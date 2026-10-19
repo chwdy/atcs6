@@ -125,6 +125,38 @@ def register(app, state: AppState) -> None:
             with state.simulation_lock:
                 yield
 
+    def _report_zeroing_failures(failures, *, locked):
+        """Report a Setup tool's failed closing zeroing as a hardware I/O
+        failure (design_new.md "Power", Hardware setup, Closing a Setup tool
+        restores the safe state). `locked` says whether the caller already holds
+        `simulation_lock`. No-op when nothing failed."""
+        if not failures:
+            return
+        from hardware.setup_tools import report_close_failures
+
+        if locked:
+            report_close_failures(state.sim_controller, failures)
+        else:
+            with state.simulation_lock:
+                report_close_failures(state.sim_controller, failures)
+
+    def _self_test_reply(result, *, locked):
+        """Answer a port-test or track sweep, first reporting a failed closing
+        zeroing the test returned (`zero_failures`, which the reply leaves out)."""
+        _report_zeroing_failures(result.pop("zero_failures", None), locked=locked)
+        return jsonify(result)
+
+    @app.after_request
+    def _report_timed_out_setup_tool_closes(response):
+        """A Setup tool's idle timeout closes it inside whichever hardware
+        request touched it next, which cannot report a failed zeroing itself.
+        Report it once that request has finished and released its locks."""
+        if request.path.startswith("/api/hardware/"):
+            from hardware.setup_tools import take_timed_out_close_failures
+
+            _report_zeroing_failures(take_timed_out_close_failures(), locked=False)
+        return response
+
     @app.route("/api/hardware/config", methods=["GET"])
     def get_hardware_configuration():
         return jsonify({
@@ -267,13 +299,14 @@ def register(app, state: AppState) -> None:
         device = hardware_config.get_live_device()
         if device is not None:
             with state.simulation_lock:
-                return jsonify(
+                return _self_test_reply(
                     self_test.run_port_test(
                         cfg, chip_id, int(port), action,
                         device=device, pulse_s=data.get("pulse_s"),
-                    )
+                    ),
+                    locked=True,
                 )
-        return jsonify(
+        return _self_test_reply(
             self_test.run_port_test(
                 cfg,
                 chip_id,
@@ -281,7 +314,8 @@ def register(app, state: AppState) -> None:
                 action,
                 open_device=_develop_opener(cfg),
                 pulse_s=data.get("pulse_s"),
-            )
+            ),
+            locked=False,
         )
 
     @app.route("/api/hardware/occupancy-test", methods=["POST"])
@@ -386,13 +420,15 @@ def register(app, state: AppState) -> None:
         device = hardware_config.get_live_device()
         if device is not None:
             with state.simulation_lock:
-                return jsonify(
-                    self_test.run_track_test(cfg, str(block_id), device=device, **mirror)
+                return _self_test_reply(
+                    self_test.run_track_test(cfg, str(block_id), device=device, **mirror),
+                    locked=True,
                 )
-        return jsonify(
+        return _self_test_reply(
             self_test.run_track_test(
                 cfg, str(block_id), open_device=_develop_opener(cfg), **mirror
-            )
+            ),
+            locked=False,
         )
 
     @app.route("/api/hardware/switch-test", methods=["POST"])
@@ -658,7 +694,9 @@ def register(app, state: AppState) -> None:
                     device=hardware_config.get_live_device(),
                 )
             except Exception as exc:  # noqa: BLE001 - reported to the panel
-                _bench_session().close()
+                # A failed open still completes the safe-state sequence, and a
+                # failed zeroing there is a hardware I/O failure.
+                _report_zeroing_failures(_bench_session().close(), locked=True)
                 return jsonify({"ok": False, "error": str(exc)}), 200
         return jsonify({"ok": True, **status})
 

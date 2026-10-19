@@ -18,7 +18,7 @@ left open; only a device opened here is closed here.
 """
 
 import time
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from block_power import MAX_TRACK_VOLTAGE
 
@@ -45,6 +45,38 @@ def _open_real_device(cfg: Any) -> Any:
     from hardware.ch347_device import open_ch347_device
 
     return open_ch347_device(getattr(cfg.controller, "device_port", None))
+
+
+def _zero_every_output(chip: Any, chip_id: str) -> List[str]:
+    """Write `0` to every output channel of a chip a test drove — the safe-state
+    sequence a Setup tool completes itself when it ends (design_new.md "Power",
+    Hardware setup, Closing a Setup tool restores the safe state). Every channel,
+    not only the ones the test touched. Returns one message when the write
+    failed, empty when it landed; a chip with no outputs has nothing to zero.
+    """
+    if not hasattr(chip, "all_off"):
+        return []
+    try:
+        chip.all_off()
+    except Exception as exc:  # noqa: BLE001 - reported as a hardware I/O failure
+        return [f"{chip_id}: {exc}"]
+    return []
+
+
+def _after_zeroing(result: Dict[str, Any], zero_failures: List[str]) -> Dict[str, Any]:
+    """Fold a failed closing zeroing into a test's result.
+
+    A failed zeroing write is a hardware I/O failure (design_new.md "Power",
+    Hardware I/O failure is fatal to the physical session), so the result says
+    the test failed and carries `zero_failures` for the route to report through
+    `report_close_failures(...)`. The route removes that key before answering.
+    """
+    if not zero_failures:
+        return result
+    message = "could not zero every output after the test: " + "; ".join(zero_failures)
+    if not result.get("ok") and result.get("error"):
+        message = f"{result['error']}; {message}"
+    return {"ok": False, "error": message, "zero_failures": list(zero_failures)}
 
 
 def run_bus_scan(
@@ -145,8 +177,14 @@ def run_port_test(
             return {"ok": True, "value": bool(chip.read_bit(port))}
         if action == "pulse_output":
             hold_s = clamp_pulse_s(pulse_s)
-            _pulse(spec.kind, chip, port, hold_s=hold_s)
-            return {"ok": True, "pulse_s": hold_s}
+            try:
+                _pulse(spec.kind, chip, port, hold_s=hold_s)
+                result: Dict[str, Any] = {"ok": True, "pulse_s": hold_s}
+            except Exception as exc:  # noqa: BLE001 - the chip is still zeroed
+                result = {"ok": False, "error": str(exc)}
+            # Ending the test zeroes every output of the chip it drove, not just
+            # the pulsed line (Closing a Setup tool restores the safe state).
+            return _after_zeroing(result, _zero_every_output(chip, chip_id))
         return {"ok": False, "error": f"unknown action {action!r}"}
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
@@ -268,7 +306,9 @@ def run_track_test(
     """Sweep a block's track through both polarities (the block editor's track
     Test button). Reads the block's `block_track` binding, then drives its two
     bound channels forward / off / reverse so a loco on the block runs, stops,
-    and reverses. Leaves the track de-energized.
+    and reverses. Leaves every channel of the block's PWM chip at 0; a failed
+    zeroing comes back as `zero_failures` for the caller to report as a hardware
+    I/O failure.
 
     `on_voltage` reports each leg as it starts, as the *nominal* signed voltage —
     the same value the runtime would command through `TrackOutput.set_voltage`
@@ -311,10 +351,25 @@ def run_track_test(
 
     try:
         chip = build_chip(device, spec)
-        _drive_sequence(chip, forward, reverse, on_voltage=on_voltage)
-        return {"ok": True, "volts": MAX_TRACK_VOLTAGE, "hold_s": TRACK_TEST_HOLD_S}
     except Exception as exc:
+        if close_after:
+            try:
+                device.close()
+            except Exception:
+                pass
         return {"ok": False, "error": str(exc)}
+
+    try:
+        try:
+            _drive_sequence(chip, forward, reverse, on_voltage=on_voltage)
+            result: Dict[str, Any] = {
+                "ok": True, "volts": MAX_TRACK_VOLTAGE, "hold_s": TRACK_TEST_HOLD_S
+            }
+        except Exception as exc:  # noqa: BLE001 - the chip is still zeroed
+            result = {"ok": False, "error": str(exc)}
+        # Ending the sweep zeroes every channel of the chip it drove, not just
+        # the block's two (Closing a Setup tool restores the safe state).
+        return _after_zeroing(result, _zero_every_output(chip, binding.chip_id))
     finally:
         if close_after:
             try:

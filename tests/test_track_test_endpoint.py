@@ -200,3 +200,50 @@ def test_unbound_block_is_reported_and_touches_no_voltage(client):
 
     assert resp.get_json()["ok"] is False
     assert pc.get_recorded_voltage("BLK_A") == 5.0
+
+
+def test_a_failed_closing_zeroing_halts_on_a_hardware_failure(client, monkeypatch):
+    """The sweep zeroes every channel of its chip when it ends; when that write
+    fails it is a hardware I/O failure (design_new.md "Power", Hardware setup,
+    Closing a Setup tool restores the safe state), not just a failed test."""
+    test_client, _block, _power = client
+    reported = []
+    from hardware import setup_tools
+
+    monkeypatch.setattr(
+        setup_tools,
+        "report_close_failures",
+        lambda _sim, failures: reported.append(list(failures)),
+    )
+
+    def broken_all_off(self):
+        raise OSError("bus error")
+
+    monkeypatch.setattr(PCA9685, "all_off", broken_all_off)
+
+    body = _sweep(test_client).get_json()
+
+    assert body["ok"] is False
+    assert "zero_failures" not in body
+    assert reported == [["pwm1: bus error"]]
+
+
+def test_a_timed_out_tool_close_is_reported_after_the_request(client, monkeypatch):
+    """A Setup tool closed by its idle timeout inside some hardware request has
+    its failed zeroing reported once that request finishes."""
+    test_client, _block, _power = client
+    from hardware import setup_tools
+
+    reported = []
+    monkeypatch.setattr(
+        setup_tools,
+        "report_close_failures",
+        lambda _sim, failures: reported.append(list(failures)),
+    )
+    monkeypatch.setattr(
+        setup_tools, "take_timed_out_close_failures", lambda: ["pwm1: bus error"]
+    )
+
+    test_client.get("/api/hardware/bench/state")
+
+    assert reported == [["pwm1: bus error"]]
