@@ -2903,9 +2903,10 @@ class PathDispatcher:
             return False
         occ_target = route_executor.find_next_move_target(occ)
         if occ_target is None:
-            # The occupant has no scheduled next move (no RUNNING run, or a
-            # route-less parked train) to reverse through the terminal — a plain
-            # parked obstruction the follower waits behind, not a reversal trap.
+            # The occupant has no scheduled next move (no RUNNING run, a
+            # route-less parked train, or a ONE_OFF run with no move task left)
+            # to reverse through the terminal — a plain parked obstruction the
+            # follower waits behind, not a reversal trap.
             return False
         if occ_target == "unresolved":
             # A running occupant whose next move task exists but will not resolve

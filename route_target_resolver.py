@@ -232,37 +232,46 @@ class RouteTargetResolver:
             resolved_target=resolved,
         )
 
-    def _forward_move_tasks(self, route, start, *, skip_start):
-        """Yield `(index, task)` for each non-`dwell` task walking forward from
-        `start` — one lap, wrapping for CIRCULAR, stopping at the end for linear
-        routes; with `skip_start=True` the walk begins strictly after `start`.
+    def _forward_move_tasks(self, route, start, direction="forward", *, skip_start):
+        """Yield `(index, task, walk_direction)` for each non-`dwell` task on the
+        directed walk from the visit to task `start` going `direction` — one
+        lap, stepping by `Route.next_walk_step(...)`: wrapping for CIRCULAR,
+        turning back at the end groups for ROUND_TRIP, stopping at the end for
+        ONE_OFF. With `skip_start=True` the walk begins strictly after `start`.
 
         The shared task-walk kernel behind `find_next_move_target(...)` (the
-        train's live next move) and `_next_move_block_after_index(...)` (a
-        hypothetical NEAREST seed position). Each caller keeps its own
-        resolve-and-return policy; only the walk order / wrap / dwell-skip is
-        shared here.
+        train's live next move), `find_next_move_target_from(...)` and
+        `_next_move_block_after_index(...)` (a hypothetical seed position). It
+        steps the same walk `RouteRun._append_next_walk_task(...)` grows but
+        appends nothing, so it is read-only. Each caller keeps its own
+        resolve-and-return policy; only the walk order / wrap / turn-back /
+        dwell-skip is shared here.
         """
         task_count = (
             route.get_task_count() if hasattr(route, "get_task_count") else 0
         )
         if task_count == 0:
             return
-        is_circular = getattr(route, "mode", None) == RouteMode.CIRCULAR
-        begin = 1 if skip_start else 0
-        for step in range(begin, task_count + begin):
-            if is_circular:
-                idx = (start + step) % task_count
-            else:
-                idx = start + step
-                if idx >= task_count:
-                    return
+        # A ROUND_TRIP lap goes out and back, so it visits up to twice as many
+        # walk-positions as the route has tasks.
+        budget = (
+            2 * task_count
+            if getattr(route, "mode", None) == RouteMode.ROUND_TRIP
+            else task_count
+        )
+        position = (start, direction)
+        if skip_start:
+            position = route.next_walk_step(start, direction)
+        for _ in range(budget):
+            if position is None:
+                return
+            idx, walk_direction = position
             task = route.get_task_at(idx) if hasattr(route, "get_task_at") else None
             if task is None:
                 return
-            if getattr(task, "task_kind", None) == "dwell":
-                continue
-            yield idx, task
+            if getattr(task, "task_kind", None) != "dwell":
+                yield idx, task, walk_direction
+            position = route.next_walk_step(idx, walk_direction)
 
     def find_next_move_target(
         self, train_id: str
@@ -275,9 +284,10 @@ class RouteTargetResolver:
         block-relative direction, the same direction filter an ordinary
         acquisition uses — of the first non-`dwell` task at or after the
         train's next planning index; `None` when the occupant has no next move
-        at all (no `RUNNING` run, or a route-less parked train); and the
-        sentinel string `"unresolved"` when a next move task exists on a running
-        walk but its target cannot be resolved this tick. Best-effort truncation
+        at all (no `RUNNING` run, a route-less parked train, or a `ONE_OFF`
+        run with no move task left, such as one dwelling at its last stop); and
+        the sentinel string `"unresolved"` when a next move task exists on a
+        running walk but its target cannot be resolved this tick. Best-effort truncation
         uses this to tell whether a stopped occupant's next move would reverse
         back through a candidate terminal block (see the reversal-trap exclusion
         under best-effort `create_path()` in design_new.md). The `None` vs
@@ -286,10 +296,11 @@ class RouteTargetResolver:
         NOT exempt — a resolution failure does not prove the occupant will never
         reverse out, so the terminal is barred conservatively.
 
-        ROUND_TRIP direction flips at route ends are not modelled here; the
-        walk steps forward (with CIRCULAR wraparound) from the next planning
-        index, which is exact for the common `[stop, dwell, stop, ...]` layout
-        and at worst returns `None`, leaving truncation at today's behavior.
+        The walk starts at the run's first unfinished walk-position and steps
+        the directed walk the run itself grows (`_forward_move_tasks`), so a
+        ROUND_TRIP train at an end group resolves the stop it turns back to,
+        and the target's direction comes from that walk-position's
+        `walk_direction`, never the run-level `RouteRun.direction`.
         """
         e = self._e
         train = (
@@ -311,11 +322,19 @@ class RouteTargetResolver:
         task_count = route.get_task_count() if hasattr(route, "get_task_count") else 0
         if task_count == 0:
             return None
-        start = self.compute_next_task_index(route, exec_state, task_count)
-        if start is None:
-            return None
+        # The live next-planning position: the first unfinished walk-position,
+        # visited in that row's own direction. When every row is finished the
+        # walk resumes after the last one (nothing, for a finished ONE_OFF).
+        if exec_state.task_runs:
+            row = exec_state.task_runs[exec_state.next_planning_walk_position]
+            start, direction = row.task_index, row.walk_direction
+            skip_start = row.finished_at is not None
+        else:
+            start, direction, skip_start = 0, "forward", False
 
-        for _idx, task in self._forward_move_tasks(route, start, skip_start=False):
+        for _idx, task, walk_direction in self._forward_move_tasks(
+            route, start, direction, skip_start=skip_start
+        ):
             block, _reason = self.resolve_task_target_block_detailed(
                 task, train=train
             )
@@ -323,14 +342,14 @@ class RouteTargetResolver:
                 # A next move task exists on the running walk but its target
                 # cannot be resolved this tick (a blocked / disabled / missing
                 # target, or a stalled walk). Return the "unresolved" sentinel —
-                # distinct from the route-less `None` below — so the reversal-
+                # distinct from the no-move `None` below — so the reversal-
                 # trap exclusion treats this occupant as NOT exempt
                 # (design_new.md "find_next_move_target" canonical definition,
                 # `"unresolved"` is not exempt).
                 return "unresolved"
             from route_executor import ResolvedRouteTarget
 
-            signed_direction = 1 if exec_state.direction == "forward" else -1
+            signed_direction = 1 if walk_direction == "forward" else -1
             return ResolvedRouteTarget(
                 requested_destination_block_id=block,
                 requested_destination_direction=self.resolve_task_direction(
@@ -377,8 +396,8 @@ class RouteTargetResolver:
         """The block of the next non-`dwell` move at or after `walk_position`.
 
         The seed-position variant of `find_next_move_target(...)`: both share
-        one forward task-walk kernel — the walk order, `CIRCULAR` wrap, and
-        `dwell` skip are defined once — and differ only in resolve-and-return
+        one task-walk kernel — the walk order, `CIRCULAR` wrap, `ROUND_TRIP`
+        turn-back, and `dwell` skip are defined once — and differ only in resolve-and-return
         policy. This one walks on past a move task it cannot resolve rather
         than stopping, because **Run start-mode seeding** asks the question
         from a hypothetical seed position where an unresolvable task says
@@ -407,9 +426,11 @@ class RouteTargetResolver:
             return None
         if not (0 <= walk_position < len(exec_state.task_runs)):
             return None
-        start = exec_state.task_runs[walk_position].task_index
+        row = exec_state.task_runs[walk_position]
 
-        for _idx, task in self._forward_move_tasks(route, start, skip_start=False):
+        for _idx, task, _walk_direction in self._forward_move_tasks(
+            route, row.task_index, row.walk_direction, skip_start=False
+        ):
             block, _reason = self.resolve_task_target_block_detailed(
                 task, train=train
             )
@@ -1123,7 +1144,8 @@ class RouteTargetResolver:
         self, route: "Route", train: Optional["Train"], idx: int
     ) -> Optional[str]:
         """Resolved block of the first `stop` / `waypoint` task after walk
-        index `idx` (skipping `dwell` tasks, wrapping for CIRCULAR), or `None`.
+        index `idx` (skipping `dwell` tasks, wrapping for CIRCULAR, turning back
+        for ROUND_TRIP), or `None`. A seeded run starts its walk `"forward"`.
 
         Mirrors `find_next_move_target(...)` but for a *hypothetical* seed
         position rather than the train's live next-planning index, so NEAREST
@@ -1132,7 +1154,9 @@ class RouteTargetResolver:
         (`_forward_move_tasks`); unlike `find_next_move_target` it skips
         non-dwell tasks that do not resolve to a block and keeps walking.
         """
-        for _j, task in self._forward_move_tasks(route, idx, skip_start=True):
+        for _j, task, _walk_direction in self._forward_move_tasks(
+            route, idx, "forward", skip_start=True
+        ):
             block, _reason = self.resolve_task_target_block_detailed(task, train=train)
             if block:
                 return block
