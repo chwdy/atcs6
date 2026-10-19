@@ -83,3 +83,31 @@ export function sessionControls(
     resetVisible: value === 'halted' && state?.halt_reason === 'layout_emergency_cut_out',
   };
 }
+
+/**
+ * Whether the Setup tools that drive outputs may run: the commissioning
+ * session, the track direction sweep, the occupancy bench, and a port-test
+ * output pulse are accepted only in Setup (design_new.md "Setting up the
+ * hardware and going live", step 4).
+ */
+export function setupToolsAllowed(state: SessionStateView | null | undefined): boolean {
+  return state?.value === 'setup';
+}
+
+/** Why a Setup tool is unavailable outside Setup. */
+export const SETUP_TOOL_HINT = 'Runs only in Setup. Enter Setup from Hardware Setup first.';
+
+/**
+ * Why Activate cannot be pressed right now, or null when it can. Activate is
+ * refused while the session is Live and while it is Halted for
+ * `runtime_failure` (design_new.md "Session state", the transition table).
+ */
+export function activateUnavailableReason(
+  state: SessionStateView | null | undefined
+): string | null {
+  if (state?.value === 'live') return 'The session is Live. Pause it, or enter Setup, before activating.';
+  if (state?.value === 'halted' && state.halt_reason === 'runtime_failure') {
+    return 'Clear the track conflict first.';
+  }
+  return null;
+}

@@ -24,7 +24,7 @@ import {
   noteRequestSuccess,
 } from './ui/connection-monitor';
 import { setupSettingsPanel } from './ui/settings-panel';
-import { setupHardwarePanel, refreshHardwarePanel } from './ui/hardware-panel';
+import { activationBlockMessage, setupHardwarePanel, refreshHardwarePanel } from './ui/hardware-panel';
 import { updateTrainDebugPanel as renderTrainDebugPanel, hideTrainDebugPanel as renderHideTrainDebugPanel } from './panels/train-debug-panel';
 import { updateTileDetails } from './panels/tile-debug-inspector';
 import { showConfirmModal, showFormModal } from './lib/helpers';
@@ -47,6 +47,9 @@ class App {
   // The active operating environment (`simulation`, `virtual_hardware` or
   // `real_hardware`), from the network snapshot.
   operationEnvironment: string | null = null;
+  // The session state from the network snapshot, for panels that offer
+  // controls only in some states (design_new.md "Session state").
+  sessionState: { value: string; halt_reason: string | null } | null = null;
   editorMode: 'edit' | 'sim' = 'edit';
   selectedTrainId: string | null;
   lastLookaheadFetch: number;
@@ -199,6 +202,27 @@ class App {
       });
     }
 
+    // After a hardware failure, Activate is the way back once the device is
+    // repaired: it clears the halt and starts the railway over (design_new.md
+    // "Power", Recovery is reactivation).
+    const activateFatalBtn = document.getElementById('btn-activate-fatal') as HTMLButtonElement | null;
+    if (activateFatalBtn) {
+      activateFatalBtn.addEventListener('click', async () => {
+        activateFatalBtn.disabled = true;
+        try {
+          await api.activateOperationEnvironment();
+          showToast('Activated — every train is off. Press Start route to run a train.', 'success', 5000);
+          await this.refreshNetwork();
+          await refreshHardwarePanel();
+        } catch (e: any) {
+          console.error('[App] Activate failed:', e);
+          showToast(activationBlockMessage(e) || 'Could not activate: ' + (e?.message ?? e), 'error', 8000);
+        } finally {
+          activateFatalBtn.disabled = false;
+        }
+      });
+    }
+
     const restartFatalBtn = document.getElementById('btn-restart-fatal') as HTMLButtonElement | null;
     if (restartFatalBtn) {
       restartFatalBtn.addEventListener('click', async () => {
@@ -344,6 +368,7 @@ class App {
    *  "Session state"). `isSimulationRunning` means the session is Live. */
   syncSessionUI(network: any): void {
     const state = network?.session_state ?? null;
+    this.sessionState = state;
     this.isSimulationRunning = state?.value === 'live';
 
     const chip = document.getElementById('session-state-chip');
@@ -764,7 +789,7 @@ class App {
       if (result?.warning) {
         showToast(`Warning: ${result.warning}`, 'warning');
       } else if (result?.hardware === 'applied') {
-        showToast("This layout's hardware configuration was applied — restart to run on it", 'info');
+        showToast("This layout's hardware configuration was applied — activate the environment to run on it", 'info');
       }
 
       this.closeModal(document.getElementById('load-layout-modal'));

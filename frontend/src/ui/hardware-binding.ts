@@ -16,6 +16,7 @@
 import { api } from '../lib/api';
 import { flashField } from '../lib/helpers';
 import { showToast } from '../lib/toast';
+import { setupToolsAllowed, SETUP_TOOL_HINT, type SessionStateView } from '../lib/session-controls';
 import { chipDisplayName, pickPorts } from './port-picker';
 
 interface Binding { chip_id: string; port: number; }
@@ -52,6 +53,9 @@ export interface HwConfig {
    * what activation captures — a coil port or a rail-polarity flag is read per
    * write, so editing one never raises this. */
   awaits_activation?: boolean;
+  /** The session state (design_new.md "Session state"); the track Test is a
+   * Setup tool, so it runs only in Setup. */
+  session_state?: SessionStateView | null;
   chips: HwChip[];
   block_track: Record<string, TrackBinding>;
   block_occupancy: Record<string, Binding>;
@@ -112,6 +116,7 @@ export async function fetchHardwareConfig(): Promise<HwConfig | null> {
       operation_environment: res.session?.operation_environment,
       environment_active: !!res.session?.environment_active,
       awaits_activation: !!res.session?.awaits_activation,
+      session_state: res.session?.session_state ?? null,
     };
   } catch {
     return null;
@@ -167,7 +172,8 @@ export function hardwareSectionHtml(cfg: HwConfig | null, logicalId: string, slo
  * this panel and a toast alone is missable. */
 function activationNoteHtml(cfg: HwConfig): string {
   if (!cfg.environment_active || cfg.operation_environment === 'simulation') {
-    return `<p class="text-warning text-xs mt-4">This Hardware Setup is not active. Wiring saves now and Test works; activate Virtual Hardware or Real Hardware from Run Environment to use it.</p>`;
+    const test = setupToolsAllowed(cfg.session_state) ? 'Test works' : 'Test works in Setup';
+    return `<p class="text-warning text-xs mt-4">This Hardware Setup is not active. Wiring saves now and ${test}; activate Virtual Hardware or Real Hardware from Run Environment to use it.</p>`;
   }
   return `<p class="text-warning text-xs mt-4 hw-pending-note"${cfg.awaits_activation ? '' : ' hidden'}>Saved setup changes are not in the running session — activate the environment again from Run Environment to apply them.</p>`;
 }
@@ -250,10 +256,13 @@ export function trackBindingSummary(cfg: HwConfig, blockId: string): string {
  */
 function trackRowHtml(cfg: HwConfig, blockId: string, slot: HwSlot): string {
   const bound = !!cfg.block_track[blockId];
+  // The track direction sweep drives the block, so it is a Setup tool.
+  const inSetup = setupToolsAllowed(cfg.session_state);
+  const testAttrs = !bound ? ' disabled' : inSetup ? '' : ` disabled title="${esc(SETUP_TOOL_HINT)}"`;
   return `<div class="input-small-row mb-8">
       <label class="input-small-label input-small-label-inline">${esc(slot.label)}</label>
       <button type="button" class="input-small-field text-left hw-track-pick">${esc(trackBindingSummary(cfg, blockId))}</button>
-      <button type="button" class="btn btn-secondary btn-sm hw-track-test"${bound ? '' : ' disabled'}>Test</button>
+      <button type="button" class="btn btn-secondary btn-sm hw-track-test"${testAttrs}>Test</button>
     </div>`;
 }
 
@@ -703,7 +712,7 @@ export function bindHardwareSection(cfg: HwConfig | null, logicalId: string): vo
         reversed: cfg.block_track[logicalId]?.reversed === true,
       };
       pickBtn.textContent = trackBindingSummary(cfg, logicalId);
-      if (trackTestBtn) trackTestBtn.disabled = false;
+      if (trackTestBtn) trackTestBtn.disabled = !setupToolsAllowed(cfg.session_state);
       flashField(pickBtn, 'ok');
       noteBindingSaved(cfg, 'Track wiring');
     } catch (e: any) {
