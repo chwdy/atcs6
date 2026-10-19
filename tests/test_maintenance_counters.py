@@ -166,3 +166,30 @@ def test_occupied_seconds_tracks_wall_time_not_scaled_delta():
         f"occupied_seconds accrued {accrued:.3f}s; expected at least ~"
         f"{wall_interval}s of wall time"
     )
+
+
+def test_a_stretch_with_no_pass_adds_nothing_to_occupied_seconds():
+    """design_new.md "Maintenance counters": a stretch in which no pass ran —
+    Paused in Simulation, a fatal halt, Setup with a hardware failure latched —
+    adds nothing; the first pass after it counts from its own start."""
+    import contextlib
+    import io
+
+    from bootstrap import bootstrap_runtime
+
+    with contextlib.redirect_stdout(io.StringIO()):
+        network, _, sim_controller, _ = bootstrap_runtime(
+            demo=True, setup_train=True
+        )
+    for _ in range(5):
+        sim_controller.update(0.1)
+    before = sum(b.occupied_seconds for b in network.blocks.values())
+
+    # The last pass was five wall seconds ago, and the iterations since ran no
+    # pass (the session was paused).
+    sim_controller._last_pass_wall_time -= 5.0
+    sim_controller.mark_no_pass()
+    sim_controller.update(0.1)
+
+    accrued = sum(b.occupied_seconds for b in network.blocks.values()) - before
+    assert accrued < 0.5, f"a stretch with no pass added {accrued:.3f}s"

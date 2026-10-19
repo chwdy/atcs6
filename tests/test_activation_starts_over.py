@@ -152,3 +152,22 @@ def test_activation_while_running_is_refused_and_changes_nothing(tmp_path, monke
     assert response.status_code == 409
     assert dispatcher.active_path_id_by_train("T1") == path_id
     assert controller.powered is True
+
+
+def test_a_direct_cancel_reports_no_latch():
+    """design_new.md "Latch consumption events": activation's cancel is not the
+    consumption of `path_cancel_request`, so its `cancel_path` event carries
+    `payload.latch = None`."""
+    _network, sim, dispatcher, _controller, path_id, _route = (
+        _rolling_train_on_a_route()
+    )
+    events = []
+    original = sim.notification_center.emit
+    sim.notification_center.emit = lambda **event: (
+        events.append(event), original(**event)
+    )[1]
+
+    sim.start_railway_over()
+
+    cancels = [e for e in events if e.get("operation") == "cancel_path"]
+    assert cancels and all(e["payload"]["latch"] is None for e in cancels)

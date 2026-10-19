@@ -236,19 +236,17 @@ class OperatorCommands:
         """Set the `power_off` latch and take the train to manual.
 
         Wraps `phase_latches.set_power_off(...)` together with the
-        controller-local side effects of setting `control_mode = "manual"`
+        controller-local side effect of setting `control_mode = "manual"`
         (which clears `commands.engaged`, per design_new.md "Driving mode",
-        Power-off acceptance) and neutralizing propulsion: `handle_position`
-        goes to neutral and `manual.manual_power_percent` is zeroed, so the rest
-        of this tick's `TrainController.tick(...)` cannot produce a non-neutral
-        propulsion command while `pending_power_off` is set (design_new.md step
-        `98d3`). The inclusive `path_cancel_request` fan-out is applied
-        automatically when a live path exists, per design_new.md "Latch Table".
+        Power-off acceptance). It writes no notch and no percentage of its own:
+        the pending power-off is a ceiling in the Propulsion cap step, which
+        lowers propulsion to `0` on this and every later Action while the latch
+        is set (design_new.md "Power/mode command contracts"). The inclusive
+        `path_cancel_request` fan-out is applied automatically when a live path
+        exists, per design_new.md "Latch Table".
         """
         c = self._c
         self._write_control_mode("manual")
-        c.ops.reset_handle_to_neutral()
-        c.manual.reset_power_percent_for_safety()
         c.route_hooks.phase_latches.set_power_off(
             reason=reason,
             has_active_path=c.path_projection.received_path_plan is not None,

@@ -993,12 +993,12 @@ class TrainController:
         # Propulsion cap step, power-off ceiling (design_new.md "Propulsion cap
         # step"). A pending `phase_latches.power_off` (EB returned above) is a
         # zero ceiling at the service rate: the command is the neutral notch and
-        # the retained percentage springs to `0`. This holds a still-powered
-        # rolling ghost train at neutral every tick until the latch is consumed;
-        # it is a no-op for the stopped-only operator writer, which already
-        # neutralized once through `_apply_power_off_request()`.
+        # the retained percentage springs to `0`. The neutral notch is this
+        # tick's physics command only; it is not written back into the stored
+        # `handle_position` (design_new.md Module boundaries rule 5, One cap
+        # step). This holds a still-powered rolling ghost train at neutral every
+        # tick until the latch is consumed.
         if self.route_hooks.phase_latches.power_off:
-            self.ops.reset_handle_to_neutral()
             self.manual.reset_power_percent_for_safety()
             return PhysicsCommand(
                 kind=PHYSICS_KIND_HANDLE,

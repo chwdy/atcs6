@@ -372,3 +372,26 @@ def test_the_detail_rides_along_when_the_lookahead_has_one():
         h.notifications.events[0]["payload"]["atc_limit_reason_detail"]
         == "BLK_7 occupied by TRAIN_2"
     )
+
+
+def test_a_pending_power_off_leaves_the_stored_handle_alone():
+    """design_new.md Module boundaries rule 5: the cap step's neutral notch is
+    a per-tick physics command; it is not written back into `handle_position`,
+    and power-off acceptance writes no notch of its own."""
+    from enums import HandlePosition
+    from network import RailwayNetwork
+    from train import Train, TrainCar
+    from train_controller import create_controller_for_train
+
+    network = RailwayNetwork()
+    car = TrainCar(car_id="C1", car_type="LOCOMOTIVE", length_cm=20.0)
+    network.add_train(Train(train_id="T1", consist=[car], max_speed=60.0))
+    controller = create_controller_for_train("T1", network)
+    controller.powered = True
+    controller.ops.handle_position = HandlePosition.P3
+
+    assert controller.commands.power_off_cmd().success
+    command = controller.produce_physics_command()
+
+    assert command.handle == HandlePosition.N
+    assert controller.ops.handle_position == HandlePosition.P3

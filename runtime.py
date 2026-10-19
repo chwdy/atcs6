@@ -193,6 +193,13 @@ def create_simulation_loop(state: AppState) -> Callable[[], None]:
                     # failed drop escalates (design_new.md step `ee19`).
                     with state.simulation_lock:
                         state.sim_controller.consume_watchdog_trip()
+                        state.sim_controller.mark_no_pass()
+                elif state.sim_controller is not None:
+                    # No pass this iteration: the time adds nothing to
+                    # `Block.occupied_seconds` (design_new.md "Maintenance
+                    # counters").
+                    with state.simulation_lock:
+                        state.sim_controller.mark_no_pass()
             except Exception as e:
                 faults.report(e)
             else:

@@ -1979,6 +1979,7 @@ class PathDispatcher:
         error: Optional["ErrorRecord"] = None,
         kind: str = "info",
         deviation: bool = False,
+        latch: Optional[str] = None,
     ) -> CancellationResult:
         """v1 cancel_path: release reservations, mark path CANCELLED.
 
@@ -1993,6 +1994,10 @@ class PathDispatcher:
             latched payload's own level rather than a level derived here.
           * `deviation` is the structured classification boolean forwarded to
             the route callback.
+          * `latch` names the latch this cancel consumes, carried into the
+            event's `payload.latch`: the Action explicit-cancel step passes
+            `"path_cancel_request"`, and a direct cancel (environment
+            activation, the layout emergency cut-out) leaves it `None`.
           * A `path_id` absent from `paths_by_id` is a caller-contract
             violation and raises (design_new.md "Path API migration"), like the
             error-pairing violation above.
@@ -2090,7 +2095,7 @@ class PathDispatcher:
                     error=error,
                     event_time=now,
                     payload={
-                        "latch": "path_cancel_request",
+                        "latch": latch,
                         "origin": error.origin,
                         "deviation": deviation,
                     },

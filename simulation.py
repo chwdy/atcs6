@@ -213,8 +213,13 @@ class SimulationController(SwitchOutputOwner):
         # stopped. Every pass's `occupied_seconds` accrual measures the unscaled
         # wall seconds against it — running and stopped alike, never the
         # playback-scaled physics delta — see
-        # `_accrue_block_occupied_seconds()`. `None` until the first pass.
+        # `_accrue_block_occupied_seconds()`. `None` until the first pass, and
+        # again after a runtime-loop iteration that ran no pass
+        # (`mark_no_pass()`), so a stretch with no pass adds nothing.
         self._last_pass_wall_time: Optional[float] = None
+        # Wall time the current pass started; the accrual measures from it when
+        # no previous pass stands behind this one.
+        self._pass_started_wall_time: Optional[float] = None
 
         # Initialize components with shared controllers. The block/switch power
         # output interfaces come from the session-build override (real backend)
@@ -447,6 +452,10 @@ class SimulationController(SwitchOutputOwner):
              next train's Plan.
           5. After all trains have committed, refresh signals from blocks.
         """
+        # This pass's start: after a stretch with no pass, the
+        # `occupied_seconds` accrual counts from here (design_new.md
+        # "Maintenance counters").
+        self._pass_started_wall_time = time.time()
         # Consume a loss-of-control watchdog trip first: it is the sole
         # operation allowed through the fatal/hardware gate below (design_new.md
         # step `ee19`), because a failed safe-state drop must still escalate to
@@ -631,12 +640,16 @@ class SimulationController(SwitchOutputOwner):
         pass — never the playback-scaled `delta_seconds` physics and route
         bookkeeping consume — because a block's physical wear tracks real
         elapsed time regardless of playback speed. Every pass stamps the wall
-        time, so a pass always measures from the immediately preceding pass, and
-        the first pass of all accrues nothing because it has no interval behind
-        it.
+        time, so a pass measures from the immediately preceding pass. A stretch
+        in which no pass ran — Paused in Simulation, a fatal halt, or Setup with
+        a hardware failure latched — adds nothing: the runtime loop calls
+        `mark_no_pass()` for each such iteration, and the first pass after it
+        counts from its own start, because no detector read covered that time.
         """
         now = time.time()
         previous = self._last_pass_wall_time
+        if previous is None:
+            previous = self._pass_started_wall_time
         self._last_pass_wall_time = now
         if previous is None:
             return
@@ -646,6 +659,13 @@ class SimulationController(SwitchOutputOwner):
         for block in self.network.blocks.values():
             if block.occupied_by is not None:
                 block.occupied_seconds += delta_seconds
+
+    def mark_no_pass(self) -> None:
+        """Record that a runtime-loop iteration ran no pass (design_new.md
+        "Maintenance counters": a stretch in which no pass ran adds nothing to
+        `Block.occupied_seconds`). The next pass then measures from its own
+        start instead of from the last pass before the stretch."""
+        self._last_pass_wall_time = None
 
     def _unidentified_clock(self) -> float:
         """The clock `UnidentifiedTrainTracker` measures its hold windows against.
@@ -1092,6 +1112,10 @@ class SimulationController(SwitchOutputOwner):
         throughout Setup). With no environment active the outputs belong to the
         Setup tools, so the drain writes nothing.
         """
+        # This pass's start: after a stretch with no pass, the
+        # `occupied_seconds` accrual counts from here (design_new.md
+        # "Maintenance counters").
+        self._pass_started_wall_time = time.time()
         if self.operation_mode is OperationMode.SIMULATION or not self.occupancy_is_real:
             return
         if self.runtime_halted:
@@ -2496,6 +2520,7 @@ class SimulationController(SwitchOutputOwner):
                 error=payload.error,
                 kind=payload.kind,
                 deviation=payload.deviation,
+                latch="path_cancel_request",
             )
         else:
             # No live path to cancel. Per design_new.md "Action latched-cancel
