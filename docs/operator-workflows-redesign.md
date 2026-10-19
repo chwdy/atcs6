@@ -632,12 +632,21 @@ default the user did not object to. Any decision can be reopened.
      Hold reason question 1 is three rows (`halted`, `setup`, `paused`), and those rows apply
      whenever the session is stopped, even to a train frozen with speed still stored.
 
-     Still open for the code phase (gap analysis next): `AppState.session_state()`, the two new
-     flags, the halt entries no longer writing `simulation_running`, the new endpoints
-     (`/api/operation/setup`, `/api/simulation/reset`, `/api/simulation/hold-all`), the cut-out
-     in Simulation, boot behaviour, the bench and commissioning as Setup tools, the hold-reason
-     rows, and the detectors being read in Setup (already in the doc for commissioning; the code
-     returns early while no environment is active).
+     Code done 2026-10-18, in commits `f99c2bc` to `d70c860`: `AppState.session_state()` and
+     the two new flags, the halts no longer writing `simulation_running`, Play/Pause and
+     `set_speed` in Simulation only, Activate's rules (it clears a hardware failure), boot
+     activating no hardware, the full Emergency stop with Reset and Hold all, Setup with its
+     tools and the detectors read in Setup, the hold-reason rows, and the UI. The
+     clear-hardware-failure endpoint is gone. Two doc gaps were settled on the way: `set_speed`
+     is Simulation-only playback speed, and a port-test output pulse is Setup-only.
+     Still open:
+     - The doc says the header shows the session state. The UI shows it in a bar at the top of
+       the canvas, with Emergency stop, Reset and Hold all, because the header has no room
+       beside Simulation's playback controls. Either the doc's wording or the UI should move.
+     - `GET /api/operation/environment` still names its fields `selected` and `active`, not
+       `requested_environment` and `active_environment`, and the `PUT` body uses `selected`
+       where the doc says `environment`.
+     - Shutdown still calls the raw safe-state sequence, not the wrapper the doc names.
 4. Write Part C rule 2 into `design_new.md` last, and move the code to it in stages.
 5. After each doc change, run a `gap-analysis` on that area and fix the code phase by phase,
    keeping `./run_all_tests.sh` green between phases.
