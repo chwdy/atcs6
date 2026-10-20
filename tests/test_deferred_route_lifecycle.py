@@ -345,21 +345,25 @@ def test_delete_route_with_assigned_never_ticked_train_latches_like_any_train(
     assert train_route_service.delete_route(state, "R") is True
 
 
-def test_delete_route_clears_an_assignment_left_by_a_deleted_train(
+def test_deleting_the_train_finishes_a_route_deletion_waiting_on_it(
     state_with_train,
 ):
-    """A train deleted from the layout leaves its route assignment behind; no
-    controller or Action pass will ever run for it, so DELETE clears the stale
-    assignment through the assignment entry and the route archives at once."""
+    """A route deleted while the session is stopped waits on its OFF train's
+    deactivate latch. Deleting that train unassigns it and finishes the route
+    deletion at once (design_new.md "Train Entity", Deleting a train)."""
     state, _train = state_with_train
     route = _make_route(state, "R", "BLK_1")
     rex = state.sim_controller.route_executor
-    route.assign_train("GONE")                               # no such train
+    assert rex.request_route_assignment("TRAIN_A", "R").success
 
-    assert train_route_service.delete_route(state, "R") is True
+    train_route_service.delete_route(state, "R")
+    assert "R" in rex.pending_route_deletions                # waits on TRAIN_A
 
-    assert "GONE" not in route.assigned_train_ids
+    assert train_service.delete_train(state, "TRAIN_A") is True
+
+    assert "TRAIN_A" not in route.assigned_train_ids
     assert "R" not in rex.route_registry
+    assert "R" not in rex.pending_route_deletions
     assert rex.get_historical_route("R") is route
 
 

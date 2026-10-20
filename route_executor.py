@@ -4626,6 +4626,37 @@ class RouteExecutor:
         """
         self._pending_reassign.pop(train_id, None)
 
+    def forget_train(self, train_id: str) -> None:
+        """Remove every route record of a train the operator deletes
+        (design_new.md "Train Entity", Deleting a train, step 1).
+
+        `SimulationController.remove_train(...)` calls this only for a train
+        with no RUNNING run, so there is no run to tear down. In order it:
+
+          1. drops the held structural re-assignment, so a route that names it
+             is no longer kept for this train;
+          2. drops the held assignment request without committing it — a
+             deleted train must not be assigned a route — and deletes a one-off
+             route the dropped request leaves empty;
+          3. drops the stashed start override;
+          4. unassigns the train from its route, deleting a one-off route left
+             with no train;
+          5. finalizes pending route deletions, so a route whose deletion was
+             waiting on this train finishes deleting.
+
+        The train's historical runs stay in the run history.
+        """
+        self.discard_pending_reassign(train_id)
+        self._drop_held_route_assignment(train_id)
+        self.clear_pending_start_override(train_id)
+        route_id = self.assigned_route_id_for(train_id)
+        if route_id is not None:
+            route = self.route_registry.get(route_id)
+            if route is not None:
+                route.unassign_train(train_id)
+            self._delete_if_emptied_one_off(route_id)
+        self.finalize_pending_route_deletions()
+
     def _emit_event(
         self, operation, message, train_id=None, payload=None, path_id=None,
         kind=None, latch_event=False,

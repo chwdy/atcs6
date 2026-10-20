@@ -155,11 +155,18 @@ def register(app, state: AppState) -> None:
 
     @app.route("/api/trains/<train_id>", methods=["DELETE"])
     def delete_train(train_id):
-        """Delete a train from the network."""
+        """Delete a train (design_new.md "Train Entity", Deleting a train).
+
+        A refused deletion — an unidentified train, a train that is not OFF, one
+        still holding a path or a running route run, or one still drawing
+        current — returns 400 with the reason and changes nothing.
+        """
         try:
             train_service.delete_train(state, train_id)
         except NotFoundError:
             return jsonify({"error": "Train not found"}), 404
+        except ValidationError as exc:
+            return jsonify({"error": str(exc)}), 400
         return jsonify({"status": "success", "message": f"Train {train_id} deleted"})
 
     @app.route("/api/trains/<train_id>/adopt", methods=["POST"])

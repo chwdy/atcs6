@@ -646,13 +646,6 @@ def delete_route(state: AppState, route_id: str) -> bool:
     # `remove_train_route_run(...)`, which archives + unassigns its run.
     for train_id in list(route.assigned_train_ids):
         executor.discard_pending_reassign(train_id)
-        if state.network.trains.get(train_id) is None:
-            # The train was deleted from the layout but its assignment stayed:
-            # no controller can hold a latch for it and no Action pass will run
-            # for it. With no train there is no run either, so the assignment
-            # entry's no-run branch clears the stale assignment.
-            executor.request_route_assignment(train_id, None)
-            continue
         # A train the sim has never ticked (assigned while paused, or a
         # just-loaded layout) has no controller yet; create it so the latch has
         # somewhere to live. The next running Action consumes it like any other.

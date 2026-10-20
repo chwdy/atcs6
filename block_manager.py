@@ -1036,10 +1036,10 @@ class BlockManager:
         """Drop every block `train_id` occupies, without leaving CAUTION behind.
 
         `Block.occupied_by` is cleared by `on_block_tail_vacated()` on the
-        ordinary detector-confirmed path. This is the teardown path for the two
-        cases that have no detector observation to wait for: the ghosted-train
-        teardown and the unidentified-train adoption re-key (design_new.md
-        "BlockManager").
+        ordinary detector-confirmed path. This is the teardown path for the
+        three cases that have no detector observation to wait for: the
+        ghosted-train teardown, the unidentified-train adoption re-key, and
+        train deletion (design_new.md "BlockManager").
 
         It writes no `caution` — there is no train travelling on to protect
         behind — and then runs `_reevaluate_caution_blocks()`, so a chain that

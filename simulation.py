@@ -3010,6 +3010,97 @@ class SimulationController(SwitchOutputOwner):
         )
         return train
 
+    def remove_train(self, train_id: str) -> None:
+        """Delete a train the operator placed (design_new.md "Train Entity",
+        Deleting a train).
+
+        Runs between ticks under `AppState.simulation_lock`, and only on a train
+        with nothing left to tear down, so it writes no latch. Raises
+        `ValueError` naming the reason, and changes nothing, when:
+
+          * no train has that id;
+          * the train is unidentified: the runtime owns it, and the operator
+            adopts it or it retires by itself;
+          * the train is not OFF;
+          * it still holds a live path or a RUNNING route run, which an OFF
+            train only does after a fatal-halt clear;
+          * a block it holds is a detected block the detector confirms
+            occupied: the locomotive is still on the track, and releasing the
+            block would leave it FREE under it with no later entry to correct it.
+
+        Otherwise, in order: `RouteExecutor.forget_train(...)` removes its route
+        records; its blocks and its switch occupancy are released; the train,
+        its controller (with every latch on it) and its physics instance leave
+        their registries; and one `remove_train` event names it. Its speed
+        profiles and roster entry stay.
+        """
+        from enums import TrainStatus
+
+        train = self.network.trains.get(train_id)
+        if train is None:
+            raise ValueError(f"Train {train_id} not found")
+        if getattr(train, "is_unidentified", False):
+            raise ValueError(
+                f"Train {train_id} is an unidentified train: adopt it, or it is "
+                "retired once it draws no current"
+            )
+        controller = self.controllers.get(train_id)
+        if controller is not None and controller.train_status != TrainStatus.OFF:
+            raise ValueError(f"Power train {train_id} off before deleting it")
+        if (
+            self.path_dispatcher.get_active_path(train_id) is not None
+            or self.route_executor.execution_state_for(train_id) is not None
+        ):
+            raise ValueError(
+                f"Train {train_id} still holds a path or a running route run; "
+                "unassign its route and let its teardown finish first"
+            )
+        held_blocks = sorted(
+            block_id
+            for block_id, block in self.network.blocks.items()
+            if getattr(block, "occupied_by", None) == train_id
+        )
+        detector = self.block_occupancy_detector
+        detected = detector.detected_block_ids()
+        drawing = (
+            sorted(set(held_blocks) & detected & detector.confirmed_occupied)
+            if detected
+            else []
+        )
+        if drawing:
+            raise ValueError(
+                f"Train {train_id} still draws current on {', '.join(drawing)}: "
+                "take the locomotive off the track first, then delete it"
+            )
+
+        self.route_executor.forget_train(train_id)
+
+        if self.block_manager is not None:
+            self.block_manager.release_train_occupancy(train_id)
+        if self.switch_manager is not None:
+            # `Switch.route_owners` is the doc's `Switch.physical_occupants`.
+            for switch_id, switch in list(self.network.switches.items()):
+                for route, owner in list(switch.route_owners.items()):
+                    if owner == train_id:
+                        self.switch_manager.on_switch_tail_vacated(
+                            switch_id, train_id, route
+                        )
+
+        self.network.remove_train(train_id)
+        self.controllers.pop(train_id, None)
+        self.physics_instances.pop(train_id, None)
+        self._detected_change_train_ids.discard(train_id)
+
+        self.notification_center.emit(
+            source="SimulationController",
+            operation="remove_train",
+            kind=Kind.INFO,
+            message=f"train {train_id} deleted",
+            entities=[train_ref(train_id)],
+            event_time=time.time(),
+            payload={"released_blocks": held_blocks},
+        )
+
     def adopt_unidentified_train(
         self,
         unidentified_train_id: str,

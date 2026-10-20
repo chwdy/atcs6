@@ -420,13 +420,30 @@ def clear_failed_runtime(state: AppState) -> dict:
 
 
 def delete_train(state: AppState, train_id: str) -> bool:
-    """Remove a train from the network. Returns True on success.
+    """Delete a train between ticks (design_new.md "Train Entity", Deleting a
+    train). Returns True on success.
+
+    `SimulationController.remove_train(...)` owns the refusals and the
+    teardown. A pure map-editor session has no runtime, so no controller,
+    physics instance, or route can name the train, and removing it from the
+    network is the whole deletion.
 
     Raises:
         NotFoundError when no train has that id.
+        ValidationError when the train is unidentified, is not OFF, still holds
+            a path or a running route run, or still draws current.
     """
-    if not state.network.remove_train(train_id):
-        raise NotFoundError("Train not found")
+    with _runtime_lock(state):
+        train = require_train(state, train_id)
+        if getattr(train, "is_unidentified", False):
+            raise ValidationError(_unidentified_refusal_message(train_id))
+        if state.sim_controller is None:
+            state.network.remove_train(train_id)
+            return True
+        try:
+            state.sim_controller.remove_train(train_id)
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
     return True
 
 
