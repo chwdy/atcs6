@@ -223,6 +223,26 @@ class OccupancyBenchSession:
         with self._lock:
             return self._take_close_failures_locked() + self._close_locked()
 
+    def is_holding_outputs(self) -> bool:
+        """Whether the tool is open. Read without the lock: the runtime loop
+        checks it on every iteration before deciding to take any lock."""
+        return self._device is not None
+
+    def close_if_idle(self) -> List[str]:
+        """Close the tool when its idle timeout has passed, for the runtime loop
+        (design_new.md "Power", Hardware setup, Closing a Setup tool restores
+        the safe state: a timeout closes the tool on time, with no request
+        needed). Never waits for the lock: a tool whose lock is held is in use,
+        so it is not idle. Returns the failed zeroing writes of that close, plus
+        any a request-noticed timeout left, for the caller to report."""
+        if not self._lock.acquire(blocking=False):
+            return []
+        try:
+            self._expire_locked()
+            return self._take_close_failures_locked()
+        finally:
+            self._lock.release()
+
     def take_close_failures(self) -> List[str]:
         """The failed zeroing writes of a close the idle timeout ran, once.
         The caller reports them as a hardware I/O failure."""

@@ -39,6 +39,30 @@ def take_timed_out_close_failures() -> List[str]:
     return errors
 
 
+def any_setup_tool_open() -> bool:
+    """Whether the commissioning session or the occupancy bench is open. A
+    cheap read with no lock, so the runtime loop can ask on every iteration."""
+    from hardware import commission, occupancy_bench
+
+    return (
+        commission.get_session().is_holding_outputs()
+        or occupancy_bench.get_session().is_holding_outputs()
+    )
+
+
+def close_idle_setup_tools() -> List[str]:
+    """Close every Setup tool whose idle timeout has passed (design_new.md
+    "Power", Hardware setup, Closing a Setup tool restores the safe state).
+    The runtime loop calls this each iteration, so a tool no request reaches
+    still closes on time. Returns the failed zeroing writes for the caller to
+    report through `report_close_failures(...)`."""
+    from hardware import commission, occupancy_bench
+
+    errors = list(commission.get_session().close_if_idle())
+    errors.extend(occupancy_bench.get_session().close_if_idle())
+    return errors
+
+
 def report_close_failures(sim_controller: Optional[Any], errors: List[str]) -> None:
     """Report a Setup tool's failed closing writes as a hardware I/O failure
     (design_new.md "Power", Hardware setup, Closing a Setup tool restores the

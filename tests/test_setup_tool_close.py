@@ -179,3 +179,85 @@ def test_a_failed_sweep_zeroing_is_returned_for_reporting(monkeypatch):
     assert res["ok"] is False
     assert res["zero_failures"] == ["pwm1: bus error"]
     assert "could not zero every output" in res["error"]
+
+
+# --- a timeout closes the tool on time ----------------------------------------
+
+import threading
+import time
+from types import SimpleNamespace
+
+import runtime
+from hardware import setup_tools
+
+
+def _open_commission(chip, *, idle_for):
+    session = CommissionSession()
+    session._device = object()
+    session._borrowed = True
+    session._chips = {"pwm1": chip}
+    session._timeout_s = 30.0
+    session._last = time.monotonic() - idle_for
+    return session
+
+
+def test_close_if_idle_closes_an_idle_tool_and_returns_its_failures():
+    session = _open_commission(_Chip(fails=True), idle_for=1e9)
+
+    assert session.close_if_idle() == ["pwm1: bus error"]
+    assert session.is_holding_outputs() is False
+
+
+def test_close_if_idle_leaves_a_tool_in_use_open():
+    chip = _Chip()
+    session = _open_commission(chip, idle_for=0)
+
+    assert session.close_if_idle() == []
+    assert session.is_holding_outputs() is True
+    assert chip.zeroed is False
+
+
+def test_close_if_idle_never_waits_on_a_busy_tool():
+    session = _open_commission(_Chip(), idle_for=1e9)
+    held, release = threading.Event(), threading.Event()
+
+    def hold_the_lock():
+        with session._lock:
+            held.set()
+            release.wait(5)
+
+    worker = threading.Thread(target=hold_the_lock)
+    worker.start()
+    held.wait(5)
+    try:
+        assert session.close_if_idle() == []      # returned at once, untouched
+        assert session.is_holding_outputs() is True
+    finally:
+        release.set()
+        worker.join()
+
+
+def test_the_runtime_loop_step_reports_a_failed_idle_close(monkeypatch):
+    reported = []
+    monkeypatch.setattr(setup_tools, "any_setup_tool_open", lambda: True)
+    monkeypatch.setattr(setup_tools, "close_idle_setup_tools", lambda: ["pwm1: bus error"])
+    monkeypatch.setattr(
+        setup_tools,
+        "report_close_failures",
+        lambda sim, failures: reported.append((sim, list(failures))),
+    )
+    sim = object()
+    state = SimpleNamespace(simulation_lock=threading.Lock(), sim_controller=sim)
+
+    runtime.close_idle_setup_tools(state)
+
+    assert reported == [(sim, ["pwm1: bus error"])]
+
+
+def test_the_runtime_loop_step_takes_no_lock_with_no_tool_open(monkeypatch):
+    monkeypatch.setattr(setup_tools, "any_setup_tool_open", lambda: False)
+    lock = threading.Lock()
+    lock.acquire()                                  # would deadlock if taken
+    state = SimpleNamespace(simulation_lock=lock, sim_controller=None)
+
+    runtime.close_idle_setup_tools(state)

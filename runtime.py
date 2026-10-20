@@ -143,6 +143,27 @@ def runtime_pass(state: AppState) -> Optional[str]:
     return PASS_STOPPED
 
 
+def close_idle_setup_tools(state: AppState) -> None:
+    """Close any Setup tool whose idle timeout has passed, and report a failed
+    zeroing as a hardware I/O failure (design_new.md "Power", Hardware setup,
+    Closing a Setup tool restores the safe state; "Running and stopped", Which
+    pass runs).
+
+    The runtime loop calls this every iteration, whatever pass it runs, so a
+    tool the operator walked away from closes on time instead of waiting for
+    the next request to notice. It takes `simulation_lock` only while a tool is
+    open, and never waits on a tool's own lock (a busy tool is not idle).
+    """
+    from hardware import setup_tools
+
+    if not setup_tools.any_setup_tool_open():
+        return
+    with state.simulation_lock:
+        setup_tools.report_close_failures(
+            state.sim_controller, setup_tools.close_idle_setup_tools()
+        )
+
+
 def create_simulation_loop(state: AppState) -> Callable[[], None]:
     """Create a simulation loop function bound to the given state.
 
@@ -156,6 +177,7 @@ def create_simulation_loop(state: AppState) -> Callable[[], None]:
     def simulation_loop() -> None:
         last_update_time = datetime.now()
         faults = FaultLog("SimulationLoop")
+        tool_faults = FaultLog("SetupToolTimeout")
         while True:
             try:
                 current_time = datetime.now()
@@ -204,6 +226,14 @@ def create_simulation_loop(state: AppState) -> Callable[[], None]:
                 faults.report(e)
             else:
                 faults.clear()
+            # In its own try, so a pass that fails every iteration cannot keep
+            # an abandoned Setup tool driving its outputs.
+            try:
+                close_idle_setup_tools(state)
+            except Exception as e:
+                tool_faults.report(e)
+            else:
+                tool_faults.clear()
             # Outside the try, so a failing tick still paces itself. Inside, a
             # stuck fault would skip its own sleep and spin the loop at full
             # speed — pinning a core and hammering whatever just failed.
