@@ -240,8 +240,8 @@ class RouteTargetResolver:
         ONE_OFF. With `skip_start=True` the walk begins strictly after `start`.
 
         The shared task-walk kernel behind `find_next_move_target(...)` (the
-        train's live next move), `find_next_move_target_from(...)` and
-        `_next_move_block_after_index(...)` (a hypothetical seed position). It
+        train's live next move) and `_next_move_block_after_index(...)` (the
+        seed walk from a hypothetical seed position). It
         steps the same walk `RouteRun._append_next_walk_task(...)` grows but
         appends nothing, so it is read-only. Each caller keeps its own
         resolve-and-return policy; only the walk order / wrap / turn-back /
@@ -388,54 +388,6 @@ class RouteTargetResolver:
             if row.finished_at is None:
                 return (pos, row.task_index)
             pos += 1
-        return None
-
-    def find_next_move_target_from(
-        self, walk_position: int, train_id: str
-    ) -> Optional[str]:
-        """The block of the next non-`dwell` move at or after `walk_position`.
-
-        The seed-position variant of `find_next_move_target(...)`: both share
-        one task-walk kernel — the walk order, `CIRCULAR` wrap, `ROUND_TRIP`
-        turn-back, and `dwell` skip are defined once — and differ only in resolve-and-return
-        policy. This one walks on past a move task it cannot resolve rather
-        than stopping, because **Run start-mode seeding** asks the question
-        from a hypothetical seed position where an unresolvable task says
-        nothing about the ones after it (design_new.md, item 11 under
-        "Path And PathDispatcher").
-        """
-        e = self._e
-        train = (
-            e.network.trains.get(train_id)
-            if hasattr(e.network, "trains")
-            else None
-        )
-        if train is None:
-            return None
-        route_id = e.assigned_route_id_for(train_id)
-        if not route_id:
-            return None
-        route = e.route_registry.get(route_id)
-        if route is None:
-            return None
-        exec_state = e.execution_states.get(train_id)
-        if exec_state is None:
-            return None
-        task_count = route.get_task_count() if hasattr(route, "get_task_count") else 0
-        if task_count == 0:
-            return None
-        if not (0 <= walk_position < len(exec_state.task_runs)):
-            return None
-        row = exec_state.task_runs[walk_position]
-
-        for _idx, task, _walk_direction in self._forward_move_tasks(
-            route, row.task_index, row.walk_direction, skip_start=False
-        ):
-            block, _reason = self.resolve_task_target_block_detailed(
-                task, train=train
-            )
-            if block is not None:
-                return block
         return None
 
     # ------------------------------------------------------------------
@@ -1143,16 +1095,17 @@ class RouteTargetResolver:
     def _next_move_block_after_index(
         self, route: "Route", train: Optional["Train"], idx: int
     ) -> Optional[str]:
-        """Resolved block of the first `stop` / `waypoint` task after walk
-        index `idx` (skipping `dwell` tasks, wrapping for CIRCULAR, turning back
-        for ROUND_TRIP), or `None`. A seeded run starts its walk `"forward"`.
+        """The seed walk (design_new.md "The seed walk"): the resolved block of
+        the first move task after task index `idx` (skipping `dwell` tasks,
+        wrapping for CIRCULAR, turning back for ROUND_TRIP), or `None`. A
+        seeded run starts its walk `"forward"`.
 
         Mirrors `find_next_move_target(...)` but for a *hypothetical* seed
-        position rather than the train's live next-planning index, so NEAREST
-        can ask "if I started here, where would my next move go?" without
-        mutating any run state. Shares the forward task-walk kernel
-        (`_forward_move_tasks`); unlike `find_next_move_target` it skips
-        non-dwell tasks that do not resolve to a block and keeps walking.
+        position on a run that has not started, so NEAREST can ask "if I
+        started here, where would my next move go?" without reading or
+        mutating any run. Shares the task-walk kernel (`_forward_move_tasks`);
+        unlike `find_next_move_target` it skips move tasks that do not resolve
+        to a block and keeps walking.
         """
         for _j, task, _walk_direction in self._forward_move_tasks(
             route, idx, "forward", skip_start=True

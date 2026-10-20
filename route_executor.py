@@ -4705,19 +4705,6 @@ class RouteExecutor:
             train_id, exclude=exclude, after_walk_position=after_walk_position
         )
 
-    def find_next_move_target_from(
-        self, walk_position: int, train_id: str
-    ) -> Optional[str]:
-        """Forward to `RouteTargetResolver.find_next_move_target_from(...)`.
-
-        The seed-position variant of `find_next_move_target(...)`, used by
-        **Run start-mode seeding**'s "No reversal first" ranking rule
-        (design_new.md, item 11 under "Path And PathDispatcher").
-        """
-        return self._get_route_target_resolver().find_next_move_target_from(
-            walk_position, train_id
-        )
-
     def find_next_move_target(
         self, train_id: str
     ) -> Optional[Union[ResolvedRouteTarget, str]]:
