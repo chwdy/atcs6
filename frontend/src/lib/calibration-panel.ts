@@ -142,3 +142,20 @@ export function compareAxisTop(stored: Curve, measured: Curve): number {
   for (const [, s] of [...(stored || []), ...(measured || [])]) top = Math.max(top, s);
   return Math.max(30, Math.ceil(top * 1.15));
 }
+
+/**
+ * What the speed row says once an open pass is gone. The status reply's
+ * `last_result` is the pass's own ending, read from the command-result stream
+ * (design_new.md "Speed calibration", A leg that overruns the stretch fails the
+ * pass: the reason goes out on the command-result stream), so a pass that
+ * failed says why. Nothing was written either way: a commit keeps the result
+ * on screen until it lands.
+ */
+export function speedPassEndedMessage(
+  lastResult: { success?: boolean; reason?: string | null } | null | undefined
+): string {
+  const reason = lastResult && !lastResult.success ? String(lastResult.reason || '').trim() : '';
+  if (!reason) return 'The pass ended. Nothing was written.';
+  const sentence = reason.charAt(0).toUpperCase() + reason.slice(1);
+  return `The pass ended: ${sentence.replace(/[.\s]+$/, '')}. Nothing was written.`;
+}

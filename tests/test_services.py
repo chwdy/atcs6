@@ -318,6 +318,59 @@ class TestSpeedProfileService:
                 state, "P1", data={"profile_id": "OTHER", "name": "x"}
             )
 
+    def test_update_keeps_the_calibration_owned_fields(self, state):
+        """The panel's save cannot move `lighting_voltage` (read-only, moved
+        only by Lighting-voltage calibration) or `calibrated_at` (written only
+        by a speed commit), and the curve stays anchored at the stored lighting
+        voltage (design_new.md "Lighting-voltage calibration", The panel; "What
+        commit writes")."""
+        speed_profile_service.create_profile(
+            state,
+            data={
+                "profile_id": "P1",
+                "name": "Profile 1",
+                "lighting_voltage": 2.0,
+                "calibrated_at": "2026-10-18T10:00:00+00:00",
+                "voltage_power_curve": [[2.0, 0.0], [6.0, 50.0], [12.0, 100.0]],
+            },
+        )
+
+        updated = speed_profile_service.update_profile(
+            state,
+            "P1",
+            data={
+                "name": "Profile 1",
+                "lighting_voltage": 1.5,
+                "calibrated_at": None,
+                "acceleration_rate": 7.0,
+                "voltage_power_curve": [[1.5, 0.0], [7.0, 50.0], [12.0, 100.0]],
+            },
+        )
+
+        assert updated.lighting_voltage == 2.0
+        assert updated.calibrated_at == "2026-10-18T10:00:00+00:00"
+        assert updated.acceleration_rate == 7.0
+        assert updated.voltage_power_curve[0] == (2.0, 0.0)
+        assert (7.0, 50.0) in updated.voltage_power_curve
+
+    def test_update_keeps_an_instance_an_instance(self, state):
+        """A body that omits `derived_from` does not turn an instance profile
+        into a model profile."""
+        speed_profile_service.create_profile(
+            state, data={"profile_id": "MODEL", "name": "Model"}
+        )
+        speed_profile_service.create_profile(
+            state,
+            data={"profile_id": "INST", "name": "Loco 7", "derived_from": "MODEL"},
+        )
+
+        updated = speed_profile_service.update_profile(
+            state, "INST", data={"name": "Loco 7 renamed"}
+        )
+
+        assert updated.derived_from == "MODEL"
+        assert updated.lighting_voltage is None
+
     def test_delete_default_raises_conflict(self, state):
         """The seeded `default` profile may never be deleted."""
         with pytest.raises(ConflictError):

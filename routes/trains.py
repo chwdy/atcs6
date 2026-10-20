@@ -310,10 +310,17 @@ def register(app, state: AppState) -> None:
 
     @app.route("/api/trains/<train_id>/calibrate", methods=["GET"])
     def calibrate_status(train_id):
-        """Progress of the open pass, for the panel to poll."""
+        """Progress of the open pass, for the panel to poll. With no pass open,
+        ``last_result`` says how the most recent one ended (read from the event
+        stream), so the panel can show why a pass failed."""
         run = train_service.calibrate_status(state, train_id)
         if run is None:
-            return jsonify({"open": False})
+            return jsonify({
+                "open": False,
+                "last_result": train_service.last_speed_calibration_result(
+                    state, train_id
+                ),
+            })
         return jsonify({"open": True, **run.to_dict()})
 
     @app.route("/api/trains/<train_id>/calibrate", methods=["DELETE"])

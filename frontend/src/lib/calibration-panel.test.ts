@@ -12,6 +12,7 @@ import {
   measuredCurve,
   readinessApplies,
   readinessKind,
+  speedPassEndedMessage,
   trainChoiceLabel,
   trainStoredValue,
   viewForOpenRuns,
@@ -157,5 +158,20 @@ describe('the measured curve', () => {
   it('sizes the speed axis to hold both curves', () => {
     expect(compareAxisTop([[0, 0], [100, 90]], [[0, 0], [100, 120]])).toBe(138);
     expect(compareAxisTop([], [[0, 0]])).toBe(30);
+  });
+});
+
+describe('speedPassEndedMessage', () => {
+  it('names the reason a failed pass gives on the command-result stream', () => {
+    expect(
+      speedPassEndedMessage({ success: false, reason: 'train overran the stretch past the far outer block' })
+    ).toBe('The pass ended: Train overran the stretch past the far outer block. Nothing was written.');
+  });
+
+  it('falls back to the plain line with no failure to name', () => {
+    expect(speedPassEndedMessage(null)).toBe('The pass ended. Nothing was written.');
+    expect(speedPassEndedMessage({ success: true, reason: 'speed_calibration finished' })).toBe(
+      'The pass ended. Nothing was written.'
+    );
   });
 });

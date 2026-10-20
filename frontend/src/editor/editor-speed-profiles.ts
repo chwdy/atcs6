@@ -21,6 +21,7 @@ import {
   measuredCurve,
   readinessApplies,
   readinessKind,
+  speedPassEndedMessage,
   trainChoiceLabel,
   trainStoredValue,
   viewForOpenRuns,
@@ -1574,8 +1575,9 @@ ${this._calibrationGroupHtml(p)}
   // so a plain length of track measures a locomotive with no loop to lap. It
   // writes nothing until the operator picks a commit target: Save to this
   // locomotive writes the measurement onto this loco's instance profile alone,
-  // Promote to model writes it onto the model profile every locomotive of that
-  // model shares (and clears this loco's own curve).
+  // Promote to model writes it onto the model profile and clears this loco's
+  // own curve, so every locomotive of that model with no curve of its own runs
+  // on it (design_new.md "What commit writes").
 
   private _renderSpeedRow(): void {
     const cal = this._cal;
@@ -1642,7 +1644,7 @@ ${this._calibrationGroupHtml(p)}
                 </div>
                 ${
                   held
-                    ? `<div class="text-muted text-xs mb-8">Save to this locomotive changes only this locomotive. Promote to model updates every locomotive of ${modelName ? escapeAttr(modelName) : 'this model'} and clears this locomotive's own curve.</div>
+                    ? `<div class="text-muted text-xs mb-8">Save to this locomotive changes only this locomotive. Promote to model writes the curve to ${modelName ? escapeAttr(modelName) : 'the model'}: every locomotive of that model without its own measured curve runs on it, this one included. A locomotive saved with its own curve keeps it.</div>
                 <div class="sp-cal-actions">
                     <button id="sp-cal-discard" class="btn btn-outline btn-sm" title="Throw the measurement away; nothing is written">Discard</button>
                     <button id="sp-cal-model" class="btn btn-outline btn-sm">Promote to model</button>
@@ -1840,10 +1842,12 @@ ${this._calibrationGroupHtml(p)}
     if (this._cal !== cal || cal.generation !== generation || cal.view !== 'speed-running') return;
     if (!run.open) {
       // EB, a power-off, a session stop, or a measurement fault ended it
-      // (design_new.md "What ends a calibration run").
+      // (design_new.md "What ends a calibration run"). The ending's reason
+      // went out on the command-result stream; the status reply carries the
+      // latest one.
       cal.view = 'speed-setup';
       cal.speedRun = null;
-      cal.message = 'The pass ended. Nothing was written.';
+      cal.message = speedPassEndedMessage(run.last_result);
       this._renderCalibration();
       void this._refreshReadiness();
       return;
@@ -1990,7 +1994,9 @@ ${this._calibrationGroupHtml(p)}
       .map((pt) => [pt[1], pt[0]] as CurvePoint)
       .sort((a, b) => a[0] - b[0]);
     this._profile!.voltage_power_curve = storage;
-    this._profile!.lighting_voltage = storage[0][0];
+    // The 0%-power point is the read-only lighting voltage: the plot locks it
+    // and the server keeps the stored value, so the plot never writes it
+    // (design_new.md "Lighting-voltage calibration", The panel).
     this._profile!.max_voltage = storage[storage.length - 1][0];
     this._syncValues();
     if (!dragging) this._commitDebounced(0);

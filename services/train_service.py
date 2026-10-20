@@ -1012,6 +1012,35 @@ def calibrate_status(state: AppState, train_id: str):
     return sim.speed_calibration.runs.get(train_id)
 
 
+def last_speed_calibration_result(
+    state: AppState, train_id: str
+) -> Optional[Dict[str, Any]]:
+    """How the train's most recent speed pass ended, read from the event stream,
+    or None when no pass has reported.
+
+    Every ending — a measurement fault through `fail(...)`, `abandon(...)`, or a
+    commit — sends its reason out on the command-result stream (design_new.md
+    "Speed calibration", A leg that overruns the stretch fails the pass; What
+    ends a calibration run). Once the run is dropped the panel reads that event
+    here, so a failed pass can say why it failed; nothing is kept beside the
+    stream (the same read the halt banner makes, `latest_by_operation`).
+    """
+    sim = getattr(state, "sim_controller", None)
+    nc = getattr(sim, "notification_center", None) if sim is not None else None
+    if nc is None:
+        return None
+    for event in nc.events_for("train", train_id):
+        if event.operation != "speed_calibration":
+            continue
+        payload = event.payload or {}
+        return {
+            "success": bool(payload.get("success")),
+            "reason": payload.get("reason") or event.message,
+            "notification_id": event.notification_id,
+        }
+    return None
+
+
 def calibrate_cancel(state: AppState, train_id: str) -> None:
     """Drop an open pass. Its samples go with it and the profile is untouched."""
     sim = getattr(state, "sim_controller", None)

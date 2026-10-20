@@ -542,3 +542,32 @@ def test_the_status_endpoint_reports_an_open_run_and_its_absence(state_with_trai
     assert body["candidate_voltage"] == pytest.approx(run.candidate_voltage)
     assert body["ceiling_voltage"] == pytest.approx(run.ceiling_voltage)
     assert body["step_v"] == pytest.approx(LIGHTING_VOLTAGE_STEP_V)
+
+
+def test_the_speed_status_reports_why_the_last_pass_ended(state_with_train):
+    """A failed pass is dropped, so the panel reads its reason from the
+    command-result stream through the status reply (design_new.md "Speed
+    calibration", the reason goes out on the command-result stream)."""
+    from app_factory import create_app
+
+    sim = state_with_train.sim_controller
+    app = create_app(state_with_train)
+    app.config["TESTING"] = True
+    with app.test_client() as client:
+        assert client.get("/api/trains/TRAIN_A/calibrate").get_json() == {
+            "open": False,
+            "last_result": None,
+        }
+        sim.speed_calibration._emit_command_result(
+            "TRAIN_A",
+            operation="speed_calibration",
+            success=False,
+            reason="train overran the stretch past the far outer block",
+        )
+        body = client.get("/api/trains/TRAIN_A/calibrate").get_json()
+
+    assert body["open"] is False
+    assert body["last_result"]["success"] is False
+    assert body["last_result"]["reason"] == (
+        "train overran the stretch past the far outer block"
+    )

@@ -21,7 +21,7 @@ from services.exceptions import (
     ServiceError,
     ValidationError,
 )
-from speed_profile import SpeedProfile
+from speed_profile import SpeedProfile, reanchor_voltage_power_curve
 
 # The one profile id that may never be deleted -- every train falls back to
 # it, so removing it would orphan the fleet.
@@ -98,6 +98,20 @@ def update_profile(
     The URL id wins: a ``profile_id`` in the body must match it or be
     omitted, and ``name`` falls back to the existing value when absent.
 
+    Three fields are not the panel's to write, so the stored record keeps them
+    whatever the body says:
+
+    * ``lighting_voltage`` — the panel's field is read-only; **Lighting-voltage
+      calibration** is the one procedure that moves it (design_new.md
+      "Lighting-voltage calibration", The lighting-voltage field is
+      read-only). A model profile's ``voltage_power_curve`` stays anchored at
+      it.
+    * ``calibrated_at`` — only a speed-calibration commit writes it
+      (design_new.md "What commit writes").
+    * ``derived_from`` — whether the record is a model profile or an instance
+      profile is not an edit; a body that omits it must not turn an instance
+      into a model profile.
+
     Raises:
         ValidationError when the body's profile_id disagrees with the URL
             id, or the data does not parse.
@@ -117,6 +131,16 @@ def update_profile(
         data["profile_id"] = profile_id
         if "name" not in data:
             data["name"] = existing.name
+
+        data["derived_from"] = existing.derived_from
+        data["lighting_voltage"] = existing.lighting_voltage
+        data["calibrated_at"] = existing.calibrated_at
+        if existing.derived_from is None and data.get("voltage_power_curve"):
+            data["voltage_power_curve"] = reanchor_voltage_power_curve(
+                [(float(v), float(p)) for v, p in data["voltage_power_curve"]],
+                float(existing.lighting_voltage),
+                float(data.get("max_voltage", existing.max_voltage)),
+            )
 
         try:
             updated = SpeedProfile.from_dict(data)
