@@ -17,12 +17,25 @@ def close_setup_tools() -> List[str]:
 
     Each close zeroes the outputs of the chips that tool drives itself.
     Returns one message per chip whose zeroing failed, empty when every write
-    landed; the caller reports a failure through `report_close_failures(...)`.
+    landed, plus any a timed-out close left unreported; the caller reports a
+    failure through `report_close_failures(...)`.
     """
     from hardware import commission, occupancy_bench
 
     errors = list(commission.get_session().close())
     errors.extend(occupancy_bench.get_session().close())
+    return errors
+
+
+def take_timed_out_close_failures() -> List[str]:
+    """The failed zeroing writes of any Setup tool close an idle timeout ran
+    since the last call, each returned once. A timeout is noticed inside
+    whichever request touched the tool, which cannot report it; the caller
+    reports these through `report_close_failures(...)`."""
+    from hardware import commission, occupancy_bench
+
+    errors = list(commission.get_session().take_close_failures())
+    errors.extend(occupancy_bench.get_session().take_close_failures())
     return errors
 
 

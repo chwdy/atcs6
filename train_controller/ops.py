@@ -38,7 +38,8 @@ class OperationalStateMachine:
     def __init__(self, controller: "TrainController") -> None:
         self._c = controller
 
-        # Current handle position (writer: manual driving, EB workflow).
+        # Current handle position (writers per design_new.md Module boundaries
+        # rule 5: manual driving, ATO output, EB workflow, this neutral helper).
         self.handle_position: HandlePosition = HandlePosition.N
         # Diagnostic: reason for current handle position (set by ATO).
         self.handle_reason: str = ""
@@ -74,8 +75,8 @@ class OperationalStateMachine:
     def reset_handle_to_neutral(self) -> None:
         """Write the neutral notch — the non-driving neutral reset helper
         (design_new.md "One neutral helper"). Called by
-        `TrainController._apply_power_off_request()`,
         `TrainController.commands.set_manual_mode_type()` when entering
-        `power_percent`, and `TrainController.complete_power_off()`.
+        `power_percent`, `TrainController.complete_power_off()`, and
+        `TrainController.eb.release()`.
         """
         self.handle_position = HandlePosition.N

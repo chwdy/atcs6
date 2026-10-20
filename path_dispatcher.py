@@ -235,7 +235,7 @@ class PathDispatcher:
         )
 
     def _head_tile_for_train(self, train):
-        """Train head tile via its controller's cab-derived span, or None
+        """Train head tile via its controller's span, or None
         (design_new.md: head/tail live on the controller, not on Train)."""
         if train is None:
             return None
@@ -272,7 +272,8 @@ class PathDispatcher:
         """The block at the head end of the train's span, or None.
 
         `occupied_blocks` runs `end_a` to `end_b`, so the head-side entry is the
-        first or last depending on which end the cab makes the head.
+        first or last depending on which end is the head (design_new.md
+        "Reservation-side head derivation").
         """
         ctrl = self._get_controller(getattr(train, "train_id", None))
         if ctrl is None:
@@ -298,26 +299,19 @@ class PathDispatcher:
         """Resolve the start-side block for `create_path` (design_new.md
         create_path flow items 4 and 13).
 
-        A cab-selected train walks from the head end implied by that cab
-        (``head_block``). A cabless train compares both physical span ends
-        against the resolved target and starts from the end whose best
-        successful graph walk wins the cross-query comparison
-        (``GraphWalkCandidate.cross_query_key()``: estimated travel time first
-        when the train's max speed is set, then ``tile_count``, then
-        ``walk_length_cm``; ``end_a`` wins exact ties). Each end uses the inward
-        occupied block, which already skips a switch the physical end may sit
-        on. Falls back to ``head_block`` whenever a second end cannot improve on
-        it (cab selected, single-block span, target inside the span, or neither
-        end yields a walk), so the cab-selected and covered/turnaround paths are
-        left unchanged.
+        The train compares both physical span ends against the resolved target
+        and starts from the end whose best successful graph walk wins the
+        cross-query comparison (``GraphWalkCandidate.cross_query_key()``:
+        estimated travel time first when the train's max speed is set, then
+        ``tile_count``, then ``walk_length_cm``; ``end_a`` wins exact ties). Each
+        end uses the inward occupied block, which already skips a switch the
+        physical end may sit on. Falls back to ``head_block`` whenever a second
+        end cannot improve on it (no controller, single-block span, target
+        inside the span, or neither end yields a walk), so the covered and
+        turnaround paths are left unchanged.
         """
         ctrl = self._get_controller(train_id)
-        cab = (
-            getattr(getattr(ctrl, "commands", None), "cab", None)
-            if ctrl is not None
-            else None
-        )
-        if cab is not None or ctrl is None:
+        if ctrl is None:
             return head_block
 
         span = ctrl.get_current_span()
@@ -1021,8 +1015,8 @@ class PathDispatcher:
 
         if getattr(train, "is_unidentified", False):
             # `PathDispatcher` never creates a path for an unidentified train: it has no
-            # cab, no route and no operator controls, so there is nothing to
-            # grant authority to (design_new.md "Unidentified trains", Never driven).
+            # speed profile, no route and no operator controls, so there is nothing
+            # to grant authority to (design_new.md "Unidentified trains", Never driven).
             return self._reject(
                 failure_kind=PathAcquisitionFailureKind.INVALID_REQUEST,
                 requested_destination_block_id=requested_destination_block_id or None,
@@ -1059,8 +1053,8 @@ class PathDispatcher:
                 reason=f"Train {train_id} already has active path {existing.path_id}",
             )
 
-        # Resolve the cab-implied head-end block (the start-side anchor for a
-        # cab-selected train, and the same-block rejection key below).
+        # Resolve the head-end block (the fallback start-side anchor, and the
+        # same-block rejection key below).
         head_block = self._get_current_block_id_for_train(train)
         if not head_block:
             return self._reject(
@@ -1078,7 +1072,7 @@ class PathDispatcher:
         # with `invalid_request`. A non-head spanned block (the tail) is a
         # legitimate turnaround target (e.g. a station turnaround route whose
         # next stop is the block the train's tail still occupies) and still falls
-        # through to the normal cab-flip candidate search below — so the
+        # through to the normal two-end candidate search below — so the
         # rejection is head-keyed, NOT full-span.
         if head_block == requested_destination_block_id:
             return self._reject(
@@ -1089,10 +1083,10 @@ class PathDispatcher:
             )
 
         # Resolve the start-side block for candidate search (design_new.md
-        # create_path flow item 4). A cab-selected train starts from `head_block`;
-        # a cabless train starts from whichever physical span end has the shorter
-        # successful graph walk to the target, so a reverse / turnaround move
-        # plans out of the tail end instead of failing to walk from the head.
+        # create_path flow item 4). The train starts from whichever physical span
+        # end has the shorter successful graph walk to the target, so a reverse /
+        # turnaround move plans out of the tail end instead of failing to walk
+        # from the head.
         start_block_id_resolved = self._resolve_create_start_block(
             train,
             train_id,
@@ -2903,9 +2897,10 @@ class PathDispatcher:
             return False
         occ_target = route_executor.find_next_move_target(occ)
         if occ_target is None:
-            # The occupant has no scheduled next move (no RUNNING run, or a
-            # route-less parked train) to reverse through the terminal — a plain
-            # parked obstruction the follower waits behind, not a reversal trap.
+            # The occupant has no scheduled next move (no RUNNING run, a
+            # route-less parked train, or a ONE_OFF run with no move task left)
+            # to reverse through the terminal — a plain parked obstruction the
+            # follower waits behind, not a reversal trap.
             return False
         if occ_target == "unresolved":
             # A running occupant whose next move task exists but will not resolve

@@ -15,7 +15,6 @@ commissioning open; going live needs a restart, which frees this handle anyway.
 """
 
 import atexit
-import logging
 import threading
 import time
 from typing import Any, Callable, Dict, List, Optional
@@ -51,6 +50,9 @@ class CommissionSession:
         # Idle window for this session; `open` resets it from its `timeout_seconds`
         # argument, or to IDLE_TIMEOUT_S when the caller names none.
         self._timeout_s = IDLE_TIMEOUT_S
+        # Failed zeroing writes from a close the idle timeout ran, kept until a
+        # caller that can report them takes them (`take_close_failures`).
+        self._unreported_close_failures: List[str] = []
 
     def open(
         self,
@@ -258,9 +260,16 @@ class CommissionSession:
     def close(self) -> List[str]:
         """Close the session, zeroing every output of the chips it built.
         Returns one message per chip whose zeroing failed, for the caller to
-        report as a hardware I/O failure."""
+        report as a hardware I/O failure — including any a timed-out close left
+        unreported."""
         with self._lock:
-            return self._close_locked()
+            return self._take_close_failures_locked() + self._close_locked()
+
+    def take_close_failures(self) -> List[str]:
+        """The failed zeroing writes of a close the idle timeout ran, once.
+        The caller reports them as a hardware I/O failure."""
+        with self._lock:
+            return self._take_close_failures_locked()
 
     # -- internals -------------------------------------------------------
     @staticmethod
@@ -303,13 +312,17 @@ class CommissionSession:
 
     def _expire_locked(self) -> None:
         if self._device is not None and (time.monotonic() - self._last) > self._timeout_s:
-            errors = self._close_locked()
-            if errors:
-                logging.getLogger(__name__).error(
-                    "commissioning session timed out and could not zero every "
-                    "output: %s",
-                    "; ".join(errors),
-                )
+            # A timed-out close is a close like any other (design_new.md "Power",
+            # Hardware setup, Closing a Setup tool restores the safe state): a
+            # failed zeroing is a hardware I/O failure. The expiry runs inside
+            # whatever call noticed it, which cannot report it, so the failures
+            # wait for `take_close_failures()`.
+            self._unreported_close_failures.extend(self._close_locked())
+
+    def _take_close_failures_locked(self) -> List[str]:
+        failures = self._unreported_close_failures
+        self._unreported_close_failures = []
+        return failures
 
     def _close_locked(self) -> List[str]:
         if self._device is None:

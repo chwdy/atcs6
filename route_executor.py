@@ -557,64 +557,16 @@ class RouteExecutionState:
         # exists), that next row is already present, so this is a no-op.
         if from_walk_position != len(self.task_runs) - 1:
             return
-        task_count = len(route.tasks)
-        if task_count == 0:
+        if route.mode not in (RouteMode.CIRCULAR, RouteMode.ROUND_TRIP):
             return
         from_row = self.task_runs[from_walk_position]
-        from_index = from_row.task_index
-        direction = from_row.walk_direction
-
-        if route.mode == RouteMode.CIRCULAR:
-            self.task_runs.append(
-                RouteTaskRun(
-                    task_index=(from_index + 1) % task_count,
-                    walk_direction=direction,
-                )
-            )
+        # The step itself — CIRCULAR wrap, ROUND_TRIP group reflection — is
+        # `Route.next_walk_step(...)`, shared with the read-only next-move
+        # lookups so they follow the walk this append grows.
+        step = route.next_walk_step(from_row.task_index, from_row.walk_direction)
+        if step is None:
             return
-
-        if route.mode != RouteMode.ROUND_TRIP:
-            return
-
-        # ROUND_TRIP: reflect task groups at the route ends.
-        groups = route.task_groups()
-        g_idx: Optional[int] = None
-        pos_in_group = 0
-        for gi, group in enumerate(groups):
-            if from_index in group:
-                g_idx = gi
-                pos_in_group = group.index(from_index)
-                break
-        if g_idx is None:
-            return
-        group = groups[g_idx]
-
-        if pos_in_group < len(group) - 1:
-            # Another row remains in this group: advance within it, same
-            # direction (dwell rows keep authored order on both visits).
-            next_index = group[pos_in_group + 1]
-            next_direction = direction
-        elif direction == "forward":
-            if g_idx < len(groups) - 1:
-                # Group boundary going forward: first row of the next group.
-                next_index = groups[g_idx + 1][0]
-                next_direction = "forward"
-            else:
-                # Forward end group: reflect to the preceding group, reverse.
-                neighbour = groups[g_idx - 1] if len(groups) >= 2 else group
-                next_index = neighbour[0]
-                next_direction = "reverse"
-        else:  # reverse
-            if g_idx > 0:
-                # Group boundary going reverse: first row of the previous group.
-                next_index = groups[g_idx - 1][0]
-                next_direction = "reverse"
-            else:
-                # Reverse end group: reflect to the second group, forward.
-                neighbour = groups[1] if len(groups) >= 2 else group
-                next_index = neighbour[0]
-                next_direction = "forward"
-
+        next_index, next_direction = step
         self.task_runs.append(
             RouteTaskRun(task_index=next_index, walk_direction=next_direction)
         )
@@ -853,7 +805,7 @@ class RouteExecutor:
           * No RUNNING run -> commit immediately: clear older pending route/start
             state, unassign the train from any old route, assign the requested
             route when non-None, and stash the start override for the next fresh
-            run allocation.
+            run allocation. A one-off old route left with no train is deleted.
           * A RUNNING run exists and the request names that same route -> an
             idempotent no-op; a supplied start override is dropped because the
             run already consumed its start mode.
@@ -933,6 +885,13 @@ class RouteExecutor:
                     new_route.assign_train(train_id)
                 if start_override is not None:
                     self._pending_start_overrides[train_id] = dict(start_override)
+            # An emptied one-off route is deleted (design_new.md "Route
+            # assignment writers", no-`RUNNING`-run branch): a one-off route
+            # this unassign left with no train goes the same way as one that
+            # finished or was torn down. Checked after the assignment, so a
+            # request naming the same route keeps it.
+            if old_route_id and self._delete_if_emptied_one_off(old_route_id):
+                self.finalize_pending_route_deletions()
             # A new route assignment resets the ATO engage bit (design_new.md
             # "ATO status"): the fresh run starts not engaged (`ato_status ==
             # READY`) and the operator issues `/ato/go` to start it. This is an

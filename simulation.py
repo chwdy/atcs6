@@ -42,7 +42,7 @@ from typing import (
 from unidentified_trains import UnidentifiedTrainTracker
 from network import RailwayNetwork
 from train import Train, TrainCar
-from enums import CommandResult, Direction, HandlePosition, OperationMode, PathStatus
+from enums import CommandResult, Direction, OperationMode, PathStatus
 import operation_environment
 from block_power import BlockPowerController
 from switch_power import (
@@ -2273,10 +2273,11 @@ class SimulationController(SwitchOutputOwner):
         rules 1/2, "Action is the sole explicit-cancel and teardown committer").
         Freezing the speed to zero here is a physics-sync write, not a state
         write, and it is what lets the stopped-gated Action cancel commit on the
-        same tick the flag rose.
+        same tick the flag rose. It writes no handle and no power percentage
+        (design_new.md "Ghosted trains", the ghost-only freeze): the power-off
+        ceiling holds propulsion at 0 until Action's `complete_power_off()`
+        rests the handle, and an OFF train accepts no driver input.
         """
-        controller.ops.handle_position = HandlePosition.N
-        controller.manual.reset_power_percent_for_safety()
         controller.physics_sync.current_speed_kmh = 0.0
         controller.physics_sync.queued_progress_reports.clear()
 

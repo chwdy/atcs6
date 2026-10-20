@@ -88,3 +88,94 @@ def test_a_clean_close_reports_nothing():
     report_close_failures(runtime, [])
 
     assert runtime.failures == []
+
+
+def test_a_timed_out_commission_close_keeps_its_failures_for_reporting():
+    """A timeout closes the session inside whichever call noticed it; the failed
+    zeroing waits for `take_close_failures()` instead of only being logged."""
+    session = CommissionSession()
+    session._device = object()
+    session._borrowed = True
+    session._chips = {"bad": _Chip(fails=True)}
+    session._last = 0.0
+    session._timeout_s = 0.0
+
+    assert session.status()["open"] is False          # the timeout closed it
+
+    assert session.take_close_failures() == ["bad: bus error"]
+    assert session.take_close_failures() == []        # each failure once
+
+
+def test_a_timed_out_bench_close_hands_its_failures_to_the_next_close():
+    session = OccupancyBenchSession()
+    session._device = object()
+    session._borrowed = True
+    session._track = TrackDriver({"bad": _Chip(fails=True)}, {}, safety=_NoSafety())
+    session._last = -1e9
+
+    assert session.is_open() is False                 # the timeout closed it
+
+    assert session.close() == ["bad: bus error"]
+    assert session.close() == []
+
+
+# --- the self-test sweep and port pulse --------------------------------------
+
+from hardware import self_test
+from hardware.chips.pca9685 import PCA9685
+from hardware.fake import FakeCh347Device
+from hardware_config import ChipConfig, ControllerConfig, HardwareConfig, TrackBinding
+
+
+def _pwm_cfg():
+    return HardwareConfig(
+        controller=ControllerConfig(kind="ch347"),
+        chips=[ChipConfig("pwm1", "pca9685", i2c_address=0x40)],
+        block_track={"B1": TrackBinding("pwm1", 4, 9)},
+    )
+
+
+def _with_channel_left_on(dev, channel):
+    chip = PCA9685(dev, address=0x40)
+    chip.configure()
+    chip.set_duty_cycle(channel, 0.5)
+    assert dev.duty_cycle(0x40, channel) > 0
+
+
+def test_track_sweep_zeroes_every_channel_of_its_chip(monkeypatch):
+    monkeypatch.setattr(self_test, "TRACK_TEST_HOLD_S", 0.0)
+    dev = FakeCh347Device(present_addresses={0x40})
+    _with_channel_left_on(dev, 12)                    # not one of the block's two
+
+    res = self_test.run_track_test(_pwm_cfg(), "B1", device=dev)
+
+    assert res["ok"] is True and "zero_failures" not in res
+    assert dev.duty_cycle(0x40, 12) == 0.0
+
+
+def test_port_pulse_zeroes_every_channel_of_its_chip():
+    dev = FakeCh347Device(present_addresses={0x40})
+    _with_channel_left_on(dev, 12)
+
+    res = self_test.run_port_test(
+        _pwm_cfg(), "pwm1", 5, "pulse_output", device=dev, pulse_s=0.0
+    )
+
+    assert res["ok"] is True
+    assert dev.duty_cycle(0x40, 12) == 0.0
+
+
+def test_a_failed_sweep_zeroing_is_returned_for_reporting(monkeypatch):
+    monkeypatch.setattr(self_test, "TRACK_TEST_HOLD_S", 0.0)
+
+    def broken_all_off(self):
+        raise OSError("bus error")
+
+    monkeypatch.setattr(PCA9685, "all_off", broken_all_off)
+    dev = FakeCh347Device(present_addresses={0x40})
+
+    res = self_test.run_track_test(_pwm_cfg(), "B1", device=dev)
+
+    assert res["ok"] is False
+    assert res["zero_failures"] == ["pwm1: bus error"]
+    assert "could not zero every output" in res["error"]

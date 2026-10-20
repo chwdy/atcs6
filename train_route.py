@@ -494,6 +494,54 @@ class Route:
                 groups.append([i])
         return groups
 
+    def next_walk_step(
+        self, task_index: int, walk_direction: str
+    ) -> Optional[tuple[int, str]]:
+        """The `(task_index, walk_direction)` the directed walk visits after a
+        visit to `task_index` going `walk_direction`, or `None` at the end of a
+        `ONE_OFF` walk.
+
+        This is the one statement of how `Route.mode` grows the walk
+        (design_new.md "`RouteRun._append_next_walk_task(from_walk_position)`"):
+
+        - ``ONE_OFF``: the next task in authored order, same direction.
+        - ``CIRCULAR``: the next task, wrapping from the last to the first; a
+          circular walk never changes direction.
+        - ``ROUND_TRIP``: move through task groups (one non-``dwell`` task plus
+          its contiguous ``dwell`` rows). Inside a group, the next row, same
+          direction. At a group boundary, the first row of the adjacent group in
+          the current direction. At an end group, the first row of the neighbour
+          group with the direction flipped, so the end group is not repeated.
+
+        It reads no run state, so the run's append and the read-only next-move
+        lookups follow the same walk.
+        """
+        task_count = len(self.tasks)
+        if not 0 <= task_index < task_count:
+            return None
+        if self.mode == RouteMode.ONE_OFF:
+            if task_index + 1 >= task_count:
+                return None
+            return (task_index + 1, walk_direction)
+        if self.mode == RouteMode.CIRCULAR:
+            return ((task_index + 1) % task_count, walk_direction)
+
+        groups = self.task_groups()
+        g_idx = next(gi for gi, group in enumerate(groups) if task_index in group)
+        group = groups[g_idx]
+        pos_in_group = group.index(task_index)
+        if pos_in_group < len(group) - 1:
+            return (group[pos_in_group + 1], walk_direction)
+        if walk_direction == "forward":
+            if g_idx < len(groups) - 1:
+                return (groups[g_idx + 1][0], "forward")
+            neighbour = groups[g_idx - 1] if len(groups) >= 2 else group
+            return (neighbour[0], "reverse")
+        if g_idx > 0:
+            return (groups[g_idx - 1][0], "reverse")
+        neighbour = groups[1] if len(groups) >= 2 else group
+        return (neighbour[0], "forward")
+
     # ── Assignment Methods ─────────────────────────────────────────
 
     def assign_train(self, train_id: str) -> bool:

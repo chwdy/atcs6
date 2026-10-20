@@ -115,17 +115,24 @@ class TestTrainRouteService:
         """design_new.md "Route assignment writers" — a train is assigned to
         at most one route. A route create/update that assigns an already-
         assigned train unassigns it from its previous route first (no
-        double-assignment across routes)."""
+        double-assignment across routes).
+
+        Both routes are circular: an emptied ONE_OFF route is deleted when the
+        assignment moves off it, which is a separate rule."""
+        tasks = [
+            {"task_kind": "stop", "task_location": "STA_X"},
+            {"task_kind": "stop", "task_location": "STA_Y"},
+        ]
         r1 = train_route_service.create_route(
-            state_with_train, route_id="ROUTE_R1", name="r1",
-            assigned_train_ids=["TRAIN_A"], tasks=[{"task_kind": "stop", "task_location": "STA_X"}],
+            state_with_train, route_id="ROUTE_R1", name="r1", mode="circular",
+            assigned_train_ids=["TRAIN_A"], tasks=tasks,
         )
         assert "TRAIN_A" in r1.assigned_train_ids
 
         # Creating a second route assigned to the same train moves the assignment.
         r2 = train_route_service.create_route(
-            state_with_train, route_id="ROUTE_R2", name="r2",
-            assigned_train_ids=["TRAIN_A"], tasks=[{"task_kind": "stop", "task_location": "STA_X"}],
+            state_with_train, route_id="ROUTE_R2", name="r2", mode="circular",
+            assigned_train_ids=["TRAIN_A"], tasks=tasks,
         )
         assert "TRAIN_A" in r2.assigned_train_ids
         assert "TRAIN_A" not in r1.assigned_train_ids
