@@ -549,9 +549,9 @@ def setup_demo_train(
             task_time=2.0,
         ),
         # Final turnaround: run up to the BLOCK_BRANCH_2 dead-end, then
-        # return to the North Station platform.  The cab auto-flips on the
-        # return trip, so the route ends with the train at North Station
-        # facing south.
+        # return to the North Station platform.  The return trip's reservation
+        # runs the other way, so the head end flips with it and the route ends
+        # with the train at North Station facing south.
         RouteTask(
             task_kind="stop",
             task_location=BlockTarget(block_id="BLOCK_BRANCH_2"),

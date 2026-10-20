@@ -173,7 +173,7 @@ class BlockPowerController:
 
     # SimulationController back-reference, set by bootstrap so this
     # controller can fetch the live `TrainController` (for the operational
-    # state machine and cab) and the live `TrainPhysics` (canonical home of
+    # state machine) and the live `TrainPhysics` (canonical home of
     # `track_voltage` per design_new.md "Block power-controller role"). This
     # controller does not read controller-owned manual-mode state directly —
     # it asks `TrainPhysics.compute_track_voltage(...)` for the scalar.

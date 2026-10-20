@@ -1078,7 +1078,7 @@ class BlockManager:
         direction. If it is FREE/RESERVED/CAUTION, or no reachable block exists
         at all, clear caution by writing ``block.caution = None``. No
         ``travel_direction`` comparison is made; an OCCUPIED forward block keeps
-        caution regardless of the occupant's cab or direction.
+        caution regardless of the occupant's direction.
 
         When the manager has no network back-reference (early bootstrap or
         unit tests), the only safe behaviour is to clear caution entries that

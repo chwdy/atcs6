@@ -3,8 +3,10 @@ LookaheadBuilder — owns the lookahead computation pulled out of
 `TrainController`.
 
 Per design_new.md "Lookahead": the lookahead is a pure derived projection of
-`(current_span, cab, received_path_plan, network_state, signals,
-current_speed_kmh, eb_active)` that recomputes on every read. This module
+`(current_span, received_path_plan, network_state, signals,
+current_speed_kmh, eb_active)` that recomputes on every read; the head end
+comes from the live reservation (design_new.md "Reservation-side head
+derivation"). This module
 centralises the computation in one place so the controller does not also
 own the underlying graph walks.
 
@@ -548,9 +550,9 @@ class LookaheadBuilder:
             )
         )
 
-        # Determine override reason code for forced-zero ATC cases. EB and
-        # wrong-direction-cab force ATC to zero regardless of geometry; in
-        # those cases every speed_curves sample carries the canonical reason.
+        # Determine override reason code for the forced-zero ATC case. EB
+        # forces ATC to zero regardless of geometry; then every speed_curves
+        # sample carries the canonical reason.
         # The EB trigger context ("ATC overspeed", "operator EB", etc.) is
         # published as a separate NotificationCenter event when EB activates;
         # the lookahead detail only carries the steady-state string.
@@ -589,7 +591,6 @@ class LookaheadBuilder:
             "head_tile": [head_tile[0], head_tile[1]],
             "head_distance_cm": head_distance_cm,
             "travel_direction": travel_direction,
-            "cab": ("B" if self._c._framed_head_end == "end_b" else "A"),
             "speed_limit_reason": top_reason,
             "lookahead": {
                 "blocks": blocks,
@@ -621,15 +622,14 @@ class LookaheadBuilder:
         anchor is stamped onto `speed_curves` so consumers reading the
         canonical reason at distance 0 (target_speed / speed_limit_reason
         properties) see the structured `AtcLimitReasonCode` without a separate
-        controller-owned cache. Used for the no-cab, no-authority (no path),
-        and head-off-path cases.
+        controller-owned cache. Used for the no-train, no-authority (no
+        path), and head-off-path cases.
         """
         payload: Dict[str, Any] = {
             "train_id": self._c.train_id,
             "head_tile": list(head_tile) if head_tile is not None else None,
             "head_distance_cm": head_distance_cm,
             "travel_direction": travel_direction,
-            "cab": ("B" if self._c._framed_head_end == "end_b" else "A"),
             "speed_limit_reason": speed_limit_reason,
             "lookahead": {
                 "blocks": [],
