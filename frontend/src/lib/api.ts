@@ -278,6 +278,15 @@ export class API implements LayoutDataClient, SimClient {
     );
   }
 
+  /** The open lighting run for the train; `{open: false}` when there is none. */
+  async getLightingCalibration(trainId: string): Promise<any> {
+    return this._request(
+      `/trains/${trainId}/calibrate/lighting`,
+      {},
+      'getLightingCalibration'
+    );
+  }
+
   async stepLightingCalibration(trainId: string, direction: number): Promise<any> {
     return this._request(
       `/trains/${trainId}/calibrate/lighting/step`,

@@ -12,6 +12,7 @@ import {
   topSpeed,
   maxVoltage,
   lightingVoltage,
+  reanchorVoltagePowerCurve,
 } from './speed-profile-curve';
 
 // Parity tests: every expected value is hand-computed from the corresponding
@@ -138,5 +139,28 @@ describe('curve summary helpers', () => {
   it('lightingVoltage reads the first voltage_power point with a fallback', () => {
     expect(lightingVoltage(VP, 99)).toBe(2);
     expect(lightingVoltage([], 99)).toBe(99);
+  });
+});
+
+describe('reanchorVoltagePowerCurve (mirrors speed_profile.reanchor_voltage_power_curve)', () => {
+  const CURVE: Curve = [
+    [1.5, 0],
+    [4, 30],
+    [12, 100],
+  ];
+
+  it('moves the 0% point up and drops the points at or below it', () => {
+    expect(reanchorVoltagePowerCurve(CURVE, 4, 12)).toEqual([
+      [4, 0],
+      [12, 100],
+    ]);
+  });
+
+  it('moves the 0% point down and keeps exactly one 0% point', () => {
+    expect(reanchorVoltagePowerCurve(CURVE, 1, 12)).toEqual([
+      [1, 0],
+      [4, 30],
+      [12, 100],
+    ]);
   });
 });

@@ -113,23 +113,76 @@
     gap: 0;
 }
 
-/* ---- lighting-voltage calibration panel ----
-   design_new.md "Lighting-voltage calibration". Three controls and nothing
-   else: the candidate voltage, a step up, a step down. The readout is the
-   thing the operator reads off while looking away at the locomotive, so it is
-   sized to be legible from the layout rather than from the screen. */
-.sp-lighting-modal {
-    max-width: 340px;
+/* ---- calibration group ----
+   design_new.md "Speed calibration", The panel, and "Lighting-voltage
+   calibration", The panel. The locomotive row names the train both runs
+   drive, and the readiness line under it names every opening condition that
+   train does not yet meet. Each run opens in place under its own row: the row
+   keeps its label line, and the run's controls sit in a body below it that
+   ends in a right-aligned actions line. */
+.sp-cal-train-row {
+    margin-bottom: 4px;
 }
+.sp-cal-readiness {
+    margin-bottom: 10px;
+    font-size: 11px;
+    line-height: 1.4;
+    color: var(--text-secondary);
+}
+.sp-cal-readiness:empty {
+    display: none;
+}
+.sp-cal-readiness.is-warn {
+    color: var(--warning-color);
+}
+.sp-cal-readiness ul {
+    margin: 2px 0 0;
+    padding-left: 16px;
+}
+.sp-cal-run-head {
+    margin-bottom: 6px;
+}
+/* Read-only inline numeric (DESIGN_LANGUAGE.md §9): the lighting voltage the
+   named train runs on. Its Calibrate is the one way to move it. */
+.sp-cal-value {
+    margin-left: auto;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-primary);
+    font-variant-numeric: tabular-nums;
+}
+.sp-cal-value small {
+    margin-left: 2px;
+    font-family: var(--font-main);
+    font-size: 10px;
+    font-weight: 400;
+    color: var(--text-secondary);
+}
+.sp-cal-run-body {
+    margin-bottom: 12px;
+    padding-top: 8px;
+    border-top: 1px dotted var(--border-color);
+    outline: none;
+}
+.sp-cal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 6px;
+}
+
+/* The lighting run: the candidate is the thing the operator reads off while
+   looking away at the locomotive, so it is a hero number (§9), in the info hue
+   of the voltage/power curve whose 0% point it moves. */
 .sp-lighting-stepper {
     display: grid;
-    grid-template-columns: 48px 1fr 48px;
+    grid-template-columns: 44px 1fr 44px;
     gap: 12px;
     align-items: center;
-    margin-top: 14px;
+    margin-bottom: 8px;
 }
 .sp-lighting-stepper .sp-lighting-step {
-    height: 44px;
+    height: 40px;
     font-size: 20px;
     line-height: 1;
     padding: 0;
@@ -140,11 +193,57 @@
     justify-content: center;
     gap: 4px;
     font-family: var(--font-mono);
-    font-size: 30px;
-    color: var(--text-primary);
+    font-size: 28px;
+    font-weight: 700;
+    line-height: 1;
+    letter-spacing: -0.01em;
+    color: var(--info-color);
     font-variant-numeric: tabular-nums;
 }
 .sp-lighting-readout small {
-    font-size: 13px;
+    font-family: var(--font-main);
+    font-size: 11px;
+    font-weight: 400;
     color: var(--text-secondary);
+}
+
+/* The speed pass: the measured points beside the measured curve drawn over
+   the stored one (the plot-block layout above, read-only). */
+.sp-compare-canvas {
+    height: 160px;
+}
+.sp-point-head-readonly,
+.sp-point-readonly {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 4px;
+}
+.sp-point-readonly {
+    padding: 2px 0;
+    border-bottom: 1px dotted var(--border-color);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    text-align: center;
+    color: var(--text-primary);
+}
+.sp-compare-legend {
+    display: flex;
+    gap: 12px;
+    margin: 6px 0 8px;
+    font-size: 10px;
+    color: var(--text-secondary);
+}
+.sp-compare-legend span {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+.sp-legend-line {
+    display: inline-block;
+    width: 16px;
+    height: 0;
+    border-top: 2px solid var(--success-color);
+}
+.sp-legend-stored {
+    border-top: 1.5px dashed var(--text-secondary);
 }

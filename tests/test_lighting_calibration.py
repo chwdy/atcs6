@@ -518,3 +518,27 @@ def test_a_route_assignment_is_refused_while_the_run_is_open(state_with_train):
     calibration.cancel_lighting("TRAIN_A")
     assert calibration.get_propulsion_override("TRAIN_A") is None
     assert controller.produce_physics_command().voltage_source_track_voltage is None
+
+
+def test_the_status_endpoint_reports_an_open_run_and_its_absence(state_with_train):
+    """The panel reads the open run when the operator names a train, so a run
+    left open by a page reload shows on its row and can be ended."""
+    from app_factory import create_app
+
+    train_service, _controller = _ready_manual_with_cab(state_with_train)
+    app = create_app(state_with_train)
+    app.config["TESTING"] = True
+    with app.test_client() as client:
+        assert client.get("/api/trains/TRAIN_A/calibrate/lighting").get_json() == {
+            "open": False
+        }
+
+        train_service.start_lighting_calibration(state_with_train, "TRAIN_A")
+        train_service.step_lighting_calibration(state_with_train, "TRAIN_A", 1)
+        body = client.get("/api/trains/TRAIN_A/calibrate/lighting").get_json()
+
+    run = state_with_train.sim_controller.speed_calibration.lighting_runs["TRAIN_A"]
+    assert body["open"] is True
+    assert body["candidate_voltage"] == pytest.approx(run.candidate_voltage)
+    assert body["ceiling_voltage"] == pytest.approx(run.ceiling_voltage)
+    assert body["step_v"] == pytest.approx(LIGHTING_VOLTAGE_STEP_V)

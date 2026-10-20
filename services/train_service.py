@@ -1109,6 +1109,19 @@ def save_lighting_calibration(state: AppState, train_id: str) -> float:
     return sim.speed_calibration.commit_lighting(train_id, profile)
 
 
+def lighting_calibration_status(state: AppState, train_id: str):
+    """The open lighting run for this train, or None when none is open.
+
+    The panel reads it when the operator names a train, so a run left open
+    (for example by a page reload) shows on its row and can be saved or
+    reverted rather than blocking a new run with nothing on screen to end it.
+    """
+    sim = getattr(state, "sim_controller", None)
+    if sim is None:
+        return None
+    return sim.speed_calibration.lighting_runs.get(train_id)
+
+
 def cancel_lighting_calibration(state: AppState, train_id: str) -> None:
     """Close the run without writing; the candidate is discarded."""
     sim = getattr(state, "sim_controller", None)

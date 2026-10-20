@@ -400,6 +400,15 @@ def register(app, state: AppState) -> None:
             return jsonify({"error": str(exc)}), 400
         return jsonify(_lighting_payload(run))
 
+    @app.route("/api/trains/<train_id>/calibrate/lighting", methods=["GET"])
+    def calibrate_lighting_status(train_id):
+        """The open lighting run, for the panel to pick up; ``{open: false}``
+        when there is none."""
+        run = train_service.lighting_calibration_status(state, train_id)
+        if run is None:
+            return jsonify({"open": False})
+        return jsonify({"open": True, **_lighting_payload(run)})
+
     @app.route("/api/trains/<train_id>/calibrate/lighting/step", methods=["POST"])
     def calibrate_lighting_step(train_id):
         """Move the candidate one step. Body: ``{ "direction": 1 | -1 }``."""
