@@ -369,8 +369,8 @@ class SpeedCalibration:
         go with it (design_new.md "Speed calibration", `abandon`).
 
         The one teardown for a speed pass: operator Stop, a panel close, Action
-        step `26f5` finding the pass no longer valid, the safe-state wrapper, and
-        a network clear or layout load all end it here.
+        step `26f5` finding the pass no longer valid, the safe-state wrapper, a
+        network clear or layout load, and deleting the train all end it here.
         Each commands `power_percent = 0` and tears the active leg route down.
         Dropping the run withdraws the propulsion override, so the controller
         falls back to its ordinary manual source; zeroing that source here is

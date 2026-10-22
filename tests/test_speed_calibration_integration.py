@@ -424,6 +424,48 @@ def test_clearing_the_network_discards_a_held_result(state):
     assert sim.speed_calibration.runs.get(train_id) is None
 
 
+def test_deleting_the_train_discards_a_held_result(state):
+    """Powering the train off keeps a finished pass; deleting the train discards
+    it, as a network clear does, so a later train with the same id can open a
+    run (design_new.md "Train Entity", Deleting a train; "What ends a
+    calibration run", A finished pass is a held result, not an open run)."""
+    sim = state.sim_controller
+    train_id = _free_train(state)
+    block_id = _first_calibratable_block(state, train_id)
+    old_train = state.network.trains[train_id]
+    profile_id = old_train.speed_profile_id
+    controller = sim.controllers[train_id]
+    old_span = controller.get_current_span()
+    outer, _length = train_service.resolve_calibration_stretch(state, block_id)
+    standing_in = next(b for b in old_span.occupied_blocks if b in outer)
+    run = train_service.calibrate_train(state, train_id, measured_block_id=block_id)
+    run.phase = PHASE_MEASURED
+
+    assert controller.commands.power_off_cmd().success
+    for _ in range(5):
+        sim.update(0.1)
+    assert controller.train_status == TrainStatus.OFF
+    assert sim.speed_calibration.runs.get(train_id) is run
+
+    assert train_service.delete_train(state, train_id) is True
+    assert sim.speed_calibration.runs.get(train_id) is None
+
+    # Put the new train where the scene put the old one: head on the old head
+    # tile, facing out of the yard road toward its approach block.
+    new_train = sim.add_train(
+        train_id, standing_in, "EAST",
+        max_speed_kmh=old_train.max_speed, length_cm=old_train.length_cm,
+        start_tile=old_span.end_a.tile,
+    )
+    new_train.speed_profile_id = profile_id
+    assert train_service.calibration_readiness(
+        state, train_id, measured_block_id=block_id
+    ) == []
+    new_run = train_service.calibrate_train(state, train_id, measured_block_id=block_id)
+    assert new_run is not run
+    assert new_run.is_measuring
+
+
 def test_a_calibration_leg_completes_through_ordinary_stop_completion(state):
     """The `9d8b` gate, end to end: a calibration leg runs as a one-off route and
     finishes through ordinary stop completion — Observe step `9d8b`

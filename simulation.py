@@ -3029,10 +3029,11 @@ class SimulationController(SwitchOutputOwner):
             block would leave it FREE under it with no later entry to correct it.
 
         Otherwise, in order: `RouteExecutor.forget_train(...)` removes its route
-        records; its blocks and its switch occupancy are released; the train,
-        its controller (with every latch on it) and its physics instance leave
-        their registries; and one `remove_train` event names it. Its speed
-        profiles and roster entry stay.
+        records; its blocks and its switch occupancy are released;
+        `SpeedCalibration.abandon(...)` discards a finished speed pass still
+        held for it; the train, its controller (with every latch on it) and its
+        physics instance leave their registries; and one `remove_train` event
+        names it. Its speed profiles and roster entry stay.
         """
         from enums import TrainStatus
 
@@ -3085,6 +3086,13 @@ class SimulationController(SwitchOutputOwner):
                         self.switch_manager.on_switch_tail_vacated(
                             switch_id, train_id, route
                         )
+
+        # A finished pass still held for this train goes, as on a network clear
+        # or layout load, so a later train with the same id can open a run. No
+        # open run reaches here: the power-off that left the train OFF ended it.
+        self.speed_calibration.abandon(
+            train_id, reason="calibration ended: the train was deleted"
+        )
 
         self.network.remove_train(train_id)
         self.controllers.pop(train_id, None)
