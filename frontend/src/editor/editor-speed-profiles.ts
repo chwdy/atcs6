@@ -13,6 +13,7 @@ import { showToast } from '../lib/toast';
 import { escapeAttr, showConfirmModal, showFormModal } from '../lib/helpers';
 import { stateManager } from '../lib/state-manager';
 import { trainDisplayStatus } from '../lib/train-status';
+import { changedProfileFields } from '../lib/profile-edits';
 import {
   type CalibrationRunView,
   calibrationControls,
@@ -614,6 +615,10 @@ export class SpeedProfileEditorHandler {
   editor: EditorHost;
   private _profile: SpeedProfileData | null = null;
   private _lastSaved: SpeedProfileData | null = null;
+  /** The model profile the open profile derives from, or null on a model
+   *  profile; and which instance fields the open instance carries itself. */
+  private _derivedFrom: string | null = null;
+  private _ownFields: string[] = [];
   private _vpPlot: CurvePlot | null = null;
   private _psPlot: CurvePlot | null = null;
   private _saveTimer: ReturnType<typeof setTimeout> | null = null;
@@ -746,9 +751,12 @@ export class SpeedProfileEditorHandler {
     this.editor._currentEditorType = 'speed-profile';
     this.editor._currentEditorId = profileId;
 
+    // The panel shows the resolved profile, so a locomotive's own profile
+    // shows what it runs on (design_new.md "SpeedProfile", Editing a profile
+    // by hand).
     let data: any;
     try {
-      data = await this.api.getSpeedProfile(profileId);
+      data = await this.api.getSpeedProfile(profileId, { resolved: true });
       if (!data || data.error) {
         showToast('Speed profile not found', 'error', 5000);
         return;
@@ -758,13 +766,42 @@ export class SpeedProfileEditorHandler {
       return;
     }
 
-    this._profile = this._normalize(data);
-    this._lastSaved = this._clone(this._profile);
+    this._applyView(data);
 
-    this.editor.showSecondarySidebar(profileId, this._editorHtml(this._profile));
+    this.editor.showSecondarySidebar(profileId, this._editorHtml(this._profile!));
     // Wider canvas room — same affordance the route editor uses.
     document.getElementById('secondary-sidebar')?.classList.add('route-editor-wide');
     setTimeout(() => this._initEditor(), 0);
+  }
+
+  /** Take a resolved view from the server as the profile on screen. */
+  private _applyView(view: any): void {
+    this._derivedFrom = view.derived_from || null;
+    this._ownFields = Array.isArray(view.own_fields) ? view.own_fields : [];
+    this._profile = this._normalize(view);
+    this._lastSaved = this._clone(this._profile);
+  }
+
+  /** A locomotive's own profile: only its power/speed curve is edited here;
+   *  every other value belongs to its model profile. */
+  private _isInstance(): boolean {
+    return this._derivedFrom !== null;
+  }
+
+  /** The note an instance profile opens with: what it carries itself and
+   *  where its other values are edited. */
+  private _instanceNoteHtml(): string {
+    if (!this._derivedFrom) return '';
+    const model = escapeAttr(this._derivedFrom);
+    const curve = this._ownFields.includes('power_speed_curve')
+      ? 'This locomotive has its own power ↔ speed curve, so a change to the model curve does not reach it.'
+      : `Its power ↔ speed curve comes from <span class="font-mono">${model}</span>; editing it here gives this locomotive its own curve.`;
+    return `
+                <div class="info-box text-xs mb-12 sp-instance-note">
+                    This is one locomotive's own profile. ${curve}
+                    Every other value comes from model profile <span class="font-mono">${model}</span> and is edited there.
+                    <button type="button" class="rr-flat-btn" id="sp-open-model" data-profile-id="${model}">Edit ${model} →</button>
+                </div>`;
   }
 
   private _normalize(d: any): SpeedProfileData {
@@ -817,8 +854,10 @@ export class SpeedProfileEditorHandler {
   }
 
   private _editorHtml(p: SpeedProfileData): string {
+    const ro = this._isInstance();
     return `
             <div class="sp-editor">
+                ${this._instanceNoteHtml()}
                 <div class="control-section">
                     <div class="control-section-header">Voltage ↔ Power</div>
                     <div class="text-muted text-xs mb-8">X = power %, Y = track voltage. Click the line to add a point · drag to move · right-click a point to remove. The 0% point is the lighting voltage; its Calibrate below is the one way to move it.</div>
@@ -869,13 +908,13 @@ ${this._calibrationGroupHtml(p)}
                 <details class="tc-disclosure">
                     <summary>Motion &amp; drag</summary>
                     <div class="tc-disclosure-body">
-                    ${this._rateRow('Acceleration (km/h/s)', 'sp-accel', p.acceleration_rate)}
-                    ${this._rateRow('Deceleration (km/h/s)', 'sp-decel', p.deceleration_rate)}
-                    ${this._rateRow('Emergency brake (km/h/s)', 'sp-eb', p.emergency_brake_rate)}
-                    ${this._rateRow('Friction (km/h/s)', 'sp-friction', p.friction_rate)}
-                    ${this._rateRow('Operational decel ratio', 'sp-opdecel', p.operational_decel_ratio)}
-                    ${this._rateRow('Drag coefficient', 'sp-drag', p.drag_coefficient)}
-                    ${this._rateRow('Reference speed (km/h)', 'sp-refspeed', p.reference_speed_kmh)}
+                    ${this._rateRow('Acceleration (km/h/s)', 'sp-accel', p.acceleration_rate, ro)}
+                    ${this._rateRow('Deceleration (km/h/s)', 'sp-decel', p.deceleration_rate, ro)}
+                    ${this._rateRow('Emergency brake (km/h/s)', 'sp-eb', p.emergency_brake_rate, ro)}
+                    ${this._rateRow('Friction (km/h/s)', 'sp-friction', p.friction_rate, ro)}
+                    ${this._rateRow('Operational decel ratio', 'sp-opdecel', p.operational_decel_ratio, ro)}
+                    ${this._rateRow('Drag coefficient', 'sp-drag', p.drag_coefficient, ro)}
+                    ${this._rateRow('Reference speed (km/h)', 'sp-refspeed', p.reference_speed_kmh, ro)}
                     </div>
                 </details>
 
@@ -883,9 +922,9 @@ ${this._calibrationGroupHtml(p)}
                     <summary>Notch response</summary>
                     <div class="tc-disclosure-body">
                     <div class="input-small-row mb-8"><label class="input-small-label">Power notches (× acceleration)</label></div>
-                    ${POWER_NOTCHES.map(([h]) => this._notchRow(h, `sp-pm-${h}`, p.power_multipliers[h])).join('')}
+                    ${POWER_NOTCHES.map(([h]) => this._notchRow(h, `sp-pm-${h}`, p.power_multipliers[h], ro)).join('')}
                     <div class="input-small-row mb-8"><label class="input-small-label">Brake notches (× operational decel)</label></div>
-                    ${BRAKE_NOTCHES.map(([h]) => this._notchRow(h, `sp-bm-${h}`, p.brake_multipliers[h])).join('')}
+                    ${BRAKE_NOTCHES.map(([h]) => this._notchRow(h, `sp-bm-${h}`, p.brake_multipliers[h], ro)).join('')}
                     </div>
                 </details>
 
@@ -897,19 +936,20 @@ ${this._calibrationGroupHtml(p)}
             </div>`;
   }
 
-  private _rateRow(label: string, id: string, value: number): string {
+  /** `readOnly`: the field belongs to the model profile of the instance on screen. */
+  private _rateRow(label: string, id: string, value: number, readOnly = false): string {
     return `
                     <div class="input-small-row mb-8">
                         <label class="input-small-label input-small-label-inline" for="${id}">${label}</label>
-                        <input type="number" id="${id}" class="input-small-field input-small-field-compact" value="${fmt(value, 4)}" step="0.1">
+                        <input type="number" id="${id}" class="input-small-field input-small-field-compact" value="${fmt(value, 4)}" step="0.1"${readOnly ? ' disabled' : ''}>
                     </div>`;
   }
 
-  private _notchRow(label: string, id: string, value: number): string {
+  private _notchRow(label: string, id: string, value: number, readOnly = false): string {
     return `
                     <div class="input-small-row mb-8">
                         <label class="input-small-label input-small-label-inline" for="${id}">${label}</label>
-                        <input type="number" id="${id}" class="input-small-field input-small-field-compact" value="${fmt(value ?? 0, 2)}" min="0" step="0.05">
+                        <input type="number" id="${id}" class="input-small-field input-small-field-compact" value="${fmt(value ?? 0, 2)}" min="0" step="0.05"${readOnly ? ' disabled' : ''}>
                     </div>`;
   }
 
@@ -931,6 +971,8 @@ ${this._calibrationGroupHtml(p)}
         onRemove: (i) => this._removePoint('vp', i),
       });
       this._vpPlot.setData(this._vpPlotPoints(), this._vpAxis());
+      // An instance profile stores no voltage/power curve; it is its model's.
+      if (this._isInstance()) this._vpPlot.setEditable(false);
     }
     if (psCanvas) {
       this._psPlot = new CurvePlot({
@@ -952,6 +994,9 @@ ${this._calibrationGroupHtml(p)}
 
     const del = document.getElementById('sp-delete-btn');
     if (del) del.onclick = () => this._deleteProfile(this._profile!.profile_id);
+
+    const openModel = document.getElementById('sp-open-model') as HTMLButtonElement | null;
+    if (openModel) openModel.onclick = () => void this.showProfileEditor(openModel.dataset.profileId || '');
 
     const model = document.getElementById('sp-model') as HTMLInputElement | null;
     if (model)
@@ -986,11 +1031,11 @@ ${this._calibrationGroupHtml(p)}
                     <div class="control-section-header">Calibration</div>
                     <div class="input-small-row mb-8">
                         <label class="input-small-label input-small-label-inline" for="sp-model">Model</label>
-                        <input type="text" id="sp-model" class="input-small-field input-small-field-compact" value="${escapeAttr(p.model || '')}" placeholder="e.g. Kato EF66">
+                        <input type="text" id="sp-model" class="input-small-field input-small-field-compact" value="${escapeAttr(p.model || '')}" placeholder="e.g. Kato EF66"${this._isInstance() ? ' disabled' : ''}>
                     </div>
                     <div class="input-small-row mb-8">
                         <label class="input-small-label input-small-label-inline" for="sp-maxv">Max voltage (100% power)</label>
-                        <input type="number" id="sp-maxv" class="input-small-field input-small-field-compact" value="${fmt(p.max_voltage)}" min="0" step="0.1">
+                        <input type="number" id="sp-maxv" class="input-small-field input-small-field-compact" value="${fmt(p.max_voltage)}" min="0" step="0.1"${this._isInstance() ? ' disabled' : ''}>
                     </div>
                     <div class="input-small-row mb-8">
                         <label class="input-small-label input-small-label-inline" for="sp-topspeed">Top speed (100% power)</label>
@@ -1448,7 +1493,7 @@ ${this._calibrationGroupHtml(p)}
     // drag or a typed point would save the candidate as the curve, so both
     // lock until the run ends.
     const previewing = candidate !== null;
-    this._vpPlot.setEditable(!previewing);
+    this._vpPlot.setEditable(!previewing && !this._isInstance());
     this._rebuildPointList('vp', previewing ? plotPts : undefined);
     if (previewing) {
       document
@@ -2034,6 +2079,13 @@ ${this._calibrationGroupHtml(p)}
     });
     html += `<button class="rr-flat-btn sp-pt-add" data-which="${which}">+ add point</button>`;
     container.innerHTML = html;
+    // An instance profile's voltage/power curve is its model's: read-only here.
+    if (isVp && this._isInstance()) {
+      container.querySelectorAll<HTMLInputElement | HTMLButtonElement>('input, button').forEach((el) => {
+        el.disabled = true;
+      });
+      return;
+    }
 
     container.querySelectorAll<HTMLInputElement>('.sp-px, .sp-py').forEach((el) => {
       el.oninput = () => this._onPointInput(which);
@@ -2262,10 +2314,27 @@ ${this._calibrationGroupHtml(p)}
 
   private async _commit(): Promise<void> {
     if (!this._profile) return;
+    // A save writes only the fields the operator changed, so a locomotive's
+    // own profile goes on reading everything else from its model profile
+    // (design_new.md "SpeedProfile", Editing a profile by hand).
+    const edits = changedProfileFields(
+      this._lastSaved as unknown as Record<string, unknown>,
+      this._profile as unknown as Record<string, unknown>,
+      this._isInstance()
+    );
+    if (!Object.keys(edits).length) return;
     try {
-      const updated = await this.api.updateSpeedProfile(this._profile.profile_id, this._profile);
-      this._profile = this._normalize(updated);
-      this._lastSaved = this._clone(this._profile);
+      await this.api.updateSpeedProfile(this._profile.profile_id, edits);
+      const view = await this.api.getSpeedProfile(this._profile.profile_id, { resolved: true });
+      const hadOwnCurve = this._ownFields.includes('power_speed_curve');
+      this._applyView(view);
+      // The first hand edit of an instance's curve changes what the note says.
+      if (this._isInstance() && hadOwnCurve !== this._ownFields.includes('power_speed_curve')) {
+        const note = document.querySelector('.sp-instance-note');
+        if (note) note.outerHTML = this._instanceNoteHtml();
+        const openModel = document.getElementById('sp-open-model') as HTMLButtonElement | null;
+        if (openModel) openModel.onclick = () => void this.showProfileEditor(openModel.dataset.profileId || '');
+      }
       this._vpPlot?.setData(this._vpPlotPoints(), this._vpAxis());
       this._psPlot?.setData(this._psPlotPoints(), this._psAxis());
       this._syncValues();

@@ -1891,15 +1891,24 @@ Create a new speed profile.
 
 Get a single speed profile by ID.
 
-**Response:** Profile object
+**Response:** The stored profile object.
+
+**With `?resolved=true`:** the profile as the Speed Profile panel shows it. Every value is the resolved one (an instance profile's unset fields are read from its model profile), and the stored `profile_id`, `name` and `derived_from` stay. `own_fields` lists the instance fields (`lighting_voltage`, `power_speed_curve`, `calibrated_at`) the record carries itself; it is empty on a model profile.
 
 **Error (404):** `{"error": "Speed profile 'X' not found"}`
 
 ### PUT /api/speed-profiles/{profile_id}
 
-Update an existing speed profile. All fields are optional except profile_id must match URL.
+Update an existing speed profile by hand. All fields are optional; a `profile_id` in the body must match the URL.
 
-**Request:** Same as POST
+- **Fields the body leaves out keep their stored values.** Send only the fields that changed. On an instance profile a field left out stays unset and goes on reading from the model profile.
+- **`lighting_voltage`, `calibrated_at` and `derived_from` never change here.** Lighting-voltage calibration and a speed calibration commit write the first two.
+- **On an instance profile only `name` and `power_speed_curve` may be sent.** Any other field belongs to the model profile, and the request is refused with 400.
+- **A `power_speed_curve` needs at least two points.**
+
+See design_new.md "SpeedProfile", Editing a profile by hand.
+
+**Request:** Any subset of the POST fields
 
 **Response:** Updated profile object
 

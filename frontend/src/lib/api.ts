@@ -2092,9 +2092,13 @@ export class API implements LayoutDataClient, SimClient {
     return result?.profiles || [];
   }
 
-  async getSpeedProfile(profileId: string): Promise<any> {
+  /** One speed profile. With `resolved`, the profile as the Speed Profile
+   *  panel shows it: resolved values plus the stored `derived_from` and the
+   *  instance's `own_fields` (design_new.md "SpeedProfile", Editing a profile
+   *  by hand); otherwise the stored record. */
+  async getSpeedProfile(profileId: string, options: { resolved?: boolean } = {}): Promise<any> {
     return this._request(
-      `/speed-profiles/${encodeURIComponent(profileId)}`,
+      `/speed-profiles/${encodeURIComponent(profileId)}${options.resolved ? '?resolved=true' : ''}`,
       {},
       'getSpeedProfile'
     );
