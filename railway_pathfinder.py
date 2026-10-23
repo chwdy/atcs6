@@ -647,12 +647,19 @@ class RailwayPathfinder:
                         if not next_track:
                             continue
                         next_x, next_y = next_track.x, next_track.y
+                        # `get_neighbor` returns the next grid tile even when
+                        # its rails do not meet ours (a buffer stop), so ask
+                        # `get_connection_edges` before counting the tile;
+                        # it also gives the right entry edge across a tunnel.
+                        edges = self.network.get_connection_edges(
+                            (curr_x, curr_y), (next_x, next_y)
+                        )
+                        if edges is None:
+                            continue
+                        entry_edge = edges[1]
                         next_block_id = next_track.block_id
                         if next_block_id and next_block_id != start_block_id:
                             reachable_blocks.add(next_block_id)
-                        entry_edge = OPPOSITE_EDGE.get(exit_edge)
-                        if not entry_edge or entry_edge not in next_track.edges:
-                            continue
                         all_exits = next_track.get_exits(
                             entry_edge, use_switch_state=False
                         )
@@ -722,12 +729,16 @@ class RailwayPathfinder:
                 next_x, next_y = next_track.x, next_track.y
                 if (next_x, next_y) in occupied_tile_set:
                     continue  # never route back through our own body
+                # Same connection check as `get_reachable_endpoints`.
+                edges = self.network.get_connection_edges(
+                    (curr_x, curr_y), (next_x, next_y)
+                )
+                if edges is None:
+                    continue
+                entry_edge = edges[1]
                 next_block_id = next_track.block_id
                 if next_block_id and next_block_id not in occupied_block_set:
                     reachable_blocks.add(next_block_id)
-                entry_edge = OPPOSITE_EDGE.get(exit_edge)
-                if not entry_edge or entry_edge not in next_track.edges:
-                    continue
                 all_exits = next_track.get_exits(entry_edge, use_switch_state=False)
                 for next_exit in all_exits:
                     queue.append((next_x, next_y, next_exit))
