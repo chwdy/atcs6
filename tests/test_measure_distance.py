@@ -5,7 +5,7 @@ signal-remap behaviour that depends on it.
 from network import RailwayNetwork
 from railway_pathfinder import RailwayPathfinder
 from railway_signal import SignalType
-from track import Tile, TRACK_EW
+from track import Tile, TRACK_EW, TRACK_NS
 from tests.segment_test_helpers import make_segment_block_with_tracks
 
 
@@ -39,6 +39,22 @@ def test_measure_distance_unreachable_is_none():
     network.add_track(Tile(x=5, y=0, track_bits=TRACK_EW))
     pf = RailwayPathfinder(network)
     assert pf.measure_distance((0, 0), (5, 0)) is None
+
+
+def test_measure_distance_crosses_tunnel_whose_edges_are_not_opposites():
+    # An EW line at y=0 whose west end (0,0,W) is tunneled to the north end
+    # (10,7,N) of an NS line at x=10. W and N are not opposites, so the far
+    # tile's entry edge must come from `get_connection_edges`.
+    network = RailwayNetwork()
+    for x in range(3):
+        network.add_track(Tile(x=x, y=0, track_bits=TRACK_EW))
+    for y in range(5, 8):
+        network.add_track(Tile(x=10, y=y, track_bits=TRACK_NS))
+    network.add_tunnel((0, 0, "W"), (10, 7, "N"))
+    pf = RailwayPathfinder(network)
+    # (2,0) -> (1,0) -> (0,0) -> tunnel -> (10,7) -> (10,6) -> (10,5)
+    assert pf.measure_distance((2, 0), (10, 5)) == 5
+    assert pf.measure_distance((10, 5), (2, 0)) == 5
 
 
 def test_measure_distance_resolves_block_id():

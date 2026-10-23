@@ -581,12 +581,19 @@ class PathDispatcher:
                 if not next_track:
                     continue
                 next_x, next_y = next_track.x, next_track.y
+                # `get_neighbor` returns the next grid tile even when its
+                # rails do not meet ours (a buffer stop), so ask
+                # `get_connection_edges` before counting the tile; it also
+                # gives the right entry edge across a tunnel.
+                edges = self.network.get_connection_edges(
+                    (curr_x, curr_y), (next_x, next_y)
+                )
+                if edges is None:
+                    continue
+                next_entry_edge = edges[1]
                 next_block_id = next_track.block_id
                 if next_block_id and next_block_id not in existing_blocks:
                     reachable_blocks.add(next_block_id)
-                next_entry_edge = OPPOSITE_EDGE.get(curr_exit)
-                if not next_entry_edge or next_entry_edge not in next_track.edges:
-                    continue
                 all_exits = next_track.get_exits(
                     next_entry_edge, use_switch_state=False
                 )

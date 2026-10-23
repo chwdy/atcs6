@@ -578,8 +578,10 @@ class RailwayPathfinder:
                 npos = (neighbor.x, neighbor.y)
                 if npos in visited:
                     continue
-                opposite = OPPOSITE_EDGE.get(edge)
-                if not opposite or opposite not in neighbor.edges:
+                # The cardinal opposite is the wrong entry edge across a
+                # tunnel whose two edges are not opposites, so ask
+                # `get_connection_edges` whether the rails meet.
+                if self.network.get_connection_edges((cx, cy), npos) is None:
                     continue
                 if npos in dst_tiles:
                     return dist + 1
