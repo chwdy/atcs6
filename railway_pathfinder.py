@@ -854,6 +854,18 @@ class RailwayPathfinder:
             new_blocks = list(blocks)
             if next_block_id and next_block_id not in new_blocks:
                 new_blocks.append(next_block_id)
+            # The step must be a real track connection before anything else,
+            # the destination included: `get_neighbor` returns the grid
+            # neighbour even when its rails do not meet ours (a buffer stop
+            # beside another block's diagonal). `get_connection_edges` also
+            # gives the entry edge across a tunnel, where it is not the
+            # cardinal opposite of the exit.
+            connection_edges = self.network.get_connection_edges(
+                (curr_x, curr_y), (next_x, next_y)
+            )
+            if connection_edges is None:
+                continue
+            entry_edge = connection_edges[1]
             if next_block_id == end_block_id:
                 # Walk forward through the rest of the destination block so
                 # the path covers every tile inside it. Without this, the
@@ -910,19 +922,6 @@ class RailwayPathfinder:
                         blocks=new_blocks,
                     )
                 )
-                continue
-            # Tunnel-aware entry edge on the next tile. Falls back to the
-            # cardinal opposite for grid-adjacent pairs (where the lookup
-            # returns the same answer), so the change is a no-op there.
-            connection_edges = self.network.get_connection_edges(
-                (curr_x, curr_y), (next_x, next_y)
-            )
-            entry_edge = (
-                connection_edges[1]
-                if connection_edges
-                else OPPOSITE_EDGE.get(exit_edge)
-            )
-            if not entry_edge or entry_edge not in next_track.edges:
                 continue
             all_exits = next_track.get_exits(entry_edge, use_switch_state=False)
             if not all_exits:
