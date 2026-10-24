@@ -269,23 +269,24 @@ class SpeedProfile:
         return curve[-1][0]
 
     def speed_to_voltage_two_stage(self, speed_kmh: float) -> float:
-        """Convert target speed to voltage via the two-stage pipeline.
+        """Convert a speed to voltage via the two-stage pipeline.
 
         Stage 2: speed_kmh -> power_percent (power_speed_curve inverted).
         Stage 1: power_percent -> voltage (voltage_power_curve inverted).
 
-        A commanded speed of 0 (or below) means the train is not being driven
-        forward, so the output is 0 V (the `lighting_voltage` floor applies
-        only to the stopped-but-lit states, not to this driven path).
+        A speed of 0 (or below) is 0% power, which is `lighting_voltage`: a
+        powered train that nothing drives is lit (design_new.md "TrainPhysics",
+        A powered train is lit whenever it is not driven). Only an OFF train and
+        an emergency cut-out put 0 V on the rails, and neither reaches here.
 
         Args:
-            speed_kmh: Target speed in km/h.
+            speed_kmh: Speed in km/h.
 
         Returns:
             Track voltage (V).
         """
         if speed_kmh <= 0:
-            return 0.0
+            return self.power_to_voltage(0.0)
         # Invert power_speed_curve: speed -> power_percent
         power_percent = self._speed_to_power(speed_kmh)
         return self.power_to_voltage(power_percent)

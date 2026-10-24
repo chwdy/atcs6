@@ -755,8 +755,10 @@ export class API implements LayoutDataClient, SimClient {
    * energized, so every '595 bit is driven this way.
    *
    * The default width is the runtime throw (10 ms), so a throw test reproduces
-   * an operating throw. Pass `pulseS` only to measure the bit rather than watch
-   * the points — that holds a coil far longer than a throw does. */
+   * an operating throw. Pass `pulseS` only for a bit no switch binding names
+   * (the output sweep does, so an LED on the pin visibly lights) or to measure
+   * a bit with a meter — on a coil bit it holds the coil far longer than a
+   * throw does. */
   async commissionPulse(
     chipId: string,
     port: number,

@@ -1237,6 +1237,50 @@ def test_commission_reads_currents():
     sess.close()
 
 
+def test_commission_learns_switch_bits_from_the_saved_setup():
+    """The panel posts chips without bindings, so the saved `switch_output` map
+    is what tells the session which shift-out bits drive a coil (design_new.md
+    "The commissioning session", Switch bits). Open reports them, and `output`
+    refuses to hold one on; a bit no binding names may be held."""
+    from hardware.commission import CommissionSession
+    from hardware_config import SwitchBinding
+
+    fake = FakeCh347Device()
+    cfg = _cfg(ChipConfig("sw1", "hc595", spi_select="cs0", chain_length=3))
+    saved = {
+        "SW_A": SwitchBinding("sw1", port_main=0, port_diverge=1, port_standby=2),
+        # A binding to a chip this session does not build is ignored.
+        "SW_B": SwitchBinding("other", port_main=4, port_diverge=5),
+    }
+    sess = CommissionSession()
+    sess.open(cfg, open_device=lambda: fake, saved_switch_output=saved)
+    assert sess.switch_ports_by_chip() == {"sw1": [0, 1, 2]}
+    with pytest.raises(ValueError):
+        sess.set_output("sw1", 1, 1.0)
+    sess.set_output("sw1", 3, 1.0)
+    assert fake.latched_bit("cs0", 3) is True
+    sess.set_output("sw1", 3, 0.0)
+    sess.close()
+
+
+def test_commission_current_read_failure_is_an_error_not_zero():
+    """A channel that cannot be read fails the whole read: a missing reading is
+    not a clear one (design_new.md "The commissioning session", Every failure
+    reaches the operator)."""
+    from hardware.commission import CommissionSession
+
+    fake = FakeCh347Device(present_addresses={0x41})
+    cfg = _cfg(ChipConfig("cur1", "ina3221", i2c_address=0x41))
+    sess = CommissionSession()
+    sess.open(cfg, open_device=lambda: fake)
+    sess.read_currents("cur1")             # configures the chip
+    fake.set_fault("i2c_read_error")
+    with pytest.raises(Exception):
+        sess.read_currents("cur1")
+    fake.clear_faults()
+    sess.close()
+
+
 def test_commission_open_bounds_the_session_timeout():
     """design_new.md "Hardware REST payload schemas": the commissioning `enter`
     body carries `timeout_seconds` with `0 < timeout_seconds <=

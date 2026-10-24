@@ -8,6 +8,8 @@ import {
   parseAddr,
   parseDeadband,
   staleBindings,
+  sweepPulseS,
+  SWEEP_VISIBLE_PULSE_S,
 } from './hardware-panel';
 import type { Coverage } from './hardware-panel';
 
@@ -306,5 +308,23 @@ describe('activationBlockMessage', () => {
     expect(
       activationBlockMessage({ issues: [{ message: 'Bindings name blocks not in the loaded layout', ids: ['<img src=x>'] }] })
     ).toBe('Bindings name blocks not in the loaded layout: &lt;img src=x&gt;');
+  });
+});
+
+// The output sweep walks every shift-out bit. A bit a saved switch binding names
+// drives a point-motor coil, so it gets only the server's coil width (no
+// pulse_s); every other bit is held long enough for an LED on it to light.
+describe('sweepPulseS', () => {
+  it('leaves a switch bit at the coil width', () => {
+    expect(sweepPulseS(6, new Set([0, 1, 2, 6, 7]))).toBeUndefined();
+  });
+
+  it('holds every other bit long enough to see', () => {
+    expect(sweepPulseS(3, new Set([0, 1, 2, 6, 7]))).toBe(SWEEP_VISIBLE_PULSE_S);
+    expect(sweepPulseS(0, new Set())).toBe(SWEEP_VISIBLE_PULSE_S);
+  });
+
+  it('is visible: well above the 10 ms coil width', () => {
+    expect(SWEEP_VISIBLE_PULSE_S).toBeGreaterThanOrEqual(0.2);
   });
 });

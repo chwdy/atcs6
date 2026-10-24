@@ -125,10 +125,12 @@ class PhysicsCommand:
       - PHYSICS_KIND_EMERGENCY_BRAKE: physics applies the speed profile's
         `emergency_brake_rate` deceleration from the previous speed.
 
-    `voltage_source_speed_kmh` is what the voltage emitter should treat as
-    the train's current speed for the per-tick voltage scalar (typically
-    the same as the physics solution, but for `power_percent` mode it is
-    the calibrated speed even before integration converges).
+    `voltage_source_speed_kmh` is the speed the voltage emitter maps to the
+    per-tick voltage scalar: the integrated current speed for ATO and manual
+    `simulation`, the calibrated speed for `power_percent` (even before
+    integration converges), and 0 otherwise. A speed of 0 maps to
+    `lighting_voltage` (design_new.md "TrainPhysics", A powered train is lit
+    whenever it is not driven).
 
     `voltage_source_power_percent` is set only when the commanded power
     percent is the authoritative operating point for the tick (manual
@@ -136,11 +138,11 @@ class PhysicsCommand:
     `track_voltage` through `voltage_power_curve`; inverting
     `power_speed_curve` first would not round-trip on a calibrated curve.
 
-    `voltage_source_track_voltage` is set only while an open lighting-voltage
-    calibration run drives (design_new.md "Lighting-voltage calibration", What
-    the run drives). It is the exact voltage magnitude the emitter must put on
-    the rails this tick, in place of whatever the operational state would
-    otherwise output; physics returns it directly rather than deriving a
+    `voltage_source_track_voltage` is set only under an emergency cut-out (`0`)
+    and while an open lighting-voltage calibration run drives (design_new.md
+    "Lighting-voltage calibration", What the run drives). It is the exact
+    voltage magnitude the emitter must put on the rails this tick, in place of
+    whatever the operational state would otherwise output; physics returns it directly rather than deriving a
     voltage from a speed or a percent. The command carries no motion (handle
     `N`) alongside it, because the candidate never feeds the speed solution.
     """
