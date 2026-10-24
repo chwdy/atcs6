@@ -175,9 +175,17 @@ let i2cScan: string[] = [];
 let scanned = false;
 // Shift registers (SPI / GPIO) cannot be scanned for — they have no
 // acknowledgement and no ID register, so a '595 or '165 reads exactly the same
-// unplugged as wired. The user running its port test is the only proof there
-// is, so the chips that have been tested this session are recorded here.
+// unplugged as wired. Running a test is not proof either: a dead chain takes
+// every write and an unwired one returns bits without an error. The only proof
+// is the user watching the board and saying it worked, so the chips confirmed
+// this session are recorded here (design_new.md "A shift register is proven
+// only when the operator confirms it").
 let manualProven = new Set<string>();
+// Shift registers whose test ran without an error and now wait for the user to
+// say whether the board did what the test asked.
+let awaitingConfirm = new Set<string>();
+// The last failure a chip's test reported, shown on its card until the next run.
+let chipErrors = new Map<string, string>();
 let controllerReachable = false;
 let savedSinceEdit = false;
 let adding = false;
@@ -208,6 +216,21 @@ let commissionActive = false;
 let activity: { chipId: string; kind: 'sweep' | 'live'; port: number; values: number[] } | null = null;
 let activityTimer: any = null;
 let sweepAbort = false;
+// The shift-out bits a saved switch binding names, per chip, from the
+// commissioning open. The sweep pulses these only for the switch-coil width,
+// because a held coil burns out (design_new.md "The commissioning session",
+// Switch bits).
+let switchPorts: Record<string, number[]> = {};
+// How long the sweep holds every other shift-out bit: long enough to see an LED
+// on the pin light. The switch-coil width (10 ms) is too short to see.
+export const SWEEP_VISIBLE_PULSE_S = 0.3;
+
+/** The pulse width the output sweep asks for on one shift-out bit: `undefined`
+ *  (the server's switch-coil width) for a bit a switch binding names, because a
+ *  held coil burns out; long enough to see for every other bit. */
+export function sweepPulseS(port: number, coilBits: ReadonlySet<number>): number | undefined {
+  return coilBits.has(port) ? undefined : SWEEP_VISIBLE_PULSE_S;
+}
 
 function clone<T>(v: T): T { return JSON.parse(JSON.stringify(v)); }
 function esc(s: any): string {
@@ -855,7 +878,7 @@ export async function refreshHardwarePanel(): Promise<void> {
   adding = false;
   i2cScan = [];
   scanned = false;
-  manualProven = new Set();
+  forgetAllProof();
   controllerReachable = false;
   sessionInfo = null;
   devReadback = null;
@@ -1166,6 +1189,14 @@ function chipCardHtml(chip: ChipCfg): string {
   const testBtn = dir === 'output'
     ? `<button type="button" class="hw-chip-action${on ? ' on' : ''}" data-hw="sweep" data-id="${esc(chip.chip_id)}"${toolAttrs}><i class="ti ti-${on ? 'player-stop' : 'player-play'}" aria-hidden="true"></i> ${on ? 'Stop' : 'Sweep'}</button>`
     : `<button type="button" class="hw-chip-action${on ? ' on' : ''}" data-hw="live" data-id="${esc(chip.chip_id)}"${toolAttrs}><i class="ti ti-${on ? 'player-stop' : 'activity'}" aria-hidden="true"></i> ${on ? 'Stop' : 'Read live'}</button>`;
+  // A shift register's test running clean is not proof; the user says so.
+  const confirmBtn = awaitingConfirm.has(chip.chip_id)
+    ? `<button type="button" class="hw-chip-action confirm" data-hw="confirm" data-id="${esc(chip.chip_id)}" title="Press only if you saw the board do what the test asked"><i class="ti ti-check" aria-hidden="true"></i> It worked</button>`
+    : '';
+  const error = chipErrors.get(chip.chip_id);
+  const errorRow = error
+    ? `<div class="hw-chip-error" role="alert"><i class="ti ti-alert-triangle" aria-hidden="true"></i> ${esc(error)}</div>`
+    : '';
   return `<div class="hw-chip ${stateCls}" data-chip="${esc(chip.chip_id)}">
     <div class="hw-chip-top">
       ${coordCellHtml(chip)}
@@ -1175,10 +1206,12 @@ function chipCardHtml(chip: ChipCfg): string {
       </div>
       <div class="hw-chip-actions">
         ${badge}
+        ${confirmBtn}
         ${testBtn}
         <button type="button" class="hw-chip-remove" data-hw="remove" data-id="${esc(chip.chip_id)}" title="Remove chip" aria-label="Remove chip">&times;</button>
       </div>
     </div>
+    ${errorRow}
     ${chip.bus !== 'i2c' && ck?.cascadable ? portCountRowHtml(chip) : ''}
     ${ck?.port_kind === 'digital_in' ? polarityRowHtml(chip) : ''}
     ${portsHtml(chip)}
@@ -1188,12 +1221,16 @@ function chipCardHtml(chip: ChipCfg): string {
 // What the card says about whether the chip is really there, in the terms that
 // bus can actually prove. An I²C chip either answered the scan or it did not.
 // A shift register answers nothing, so its badge reports the only fact there
-// is — whether the user has run its test.
+// is — whether the user watched its test work and said so.
 function stateBadgeHtml(chip: ChipCfg, st: ChipState): string {
   if (chip.bus !== 'i2c') {
-    return st === 'alive'
-      ? `<span class="hw-state-badge alive" title="You ran this chip's test. A shift register cannot be detected any other way — it has no address and no reply."><i class="ti ti-check" aria-hidden="true"></i> Tested by you</span>`
-      : `<span class="hw-state-badge untested" title="A shift register cannot be detected: it has no address and sends no reply, so it reads the same unplugged as wired. Run the test and watch the board.">Test to prove</span>`;
+    if (st === 'alive') {
+      return `<span class="hw-state-badge alive" title="You watched this chip's test work and confirmed it. A shift register cannot be detected any other way — it has no address and no reply."><i class="ti ti-check" aria-hidden="true"></i> Confirmed by you</span>`;
+    }
+    if (awaitingConfirm.has(chip.chip_id)) {
+      return `<span class="hw-state-badge waiting" title="The test ran without an error, but a dead or unwired shift register runs clean too. Confirm only if the board did what the test asked.">Did it work?</span>`;
+    }
+    return `<span class="hw-state-badge untested" title="A shift register cannot be detected: it has no address and sends no reply, so it reads the same unplugged as wired. Run the test, watch the board, and confirm it.">Test to prove</span>`;
   }
   if (st === 'alive') {
     return `<span class="hw-state-badge alive" title="This address answered the last bus scan"><i class="ti ti-check" aria-hidden="true"></i> On the bus</span>`;
@@ -1274,10 +1311,14 @@ function portsHtml(chip: ChipCfg): string {
     : 'Read live to watch these';
 
   const act = activity?.chipId === chip.chip_id ? activity : null;
+  const coilBits = new Set(switchPorts[chip.chip_id] || []);
   const pills: string[] = [];
   for (let p = 0; p < n; p++) {
     const name = lineLabel(chip, p);
     let cls = 'hw-port', txt = name, extra = '';
+    // The sweep only blips a switch bit (the coil width), so say why it barely
+    // lights; Test throw in the switch editor is how that bit is proven.
+    const coilNote = coilBits.has(p) ? ' — switch bit: the sweep pulses it only for the coil width' : '';
     if (act?.kind === 'sweep' && act.port === p) cls += ' sweep';
     if (act?.kind === 'live') {
       const v = act.values[p];
@@ -1287,7 +1328,7 @@ function portsHtml(chip: ChipCfg): string {
     if (dir === 'output') {
       // A pulse drives an output, so it is a Setup tool.
       const pulseOk = setupToolsAllowed(environmentInfo.session_state);
-      const pulseTitle = pulseOk ? `${name} — click to drive high for 1 s` : `${name} — ${SETUP_TOOL_HINT}`;
+      const pulseTitle = (pulseOk ? `${name} — click to drive high for 1 s` : `${name} — ${SETUP_TOOL_HINT}`) + coilNote;
       pills.push(`<button type="button" class="${cls}${extra}" data-hw="pulse" data-id="${esc(chip.chip_id)}" data-port="${p}" title="${esc(pulseTitle)}"${pulseOk ? '' : ' disabled'}>${txt}</button>`);
     } else {
       pills.push(`<span class="${cls}${extra}" title="${name}">${txt}</span>`);
@@ -1473,6 +1514,7 @@ async function onClick(e: Event): Promise<void> {
     case 'sweep': return void toggleSweep(id);
     case 'live': return void toggleLive(id);
     case 'pulse': return void pulsePort(id, Number(target.dataset.port));
+    case 'confirm': return confirmProven(id);
     case 'add-open': adding = true; render(); syncAddForm(); return;
     case 'add-cancel': adding = false; render(); return;
     case 'add-commit': return commitAdd();
@@ -1536,7 +1578,7 @@ function setChip(id: string, mut: (c: ChipCfg) => void): void {
   mut(chip);
   // Re-strapping or re-wiring a chip retires the proof the user gathered for
   // the old settings; the badge drops back to unproven until it is re-earned.
-  manualProven.delete(id);
+  forgetProof(id);
   onEdit();
   render();
 }
@@ -1555,7 +1597,7 @@ function setPorts(id: string, raw: string): void {
 function removeChip(id: string): void {
   if (activity?.chipId === id) void stopCommissioning();
   state.chips = state.chips.filter((c) => c.chip_id !== id);
-  manualProven.delete(id);
+  forgetProof(id);
   onEdit();
   render();
 }
@@ -1574,7 +1616,7 @@ async function selectEnvironment(selected: string): Promise<void> {
   controllerReachable = false;
   scanned = false;
   i2cScan = [];
-  manualProven = new Set();
+  forgetAllProof();
   render();
 }
 
@@ -1830,26 +1872,30 @@ async function pulsePort(id: string, line: number): Promise<void> {
   pulsing = true;
   try {
     const res = await api.runHardwarePortTest(payload(), id, line, 'pulse_output');
-    if (!res?.ok) { showToast(res?.error || 'Port test failed.', 'error', 3500); return; }
-    markProven(id);
+    if (!res?.ok) { noteTestFailed(id, res?.error || 'Port test failed.'); return; }
+    noteTestRan(id);
     render();
     const held = typeof res.pulse_s === 'number' ? ` for ${res.pulse_s.toFixed(1)} s` : '';
     showToast(`Drove ${chip ? lineLabel(chip, line) : line} high${held}.`, 'success', 1600);
   } catch (e: any) {
-    showToast(e?.message || 'Port test failed.', 'error', 3500);
+    noteTestFailed(id, e?.message || 'Port test failed.');
   } finally {
     pulsing = false;
   }
 }
 
 // --- commissioning: sweep (output) + read-live (input) ---------------------
-async function ensureCommission(): Promise<boolean> {
+async function ensureCommission(id: string): Promise<boolean> {
   if (commissionActive) return true;
   try {
     const res = await api.commissionOpen(payload());
-    if (!res?.ok) { showToast(res?.error ? `Controller unavailable: ${res.error}` : 'Controller unavailable.', 'error', 4000); return false; }
+    if (!res?.ok) {
+      noteTestFailed(id, res?.error ? `Controller unavailable: ${res.error}` : 'Controller unavailable.');
+      return false;
+    }
+    switchPorts = res.switch_ports || {};
   } catch (e: any) {
-    showToast(e?.message || 'Controller unavailable.', 'error', 4000);
+    noteTestFailed(id, e?.message || 'Controller unavailable.');
     return false;
   }
   commissionActive = true;
@@ -1870,20 +1916,60 @@ async function stopCommissioning(): Promise<void> {
 async function toggleSweep(id: string): Promise<void> {
   if (activity?.chipId === id) { await stopCommissioning(); render(); return; }
   await stopCommissioning();
-  if (!(await ensureCommission())) return;
+  chipErrors.delete(id);
+  if (!(await ensureCommission(id))) { render(); return; }
   activity = { chipId: id, kind: 'sweep', port: 0, values: [] };
   sweepAbort = false;
-  markProven(id);
   render();
   void runSweep(id);
 }
 
-// A shift register is proven by its owner watching it work, so running its test
-// is what earns its badge — nothing on the bus can report it (see chipState).
-// I²C chips answer a scan, so their badge is not this to give.
-function markProven(id: string): void {
+// --- proof -----------------------------------------------------------------
+// A test that ran without an error is not proof for a shift register — a dead
+// chain takes every write and an unwired one still returns bits — so it waits
+// for the user to say the board did what the test asked. I²C chips answer a
+// scan, so their badge is not this to give.
+function noteTestRan(id: string): void {
+  chipErrors.delete(id);
   const chip = state.chips.find((c) => c.chip_id === id);
-  if (chip && chip.bus !== 'i2c') manualProven.add(id);
+  if (chip && chip.bus !== 'i2c' && !manualProven.has(id)) awaitingConfirm.add(id);
+}
+
+// A test failed: the card names the error until the next run, and the toast
+// says so now. A failure also takes back an earlier confirmation — the chip is
+// not working now, whatever it did before.
+function noteTestFailed(id: string, message: string): void {
+  chipErrors.set(id, message);
+  awaitingConfirm.delete(id);
+  manualProven.delete(id);
+  showToast(`${id}: ${message}`, 'error', 4500);
+  render();
+}
+
+function confirmProven(id: string): void {
+  awaitingConfirm.delete(id);
+  manualProven.add(id);
+  render();
+}
+
+function forgetProof(id: string): void {
+  manualProven.delete(id);
+  awaitingConfirm.delete(id);
+  chipErrors.delete(id);
+}
+
+function forgetAllProof(): void {
+  manualProven = new Set();
+  awaitingConfirm = new Set();
+  chipErrors = new Map();
+}
+
+// Stop the running test and report why. Only the test that is still running
+// reports, so a reply that lands after the user stopped it says nothing.
+async function failTest(id: string, message: string): Promise<void> {
+  if (activity?.chipId !== id) return;
+  await stopCommissioning();
+  noteTestFailed(id, message);
 }
 
 async function runSweep(id: string): Promise<void> {
@@ -1893,23 +1979,34 @@ async function runSweep(id: string): Promise<void> {
   // in turn, which is what the grid shows and what the user watches on the board.
   const count = chipLines(chip);
   const duties = chip.bus === 'i2c' ? [0.3, 0.6, 1.0] : [1.0];   // PWM steps vs on/off
-  // A shift-out bit may be wired to a solenoid point-motor coil, which burns out
-  // if held energized, so the marquee pulses those bits server-side for the
-  // switch-coil width instead of driving them for the whole visual step.
+  // A shift-out bit a switch binding names drives a point-motor coil, which
+  // burns out if held energized, so those bits get the switch-coil pulse. Every
+  // other bit is held long enough to see an LED on its pin light.
   const isShiftOut = chip.kind === 'hc595';
+  const coilBits = new Set(switchPorts[id] || []);
   let pass = 0;
+  let ran = false;
   while (!sweepAbort && activity?.chipId === id) {
     const duty = duties[pass % duties.length];
     pass++;
     for (let p = 0; p < count && !sweepAbort && activity?.chipId === id; p++) {
-      try {
-        if (isShiftOut) await api.commissionPulse(id, p);
-        else await api.commissionOutput(id, p, duty);
-      } catch { /* ignore */ }
       if (activity) { activity.port = p; render(); }
-      await sleep(450);
+      const coil = isShiftOut && coilBits.has(p);
+      let res: any;
+      try {
+        res = isShiftOut
+          ? await api.commissionPulse(id, p, null, null, sweepPulseS(p, coilBits))
+          : await api.commissionOutput(id, p, duty);
+      } catch (e: any) {
+        res = { ok: false, error: e?.message || 'The request failed.' };
+      }
+      if (!res?.ok) { await failTest(id, res?.error || 'The chip did not take the write.'); return; }
+      if (!ran) { ran = true; noteTestRan(id); render(); }
+      await sleep(isShiftOut && !coil ? 150 : 450);
       if (!isShiftOut) {
-        try { await api.commissionOutput(id, p, 0); } catch { /* ignore */ }
+        let off: any;
+        try { off = await api.commissionOutput(id, p, 0); } catch (e: any) { off = { ok: false, error: e?.message }; }
+        if (!off?.ok) { await failTest(id, off?.error || 'The chip did not take the write.'); return; }
       }
     }
   }
@@ -1918,26 +2015,31 @@ async function runSweep(id: string): Promise<void> {
 async function toggleLive(id: string): Promise<void> {
   if (activity?.chipId === id) { await stopCommissioning(); render(); return; }
   await stopCommissioning();
-  if (!(await ensureCommission())) return;
+  chipErrors.delete(id);
+  if (!(await ensureCommission(id))) { render(); return; }
   const chip = state.chips.find((c) => c.chip_id === id);
   const current = chip ? isCurrentSense(chip) : false;
   activity = { chipId: id, kind: 'live', port: -1, values: [] };
-  markProven(id);
   render();
+  let ran = false;
   const poll = async () => {
     if (activity?.chipId !== id) return;
+    let res: any;
     try {
-      if (current) {
-        const res = await api.commissionCurrents(id);
-        if (res?.ok && activity) { activity.values = (res.currents || []).map((p: any) => Number(p.current_ma) || 0); render(); }
-      } else {
-        const res = await api.commissionInputs(id);
-        if (res?.ok && activity) { activity.values = (res.ports || []).map((p: any) => (p.value ? 1 : 0)); render(); }
-      }
-    } catch { /* transient */ }
+      res = current ? await api.commissionCurrents(id) : await api.commissionInputs(id);
+    } catch (e: any) {
+      res = { ok: false, error: e?.message || 'The request failed.' };
+    }
+    if (activity?.chipId !== id) return;
+    if (!res?.ok) { await failTest(id, res?.error || 'The read failed.'); return; }
+    activity.values = current
+      ? (res.currents || []).map((p: any) => Number(p.current_ma) || 0)
+      : (res.ports || []).map((p: any) => (p.value ? 1 : 0));
+    if (!ran) { ran = true; noteTestRan(id); }
+    render();
   };
   await poll();
-  activityTimer = setInterval(poll, 500);
+  if (activity?.chipId === id) activityTimer = setInterval(poll, 500);
 }
 
 // --- save ------------------------------------------------------------------

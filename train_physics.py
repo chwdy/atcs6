@@ -657,11 +657,19 @@ class TrainPhysics:
         """Canonical home for `track_voltage`.
 
         Per design_new.md "Voltage behavior" and "Block power-controller role",
-        `track_voltage` is per-tick derived state owned by `TrainPhysics`.
-        Operational state (OFF / READY / RUNNING_MOVING)
-        selects the voltage shape; for RUNNING_MOVING the speed scalar is
-        published by the controller as `PhysicsCommand.voltage_source_speed_kmh`
-        so physics never inspects manual-mode fields directly.
+        `track_voltage` is per-tick derived state owned by `TrainPhysics`. The
+        controller publishes the voltage source on its `PhysicsCommand`, so
+        physics never inspects mode fields directly:
+          - `voltage_source_track_voltage` — an exact magnitude: `0` under an
+            emergency cut-out, or a lighting-voltage run's candidate;
+          - `voltage_source_power_percent` — manual `power_percent`;
+          - `voltage_source_speed_kmh` — every other case, ATO included.
+
+        A powered train is lit whenever it is not driven (design_new.md
+        "TrainPhysics", A powered train is lit whenever it is not driven): a
+        speed of 0 is 0% power, which is `lighting_voltage`, whether or not the
+        train holds a reservation and in either mode. Only an OFF train and an
+        emergency cut-out output 0 V.
 
         `BlockPowerController` consumes this scalar without making any
         manual-mode policy decisions itself.
@@ -678,50 +686,26 @@ class TrainPhysics:
         # than physics inspecting mode fields or the calibration run registry.
         command = self._read_physics_command(controller)
 
-        # An open lighting-voltage run publishes its candidate as an explicit
-        # track-voltage magnitude on the command, in place of the stopped-but-lit
-        # value this state would otherwise output, so each press of the panel's
-        # step control is answered by the locomotive itself (design_new.md
-        # "Lighting-voltage calibration", What the run drives). Nothing else about
-        # emission changes: the value is still a magnitude reaching this train's
-        # ordinary energized set, signed per block. The controller reads the
-        # validated accessor and hands the magnitude down; physics never reaches
-        # into the run registry (design_new.md "Lighting-voltage calibration",
-        # Where it lives).
+        # An exact magnitude wins. The emergency cut-out publishes `0` here
+        # (design_new.md "Emergency cut-out"). An open lighting-voltage run
+        # publishes its candidate in place of the lit value, so each press of the
+        # panel's step control is answered by the locomotive itself
+        # (design_new.md "Lighting-voltage calibration", What the run drives).
+        # Nothing else about emission changes: the value is still a magnitude
+        # reaching this train's ordinary energized set, signed per block. The
+        # controller reads the validated accessor and hands the magnitude down;
+        # physics never reaches into the run registry (design_new.md
+        # "Lighting-voltage calibration", Where it lives).
+        #
+        # An overrun is handled by the emergency cut-out, not here:
+        # `compute_track_voltage` has no overrun test of its own (design_new.md
+        # "TrainPhysics", A train that overran its authority is cut out). The one
+        # overrun that raises no cut-out is a calibration leg's, whose overrun
+        # block is kept dead by the separate emission-set exclusion
+        # `blocks_past_authority`, not by this method.
         if command.voltage_source_track_voltage is not None:
             return float(command.voltage_source_track_voltage)
 
-        lighting_voltage = (
-            speed_profile.lighting_voltage if speed_profile is not None else 0.0
-        )
-
-        # Stopped-but-lit: a powered train standing at rest with no live
-        # reservation and no EB (the old READY case) outputs the lighting
-        # voltage scalar so its block stays detectable. A dwelling train, whose
-        # reservation released on arrival, is one such case.
-        stopped_but_lit = (
-            controller.is_stopped()
-            and controller.path_projection.received_path_plan is None
-            and not controller.eb.active
-        )
-        if stopped_but_lit:
-            return lighting_voltage
-
-        # An overrun is handled by the emergency cut-out, not here:
-        # `compute_track_voltage` has no overrun test of its own (design_new.md
-        # "TrainPhysics", A train that overran its authority is cut out). When
-        # attribution credits a train a head-side block that is not reserved for
-        # it, Observe raises the train's emergency cut-out on that read, which
-        # sets `eb.cut_out` and drives the whole train to `0` through the
-        # Propulsion cap step (`voltage_source_track_voltage = 0`, handled by the
-        # command branch above). The one overrun that raises no cut-out is a
-        # calibration leg's, whose overrun block is kept dead by the separate
-        # emission-set exclusion `blocks_past_authority`, not by this method.
-
-        # Moving, or stopped under a live reservation / EB (the old
-        # RUNNING_MOVING case): the reference comes from the controller's
-        # PhysicsCommand. EB collapses voltage_source_speed_kmh to 0.0 in
-        # the producer, so no extra branch is needed here.
         voltage_speed = float(command.voltage_source_speed_kmh)
         if speed_profile is not None:
             source_percent = command.voltage_source_power_percent
@@ -732,6 +716,8 @@ class TrainPhysics:
                 # power_speed_curve, which does not round-trip once that curve
                 # is calibrated and non-linear (design_new.md, "Voltage behavior").
                 return speed_profile.power_to_voltage(float(source_percent))
+            # A speed of 0 maps to `lighting_voltage`: standing, under a plain EB,
+            # under the power-off ceiling, or in ATO while not engaged.
             return speed_profile.speed_to_voltage_two_stage(voltage_speed)
         return self._linear_speed_to_voltage(voltage_speed)
 
@@ -2328,8 +2314,10 @@ class TrainPhysics:
 
         Per design_new.md "Ownership split", voltage emission delegates to
         `compute_track_voltage(...)` so physics does not inspect controller
-        mode fields. The EB-zero override is already baked into the
-        controller-published `PhysicsCommand.voltage_source_speed_kmh`.
+        mode fields. The EB zero ceiling is already baked into the
+        controller-published `PhysicsCommand.voltage_source_speed_kmh`, which
+        maps to `lighting_voltage`; the cut-out's 0 V arrives as
+        `voltage_source_track_voltage`.
         """
         power_controller = self._get_power_controller()
         if not power_controller:

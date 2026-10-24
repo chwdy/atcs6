@@ -923,13 +923,16 @@ class TrainController:
           - ATO / manual simulation→ the handle; physics caps it at the live
                                      distance-0 atc_limit
 
-        `voltage_source_speed_kmh` is the scalar the voltage emitter uses
-        as the train's "current speed" when computing the per-tick voltage:
+        `voltage_source_speed_kmh` is the speed the voltage emitter maps to
+        the per-tick voltage (design_new.md "TrainPhysics", Voltage behavior):
           - power_percent          → calibrated target speed
-          - manual simulation      → integrated current speed
-          - ATO                    → live target speed from lookahead
-          - everything else        → 0.0 (READY/AT_STATION/OFF use lighting
-                                     or zero voltage and ignore this field)
+          - ATO / manual simulation→ integrated current speed, so the
+                                     locomotive runs at the speed its calculated
+                                     span moves at
+          - everything else        → 0.0
+        A speed of 0 maps to `lighting_voltage`: a powered train that nothing
+        drives is lit. OFF (physics checks `powered`) and the emergency cut-out
+        (`voltage_source_track_voltage = 0`) are the only 0 V outputs.
         """
         # design_new.md, "A capped crossing is discarded": when the
         # Propulsion cap step lowers the calibration drive through an external
@@ -1050,10 +1053,9 @@ class TrainController:
             cap = float(self.atc.speed_limit or 0.0)
             # The commanded percent is the authoritative operating point for
             # this tick, so physics maps it straight to track_voltage through
-            # voltage_power_curve (design_new.md, "Voltage behavior"). A zero percent
-            # keeps the existing dead-rail outcome rather than the curve's
-            # 0%-power lighting anchor.
-            voltage_pct: Optional[float] = pct if pct > 0.0 else None
+            # voltage_power_curve (design_new.md, "Voltage behavior"). A zero
+            # percent is the curve's 0%-power point, `lighting_voltage`.
+            voltage_pct: Optional[float] = pct
             if target > cap:
                 # Per design_new.md: when the cap intervenes, the controller
                 # clamps the target to it. For an ordinary manual command it also
@@ -1086,11 +1088,16 @@ class TrainController:
         # inputs). ATO carries no `atc_limit_kmh`: its `compute_handle` already
         # aims at an ATC-aware target, so it never commands above the limit and
         # needs no physics cap.
+        #
+        # Both take the voltage from the integrated current speed (design_new.md
+        # "TrainPhysics", ATO and manual driving read the same speed). ATO's
+        # lookahead target is a speed the train has not reached — and while ATO
+        # is not engaged it commands 0 — so driving the rails from it would run
+        # the locomotive ahead of a calculated span that is standing still.
+        voltage_speed = float(self.physics_sync.current_speed_kmh or 0.0)
         if self.commands.control_mode == "ato":
-            voltage_speed = float(self.target_speed or 0.0)
             atc_limit_kmh = None
         else:
-            voltage_speed = float(self.physics_sync.current_speed_kmh or 0.0)
             atc_limit_kmh = float(self.atc.speed_limit)
         return PhysicsCommand(
             kind=PHYSICS_KIND_HANDLE,

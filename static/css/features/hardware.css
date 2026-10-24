@@ -526,6 +526,21 @@
 .hw-state-badge.untested { color: var(--text-tertiary); background: var(--bg-hover); }
 .hw-state-badge.alive { color: var(--success-color); background: rgba(var(--success-rgb), 0.15); }
 .hw-state-badge.noresp { color: var(--danger-color); background: rgba(var(--danger-rgb), 0.15); }
+.hw-state-badge.waiting { color: var(--warning-color); background: rgba(var(--warning-rgb), 0.15); }
+
+/* A chip test that failed names its error until the next run. */
+.hw-chip-error {
+    margin-top: var(--space-6);
+    padding: var(--space-4) var(--space-8);
+    font-size: var(--font-size-body);
+    color: var(--danger-color);
+    background: rgba(var(--danger-rgb), 0.10);
+    border-radius: var(--radius-xs);
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-4);
+    overflow-wrap: anywhere;
+}
 
 .hw-chip-action {
     display: inline-flex;
@@ -545,6 +560,11 @@
 .hw-chip-action:hover {
     border-color: var(--accent-color);
     color: var(--accent-hover);
+}
+
+.hw-chip-action.confirm {
+    border-color: rgba(var(--success-rgb), 0.55);
+    color: var(--success-color);
 }
 
 .hw-chip-action.on {

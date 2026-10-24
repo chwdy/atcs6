@@ -91,7 +91,7 @@ export class TrainEditorHandler {
     // Location and facing are spatial facts, so they're set on the map, not
     // typed as coordinates (DESIGN_LANGUAGE.md Principle 9). "Pick on map" drops
     // into a placement mode; clicking a track sets the location, the track's own
-    // exit directions become the Cab/facing choice, and a translucent unidentified train on
+    // exit directions become the facing choice, and a translucent unidentified train on
     // the canvas shows how long the train will be along the track.
     this._resetPlacementState();
 
@@ -113,7 +113,7 @@ export class TrainEditorHandler {
         </div>
 
         <div class="input-large-container">
-          <label class="input-large-label">Facing</label>
+          <label class="input-large-label">Front faces</label>
           <div id="at-facing-slot">${this._renderFacingOptions()}</div>
         </div>
 
@@ -213,20 +213,19 @@ export class TrainEditorHandler {
     this.editor.renderer?.requestRedraw?.();
   }
 
-  /** Build the Facing segment from the picked track's exit directions. Two
-   *  exits read as Cab A / Cab B (the track's two ends); any other count
-   *  degrades to plain direction buttons. */
+  /** Build the facing segment from the picked track's exit directions: one
+   *  button per way the front can point. There is no cab to choose — the end
+   *  that leads is whichever end the train's reservation runs from
+   *  (design_new.md "Reservation-side head derivation"). */
   _renderFacingOptions(): string {
     const DIR_WORD: Record<string, string> = { N: 'North', E: 'East', S: 'South', W: 'West' };
     if (!this._placePos || this._placeExits.length === 0) {
       return `<div class="switch-group fluid"><button type="button" class="switch-btn" disabled>Place on a track first</button></div>`;
     }
-    const twoWay = this._placeExits.length === 2;
     const btns = this._placeExits
-      .map((edge, i) => {
+      .map((edge) => {
         const active = edge === this._placeFacing ? 'active' : '';
-        const cab = twoWay ? `Cab ${i === 0 ? 'A' : 'B'} · ` : '';
-        return `<button type="button" class="switch-btn ${active}" data-facing="${edge}">${cab}→ ${DIR_WORD[edge] ?? edge}</button>`;
+        return `<button type="button" class="switch-btn ${active}" data-facing="${edge}">→ ${DIR_WORD[edge] ?? edge}</button>`;
       })
       .join('');
     return `<div class="switch-group fluid">${btns}</div>`;
@@ -722,7 +721,7 @@ export class TrainEditorHandler {
                         </div>
 
                         <div class="input-large-container">
-                            <label class="input-large-label">Facing</label>
+                            <label class="input-large-label">Front faces</label>
                             <div id="unidentified-adopt-facing-slot">${this._renderAdoptFacingOptions()}</div>
                         </div>
 
@@ -792,20 +791,18 @@ export class TrainEditorHandler {
         `;
   }
 
-  /** Facing choices for adoption. Two exits read as Cab A / Cab B, matching the
-   *  add-train form. */
+  /** Facing choices for adoption: one button per way the front can point,
+   *  matching the add-train form. */
   _renderAdoptFacingOptions(): string {
     const DIR_WORD: Record<string, string> = { N: 'North', E: 'East', S: 'South', W: 'West' };
     const exits: string[] = this._adoptExits();
     if (exits.length === 0) {
       return `<div class="switch-group fluid"><button type="button" class="switch-btn" disabled>No track direction here</button></div>`;
     }
-    const twoWay = exits.length === 2;
     const btns = exits
-      .map((edge, i) => {
+      .map((edge) => {
         const active = edge === this._adoptFacing ? 'active' : '';
-        const cab = twoWay ? `Cab ${i === 0 ? 'A' : 'B'} · ` : '';
-        return `<button type="button" class="switch-btn ${active}" data-adopt-facing="${edge}">${cab}→ ${DIR_WORD[edge] ?? edge}</button>`;
+        return `<button type="button" class="switch-btn ${active}" data-adopt-facing="${edge}">→ ${DIR_WORD[edge] ?? edge}</button>`;
       })
       .join('');
     return `<div class="switch-group fluid">${btns}</div>`;
@@ -886,10 +883,9 @@ export class TrainEditorHandler {
       new_train_id: newId,
       length_cm: Math.max(1, parseFloat(inputValue('unidentified-adopt-length')) || 10),
       max_speed: parseFloat(inputValue('unidentified-adopt-max-speed')) || 100,
+      // The facing alone says which way the front points. No cab is sent:
+      // which end leads follows the train's reservation once it has one.
       direction: DIR[this._adoptFacing] || 'EAST',
-      // Two exits were offered as Cab A / Cab B in that order, so the chosen
-      // facing names the cab at the front.
-      cab: this._adoptFacing === (this._adoptExits()[1] ?? null) ? 'B' : 'A',
     };
     // Omitted unless the operator overrode the centred default, because
     // omitting it is what asks the runtime to centre the consist.
@@ -919,8 +915,7 @@ export class TrainEditorHandler {
    *  front goes, so the front can only face where that tile leads. Centred, the
    *  front ends up at one of the two ends of the detected track, so the offer is
    *  every exit that leaves the claimed tiles — the same test the runtime uses
-   *  to work out which end is the front for a given facing. Claimed order, so
-   *  the near end reads as Cab A and the far end as Cab B. */
+   *  to work out which end is the front for a given facing. */
   _adoptExits(): string[] {
     const tile = this._adoptHeadTile;
     if (tile) {

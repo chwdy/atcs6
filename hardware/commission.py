@@ -40,8 +40,9 @@ class CommissionSession:
         # Per PWM chip, the channel `set_output` last drove. Zeroed before the
         # next channel is raised — see set_output.
         self._driven: Dict[str, int] = {}
-        # (chip_id, port) pairs carrying a switch coil / standby bit, from the
-        # config the session was opened with.
+        # (chip_id, port) pairs carrying a switch coil / standby bit: every port
+        # a `switch_output` binding names, from the posted config and the saved
+        # one (design_new.md "The commissioning session", Switch bits).
         self._switch_ports: set = set()
         # True when `_device` belongs to a running operation session rather than
         # to this one: it is neither cleared on open nor closed on close.
@@ -60,6 +61,7 @@ class CommissionSession:
         open_device: Optional[Callable[[], Any]] = None,
         device: Optional[Any] = None,
         timeout_seconds: Optional[float] = None,
+        saved_switch_output: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Open (or reclaim) the session for `cfg` and build its chip drivers.
 
@@ -81,6 +83,12 @@ class CommissionSession:
         at `0 < timeout_seconds <= COMMISSION_MAX_SESSION_SECONDS`; a request
         outside that is rejected here (a session too long is not silently
         shortened). `None` keeps the default IDLE_TIMEOUT_S.
+
+        `saved_switch_output` is the saved setup's `switch_output` map. The
+        panel posts its chips without bindings, so the saved bindings are what
+        tell this session which shift-out bits drive a coil (design_new.md "The
+        commissioning session", Switch bits). A binding counts only for a chip
+        this session builds.
         """
         with self._lock:
             # Reject a bad window before any side effect, then reclaim a prior
@@ -102,9 +110,12 @@ class CommissionSession:
             self._driven = {}
             # Which (chip_id, port) pairs a switch coil or its driver standby
             # sits on. `set_output` refuses to hold these — see there.
+            bindings = list(getattr(cfg, "switch_output", {}).values())
+            bindings += list((saved_switch_output or {}).values())
             self._switch_ports = {
                 (b.chip_id, port)
-                for b in getattr(cfg, "switch_output", {}).values()
+                for b in bindings
+                if b.chip_id in self._chips
                 for port in b.ports
             }
             if not self._borrowed:
@@ -112,6 +123,15 @@ class CommissionSession:
                     if hasattr(chip, "all_off"):
                         chip.all_off()
             self._touch()
+
+    def switch_ports_by_chip(self) -> Dict[str, List[int]]:
+        """The switch bits per chip — what `open` reports as `switch_ports`, so
+        a caller walking the bits pulses these only for the switch-coil width."""
+        with self._lock:
+            by_chip: Dict[str, List[int]] = {}
+            for chip_id, port in self._switch_ports:
+                by_chip.setdefault(chip_id, []).append(port)
+            return {chip_id: sorted(ports) for chip_id, ports in by_chip.items()}
 
     def set_output(self, chip_id: str, line: int, duty: float) -> None:
         """Drive one output line. `line` is the raw hardware line the port grid
@@ -231,8 +251,13 @@ class CommissionSession:
             return bits
 
     def read_currents(self, chip_id: str) -> List[float]:
-        """Read every channel's current in mA on an INA3221 (for the live
-        calibration view). Configures the chip once so its channels are enabled."""
+        """Read every channel's current in mA on a current monitor (for the live
+        calibration view). Configures the chip once so its channels are enabled.
+
+        A channel that cannot be read raises, failing the whole read: a missing
+        reading is not a clear one, so it is never reported as 0 mA
+        (design_new.md "The commissioning session", Every failure reaches the
+        operator)."""
         with self._lock:
             self._require_open()
             chip = self._chips.get(chip_id)
@@ -245,10 +270,7 @@ class CommissionSession:
             channels = getattr(chip, "NUM_CHANNELS", 3)
             readings: List[float] = []
             for channel in range(1, channels + 1):
-                try:
-                    readings.append(chip.read_current(channel) * 1000.0)
-                except Exception:
-                    readings.append(0.0)
+                readings.append(chip.read_current(channel) * 1000.0)
             self._touch()
             return readings
 

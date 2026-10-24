@@ -824,10 +824,16 @@ def register(app, state: AppState) -> None:
                 open_device=_develop_opener(cfg),
                 device=hardware_config.get_live_device(),
                 timeout_seconds=data.get("timeout_seconds"),
+                saved_switch_output=hardware_config.get_hardware_config().switch_output,
             )
         except Exception as exc:
             return jsonify({"ok": False, "error": str(exc)})
-        return jsonify({"ok": True})
+        # The switch bits a caller walking the bits must pulse only for the
+        # switch-coil width (design_new.md "The commissioning session").
+        return jsonify({
+            "ok": True,
+            "switch_ports": commission.get_session().switch_ports_by_chip(),
+        })
 
     @app.route("/api/hardware/commission/output", methods=["POST"])
     def hardware_commission_output():

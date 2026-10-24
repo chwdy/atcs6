@@ -96,7 +96,7 @@ class TestSpeedProfile:
 
     def test_speed_to_voltage_at_calibration_points(self, basic_profile: SpeedProfile):
         """Two-stage conversion returns exact values at calibration points."""
-        assert basic_profile.speed_to_voltage_two_stage(0.0) == 0.0
+        assert basic_profile.speed_to_voltage_two_stage(0.0) == 2.0
         assert basic_profile.speed_to_voltage_two_stage(30.0) == 5.0
         assert basic_profile.speed_to_voltage_two_stage(60.0) == 8.0
         assert basic_profile.speed_to_voltage_two_stage(120.0) == 12.0
@@ -117,9 +117,11 @@ class TestSpeedProfile:
         assert basic_profile.speed_to_voltage_two_stage(200.0) == 12.0
 
     def test_speed_to_voltage_zero_and_negative(self, basic_profile: SpeedProfile):
-        """Two-stage conversion outputs 0 V for zero and negative speed."""
-        assert basic_profile.speed_to_voltage_two_stage(0.0) == 0.0
-        assert basic_profile.speed_to_voltage_two_stage(-10.0) == 0.0
+        """A speed of zero or below is 0% power, which is `lighting_voltage`:
+        a powered train that nothing drives is lit (design_new.md
+        "TrainPhysics", A powered train is lit whenever it is not driven)."""
+        assert basic_profile.speed_to_voltage_two_stage(0.0) == basic_profile.lighting_voltage
+        assert basic_profile.speed_to_voltage_two_stage(-10.0) == basic_profile.lighting_voltage
 
     def test_to_dict_from_dict_roundtrip(self, basic_profile: SpeedProfile):
         """Test serialization roundtrip."""
