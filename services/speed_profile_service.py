@@ -27,6 +27,18 @@ from speed_profile import SpeedProfile, reanchor_voltage_power_curve
 # it, so removing it would orphan the fleet.
 DEFAULT_PROFILE_ID = "default"
 
+# The three fields an instance profile may carry (design_new.md "SpeedProfile",
+# Model profiles and instance profiles).
+INSTANCE_FIELDS = ("lighting_voltage", "power_speed_curve", "calibrated_at")
+
+# Fields a hand edit never changes (design_new.md "SpeedProfile", Editing a
+# profile by hand): the stored value always wins over the request body.
+_NOT_HAND_EDITED = ("derived_from", "lighting_voltage", "calibrated_at")
+
+# What a hand edit may change on an instance profile besides its name; every
+# other field belongs to the model profile it derives from.
+_INSTANCE_HAND_EDITED = ("name", "power_speed_curve")
+
 
 def list_profiles(state: AppState) -> List[SpeedProfile]:
     """Return every registered profile (registry order)."""
@@ -45,6 +57,33 @@ def get_profile(state: AppState, profile_id: str) -> Optional[SpeedProfile]:
     """Return the profile, or None when not found."""
     with state.simulation_lock:
         return state.speed_profile_registry.get(profile_id)
+
+
+def resolved_view(state: AppState, profile_id: str) -> Optional[Dict[str, Any]]:
+    """The profile as the Speed Profile panel shows it, or None when absent.
+
+    Every value is the resolved one, read through
+    ``SpeedProfileRegistry.resolve(...)``, so an instance profile shows what its
+    locomotive runs on. The stored record's own ``profile_id``, ``name`` and
+    ``derived_from`` stay, and ``own_fields`` lists the instance fields the
+    record carries itself (empty on a model profile, which carries all of
+    them) -- design_new.md "SpeedProfile", Editing a profile by hand.
+    """
+    with state.simulation_lock:
+        registry = state.speed_profile_registry
+        stored = registry.get(profile_id)
+        if stored is None:
+            return None
+        view = registry.resolve(profile_id).to_dict()
+        view["profile_id"] = stored.profile_id
+        view["name"] = stored.name
+        view["derived_from"] = stored.derived_from
+        view["own_fields"] = (
+            []
+            if stored.derived_from is None
+            else [f for f in INSTANCE_FIELDS if getattr(stored, f) is not None]
+        )
+        return view
 
 
 def require_profile(state: AppState, profile_id: str) -> SpeedProfile:
@@ -93,28 +132,26 @@ def create_profile(state: AppState, *, data: Dict[str, Any]) -> SpeedProfile:
 def update_profile(
     state: AppState, profile_id: str, *, data: Dict[str, Any]
 ) -> SpeedProfile:
-    """Replace an existing profile's fields from a request-shaped dict.
+    """Apply a hand edit to an existing profile.
 
-    The URL id wins: a ``profile_id`` in the body must match it or be
-    omitted, and ``name`` falls back to the existing value when absent.
+    design_new.md "SpeedProfile", Editing a profile by hand:
 
-    Three fields are not the panel's to write, so the stored record keeps them
-    whatever the body says:
+    * Every field the body leaves out keeps its stored value, so the panel
+      sends only the fields the operator changed, and an instance profile's
+      unset fields stay unset and go on reading from its model profile.
+    * ``lighting_voltage``, ``calibrated_at`` and ``derived_from`` are never
+      edited by hand; the stored values win over the body. A model profile's
+      ``voltage_power_curve`` stays anchored at its stored lighting voltage.
+    * On an instance profile only ``name`` and ``power_speed_curve`` may be
+      written; a body that changes any other field is refused, because that
+      field belongs to the model profile.
 
-    * ``lighting_voltage`` — the panel's field is read-only; **Lighting-voltage
-      calibration** is the one procedure that moves it (design_new.md
-      "Lighting-voltage calibration", The lighting-voltage field is
-      read-only). A model profile's ``voltage_power_curve`` stays anchored at
-      it.
-    * ``calibrated_at`` — only a speed-calibration commit writes it
-      (design_new.md "What commit writes").
-    * ``derived_from`` — whether the record is a model profile or an instance
-      profile is not an edit; a body that omits it must not turn an instance
-      into a model profile.
+    The URL id wins: a ``profile_id`` in the body must match it or be omitted.
 
     Raises:
         ValidationError when the body's profile_id disagrees with the URL
-            id, or the data does not parse.
+            id, the body changes a model-profile field on an instance profile,
+            a curve has fewer than two points, or the data does not parse.
         NotFoundError when no profile has that id.
     """
     data = dict(data or {})
@@ -122,28 +159,37 @@ def update_profile(
         raise ValidationError(
             "profile_id in body must match URL parameter or be omitted"
         )
+    data.pop("profile_id", None)
+    for key in _NOT_HAND_EDITED:
+        data.pop(key, None)
+    curve = data.get("power_speed_curve")
+    if curve is not None and len(curve) < 2:
+        raise ValidationError("power_speed_curve needs at least two points")
 
     with state.simulation_lock:
         existing = state.speed_profile_registry.get(profile_id)
         if not existing:
             raise NotFoundError(f"Speed profile '{profile_id}' not found")
 
-        data["profile_id"] = profile_id
-        if "name" not in data:
-            data["name"] = existing.name
+        if existing.derived_from is not None:
+            model_fields = sorted(k for k in data if k not in _INSTANCE_HAND_EDITED)
+            if model_fields:
+                raise ValidationError(
+                    f"{', '.join(model_fields)} belong to model profile "
+                    f"'{existing.derived_from}'; edit that profile instead"
+                )
 
-        data["derived_from"] = existing.derived_from
-        data["lighting_voltage"] = existing.lighting_voltage
-        data["calibrated_at"] = existing.calibrated_at
+        merged = existing.to_dict()
+        merged.update(data)
         if existing.derived_from is None and data.get("voltage_power_curve"):
-            data["voltage_power_curve"] = reanchor_voltage_power_curve(
+            merged["voltage_power_curve"] = reanchor_voltage_power_curve(
                 [(float(v), float(p)) for v, p in data["voltage_power_curve"]],
                 float(existing.lighting_voltage),
-                float(data.get("max_voltage", existing.max_voltage)),
+                float(merged.get("max_voltage", existing.max_voltage)),
             )
 
         try:
-            updated = SpeedProfile.from_dict(data)
+            updated = SpeedProfile.from_dict(merged)
         except (ValueError, KeyError, TypeError) as exc:
             raise ValidationError(f"Invalid profile data: {exc}") from exc
         state.speed_profile_registry.register(updated)

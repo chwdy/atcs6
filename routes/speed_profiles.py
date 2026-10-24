@@ -44,7 +44,18 @@ def register(app, state: AppState) -> None:
 
     @app.route("/api/speed-profiles/<profile_id>", methods=["GET"])
     def get_speed_profile(profile_id: str):
-        """Get a single speed profile by ID (404 if absent)."""
+        """Get a single speed profile by ID (404 if absent).
+
+        With ``?resolved=true`` it returns the profile as the Speed Profile
+        panel shows it: resolved values plus the stored ``derived_from`` and
+        the instance's ``own_fields`` (design_new.md "SpeedProfile", Editing a
+        profile by hand). Without it, the stored record.
+        """
+        if request.args.get("resolved") in ("1", "true"):
+            view = speed_profile_service.resolved_view(state, profile_id)
+            if view is None:
+                return jsonify({"error": f"Speed profile '{profile_id}' not found"}), 404
+            return jsonify(view)
         profile = speed_profile_service.get_profile(state, profile_id)
         if not profile:
             return jsonify({"error": f"Speed profile '{profile_id}' not found"}), 404

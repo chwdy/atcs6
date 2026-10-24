@@ -371,6 +371,103 @@ class TestSpeedProfileService:
         assert updated.derived_from == "MODEL"
         assert updated.lighting_voltage is None
 
+    def test_update_keeps_the_fields_the_body_leaves_out(self, state):
+        """A save sends only the fields the operator changed; every other
+        field keeps its stored value (design_new.md "SpeedProfile", Editing a
+        profile by hand)."""
+        speed_profile_service.create_profile(
+            state,
+            data={"profile_id": "P1", "name": "Profile 1", "acceleration_rate": 7.0},
+        )
+
+        updated = speed_profile_service.update_profile(
+            state, "P1", data={"deceleration_rate": 9.0}
+        )
+
+        assert updated.acceleration_rate == 7.0
+        assert updated.deceleration_rate == 9.0
+        assert updated.name == "Profile 1"
+
+    def test_update_writes_only_the_curve_onto_an_instance(self, state):
+        """A hand-edited curve gives the locomotive its own curve and leaves
+        every other field unset, so it still reads them from its model."""
+        speed_profile_service.create_profile(
+            state,
+            data={"profile_id": "MODEL", "name": "Model", "acceleration_rate": 6.0},
+        )
+        speed_profile_service.create_profile(
+            state,
+            data={"profile_id": "INST", "name": "Loco 7", "derived_from": "MODEL"},
+        )
+
+        updated = speed_profile_service.update_profile(
+            state, "INST", data={"power_speed_curve": [[0, 0], [100, 60]]}
+        )
+
+        assert updated.power_speed_curve == [(0.0, 0.0), (100.0, 60.0)]
+        assert updated.lighting_voltage is None
+        assert updated.calibrated_at is None
+        resolved = state.speed_profile_registry.resolve("INST")
+        assert resolved.acceleration_rate == 6.0
+        assert resolved.power_percent_to_speed(50) == pytest.approx(30.0)
+
+    def test_update_refuses_a_model_field_on_an_instance(self, state):
+        """A model-profile field is edited on the model profile, never on an
+        instance."""
+        speed_profile_service.create_profile(
+            state, data={"profile_id": "MODEL", "name": "Model"}
+        )
+        speed_profile_service.create_profile(
+            state,
+            data={"profile_id": "INST", "name": "Loco 7", "derived_from": "MODEL"},
+        )
+
+        with pytest.raises(ValidationError, match="model profile 'MODEL'"):
+            speed_profile_service.update_profile(
+                state, "INST", data={"acceleration_rate": 5.0}
+            )
+        assert state.speed_profile_registry.get("INST").power_speed_curve is None
+
+    def test_update_refuses_a_curve_with_fewer_than_two_points(self, state):
+        speed_profile_service.create_profile(
+            state, data={"profile_id": "P1", "name": "Profile 1"}
+        )
+        with pytest.raises(ValidationError):
+            speed_profile_service.update_profile(
+                state, "P1", data={"power_speed_curve": []}
+            )
+
+    def test_resolved_view_shows_what_the_locomotive_runs_on(self, state):
+        """The panel's view of an instance holds the resolved values, the
+        stored `derived_from`, and the instance fields the record carries."""
+        speed_profile_service.create_profile(
+            state,
+            data={
+                "profile_id": "MODEL",
+                "name": "Model",
+                "power_speed_curve": [[0, 0], [100, 80]],
+            },
+        )
+        speed_profile_service.create_profile(
+            state,
+            data={
+                "profile_id": "INST",
+                "name": "Loco 7",
+                "derived_from": "MODEL",
+                "lighting_voltage": 2.0,
+            },
+        )
+
+        view = speed_profile_service.resolved_view(state, "INST")
+
+        assert view["profile_id"] == "INST"
+        assert view["derived_from"] == "MODEL"
+        assert view["power_speed_curve"] == [[0.0, 0.0], [100.0, 80.0]]
+        assert view["lighting_voltage"] == 2.0
+        assert view["own_fields"] == ["lighting_voltage"]
+        assert speed_profile_service.resolved_view(state, "MODEL")["own_fields"] == []
+        assert speed_profile_service.resolved_view(state, "MISSING") is None
+
     def test_delete_default_raises_conflict(self, state):
         """The seeded `default` profile may never be deleted."""
         with pytest.raises(ConflictError):

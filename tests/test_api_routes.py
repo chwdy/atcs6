@@ -1737,6 +1737,10 @@ class TestMigratedSpeedProfileRoutes:
         assert client.post("/api/speed-profiles", json={}).status_code == 400
         assert client.get("/api/speed-profiles/NOPE").status_code == 404
         assert client.put("/api/speed-profiles/NOPE", json={"name": "x"}).status_code == 404
+        assert client.get("/api/speed-profiles/NOPE?resolved=true").status_code == 404
+        resolved = client.get("/api/speed-profiles/default?resolved=true").get_json()
+        assert resolved["profile_id"] == "default"
+        assert resolved["own_fields"] == []
 
 
 class TestMigratedScaleRoutes:

@@ -207,7 +207,7 @@ export interface SimClient {
 
   // --- Speed profiles (train accel/brake curves) ---
   getSpeedProfiles(): Promise<any[]>;
-  getSpeedProfile(profileId: string): Promise<any>;
+  getSpeedProfile(profileId: string, options?: { resolved?: boolean }): Promise<any>;
   createSpeedProfile(data: unknown): Promise<any>;
   updateSpeedProfile(profileId: string, data: unknown): Promise<any>;
   deleteSpeedProfile(profileId: string): Promise<any>;
