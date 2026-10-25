@@ -49,8 +49,8 @@ interface SpeedProfileData {
   // The locomotive model this profile describes, matched against
   // RosterEntry.model so one measured curve serves every locomotive of a model.
   model: string;
-  // ISO stamp of the last speed-calibration commit; null while the curve is
-  // still the seeded linear default.
+  // ISO stamp of the speed-calibration commit that wrote the curve this profile
+  // runs on; null when none did (a seeded or hand-drawn curve).
   calibrated_at: string | null;
   power_speed_curve: CurvePoint[];
   voltage_power_curve: CurvePoint[];
@@ -1633,7 +1633,7 @@ ${this._calibrationGroupHtml(p)}
     const p = this._profile;
     const stamp = p.calibrated_at
       ? `Measured ${escapeAttr(String(p.calibrated_at).replace('T', ' ').replace('+00:00', ' UTC'))}`
-      : 'Not measured — the curve is still the seeded linear default.';
+      : 'Not measured — no speed calibration has written this curve.';
     const head = `
             <div class="input-small-row sp-cal-run-head">
                 <label class="input-small-label input-small-label-inline">Power → speed curve</label>

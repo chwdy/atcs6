@@ -83,6 +83,26 @@ def test_an_instance_field_that_is_set_wins_over_the_model():
     assert resolved.lighting_voltage == 1.5
 
 
+def test_calibrated_at_follows_the_curve():
+    """design_new.md "SpeedProfile", `calibrated_at` follows the curve: an
+    instance running on its own curve reads its own stamp, so a curve drawn by
+    hand never carries the model profile's measurement date, while an instance
+    running on the model's curve reads the model's stamp."""
+    reg = SpeedProfileRegistry()
+    model = _model()
+    model.calibrated_at = "2026-08-10T12:00:00+00:00"
+    reg.register(model)
+    drawn = make_instance_profile("M", profile_id="DRAWN")
+    drawn.power_speed_curve = [(0.0, 0.0), (100.0, 70.0)]
+    reg.register(drawn)
+    linked = make_instance_profile("M", profile_id="LINKED")
+    reg.register(linked)
+
+    assert reg.resolve("DRAWN").power_speed_curve == [(0.0, 0.0), (100.0, 70.0)]
+    assert reg.resolve("DRAWN").calibrated_at is None
+    assert reg.resolve("LINKED").calibrated_at == "2026-08-10T12:00:00+00:00"
+
+
 # ---- voltage_power_curve reconstruction -----------------------------------
 
 

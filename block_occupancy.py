@@ -256,6 +256,14 @@ class BlockOccupancyDetector:
         maps are train_id -> set of block_ids, and `unmatched_entries` holds the
         entered blocks that match no existing train.
 
+        An entered block that `Block.occupied_by` already names is the `held`
+        result, rank 1 of the match order (design_new.md "Block occupancy
+        detection", Match order for a newly OCCUPIED block): it is in neither
+        map, because nothing changes for it. That is the read on which current
+        returns under a block held through a detection fault. Every other
+        occupied block is seeded as already confirmed, so it never reaches here
+        as an entry.
+
         `reoffered` holds blocks that stay confirmed occupied while no train is
         credited with them — a standing `conflict` block (design_new.md "Block
         occupancy detection", An overrun entry or a conflict raises the emergency
@@ -311,7 +319,13 @@ class BlockOccupancyDetector:
         """
         reoffered = set(reoffered)
         entered_by_train: Dict[str, Set[str]] = {}
-        pending: Set[str] = set(entered) | reoffered
+        # Rank 1, Held: a block already in some train's block list resolves to
+        # that train and nothing changes, so it is credited to no one here.
+        pending: Set[str] = {
+            block_id
+            for block_id in set(entered) | reoffered
+            if getattr(self.network.blocks.get(block_id), "occupied_by", None) is None
+        }
         resolved = True
         while pending and resolved:
             resolved = False
