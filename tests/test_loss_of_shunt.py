@@ -244,14 +244,31 @@ def test_current_returning_under_a_held_block_is_not_an_overrun():
     _read(sim, detector.off_threshold + 2)
     assert sim._held_clear_blocks.get("BLK_2") == "T"
 
-    # The locomotive arrives and current returns.
+    # The locomotive arrives and current returns. Nothing changes for a held
+    # block: it reaches neither the train's entered slice nor route settlement.
     detector.input_interface.live.add("BLK_2")
-    _read(sim, detector.on_threshold + 1)
+    detector_reads = []
+    head_entries = []
+    detect = sim._detect_block_occupancy
+
+    def detect_and_record():
+        detect()
+        detector_reads.append(set(controller.physics_sync.pending_detected_entered_blocks))
+
+    sim._detect_block_occupancy = detect_and_record
+    for _ in range(detector.on_threshold + 1):
+        sim.update(0.1)
+        head_entries += [
+            event.resource_id
+            for _, event in controller.physics_sync.entered_blocks_this_tick
+        ]
 
     assert _overrun_count(sim) == 0
     assert controller.eb.active is False
     assert ahead.occupied_by == "T"
     assert "BLK_2" not in sim._held_clear_blocks
+    assert all("BLK_2" not in entered for entered in detector_reads)
+    assert "BLK_2" not in head_entries
 
 
 def test_a_block_neither_reserved_nor_held_is_still_an_overrun():
