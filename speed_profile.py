@@ -62,7 +62,8 @@ class SpeedProfile:
             ascending, power_percent ascending. Default is linear across the
             usable range: lighting_voltage (1.5 V) -> 0%, max_voltage (12 V) -> 100%.
         lighting_voltage: Voltage at which the train is lit but still holds
-            (the stopped-but-lit states use it) and the 0%-power point of
+            (every powered train that nothing drives outputs it) and the
+            0%-power point of
             voltage_power_curve. At exactly this voltage power is 0 and the
             train does not move; just above it the train begins to move.
         acceleration_rate: Speed increase rate (km/h per second)
