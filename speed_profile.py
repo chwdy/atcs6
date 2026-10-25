@@ -92,11 +92,13 @@ class SpeedProfile:
     # profile seeded at train creation.
     model: str = ""
     # Wall-clock ISO-8601 stamp of the last `power_speed_curve` write by a
-    # speed-calibration commit; None while the curve is still the seeded linear
-    # default. It is the one field that says whether a profile is measured or a
-    # placeholder, and it breaks ties when two model profiles name one model. It
-    # is one of the three fields an instance profile may carry; None means
-    # "unset -> read from the model" on an instance.
+    # speed-calibration commit; None until a commit first writes it. A hand edit
+    # does not write it, so it dates the last measurement, not the last change.
+    # It is the one field that says whether a curve has been measured, and it
+    # breaks ties when two model profiles name one model. It is one of the three
+    # fields an instance profile may carry; on an instance it is resolved from
+    # whichever record supplies `power_speed_curve` (see
+    # `_overlay_instance_on_model`).
     calibrated_at: Optional[str] = None
     # One of the three instance-eligible fields. None means "unset" here: on a
     # MODEL profile __post_init__ fills the v1 linear default, so a model profile
@@ -520,9 +522,13 @@ def _overlay_instance_on_model(
         if instance.power_speed_curve is not None
         else model.power_speed_curve
     )
+    # `calibrated_at` follows the curve (design_new.md "SpeedProfile",
+    # `calibrated_at` follows the curve): an instance running on its own curve
+    # reads its own stamp, unset for a curve drawn by hand, so the model's
+    # measurement date never labels a curve it did not measure.
     calibrated_at = (
         instance.calibrated_at
-        if instance.calibrated_at is not None
+        if instance.power_speed_curve is not None
         else model.calibrated_at
     )
     voltage_power = reanchor_voltage_power_curve(

@@ -1893,7 +1893,7 @@ Get a single speed profile by ID.
 
 **Response:** The stored profile object.
 
-**With `?resolved=true`:** the profile as the Speed Profile panel shows it. Every value is the resolved one (an instance profile's unset fields are read from its model profile), and the stored `profile_id`, `name` and `derived_from` stay. `own_fields` lists the instance fields (`lighting_voltage`, `power_speed_curve`, `calibrated_at`) the record carries itself; it is empty on a model profile.
+**With `?resolved=true`:** the profile as the Speed Profile panel shows it. Every value is the resolved one (an instance profile's unset fields are read from its model profile, and `calibrated_at` comes from whichever record supplies `power_speed_curve`, so a hand-drawn curve reads as not measured), and the stored `profile_id`, `name` and `derived_from` stay. `own_fields` lists the instance fields (`lighting_voltage`, `power_speed_curve`, `calibrated_at`) the record carries itself; it is empty on a model profile.
 
 **Error (404):** `{"error": "Speed profile 'X' not found"}`
 
