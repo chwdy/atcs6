@@ -1908,8 +1908,15 @@ class SimulationController(SwitchOutputOwner):
         overrun entry or a conflict raises the emergency cut-out).
 
         An overrun entry is a block credited to a train, on its head side, that
-        is not reserved for that train, while the train holds a live plan — a
-        train with no authority cannot overrun one. Observe latches
+        is neither reserved for that train nor already in its block list, while
+        the train holds a live plan — a train with no authority cannot overrun
+        one. A block already in the train's block list (`Block.occupied_by`
+        names the train) is the `held` result, rank 1 of the match order, and
+        nothing changes for it. That is the read on which current returns under
+        a block held through a detection fault: the train's first entry onto
+        the block consumed its reservation, so judging that read by the
+        reservation alone would cut out a train that never left its own block.
+        Observe latches
         `phase_latches.emergency_request = "cut_out"` for that train; the same
         tick's Action step `01f2` applies it through
         `TrainController.eb.activate_cut_out()`, which de-energizes its blocks
@@ -1945,7 +1952,9 @@ class SimulationController(SwitchOutputOwner):
             overrun_blocks = sorted(
                 block_id
                 for block_id in entered_by_train[train_id]
-                if getattr(
+                if getattr(self.network.blocks.get(block_id), "occupied_by", None)
+                != train_id
+                and getattr(
                     self.network.blocks.get(block_id), "reserved_for_train", None
                 )
                 != train_id

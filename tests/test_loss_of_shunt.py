@@ -18,6 +18,7 @@ from block_occupancy import OccupancyInput
 from enums import Direction
 from entity_ids import segment_id_for_block
 from network import RailwayNetwork
+from path_dispatcher import PathDispatcher
 from simulation import SimulationController
 from track import Tile, TRACK_EW
 from train import Train, TrainCar
@@ -173,3 +174,98 @@ def test_held_clear_is_reoffered_once_the_tail_clears():
     # The tail has now reached BLK_0's exit seam, so the held clear is vacated.
     assert "BLK_0" not in sim._held_clear_blocks
     assert "BLK_0" in controller.physics_sync.pending_detected_vacated_blocks
+
+
+# --- current returning under a held block is `held`, not an overrun --------
+
+
+def _train_with_path_to(destination, live):
+    """A powered, standing 10cm train on BLK_1 holding a path to `destination`,
+    with every block detected and `live` confirmed to start with."""
+    network = build_line()
+    dispatcher = PathDispatcher(network)
+    sim = SimulationController(network, dispatcher)
+    train = Train(
+        train_id="T",
+        consist=[TrainCar(car_id="c1", car_type="LOCOMOTIVE", length_cm=10.0)],
+        max_speed=80.0,
+    )
+    network.add_train(train)
+    controller = sim._get_or_create_controller(train)
+    controller.physics_sync.current_span = network.place_train(
+        train, 1, 0, Direction.EAST
+    )
+    sim._get_or_create_physics(train)
+    wire_detector(sim, detected={f"BLK_{x}" for x in range(5)}, confirmed=live)
+    assert dispatcher.create_path(
+        train_id="T", requested_destination_block_id=destination
+    ).success
+    assert controller.commands.power_on_cmd().success
+    return sim, network, controller
+
+
+def _overrun_count(sim) -> int:
+    """Overrun warnings `SimulationController` raised (the cut-out request it
+    latches carries the same error origin, so count the warning alone)."""
+    return sum(
+        1
+        for n in sim.notification_center.peek_recent(200)
+        if n.error is not None
+        and n.error.origin == "overrun_entry"
+        and n.operation == "_detect_block_occupancy"
+    )
+
+
+def _read(sim, times):
+    for _ in range(times):
+        sim.update(0.1)
+
+
+def test_current_returning_under_a_held_block_is_not_an_overrun():
+    """The 2026-10-24 rig run: an empty block ahead read current, so the train
+    entered it on paper and its reservation was consumed; the block then read
+    clear and was held under a detection fault. When the locomotive really
+    arrived, the returning current was judged by the reservation alone and cut
+    the train out. A block already in the train's block list is the `held`
+    result (rank 1 of the match order), and nothing changes for it."""
+    sim, network, controller = _train_with_path_to("BLK_2", live={"BLK_1"})
+    detector = sim.block_occupancy_detector
+    ahead = network.blocks["BLK_2"]
+
+    # Current with no locomotive behind it: an entry that consumes the
+    # reservation.
+    detector.input_interface.live.add("BLK_2")
+    _read(sim, detector.on_threshold + 1)
+    assert ahead.occupied_by == "T"
+    assert ahead.reserved_for_train is None
+
+    # It goes quiet with the train still standing on it: held, not vacated.
+    detector.input_interface.live.discard("BLK_2")
+    _read(sim, detector.off_threshold + 2)
+    assert sim._held_clear_blocks.get("BLK_2") == "T"
+
+    # The locomotive arrives and current returns.
+    detector.input_interface.live.add("BLK_2")
+    _read(sim, detector.on_threshold + 1)
+
+    assert _overrun_count(sim) == 0
+    assert controller.eb.active is False
+    assert ahead.occupied_by == "T"
+    assert "BLK_2" not in sim._held_clear_blocks
+
+
+def test_a_block_neither_reserved_nor_held_is_still_an_overrun():
+    """The held exemption covers only the train's own blocks: current on the
+    block past its authority end still cuts the train out."""
+    sim, network, controller = _train_with_path_to("BLK_2", live={"BLK_1"})
+    detector = sim.block_occupancy_detector
+
+    detector.input_interface.live.add("BLK_2")
+    _read(sim, detector.on_threshold + 1)
+    assert network.blocks["BLK_2"].occupied_by == "T"
+
+    detector.input_interface.live.add("BLK_3")
+    _read(sim, detector.on_threshold + 1)
+
+    assert _overrun_count(sim) == 1
+    assert controller.eb.active is True
