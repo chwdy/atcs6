@@ -19,7 +19,7 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from block_occupancy import OccupancyInput
 from block_power import MAX_TRACK_VOLTAGE, TrackOutput
-from constants import LIGHTING_CLEAR_HOLD_READS
+from constants import LIGHTING_CLEAR_HOLD_READS, OCCUPANCY_ON_THRESHOLD
 from switch_power import SwitchOutput
 
 from hardware.catalog import (
@@ -529,12 +529,26 @@ class OccupancyDriver(OccupancyInput):
     `threshold_ma`, is what keeps a real lit loco above the floor; the window
     only decides how long a genuinely silent block waits.
 
+    The window holds only an ESTABLISHED presence: one the deciding source has
+    read on `confirm_reads` consecutive reads (`OCCUPANCY_ON_THRESHOLD`, the same
+    run `BlockOccupancyDetector` needs to confirm a block) since this driver last
+    reported the block clear. The run counts reads in any zone, so a train that
+    was confirmed while driven or idle is held when it stops in this zone. A
+    lone current-present read is reported as read, and the clear read after it
+    is reported clear. Holding it instead would hand the detector the second
+    consecutive "present" it asks for, so one noisy sample would confirm an
+    empty block. Measured on the rig: a locomotive starting on the next block
+    put a single 12.8 mA reading on an empty block's channel (10 mA trip, the
+    reads either side under 7.2 mA), and the hold turned it into a confirmed
+    entry.
+
     A block may have both sources, only one, or neither (`deciding_source` is the
     one definition of this precedence):
 
       - driven + has current    -> current channel
-      - lighting + has current  -> current channel; clears only after sustained
-                                   agreement from it ('165 not read)
+      - lighting + has current  -> current channel; an established presence
+                                   clears only after sustained agreement from
+                                   it ('165 not read)
       - lighting, digital only  -> '165 bit, under that same clear window
       - otherwise + has digital -> '165 bit
       - idle + only current     -> current channel (reads ~0 with no drive; best effort)
@@ -562,6 +576,7 @@ class OccupancyDriver(OccupancyInput):
         track: Optional[TrackDriver] = None,
         digital_active_low: Optional[Dict[str, bool]] = None,
         lighting_clear_hold_reads: int = LIGHTING_CLEAR_HOLD_READS,
+        confirm_reads: int = OCCUPANCY_ON_THRESHOLD,
     ) -> None:
         self._digital_chips = digital_chips
         self._digital = digital_bindings
@@ -581,6 +596,14 @@ class OccupancyDriver(OccupancyInput):
         # zone, so it only ever counts an unbroken run; at the threshold the
         # block is released and the count starts over.
         self._lighting_clear_counts: Dict[str, int] = {}
+        # Consecutive reads, in any zone, on which a block's deciding source read
+        # current. Reset by any clear read.
+        self._confirm_reads = confirm_reads
+        self._present_runs: Dict[str, int] = {}
+        # Blocks whose reported presence is established: a run of
+        # `_confirm_reads` present reads since the block was last reported
+        # clear. Only these are held through the lighting zone's clear reads.
+        self._established: Set[str] = set()
         # Per-block detail of the last read_block_currents() call — which source
         # answered, what it measured, and the commanded drive state at the time.
         # Diagnostic read-back for the raw-occupancy debug endpoint only.
@@ -618,27 +641,44 @@ class OccupancyDriver(OccupancyInput):
             }
             present = self._read_source(source, block_id, digital_cache, entry)
             detail[block_id] = entry
+            if present:
+                runs = self._present_runs.get(block_id, 0) + 1
+                self._present_runs[block_id] = runs
+                if runs >= self._confirm_reads:
+                    self._established.add(block_id)
+            else:
+                self._present_runs[block_id] = 0
             if zone is not DriveZone.LIGHTING:
                 result[block_id] = present
+                if not present:
+                    self._established.discard(block_id)
                 continue
             # The lighting zone. The current channel decides and the '165 is not
             # read at all, because the rail its comparator watches is the rail
             # being pulsed and its bit reports the duty cycle rather than the
             # train (see the class docstring); a digital-only block has nothing
             # else to ask, so it falls back to the '165. No single read can
-            # CLEAR a block in either case: the last reported value holds
-            # through a clear read until the deciding source has read clear for
-            # `_lighting_clear_hold_reads` running.
+            # CLEAR an established presence in either case: the last reported
+            # value holds through a clear read until the deciding source has
+            # read clear for `_lighting_clear_hold_reads` running. A presence
+            # that is not established is not held, so a lone noisy read never
+            # becomes the run the detector confirms on.
             entry["held_zone"] = True
-            held = self._last_reported.get(block_id, False)
+            held = (
+                self._last_reported.get(block_id, False)
+                and block_id in self._established
+            )
             if present:
                 self._lighting_clear_counts[block_id] = 0
                 entry["clear_count"] = 0
                 entry["held_from_previous"] = False
                 result[block_id] = True
             else:
-                count = self._lighting_clear_counts.get(block_id, 0) + 1
-                released = count >= self._lighting_clear_hold_reads
+                if held:
+                    count = self._lighting_clear_counts.get(block_id, 0) + 1
+                    released = count >= self._lighting_clear_hold_reads
+                else:
+                    count, released = 0, False
                 # Start the window over on release, so a block that re-confirms
                 # and goes quiet again waits the full window rather than
                 # dropping out on its next silent read.
@@ -647,6 +687,8 @@ class OccupancyDriver(OccupancyInput):
                 entry["clear_hold_reads"] = self._lighting_clear_hold_reads
                 entry["held_from_previous"] = held and not released
                 result[block_id] = held and not released
+                if not result[block_id]:
+                    self._established.discard(block_id)
         self._last_read_detail = detail
         self._last_reported = dict(result)
         return result
