@@ -271,6 +271,46 @@ def test_current_returning_under_a_held_block_is_not_an_overrun():
     assert "BLK_2" not in head_entries
 
 
+def test_current_returning_after_the_span_left_a_held_block_stays_held():
+    """Current returns under a held block on the read just after the calculated
+    span has moved off it. No train's span covers the block any more, but the
+    train still holds it, so it is the `held` result (rank 1 of the match
+    order). It must not go to a new unidentified train, whose commit would then
+    collide with the train still named in `Block.occupied_by`."""
+    network = build_line(6)
+    sim, train, controller, physics = place(network, head_x=1, length_cm=150.0)
+    detector = wire_detector(
+        sim,
+        detected={f"BLK_{i}" for i in range(6)},
+        confirmed={"BLK_0", "BLK_1", "BLK_2"},
+    )
+    network.blocks["BLK_2"].occupied_by = "T"
+
+    # The rear block reads clear while the tail is 50cm into it: held.
+    detector.input_interface.live = {"BLK_1", "BLK_2"}
+    for _ in range(detector.off_threshold + 1):
+        sim._detect_block_occupancy()
+    assert sim._held_clear_blocks.get("BLK_0") == "T"
+
+    # Current returns (first of two reads); then the calculated span moves on
+    # so it no longer covers BLK_0; the second read confirms BLK_0 again.
+    controller.physics_sync.current_speed_kmh = 20.0
+    detector.input_interface.live = {"BLK_0", "BLK_1", "BLK_2"}
+    sim._detect_block_occupancy()
+    controller.physics_sync.current_span = network.place_train(
+        train, 2, 0, Direction.EAST
+    )
+    assert "BLK_0" not in controller.physics_sync.current_span.occupied_blocks
+    sim._detect_block_occupancy()
+
+    assert not any(
+        getattr(network.trains.get(train_id), "is_unidentified", False)
+        for train_id in sim.controllers
+    )
+    assert network.blocks["BLK_0"].occupied_by == "T"
+    assert "BLK_0" not in controller.physics_sync.pending_detected_entered_blocks
+
+
 def test_a_block_neither_reserved_nor_held_is_still_an_overrun():
     """The held exemption covers only the train's own blocks: current on the
     block past its authority end still cuts the train out."""

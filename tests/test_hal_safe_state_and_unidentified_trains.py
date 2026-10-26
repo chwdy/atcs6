@@ -16,7 +16,12 @@ exercised here as unit contracts.
 """
 
 from block import Block
-from block_occupancy import BlockOccupancyDetector, SimulatedOccupancyDriver
+from block_occupancy import (
+    AttributionKind,
+    AttributionResult,
+    BlockOccupancyDetector,
+    SimulatedOccupancyDriver,
+)
 from block_power import BlockPowerController, SimulatedTrackDriver
 from network import RailwayNetwork
 from path_dispatcher import PathDispatcher
@@ -79,11 +84,10 @@ def test_unattributable_entry_is_unmatched_without_writing_block_state():
     network, detector = _detector()
     block = network.blocks["BLK_X"]
     # No reserving train, no covering span -> the entry belongs to an unidentified train.
-    # `attribute()` is pure: it reports the block as unmatched and writes
+    # `attribute()` is pure: it reports the block as `unidentified` and writes
     # nothing, leaving creation to UnidentifiedTrainTracker.
-    entered_by_train, _, unmatched = detector.attribute({"BLK_X"}, set())
-    assert entered_by_train == {}
-    assert unmatched == {"BLK_X"}
+    results, _ = detector.attribute({"BLK_X"}, set())
+    assert results == [AttributionResult(AttributionKind.UNIDENTIFIED, "BLK_X")]
     assert block.occupied_by is None
 
 
@@ -91,9 +95,9 @@ def test_unidentified_train_vacate_attributes_to_the_unidentified_train_without_
     network, detector = _detector()
     block = network.blocks["BLK_X"]
     block.occupied_by = "UNIDENT_1"
-    _, vacated_by_train, unmatched = detector.attribute(set(), {"BLK_X"})
+    results, vacated_by_train = detector.attribute(set(), {"BLK_X"})
     # An unidentified train is an ordinary train to attribution: its vacate resolves through
     # `Block.occupied_by` like any other train's.
     assert vacated_by_train == {"UNIDENT_1": {"BLK_X"}}
-    assert unmatched == set()
+    assert results == []
     assert block.occupied_by == "UNIDENT_1"
