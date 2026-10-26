@@ -40,14 +40,17 @@ if TYPE_CHECKING:
 
 
 class AttributionKind(Enum):
-    """What a newly OCCUPIED block resolved to (design_new.md "Block occupancy
-    detection", The attribution result)."""
+    """What a newly OCCUPIED or newly CLEAR block resolved to (design_new.md
+    "Block occupancy detection", The attribution result)."""
 
     HELD = "held"
     ENTRY = "entry"
     OVERRUN_ENTRY = "overrun_entry"
     UNIDENTIFIED = "unidentified"
     CONFLICT = "conflict"
+    VACATE = "vacate"
+    HELD_CLEAR = "held_clear"
+    UNOWNED_CLEAR = "unowned_clear"
 
 
 # The kinds that add the block to a train's block list. The block-list commit
@@ -59,14 +62,15 @@ JOINS_BLOCK_LIST = frozenset(
 
 @dataclass(frozen=True)
 class AttributionResult:
-    """One newly OCCUPIED block and what it resolved to (design_new.md "Block
-    occupancy detection", The attribution result).
+    """One newly OCCUPIED or newly CLEAR block and what it resolved to
+    (design_new.md "Block occupancy detection", The attribution result).
 
-    `train_id` is the matched train for `held`, `entry` and `overrun_entry`. For
-    `unidentified` it is the unidentified train the block joined or was minted
-    as, and it stays `None` until `UnidentifiedTrainTracker` names that train,
-    because creating a train is not attribution's job. For `conflict` it is
-    `None`, and the tied trains are in `candidates`.
+    `train_id` is the matched train for `held`, `entry` and `overrun_entry`, and
+    the holder for `vacate` and `held_clear`. For `unidentified` it is the
+    unidentified train the block joined or was minted as, and it stays `None`
+    until `UnidentifiedTrainTracker` names that train, because creating a train
+    is not attribution's job. For `conflict` it is `None`, and the tied trains
+    are in `candidates`. For `unowned_clear` it is `None`.
     """
 
     kind: AttributionKind
@@ -84,6 +88,18 @@ def blocks_joined_by_train(
         if result.kind in JOINS_BLOCK_LIST and result.train_id is not None:
             joined.setdefault(result.train_id, set()).add(result.block_id)
     return joined
+
+
+def blocks_vacated_by_train(
+    results: Iterable[AttributionResult],
+) -> Dict[str, Set[str]]:
+    """train_id -> the blocks these results take out of that train's block
+    list (the `vacate` results)."""
+    vacated: Dict[str, Set[str]] = {}
+    for result in results:
+        if result.kind is AttributionKind.VACATE and result.train_id is not None:
+            vacated.setdefault(result.train_id, set()).add(result.block_id)
+    return vacated
 
 
 class OccupancyInput(ABC):
@@ -202,6 +218,12 @@ class BlockOccupancyDetector:
     # `TrainPhysics.could_be_entering`. Without it no entry is credited to an
     # adjacent train at all, which is the fail-safe reading.
     can_enter: Optional[Callable[[str, str], bool]] = None
+    # A train's block list — the blocks `Block.occupied_by` names it on,
+    # ordered rear to front. A newly clear block is vacated only when it is the
+    # rearmost block of its holder's list, so the clear results need the order.
+    # `SimulationController` wires it to `TrainPhysics.block_list_rear_to_front`.
+    # An empty list (unwired, or a train with no span) vacates every clear.
+    block_list: Optional[Callable[[str], List[str]]] = None
     _on_counts: Dict[str, int] = field(default_factory=dict)
     _off_counts: Dict[str, int] = field(default_factory=dict)
     _confirmed: Set[str] = field(default_factory=set)
@@ -297,14 +319,13 @@ class BlockOccupancyDetector:
         entered: Set[str],
         vacated: Set[str],
         reoffered: Iterable[str] = (),
-    ) -> Tuple[Dict[str, Set[str]], Dict[str, Set[str]], Set[str]]:
+        held_clears: Iterable[str] = (),
+    ) -> List[AttributionResult]:
         """Attribute confirmed transitions to trains.
 
-        Returns (results, vacated_by_train). `results` holds one
-        `AttributionResult` per entered or re-offered block, sorted by block id
-        (design_new.md "Block occupancy detection", The attribution result);
-        every consumer reads its `kind`. `vacated_by_train` maps train_id -> the
-        vacated blocks that train holds.
+        Returns one `AttributionResult` per entered, vacated or re-offered
+        block, sorted by block id (design_new.md "Block occupancy detection",
+        The attribution result); every consumer reads its `kind`.
 
         An entered block resolves by the first of these that applies
         (design_new.md "Block occupancy detection", Match order for a newly
@@ -330,8 +351,12 @@ class BlockOccupancyDetector:
         no unidentified-train warning: the conflict was reported when it first
         arose.
 
-        Vacated blocks attribute to `Block.occupied_by`; a vacate whose block is
-        already clear is a benign double-clear and is skipped.
+        A vacated block, and each block in `held_clears` (a clear held on the
+        last read that the detector still reads clear and the same train still
+        holds — design_new.md "Block occupancy detection", A held clear is
+        re-offered until it is an end block), resolves against its holder
+        (`Block.occupied_by`) by `_clear_results`: `vacate`, `held_clear`, or
+        `unowned_clear` when no train holds it.
 
         The adjacency condition on the reservation match is what keeps a
         reserved-ahead corridor from swallowing a foreign occupant. A train
@@ -411,15 +436,56 @@ class BlockOccupancyDetector:
                 f"train; attributing to an unidentified train",
             )
 
-        vacated_by_train: Dict[str, Set[str]] = {}
-        for block_id in vacated:
-            block = self.network.blocks.get(block_id)
-            train_id = getattr(block, "occupied_by", None) if block else None
-            if train_id is None:
-                continue
-            vacated_by_train.setdefault(train_id, set()).add(block_id)
+        self._clear_results(set(vacated) | set(held_clears), results)
 
-        return [results[block_id] for block_id in sorted(results)], vacated_by_train
+        return [results[block_id] for block_id in sorted(results)]
+
+    def _clear_results(
+        self, clears: Set[str], results: Dict[str, AttributionResult]
+    ) -> None:
+        """Resolve each newly clear block against its holder (design_new.md
+        "Block occupancy detection", A newly CLEAR block).
+
+        - `unowned_clear` — no train holds the block.
+        - `vacate` — the block is the rearmost block of its holder's block list.
+          Vacates run from the rear while the rearmost block reads clear, so a
+          train that cleared several blocks between two reads vacates them all:
+          each one taken out of the list leaves the next one rearmost. Every
+          clear of an unidentified train is a `vacate`, because it integrates no
+          motion to weigh the clear against (An unidentified train's clears
+          commit at once). So is every clear of a train whose list has no order
+          — no `block_list` wired, or no span to order it by.
+        - `held_clear` — any other block the holder holds: a middle block, or
+          the front block of a list that holds more than one block.
+        """
+        by_holder: Dict[str, Set[str]] = {}
+        for block_id in clears:
+            holder = getattr(self.network.blocks.get(block_id), "occupied_by", None)
+            if holder is None:
+                results[block_id] = AttributionResult(
+                    AttributionKind.UNOWNED_CLEAR, block_id
+                )
+            else:
+                by_holder.setdefault(holder, set()).add(block_id)
+
+        for holder, blocks in sorted(by_holder.items()):
+            order: List[str] = []
+            if not self._is_unidentified(holder) and self.block_list is not None:
+                order = list(self.block_list(holder))
+            vacated: Set[str] = set()
+            if not order:
+                vacated = set(blocks)
+            for block_id in order:
+                if block_id not in blocks:
+                    break
+                vacated.add(block_id)
+            for block_id in blocks:
+                kind = (
+                    AttributionKind.VACATE
+                    if block_id in vacated
+                    else AttributionKind.HELD_CLEAR
+                )
+                results[block_id] = AttributionResult(kind, block_id, holder)
 
     def _match_touching(
         self,

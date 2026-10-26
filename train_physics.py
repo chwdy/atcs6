@@ -1519,13 +1519,13 @@ class TrainPhysics:
         rigid span forward one tile at a time until the head has reached every
         confirmed-entered block — "snap to the seam at least".
 
-        A confirmed clear never moves the span (design_new.md "Block occupancy
-        detection", A confirmed clear never moves the span): a span moved by a
-        clear would claim head positions no detector reported. The clear is
-        handled by the vacate path instead, and the tail advances past the seam
-        through ordinary integration once its cap releases. An unidentified train
-        is the one exception — its span IS its confirmed-occupied blocks, so a
-        clear shrinks it directly (see the unidentified-train branch below).
+        A `vacate` moves the tail forward out of the vacated block, to its seam
+        with the next block (design_new.md "Block occupancy detection", A
+        vacated block moves the span end to the seam; `_move_tail_to_vacated_seam`).
+        It runs after the entry correction, so a read that both enters and
+        vacates first puts the head on the entered block. An unidentified
+        train's span IS its confirmed-occupied blocks, so a clear shrinks it
+        directly (see the unidentified-train branch below).
 
         One-directional: it only advances the train forward, never backward, and
         is a no-op when the calculated span already agrees. Under the v1
@@ -1551,13 +1551,26 @@ class TrainPhysics:
                 train.train_id, set(entered), set(vacated)
             )
 
-        span = ps.current_span
-        if span is None:
+        if ps.current_span is None:
             return False
-        # A confirmed clear never moves an ordinary train's span, so only a
-        # confirmed entry can drive the correction; a vacate-only read is a
-        # no-op here (the tail advances through ordinary integration).
-        if not entered:
+        moved = self._snap_head_to_entered(train, controller, set(entered))
+        if vacated:
+            moved = (
+                self._move_tail_to_vacated_seam(train, controller, set(vacated))
+                or moved
+            )
+        return moved
+
+    def _snap_head_to_entered(
+        self, train: "Train", controller: "TrainController", entered: Set[str]
+    ) -> bool:
+        """Slide the rigid span forward until the head has reached every
+        confirmed-entered block it can reach by going forward (design_new.md
+        "Block occupancy detection", Physical detection outranks the calculated
+        position). Returns True if it moved the span."""
+        ps = controller.physics_sync
+        span = ps.current_span
+        if span is None or not entered:
             return False
 
         head_is_a = controller._head_end_label() == "end_a"
@@ -2085,52 +2098,167 @@ class TrainPhysics:
                 return travelled
         return None
 
-    def tail_has_reached_exit_seam(self, train: "Train", block_id: str) -> bool:
-        """Whether this train's calculated tail has reached the exit seam of
-        `block_id` — the gate for vacating a block the detector reads clear.
+    def block_list_rear_to_front(self) -> List[str]:
+        """This train's block list — the blocks `Block.occupied_by` names it
+        on — ordered rear to front (design_new.md "Block occupancy detection",
+        The occupancy chain runs one way).
 
-        A clear read from a block whose exit seam the tail has not reached is a
-        detection fault, not a vacate: the train still stands on the block
-        (design_new.md "Block occupancy detection", A clear read from under the
-        train is a detection fault). The tail has reached the seam when the
-        block is no longer under the span (the tail has already passed it), or
-        the tail sits in the block within two seam epsilons of leaving it.
+        The order is the connectivity walk forward from the span's tail end, so
+        the span supplies which side is the tail, never where inside a block
+        the train sits. Blocks the walk meets in order come first to last. A
+        held block the walk never meets is either behind the tail — the
+        locomotive standing behind the calculated span, which makes it the
+        rearmost — or ahead of the head, which makes it the front; it is placed
+        accordingly. Empty when the train holds no block or has no span.
         """
         controller = self.controller
-        if controller is None or self.network is None:
-            return True
+        network = self.network
+        train = self._get_train()
+        if controller is None or network is None or train is None:
+            return []
+        held = {
+            block_id
+            for block_id, block in network.blocks.items()
+            if getattr(block, "occupied_by", None) == train.train_id
+        }
         span = controller.physics_sync.current_span
-        if span is None:
-            return True
+        if not held or span is None:
+            return []
+
         head_is_a = controller._head_end_label() == "end_a"
-        if head_is_a:
-            tail_tile = tuple(span.end_b.tile)
-            tail_distance = float(span.end_b.distance_cm)
-            tail_entry = span.end_b.entry_edge
+        previous_work = self._work
+        self._work = _work_from_span(span, head_is_a)
+        try:
+            tail = span.end_b if head_is_a else span.end_a
+            tail_tile = tuple(tail.tile)
+            ordered: List[str] = []
+            tail_block = self._block_of_tile(tail_tile)
+            if tail_block in held:
+                ordered.append(tail_block)
+            for next_tile, _travelled in self._walk_forward_tiles(
+                tail_tile, float(tail.distance_cm), tail.entry_edge, float("inf")
+            ):
+                if len(ordered) == len(held):
+                    break
+                block_id = self._block_of_tile(next_tile)
+                if block_id is None or block_id in ordered:
+                    continue
+                if block_id in held:
+                    ordered.append(block_id)
+                elif ordered:
+                    # Past this train's last held block: the list ends here.
+                    break
+            unmet = held - set(ordered)
+            ahead = self._entered_blocks_ahead(unmet) if unmet else set()
+            return sorted(unmet - ahead) + ordered + sorted(ahead)
+        finally:
+            self._work = previous_work
+
+    def _move_tail_to_vacated_seam(
+        self, train: "Train", controller: "TrainController", vacated: Set[str]
+    ) -> bool:
+        """Move the span's tail out of the blocks this read vacated, to the seam
+        with the next block (design_new.md "Block occupancy detection", A
+        vacated block moves the span end to the seam). Returns True if it moved
+        the span.
+
+        Only the tail moves out of a vacated block, and only forward: a vacate
+        is always the rearmost block of the list. The head moves with it by the
+        same distance, because a span is rigid. The tail stops at the first tile
+        ahead that is not in a vacated block — a switch tile included — so the
+        move never carries the tail across a switch; ordinary integration
+        carries it there and records the switch's tail-vacate.
+
+        The head may move only over this train's own blocks: when the move
+        would carry it onto a switch tile or into a block outside the list, the
+        head stops at the exit seam of the block it is in, and the tail stops
+        short of its seam by the same amount. That keeps the head off track the
+        detector has not given this train, and off a switch tile whose entry
+        only ordinary integration records.
+        """
+        span = controller.physics_sync.current_span
+        if span is None or self.network is None:
+            return False
+        head_is_a = controller._head_end_label() == "end_a"
+        self._work = _work_from_span(span, head_is_a)
+        try:
+            tail = span.end_b if head_is_a else span.end_a
+            tail_tile = tuple(tail.tile)
+            if self._block_of_tile(tail_tile) not in vacated:
+                return False
+            to_seam: Optional[float] = None
+            for next_tile, travelled in self._walk_forward_tiles(
+                tail_tile, float(tail.distance_cm), tail.entry_edge, float("inf")
+            ):
+                if self._block_of_tile(next_tile) not in vacated:
+                    to_seam = travelled
+                    break
+            if to_seam is None or to_seam <= _SEAM_HOLD_EPSILON_CM:
+                return False
+
+            own = {
+                block_id
+                for block_id, block in self.network.blocks.items()
+                if getattr(block, "occupied_by", None) == train.train_id
+            }
+            own |= set(controller.physics_sync.pending_detected_entered_blocks)
+            own -= vacated
+            distance = min(to_seam, self._head_room_within(own, to_seam))
+            if distance <= _SEAM_HOLD_EPSILON_CM:
+                return False
+            self._advance_head_by(train, distance)
+            controller.physics_sync.current_span = _span_from_work(self._work)
+            return True
+        finally:
+            self._work = None
+
+    def _head_room_within(self, blocks: Set[str], limit_cm: float) -> float:
+        """How far the head may move forward, up to `limit_cm`, before it would
+        leave `blocks` — onto a switch tile or into any other block."""
+        work = self._work
+        if work is None:
+            return 0.0
+        if work.head_is_a:
+            tile, distance, entry = (
+                work.end_a_tile,
+                work.end_a_distance_cm,
+                work.end_a_entry_edge,
+            )
         else:
-            tail_tile = tuple(span.end_a.tile)
-            tail_distance = float(span.end_a.distance_cm)
-            tail_entry = span.end_a.entry_edge
-
-        tail_block = self._block_of_tile(tail_tile)
-        if tail_block != block_id:
-            # The block is not the tail's own block: the tail has reached its
-            # seam only when the span no longer covers the block (the tail has
-            # already passed it). A block still under the head or middle of the
-            # span is one the train has not left.
-            occupied = set(span.occupied_blocks or [])
-            return block_id not in occupied
-
-        # The tail sits in the block: it has reached the exit seam when the next
-        # tile forward belongs to a different block (or a switch tile, which
-        # belongs to none) within two seam epsilons.
-        limit_cm = 2 * _SEAM_HOLD_EPSILON_CM
-        for next_tile, _travelled in self._walk_forward_tiles(
-            tail_tile, tail_distance, tail_entry, limit_cm
+            tile, distance, entry = (
+                work.end_b_tile,
+                work.end_b_distance_cm,
+                work.end_b_entry_edge,
+            )
+        if self._block_of_tile(tile) not in blocks:
+            return 0.0
+        for next_tile, travelled in self._walk_forward_tiles(
+            tile, distance, entry, limit_cm
         ):
-            if self._block_of_tile(next_tile) != block_id:
-                return True
-        return False
+            if self._block_of_tile(next_tile) not in blocks:
+                return travelled
+        return limit_cm
+
+    def _advance_head_by(self, train: "Train", distance_cm: float) -> None:
+        """Move the head forward by `distance_cm` and retrace the tail and
+        occupied span. Like `_advance_head_to_next_tile`, it records no swept
+        traversals, so it emits no movement events."""
+        work = self._work
+        remaining = distance_cm
+        while work is not None and remaining > _SEAM_HOLD_EPSILON_CM:
+            to_next = self._head_distance_to_next_tile()
+            # A move that ends on the tile's exit seam leaves the head in this
+            # tile, so the span does not list the block beyond it.
+            if to_next >= remaining - _SEAM_HOLD_EPSILON_CM:
+                if work.head_is_a:
+                    work.end_a_distance_cm += remaining
+                else:
+                    work.end_b_distance_cm += remaining
+                self._retrace_from_head(train)
+                return
+            if not self._advance_head_to_next_tile(train):
+                return
+            remaining -= to_next
 
     def _walk_forward_tiles(
         self,
@@ -2229,12 +2357,23 @@ class TrainPhysics:
             work.end_b_entry_edge = next_entry
             work.end_b_distance_cm = 0.0
 
+        self._retrace_from_head(train)
+        return True
+
+    def _retrace_from_head(self, train: "Train") -> None:
+        """Retrace the tail and the occupied tiles and blocks from where the
+        head now is.
+
+        Rebuilds the ordered occupied_blocks from the new tiles, mirroring
+        _update_block_occupancy but without its diagnostic transition
+        bookkeeping (last_block_transitions / _last_occupied_blocks), which the
+        reconciliation must not perturb.
+        """
+        work = self._work
+        if work is None:
+            return
         self._update_tail_position(train)
         self._update_occupied_tiles(train)
-        # Rebuild the ordered occupied_blocks from the new tiles, mirroring
-        # _update_block_occupancy but without its diagnostic transition
-        # bookkeeping (last_block_transitions / _last_occupied_blocks), which the
-        # reconciliation must not perturb.
         ordered_blocks: List[str] = []
         seen: Set[str] = set()
         for tile in work.occupied_tiles or []:
@@ -2244,7 +2383,6 @@ class TrainPhysics:
                 ordered_blocks.append(bid)
                 seen.add(bid)
         work.occupied_blocks = ordered_blocks
-        return True
 
     def _validate_position_sync(self, train: "Train") -> bool:
         """

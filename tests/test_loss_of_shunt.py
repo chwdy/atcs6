@@ -1,14 +1,14 @@
 """A clear read from under a train is a detection fault, not a vacate.
 
 design_new.md "Block occupancy detection":
-- A newly CLEAR block is vacated for its holder only once the holder's
-  calculated tail has reached the block's exit seam; otherwise it is held.
-- A clear read from under the train is a detection fault: Block.occupied_by
-  stays, the block keeps its voltage, and the span does not move.
+- A newly CLEAR block is a `vacate` only when it is the rearmost block of its
+  holder's block list; any other block the train holds is a `held_clear`.
+- A held clear is a detection fault: Block.occupied_by stays, the block keeps
+  its voltage, and the span does not move.
 - The fault is reported once per block, and the held clear is re-offered until
-  the tail reaches the seam (or the block reads current again).
-- When no block in a train's evidence set reads confirmed occupied, that train
-  is ghosted instead of holding a single block.
+  it is the rearmost block (or the block reads current again).
+- A vacate moves the span's tail forward to the vacated block's seam.
+- A clear on a block no train holds changes nothing and records one info event.
 """
 
 from typing import Dict, Set
@@ -82,59 +82,76 @@ def _fault_count(sim) -> int:
     )
 
 
-# --- the tail-reached-exit-seam predicate (geometry) ----------------------
+def _set_head_distance(train, controller, physics, distance_cm):
+    """Put the head `distance_cm` into its tile and retrace the tail from it."""
+    from train_physics import _span_from_work, _work_from_span
+
+    span = controller.physics_sync.current_span
+    head_is_a = controller._head_end_label() == "end_a"
+    physics._work = _work_from_span(span, head_is_a)
+    if head_is_a:
+        physics._work.end_a_distance_cm = distance_cm
+    else:
+        physics._work.end_b_distance_cm = distance_cm
+    physics._retrace_from_head(train)
+    controller.physics_sync.current_span = _span_from_work(physics._work)
+    physics._work = None
 
 
-def test_tail_has_reached_exit_seam_geometry():
+def _info_count(sim, block_id) -> int:
+    return sum(
+        1
+        for n in sim.notification_center.peek_recent(200)
+        if str(n.kind).lower().endswith("info") and f"block {block_id} read clear" in (n.message or "")
+    )
+
+
+# --- the block list, rear to front -----------------------------------------
+
+
+def test_block_list_runs_rear_to_front():
     network = build_line()
-    # 150cm train, head on tile 1's exit seam: spans BLK_1 (head) and BLK_0
-    # (tail sits 50cm into BLK_0 — mid-block).
+    # 150cm train, head on tile 1's exit seam: tail 50cm into BLK_0.
     sim, train, controller, physics = place(network, head_x=1, length_cm=150.0)
-    assert "BLK_0" in controller.physics_sync.current_span.occupied_blocks
+    assert physics.block_list_rear_to_front() == ["BLK_0", "BLK_1"]
 
-    # The tail is mid-BLK_0, so it has not reached BLK_0's exit seam.
-    assert physics.tail_has_reached_exit_seam(train, "BLK_0") is False
-    # BLK_1 is the head block; the tail is far short of its exit seam.
-    assert physics.tail_has_reached_exit_seam(train, "BLK_1") is False
-
-    # A short train two blocks ahead has left BLK_0 entirely.
+    # A held block behind the span — the locomotive standing behind the
+    # calculated position — is the rearmost.
     network2 = build_line()
     _sim2, train2, _c2, physics2 = place(
         network2, head_x=2, length_cm=40.0, train_id="U"
     )
-    assert physics2.tail_has_reached_exit_seam(train2, "BLK_0") is True
+    network2.blocks["BLK_1"].occupied_by = "U"
+    assert physics2.block_list_rear_to_front() == ["BLK_1", "BLK_2"]
 
 
-# --- the hold + one fault + re-offer lifecycle ----------------------------
+# --- held clears: the fault, the once-per-block report, the re-offer -------
 
 
-def test_clear_under_a_train_is_held_not_vacated():
+def test_a_clear_on_the_front_block_is_held_not_vacated():
     network = build_line()
     sim, train, controller, physics = place(network, head_x=1, length_cm=150.0)
-    # Both span blocks confirmed to start with.
     wire_detector(sim, detected={"BLK_0", "BLK_1", "BLK_2"}, confirmed={"BLK_0", "BLK_1"})
-    assert network.blocks["BLK_0"].occupied_by == "T"
+    span_before = controller.physics_sync.current_span
 
-    # BLK_0 loses current while BLK_1 keeps it: a clear from under the stationary
-    # train, whose tail is mid-BLK_0.
-    sim.block_occupancy_detector.input_interface.live = {"BLK_1"}
+    # The front block loses current while the rear keeps it. A span is never
+    # moved backward, so a standing train's front block reading clear is held.
+    sim.block_occupancy_detector.input_interface.live = {"BLK_0"}
     for _ in range(sim.block_occupancy_detector.off_threshold + 2):
         sim._detect_block_occupancy()
 
-    # Held, not vacated: occupied_by stays, and it is tracked as a held clear.
-    assert network.blocks["BLK_0"].occupied_by == "T"
-    assert "BLK_0" in sim._held_clear_blocks
-    # The train is not ghosted: BLK_1 still reads occupied.
+    assert network.blocks["BLK_1"].occupied_by == "T"
+    assert sim._held_clear_blocks == {"BLK_1": "T"}
     assert controller.presence_unknown is False
     # Reported exactly once, however long the block stays quiet.
     assert _fault_count(sim) == 1
-    # The held clear was not offered to the vacate path.
-    assert "BLK_0" not in controller.physics_sync.pending_detected_vacated_blocks
+    assert "BLK_1" not in controller.physics_sync.pending_detected_vacated_blocks
+    assert controller.physics_sync.current_span == span_before
 
 
 def test_all_clear_ghosts_rather_than_holding():
-    """When every evidence block reads clear the train is ghosted; a single
-    block is not held as a detection fault."""
+    """A one-block list's only block is its rearmost, so its clear vacates and
+    the train is ghosted; it is not held as a detection fault."""
     network = build_line()
     sim, train, controller, physics = place(network, head_x=1, length_cm=40.0)
     wire_detector(sim, detected={"BLK_0", "BLK_1", "BLK_2"}, confirmed={"BLK_1"})
@@ -148,32 +165,98 @@ def test_all_clear_ghosts_rather_than_holding():
     assert _fault_count(sim) == 0
 
 
-def test_held_clear_is_reoffered_once_the_tail_clears():
+def test_a_held_middle_block_vacates_once_the_blocks_behind_it_clear():
+    network = build_line()
+    # 250cm train: tail 50cm into BLK_0, head on BLK_2's exit seam.
+    sim, train, controller, physics = place(network, head_x=2, length_cm=250.0)
+    assert physics.block_list_rear_to_front() == ["BLK_0", "BLK_1", "BLK_2"]
+    detector = wire_detector(
+        sim, detected={f"BLK_{x}" for x in range(5)}, confirmed={"BLK_0", "BLK_1", "BLK_2"}
+    )
+
+    # The middle block goes quiet: held.
+    detector.input_interface.live = {"BLK_0", "BLK_2"}
+    for _ in range(detector.off_threshold + 2):
+        sim._detect_block_occupancy()
+    assert sim._held_clear_blocks == {"BLK_1": "T"}
+
+    # The rear block clears too. It vacates, which leaves the held middle block
+    # the rearmost, so the re-offer vacates it on the same read.
+    detector.input_interface.live = {"BLK_2"}
+    for _ in range(detector.off_threshold):
+        sim._detect_block_occupancy()
+    assert sim._held_clear_blocks == {}
+    assert controller.physics_sync.pending_detected_vacated_blocks == {"BLK_0", "BLK_1"}
+    assert _fault_count(sim) == 1
+
+
+# --- a vacate moves the tail to the seam ------------------------------------
+
+
+def test_a_rear_block_clear_vacates_and_moves_the_tail_to_its_seam():
+    network = build_line()
+    # 100cm train, head 5cm into BLK_2: tail 5cm into BLK_1.
+    sim, train, controller, physics = place(network, head_x=2, length_cm=100.0)
+    _set_head_distance(train, controller, physics, 5.0)
+    network.blocks["BLK_1"].occupied_by = "T"
+    assert set(controller.physics_sync.current_span.occupied_blocks) == {"BLK_1", "BLK_2"}
+    detector = wire_detector(
+        sim, detected={f"BLK_{x}" for x in range(5)}, confirmed={"BLK_1", "BLK_2"}
+    )
+
+    detector.input_interface.live = {"BLK_2"}
+    for _ in range(detector.off_threshold):
+        sim._detect_block_occupancy()
+
+    assert controller.physics_sync.pending_detected_vacated_blocks == {"BLK_1"}
+    assert _fault_count(sim) == 0
+    span = controller.physics_sync.current_span
+    # The tail sits on the BLK_1 / BLK_2 seam, so the span holds BLK_2 alone.
+    assert span.occupied_blocks == ["BLK_2"]
+    assert abs(span.end_a.distance_cm - 100.0) < 1e-6
+
+
+def test_the_tail_stops_short_when_the_head_would_leave_its_blocks():
+    """The head may move only over the train's own blocks, so a head near the
+    end of its block holds the tail short of the vacated block's seam."""
+    network = build_line()
+    # 150cm train, head 60cm into BLK_2: tail 10cm into BLK_1, 90cm from the
+    # seam, while the head has only 40cm left in BLK_2.
+    sim, train, controller, physics = place(network, head_x=2, length_cm=150.0)
+    _set_head_distance(train, controller, physics, 60.0)
+    assert network.blocks["BLK_1"].occupied_by == "T"
+    detector = wire_detector(
+        sim, detected={f"BLK_{x}" for x in range(5)}, confirmed={"BLK_1", "BLK_2"}
+    )
+
+    detector.input_interface.live = {"BLK_2"}
+    for _ in range(detector.off_threshold):
+        sim._detect_block_occupancy()
+
+    assert controller.physics_sync.pending_detected_vacated_blocks == {"BLK_1"}
+    span = controller.physics_sync.current_span
+    # The head stops on BLK_2's exit seam, 40cm on; the tail moves the same
+    # 40cm and is still 50cm into BLK_1.
+    assert span.end_a.tile == (2, 0)
+    assert abs(span.end_a.distance_cm - 100.0) < 1e-6
+    assert span.end_b.tile == (1, 0)
+    assert abs(span.end_b.distance_cm - 50.0) < 1e-6
+
+
+def test_a_clear_no_train_holds_records_one_info_event():
     network = build_line()
     sim, train, controller, physics = place(network, head_x=1, length_cm=150.0)
-    wire_detector(sim, detected={"BLK_0", "BLK_1", "BLK_2"}, confirmed={"BLK_0", "BLK_1"})
-
-    # Hold BLK_0 first.
-    sim.block_occupancy_detector.input_interface.live = {"BLK_1"}
-    for _ in range(sim.block_occupancy_detector.off_threshold + 2):
-        sim._detect_block_occupancy()
-    assert "BLK_0" in sim._held_clear_blocks
-
-    # The train's tail advances past BLK_0 (now spanning BLK_1 + BLK_2). The
-    # block stays held through Block.occupied_by until the vacate commits.
-    controller.physics_sync.current_span = network.place_train(
-        train, 2, 0, Direction.EAST
+    detector = wire_detector(
+        sim, detected={f"BLK_{x}" for x in range(5)}, confirmed={"BLK_0", "BLK_1", "BLK_4"}
     )
-    network.blocks["BLK_0"].occupied_by = "T"
-    sim.block_occupancy_detector.input_interface.detected = {"BLK_0", "BLK_1", "BLK_2"}
-    sim.block_occupancy_detector.input_interface.live = {"BLK_1", "BLK_2"}
-    sim.block_occupancy_detector.seed_occupied({"BLK_1", "BLK_2"})
+    assert network.blocks["BLK_4"].occupied_by is None
 
-    sim._detect_block_occupancy()
+    detector.input_interface.live = {"BLK_0", "BLK_1"}
+    for _ in range(detector.off_threshold + 2):
+        sim._detect_block_occupancy()
 
-    # The tail has now reached BLK_0's exit seam, so the held clear is vacated.
-    assert "BLK_0" not in sim._held_clear_blocks
-    assert "BLK_0" in controller.physics_sync.pending_detected_vacated_blocks
+    assert _info_count(sim, "BLK_4") == 1
+    assert _fault_count(sim) == 0
 
 
 # --- current returning under a held block is `held`, not an overrun --------
@@ -269,46 +352,6 @@ def test_current_returning_under_a_held_block_is_not_an_overrun():
     assert "BLK_2" not in sim._held_clear_blocks
     assert all("BLK_2" not in entered for entered in detector_reads)
     assert "BLK_2" not in head_entries
-
-
-def test_current_returning_after_the_span_left_a_held_block_stays_held():
-    """Current returns under a held block on the read just after the calculated
-    span has moved off it. No train's span covers the block any more, but the
-    train still holds it, so it is the `held` result (rank 1 of the match
-    order). It must not go to a new unidentified train, whose commit would then
-    collide with the train still named in `Block.occupied_by`."""
-    network = build_line(6)
-    sim, train, controller, physics = place(network, head_x=1, length_cm=150.0)
-    detector = wire_detector(
-        sim,
-        detected={f"BLK_{i}" for i in range(6)},
-        confirmed={"BLK_0", "BLK_1", "BLK_2"},
-    )
-    network.blocks["BLK_2"].occupied_by = "T"
-
-    # The rear block reads clear while the tail is 50cm into it: held.
-    detector.input_interface.live = {"BLK_1", "BLK_2"}
-    for _ in range(detector.off_threshold + 1):
-        sim._detect_block_occupancy()
-    assert sim._held_clear_blocks.get("BLK_0") == "T"
-
-    # Current returns (first of two reads); then the calculated span moves on
-    # so it no longer covers BLK_0; the second read confirms BLK_0 again.
-    controller.physics_sync.current_speed_kmh = 20.0
-    detector.input_interface.live = {"BLK_0", "BLK_1", "BLK_2"}
-    sim._detect_block_occupancy()
-    controller.physics_sync.current_span = network.place_train(
-        train, 2, 0, Direction.EAST
-    )
-    assert "BLK_0" not in controller.physics_sync.current_span.occupied_blocks
-    sim._detect_block_occupancy()
-
-    assert not any(
-        getattr(network.trains.get(train_id), "is_unidentified", False)
-        for train_id in sim.controllers
-    )
-    assert network.blocks["BLK_0"].occupied_by == "T"
-    assert "BLK_0" not in controller.physics_sync.pending_detected_entered_blocks
 
 
 def test_a_block_neither_reserved_nor_held_is_still_an_overrun():

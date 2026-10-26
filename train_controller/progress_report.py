@@ -361,6 +361,11 @@ class ProgressReportBuilder:
             ps.pending_detected_entered_blocks,
             key=lambda b: (resolve_block_index(b) or 0, b),
         ):
+            # A fresh entry means any exit edge still held for this block is
+            # left over from an earlier stay: its vacate committed before the
+            # calculated tail left the block, so nothing consumed the edge the
+            # tail recorded afterwards.
+            ps.pending_block_exit_edges.pop(block_id, None)
             entered_resources.append(
                 ResourceEvent(
                     sequence_index=resolve_block_index(block_id),

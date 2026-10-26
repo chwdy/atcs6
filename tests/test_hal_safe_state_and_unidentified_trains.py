@@ -86,7 +86,7 @@ def test_unattributable_entry_is_unmatched_without_writing_block_state():
     # No reserving train, no covering span -> the entry belongs to an unidentified train.
     # `attribute()` is pure: it reports the block as `unidentified` and writes
     # nothing, leaving creation to UnidentifiedTrainTracker.
-    results, _ = detector.attribute({"BLK_X"}, set())
+    results = detector.attribute({"BLK_X"}, set())
     assert results == [AttributionResult(AttributionKind.UNIDENTIFIED, "BLK_X")]
     assert block.occupied_by is None
 
@@ -95,9 +95,8 @@ def test_unidentified_train_vacate_attributes_to_the_unidentified_train_without_
     network, detector = _detector()
     block = network.blocks["BLK_X"]
     block.occupied_by = "UNIDENT_1"
-    results, vacated_by_train = detector.attribute(set(), {"BLK_X"})
+    results = detector.attribute(set(), {"BLK_X"})
     # An unidentified train is an ordinary train to attribution: its vacate resolves through
-    # `Block.occupied_by` like any other train's.
-    assert vacated_by_train == {"UNIDENT_1": {"BLK_X"}}
-    assert results == []
+    # `Block.occupied_by` like any other train's, and it commits at once.
+    assert results == [AttributionResult(AttributionKind.VACATE, "BLK_X", "UNIDENT_1")]
     assert block.occupied_by == "UNIDENT_1"
