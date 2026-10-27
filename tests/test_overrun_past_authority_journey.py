@@ -20,9 +20,10 @@ What the journey demonstrates, tick by tick, through the real
   2. A span correction that gains >= 2 blocks emits the "running faster than its
      speed profile" WARNING; a one-block correction is silent sensor latency.
   3. The block the detector reports PAST the authority end (BLK_D) is attributed
-     to THIS train -- owned, not ghosted, no phantom train minted -- because a
-     train at its authority end stays permissive (design_new.md, "Attribution is
-     gated on plausibility").
+     to THIS train -- owned, not ghosted, no phantom train minted -- because it
+     is the block on the train's head side, the first block past the front of
+     its block list as the points are set (design_new.md "Block occupancy
+     detection", Touching).
   4. That attribution result -- a head-side block not reserved for the train --
      is an overrun entry, so Observe raises the train's EMERGENCY CUT-OUT on the
      same read (design_new.md "Block occupancy detection", An overrun entry or a

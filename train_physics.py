@@ -43,6 +43,7 @@ from typing import (
     TYPE_CHECKING,
     Any,
     Dict,
+    Iterable,
     Iterator,
     List,
     Optional,
@@ -1519,13 +1520,13 @@ class TrainPhysics:
         rigid span forward one tile at a time until the head has reached every
         confirmed-entered block — "snap to the seam at least".
 
-        A confirmed clear never moves the span (design_new.md "Block occupancy
-        detection", A confirmed clear never moves the span): a span moved by a
-        clear would claim head positions no detector reported. The clear is
-        handled by the vacate path instead, and the tail advances past the seam
-        through ordinary integration once its cap releases. An unidentified train
-        is the one exception — its span IS its confirmed-occupied blocks, so a
-        clear shrinks it directly (see the unidentified-train branch below).
+        A `vacate` moves the tail forward out of the vacated block, to its seam
+        with the next block (design_new.md "Block occupancy detection", A
+        vacated block moves the span end to the seam; `_move_tail_to_vacated_seam`).
+        It runs after the entry correction, so a read that both enters and
+        vacates first puts the head on the entered block. An unidentified
+        train's span IS its confirmed-occupied blocks, so a clear shrinks it
+        directly (see the unidentified-train branch below).
 
         One-directional: it only advances the train forward, never backward, and
         is a no-op when the calculated span already agrees. Under the v1
@@ -1551,13 +1552,26 @@ class TrainPhysics:
                 train.train_id, set(entered), set(vacated)
             )
 
-        span = ps.current_span
-        if span is None:
+        if ps.current_span is None:
             return False
-        # A confirmed clear never moves an ordinary train's span, so only a
-        # confirmed entry can drive the correction; a vacate-only read is a
-        # no-op here (the tail advances through ordinary integration).
-        if not entered:
+        moved = self._snap_head_to_entered(train, controller, set(entered))
+        if vacated:
+            moved = (
+                self._move_tail_to_vacated_seam(train, controller, set(vacated))
+                or moved
+            )
+        return moved
+
+    def _snap_head_to_entered(
+        self, train: "Train", controller: "TrainController", entered: Set[str]
+    ) -> bool:
+        """Slide the rigid span forward until the head has reached every
+        confirmed-entered block it can reach by going forward (design_new.md
+        "Block occupancy detection", Physical detection outranks the calculated
+        position). Returns True if it moved the span."""
+        ps = controller.physics_sync
+        span = ps.current_span
+        if span is None or not entered:
             return False
 
         head_is_a = controller._head_end_label() == "end_a"
@@ -1714,86 +1728,6 @@ class TrainPhysics:
                 train.train_id,
                 len(gained),
             )
-
-    def could_be_entering(self, block_id: str) -> bool:
-        """Whether this train could be the current that just appeared on
-        `block_id` (design_new.md "Power", A train is not entering a block it is
-        being driven away from).
-
-        **A moving train can only have entered a block in front of it.** A train
-        is driven one way at a time and the polarity on its rails says which, so
-        current appearing on the side it is driving *away* from is not that train
-        arriving there. It is something else on the track behind it.
-
-        Forward means the same walk `reconcile_to_detected_occupancy` corrects
-        along, so it follows the points as aligned and stops at the first
-        `detected block` the detector has not confirmed. A train that genuinely
-        crossed two blocks between reads has both confirmed, so the walk reaches
-        both and both stay plausible; a block with a clear detected block in
-        between does not, which is the same line every other rule holds. The lone
-        exception is a clear block this train still holds itself: that is its own
-        body clearing behind the head, not foreign track, so the walk crosses it
-        to reach a block confirmed just beyond (see `_entered_blocks_ahead`).
-
-        **A train that is not moving is not being driven away from anything, so
-        every neighbouring block stays plausible for it.** The model never knows
-        where inside a block a train sits — the position between two confirmed
-        fixes is integrated from a speed solution, and an adopted train is placed
-        in the middle of its blocks because nobody knows better. A stationary
-        locomotive may therefore be bridging an insulated joint the model shows
-        it well clear of, drawing current on the block on either side of it, and
-        no geometry the app holds can rule that out.
-
-        The test uses only the direction of the motion, never its magnitude. A
-        `SpeedProfile` describes the locomotive it was calibrated for, so the
-        modeled distance is exactly the number this cannot trust — a train
-        reaching a block early is the whole case this exists for. Which way a
-        train is being driven survives a wrong profile; how far it got does not.
-        """
-        span = self.controller.physics_sync.current_span if self.controller else None
-        if span is None or self.network is None:
-            return False
-        if block_id in (span.occupied_blocks or []):
-            return True
-        train = self._get_train()
-        if train is None:
-            return False
-        if abs(self._read_current_speed(train)) <= STOPPED_SPEED_THRESHOLD_KMH:
-            return True
-
-        previous_work = self._work
-        try:
-            self._work = _work_from_span(
-                span, self.controller._head_end_label() == "end_a"
-            )
-            # A train at or past the end of its authority is being brought to a
-            # stop, not driven onward, so — like a stopped train — its travel
-            # direction no longer reliably says which side it is leaving, and
-            # every neighbour stays plausible. This is what lets the block the
-            # locomotive overran past its authority end attribute to it on the
-            # read that first confirms it, rather than minting an unidentified
-            # train for that current. Safe here only because Observe raises the
-            # train's emergency cut-out on the read that credits it a head-side
-            # block not reserved for it (design_new.md "Block occupancy
-            # detection", An overrun entry or a conflict raises the emergency
-            # cut-out), which drives the train to 0 V, so it is not being driven
-            # further onto the block it claims. The authority test is the
-            # emission side's: a train that holds a path plan but has no reserved
-            # block ahead of its head has run to its authority end
-            # (`_resolve_next_reserved_block`).
-            projection = getattr(self.controller, "path_projection", None)
-            has_plan = getattr(projection, "received_path_plan", None) is not None
-            if has_plan and self._resolve_next_reserved_block(
-                train, set(span.occupied_blocks or [])
-            ) is None:
-                return True
-            return bool(
-                self._entered_blocks_ahead(
-                    {block_id}, allow_crossing_own_body=True
-                )
-            )
-        finally:
-            self._work = previous_work
 
     def _entered_blocks_ahead(
         self, entered: Set[str], *, allow_crossing_own_body: bool = False
@@ -2085,52 +2019,193 @@ class TrainPhysics:
                 return travelled
         return None
 
-    def tail_has_reached_exit_seam(self, train: "Train", block_id: str) -> bool:
-        """Whether this train's calculated tail has reached the exit seam of
-        `block_id` — the gate for vacating a block the detector reads clear.
+    def block_list_rear_to_front(self) -> List[str]:
+        """This train's block list — the blocks `Block.occupied_by` names it
+        on — ordered rear to front (design_new.md "Block occupancy detection",
+        The occupancy chain runs one way).
 
-        A clear read from a block whose exit seam the tail has not reached is a
-        detection fault, not a vacate: the train still stands on the block
-        (design_new.md "Block occupancy detection", A clear read from under the
-        train is a detection fault). The tail has reached the seam when the
-        block is no longer under the span (the tail has already passed it), or
-        the tail sits in the block within two seam epsilons of leaving it.
+        The order is the connectivity walk forward from the span's tail end,
+        following the points as they are set, so the span supplies which side
+        is the tail, never where inside a block the train sits. Blocks the walk
+        meets in order come first to last. A held block the walk never meets is
+        either behind the tail — the locomotive standing behind the calculated
+        span, which makes it the rearmost — or ahead of the head, which makes it
+        the front; it is placed accordingly. Empty when the train holds no block
+        or has no span.
         """
+        return self._walk_block_list(set())[0]
+
+    def head_side_block(self, gained: Iterable[str] = ()) -> Optional[str]:
+        """The block on this train's head side: the first block the
+        connectivity walk meets past the front of its block list, going away
+        from the rear (design_new.md "Block occupancy detection", Touching).
+
+        `gained` is what attribution has credited this train on the current
+        read; each such block joins the list for the next pass, so a train
+        that crossed several blocks between two reads has its head side past
+        the last of them. None when the walk meets no further block.
+        """
+        return self._walk_block_list(set(gained))[1]
+
+    def _walk_block_list(
+        self, gained: Set[str]
+    ) -> Tuple[List[str], Optional[str]]:
+        """(block list rear to front, head-side block) for the blocks this
+        train holds plus `gained`. See `block_list_rear_to_front` and
+        `head_side_block`."""
         controller = self.controller
-        if controller is None or self.network is None:
-            return True
+        network = self.network
+        train = self._get_train()
+        if controller is None or network is None or train is None:
+            return [], None
+        listed = {
+            block_id
+            for block_id, block in network.blocks.items()
+            if getattr(block, "occupied_by", None) == train.train_id
+        } | gained
         span = controller.physics_sync.current_span
-        if span is None:
-            return True
+        if not listed or span is None:
+            return [], None
+
         head_is_a = controller._head_end_label() == "end_a"
-        if head_is_a:
-            tail_tile = tuple(span.end_b.tile)
-            tail_distance = float(span.end_b.distance_cm)
-            tail_entry = span.end_b.entry_edge
+        previous_work = self._work
+        self._work = _work_from_span(span, head_is_a)
+        try:
+            tail = span.end_b if head_is_a else span.end_a
+            tail_tile = tuple(tail.tile)
+            ordered: List[str] = []
+            head_side: Optional[str] = None
+            tail_block = self._block_of_tile(tail_tile)
+            if tail_block in listed:
+                ordered.append(tail_block)
+            for next_tile, _travelled in self._walk_forward_tiles(
+                tail_tile,
+                float(tail.distance_cm),
+                tail.entry_edge,
+                float("inf"),
+                follow_path=False,
+            ):
+                block_id = self._block_of_tile(next_tile)
+                if block_id is None or block_id in ordered:
+                    continue
+                if block_id in listed:
+                    ordered.append(block_id)
+                elif ordered:
+                    # Past this train's last listed block: the list ends here
+                    # and this is the block on its head side.
+                    head_side = block_id
+                    break
+            unmet = listed - set(ordered)
+            ahead = self._entered_blocks_ahead(unmet) if unmet else set()
+            return sorted(unmet - ahead) + ordered + sorted(ahead), head_side
+        finally:
+            self._work = previous_work
+
+    def _move_tail_to_vacated_seam(
+        self, train: "Train", controller: "TrainController", vacated: Set[str]
+    ) -> bool:
+        """Move the span's tail out of the blocks this read vacated, to the seam
+        with the next block (design_new.md "Block occupancy detection", A
+        vacated block moves the span end to the seam). Returns True if it moved
+        the span.
+
+        Only the tail moves out of a vacated block, and only forward: a vacate
+        is always the rearmost block of the list. The head moves with it by the
+        same distance, because a span is rigid. The tail stops at the first tile
+        ahead that is not in a vacated block — a switch tile included — so the
+        move never carries the tail across a switch; ordinary integration
+        carries it there and records the switch's tail-vacate.
+
+        The head may move only over this train's own blocks: when the move
+        would carry it onto a switch tile or into a block outside the list, the
+        head stops at the exit seam of the block it is in, and the tail stops
+        short of its seam by the same amount. That keeps the head off track the
+        detector has not given this train, and off a switch tile whose entry
+        only ordinary integration records.
+        """
+        span = controller.physics_sync.current_span
+        if span is None or self.network is None:
+            return False
+        head_is_a = controller._head_end_label() == "end_a"
+        self._work = _work_from_span(span, head_is_a)
+        try:
+            tail = span.end_b if head_is_a else span.end_a
+            tail_tile = tuple(tail.tile)
+            if self._block_of_tile(tail_tile) not in vacated:
+                return False
+            to_seam: Optional[float] = None
+            for next_tile, travelled in self._walk_forward_tiles(
+                tail_tile, float(tail.distance_cm), tail.entry_edge, float("inf")
+            ):
+                if self._block_of_tile(next_tile) not in vacated:
+                    to_seam = travelled
+                    break
+            if to_seam is None or to_seam <= _SEAM_HOLD_EPSILON_CM:
+                return False
+
+            own = {
+                block_id
+                for block_id, block in self.network.blocks.items()
+                if getattr(block, "occupied_by", None) == train.train_id
+            }
+            own |= set(controller.physics_sync.pending_detected_entered_blocks)
+            own -= vacated
+            distance = min(to_seam, self._head_room_within(own, to_seam))
+            if distance <= _SEAM_HOLD_EPSILON_CM:
+                return False
+            self._advance_head_by(train, distance)
+            controller.physics_sync.current_span = _span_from_work(self._work)
+            return True
+        finally:
+            self._work = None
+
+    def _head_room_within(self, blocks: Set[str], limit_cm: float) -> float:
+        """How far the head may move forward, up to `limit_cm`, before it would
+        leave `blocks` — onto a switch tile or into any other block."""
+        work = self._work
+        if work is None:
+            return 0.0
+        if work.head_is_a:
+            tile, distance, entry = (
+                work.end_a_tile,
+                work.end_a_distance_cm,
+                work.end_a_entry_edge,
+            )
         else:
-            tail_tile = tuple(span.end_a.tile)
-            tail_distance = float(span.end_a.distance_cm)
-            tail_entry = span.end_a.entry_edge
-
-        tail_block = self._block_of_tile(tail_tile)
-        if tail_block != block_id:
-            # The block is not the tail's own block: the tail has reached its
-            # seam only when the span no longer covers the block (the tail has
-            # already passed it). A block still under the head or middle of the
-            # span is one the train has not left.
-            occupied = set(span.occupied_blocks or [])
-            return block_id not in occupied
-
-        # The tail sits in the block: it has reached the exit seam when the next
-        # tile forward belongs to a different block (or a switch tile, which
-        # belongs to none) within two seam epsilons.
-        limit_cm = 2 * _SEAM_HOLD_EPSILON_CM
-        for next_tile, _travelled in self._walk_forward_tiles(
-            tail_tile, tail_distance, tail_entry, limit_cm
+            tile, distance, entry = (
+                work.end_b_tile,
+                work.end_b_distance_cm,
+                work.end_b_entry_edge,
+            )
+        if self._block_of_tile(tile) not in blocks:
+            return 0.0
+        for next_tile, travelled in self._walk_forward_tiles(
+            tile, distance, entry, limit_cm
         ):
-            if self._block_of_tile(next_tile) != block_id:
-                return True
-        return False
+            if self._block_of_tile(next_tile) not in blocks:
+                return travelled
+        return limit_cm
+
+    def _advance_head_by(self, train: "Train", distance_cm: float) -> None:
+        """Move the head forward by `distance_cm` and retrace the tail and
+        occupied span. Like `_advance_head_to_next_tile`, it records no swept
+        traversals, so it emits no movement events."""
+        work = self._work
+        remaining = distance_cm
+        while work is not None and remaining > _SEAM_HOLD_EPSILON_CM:
+            to_next = self._head_distance_to_next_tile()
+            # A move that ends on the tile's exit seam leaves the head in this
+            # tile, so the span does not list the block beyond it.
+            if to_next >= remaining - _SEAM_HOLD_EPSILON_CM:
+                if work.head_is_a:
+                    work.end_a_distance_cm += remaining
+                else:
+                    work.end_b_distance_cm += remaining
+                self._retrace_from_head(train)
+                return
+            if not self._advance_head_to_next_tile(train):
+                return
+            remaining -= to_next
 
     def _walk_forward_tiles(
         self,
@@ -2138,6 +2213,7 @@ class TrainPhysics:
         distance_cm: float,
         entry_edge: str,
         limit_cm: float,
+        follow_path: bool = True,
     ) -> Iterator[Tuple[Tuple[int, int], float]]:
         """Walk forward from one span end, yielding `(tile, travelled_cm)` for
         each tile the end would reach, where `travelled_cm` is how far the end
@@ -2155,7 +2231,9 @@ class TrainPhysics:
         for _ in range(_CAP_WALK_MAX_TILES):
             if travelled > limit_cm:
                 return
-            exit_edge = self._calculate_exit_edge(current_tile, current_entry)
+            exit_edge = self._calculate_exit_edge(
+                current_tile, current_entry, follow_path
+            )
             if not exit_edge:
                 return
             next_tile = self._get_neighbor_tile(current_tile, exit_edge)
@@ -2229,12 +2307,23 @@ class TrainPhysics:
             work.end_b_entry_edge = next_entry
             work.end_b_distance_cm = 0.0
 
+        self._retrace_from_head(train)
+        return True
+
+    def _retrace_from_head(self, train: "Train") -> None:
+        """Retrace the tail and the occupied tiles and blocks from where the
+        head now is.
+
+        Rebuilds the ordered occupied_blocks from the new tiles, mirroring
+        _update_block_occupancy but without its diagnostic transition
+        bookkeeping (last_block_transitions / _last_occupied_blocks), which the
+        reconciliation must not perturb.
+        """
+        work = self._work
+        if work is None:
+            return
         self._update_tail_position(train)
         self._update_occupied_tiles(train)
-        # Rebuild the ordered occupied_blocks from the new tiles, mirroring
-        # _update_block_occupancy but without its diagnostic transition
-        # bookkeeping (last_block_transitions / _last_occupied_blocks), which the
-        # reconciliation must not perturb.
         ordered_blocks: List[str] = []
         seen: Set[str] = set()
         for tile in work.occupied_tiles or []:
@@ -2244,7 +2333,6 @@ class TrainPhysics:
                 ordered_blocks.append(bid)
                 seen.add(bid)
         work.occupied_blocks = ordered_blocks
-        return True
 
     def _validate_position_sync(self, train: "Train") -> bool:
         """
@@ -2693,9 +2781,10 @@ class TrainPhysics:
         past the end of its authority.
 
         A train past its authority end is one that holds a path plan but has no
-        reserved block ahead of its head — the same test attribution uses to let
-        the overrun block credit to it rather than to an unidentified train (see
-        `could_be_entering`). A block such a train stands on only by the
+        reserved block ahead of its head. The overrun block is the block on its
+        head side, so attribution credits it to this train rather than to an
+        unidentified train (design_new.md "Block occupancy detection",
+        Touching). A block such a train stands on only by the
         detector's say-so, and that is not on its authorized path, is a block it
         overran onto. The rail there must stay dead: powering it keeps pushing
         a locomotive that has already run past where it may go, and the block's
@@ -2730,12 +2819,16 @@ class TrainPhysics:
         return self.network._get_tile_length_cm(tile[0], tile[1])
 
     def _calculate_exit_edge(
-        self, tile: Tuple[int, int], entry_edge: str
+        self, tile: Tuple[int, int], entry_edge: str, follow_path: bool = True
     ) -> Optional[str]:
         """
         Calculate exit edge based on track geometry and entry edge.
 
         Uses the 6-bit track system to determine valid paths through the tile.
+        With `follow_path` False the exit follows the points as they are set
+        (`Switch.position`) and ignores the train's path, which is the
+        connectivity walk attribution's adjacency uses (design_new.md "Block
+        occupancy detection", Touching).
         """
         if not self.network:
             return None
@@ -2760,6 +2853,8 @@ class TrainPhysics:
         # raises the emergency cut-out). The path-follow cap below would
         # otherwise stop the forward walk at the authority end. Past that end the
         # path offers no next tile anyway, so ordinary movement is unaffected.
+        if not follow_path:
+            return possible_exits[0]
         train = self._get_train()
         path_tiles = self._get_path_tiles()
         eb = getattr(self.controller, "eb", None)

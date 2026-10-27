@@ -3,9 +3,10 @@ TrainPhysics.reconcile_to_detected_occupancy.
 
 Physical detection outranks the calculated position: when the current detector
 confirms a block ENTERED that the calculated span does not yet agree with, the
-span is slid forward to the seam. A confirmed CLEAR never moves the span
-(design_new.md "Block occupancy detection", A confirmed clear never moves the
-span) — the tail advances past the seam through ordinary integration instead.
+span is slid forward to the seam. A `vacate` moves the tail forward to the
+vacated block's seam, but only as far as the head can go over the train's own
+blocks (design_new.md "Block occupancy detection", A vacated block moves the
+span end to the seam).
 This is inert under the v1 simulated sensor (current is derived from the span),
 so these tests drive the detector slice directly to exercise the geometry as a
 real/early sensor would.
@@ -94,17 +95,18 @@ def test_snap_inert_when_span_already_covers_block():
     assert controller.physics_sync.current_span is before
 
 
-def test_confirmed_clear_never_moves_the_span():
+def test_a_vacate_does_not_move_a_span_whose_head_has_no_room():
     network = build_line(6)
     # 250cm train with head at tile 2's exit edge spans BLK_2, BLK_1, BLK_0.
     sim, train, controller, physics = place(network, "T", head_x=2, length_cm=250.0)
     span = controller.physics_sync.current_span
     assert "BLK_0" in span.occupied_blocks
 
-    # A confirmed clear never moves an ordinary train's span (design_new.md
-    # "Block occupancy detection", A confirmed clear never moves the span): the
-    # span stays put and the tail advances past the seam through ordinary
-    # integration, not by the reconciliation snapping it forward.
+    # The head already sits on its block's exit seam, and the head may move
+    # only over the train's own blocks, so the vacate cannot move the tail:
+    # it stops short of BLK_0's seam by the whole distance (design_new.md
+    # "Block occupancy detection", A vacated block moves the span end to the
+    # seam). Ordinary integration carries the tail on once the head can move.
     controller.physics_sync.pending_detected_vacated_blocks = {"BLK_0"}
     moved = physics.reconcile_to_detected_occupancy(train, controller)
 

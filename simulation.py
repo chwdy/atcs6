@@ -26,6 +26,7 @@ Architecture:
 
 import logging
 import time
+from dataclasses import replace
 from datetime import datetime
 from typing import (
     Any,
@@ -50,7 +51,14 @@ from switch_power import (
     SwitchOutputOwner,
     SwitchPowerController,
 )
-from block_occupancy import SimulatedOccupancyDriver, BlockOccupancyDetector
+from block_occupancy import (
+    AttributionKind,
+    AttributionResult,
+    BlockOccupancyDetector,
+    SimulatedOccupancyDriver,
+    blocks_joined_by_train,
+    blocks_vacated_by_train,
+)
 from hardware.safety import SafeStateError
 from hardware.watchdog import WatchdogTripRecord
 from notification_center import (
@@ -190,14 +198,14 @@ class SimulationController(SwitchOutputOwner):
         # runs only when movement is calculated; detection feedback always runs").
         self._detected_change_train_ids: Set[str] = set()
 
-        # Blocks the detector confirmed clear while their holding train still
-        # stands on them (its calculated tail has not reached the block's exit
-        # seam) — a detection fault, not a vacate. Maps block_id -> holding
-        # train_id. The block is held (occupied_by and voltage kept) and
-        # re-offered each read until the tail reaches the seam or current
-        # returns (design_new.md "Block occupancy detection", A clear read from
-        # under the train is a detection fault; A held clear is re-offered until
-        # the tail reaches the seam). Used to report the fault once per block.
+        # The last read's `held_clear` results: blocks the detector confirmed
+        # clear that are not the rearmost block of their holder's list — a
+        # detection fault, not a vacate. Maps block_id -> holding train_id. The
+        # block is held (occupied_by and voltage kept) and re-offered each read
+        # until it is the rearmost block or current returns (design_new.md
+        # "Block occupancy detection", A clear read from under the train is a
+        # detection fault; A held clear is re-offered until it is an end
+        # block). Used for the re-offer, the seed, and the once-per-block report.
         self._held_clear_blocks: Dict[str, str] = {}
 
         # Blocks whose attribution result on the last read was a `conflict`:
@@ -283,12 +291,16 @@ class SimulationController(SwitchOutputOwner):
         self.block_occupancy_detector.reachable_blocks = (
             self.unidentified_trains.reachable_blocks
         )
-        # Adjacency says two things are next to each other and nothing about
-        # which way either is going, so every adjacency match is also gated on
-        # whether the train could be entering the block at all — moving, and
-        # driving toward it (design_new.md "Power", Attribution is gated on
-        # plausibility).
-        self.block_occupancy_detector.can_enter = self._train_could_be_entering
+        # Touching reads each train's block list, whether it is directional, and
+        # the block on its head side, plus a ghosted train's retained span
+        # (design_new.md "Block occupancy detection", Touching).
+        self.block_occupancy_detector.directional = self._train_is_directional
+        self.block_occupancy_detector.head_side = self._train_head_side_block
+        self.block_occupancy_detector.retained_span = self._ghost_retained_span
+        # A clear is vacated only on the rearmost block of its holder's block
+        # list, so the clear results need each list in order (design_new.md
+        # "Block occupancy detection", A newly CLEAR block).
+        self.block_occupancy_detector.block_list = self._train_block_list
         # The clock the unidentified train tracker's hold windows are measured against — see
         # `_unidentified_clock` for why it is wall-clock and not `simulation_time`.
         # Replaceable so a test can age a window out without sleeping.
@@ -750,79 +762,76 @@ class SimulationController(SwitchOutputOwner):
 
         self.network.update_signals_from_blocks()
 
-    def _train_could_be_entering(self, train_id: str, block_id: str) -> bool:
-        """Whether `train_id` could be the current that just appeared on
-        `block_id` (design_new.md "Power", Attribution is gated on plausibility).
+    def _train_is_directional(self, train_id: str) -> bool:
+        """Whether `train_id` holds a live reservation (`received_path_plan` is
+        set) and is not stopped (design_new.md "Block occupancy detection",
+        Touching). A directional train is touched on its head side only."""
+        controller = self.controllers.get(train_id)
+        if controller is None:
+            return False
+        if controller.path_projection.received_path_plan is None:
+            return False
+        return not controller.is_stopped()
 
-        The physics instance owns the answer — it holds the span, the direction
-        of travel, and the speed. This is the seam that hands it to the detector,
-        which knows only blocks. An unidentified train is never a candidate: it
-        is never energized and integrates no motion, so it enters nothing under
-        its own power, and its own blocks arrive through its detected span.
-        """
+    def _train_head_side_block(
+        self, train_id: str, gained: Set[str]
+    ) -> Optional[str]:
+        """The block on `train_id`'s head side, given the blocks it gained on
+        this read (`TrainPhysics.head_side_block`)."""
         train = self.network.trains.get(train_id)
-        if train is None or getattr(train, "is_unidentified", False):
-            return False
         physics = self.physics_instances.get(train_id)
-        if physics is None:
-            return False
-        return physics.could_be_entering(block_id)
+        if train is None or physics is None:
+            return None
+        return physics.head_side_block(gained)
 
-    def _entries_for_adjacent_trains(
-        self, unmatched: Set[str], claimed: Dict[str, Set[str]]
-    ) -> Tuple[Dict[str, Set[str]], Dict[str, List[str]]]:
-        """Give each unmatched confirmed entry to the one ordinary train that
-        touches it, and report every entry more than one train touches as a
-        conflict (design_new.md "Block occupancy detection", Attribution).
+    def _ghost_retained_span(self, train_id: str) -> Set[str]:
+        """A ghosted train's retained span blocks, which stand in for its empty
+        block list in attribution; empty for any other train (design_new.md
+        "Block occupancy detection", A ghosted train's retained span stands in
+        for its block list)."""
+        controller = self.controllers.get(train_id)
+        if controller is None or not controller.presence_unknown:
+            return set()
+        span = controller.physics_sync.current_span
+        return set(span.occupied_blocks or []) if span is not None else set()
 
-        Returns `(entries, conflicts)`: `entries` maps train_id -> the blocks it
-        gained here, and `conflicts` maps block_id -> the sorted candidate train
-        ids. A conflict block goes to no train — not to any candidate and not to
-        an unidentified train — and each candidate keeps the blocks it already
-        held. A block no train touches is left in neither map, for the
-        unidentified-train step.
+    def _name_unidentified_trains(
+        self, results: List[AttributionResult]
+    ) -> List[AttributionResult]:
+        """Fill in the unidentified train each `unidentified` result joined or
+        was minted as (design_new.md "Block occupancy detection", The
+        attribution result).
 
-        A locomotive standing across a block boundary draws current on both
-        blocks. The far one matches no reservation and no span, so without this
-        it would be read as a second object and handed an unidentified train — which then
-        de-energizes it, because an unidentified train is never energized, stranding the very
-        locomotive the app is driving. Adjacency is the same connectivity walk
-        unidentified train identity uses, and `BlockOccupancyDetector` owns it:
-        only the first block across undetected track counts, so a block with
-        empty blocks between it and every train is still an unidentified train.
-
-        `claimed` is what attribution has already matched this tick. It is
-        passed in, and grown as this step resolves blocks of its own, so a train
-        that crossed several blocks between two detector reads is still read as
-        one train: each block it just gained is evidence for the next. Matching
-        runs in rounds, each round testing every pending block against the
-        evidence the round started with, so the result does not depend on the
-        order the blocks are visited in. A conflict block is never evidence.
+        Such a block matches no existing train and is not next to one, so it
+        belongs to an unidentified train (design_new.md "Attribution").
+        `UnidentifiedTrainTracker` resolves it to an unidentified train
+        `train_id` — a new unidentified train, or one continuing its run across
+        an undetected switch tile — and from here the unidentified train is an
+        ordinary train, so its slice is written and committed exactly like
+        every other train's.
         """
-        detector = self.block_occupancy_detector
-        entries: Dict[str, Set[str]] = {}
-        conflicts: Dict[str, List[str]] = {}
-        evidence = {train_id: set(blocks) for train_id, blocks in claimed.items()}
-        pending = set(unmatched)
-        while pending:
-            touching = {
-                block_id: detector.touching_trains_for_block(block_id, evidence)
-                for block_id in sorted(pending)
-            }
-            resolved = False
-            for block_id, train_ids in touching.items():
-                if len(train_ids) == 1:
-                    train_id = train_ids[0]
-                    entries.setdefault(train_id, set()).add(block_id)
-                    evidence.setdefault(train_id, set()).add(block_id)
-                    pending.discard(block_id)
-                    resolved = True
-                elif len(train_ids) > 1:
-                    conflicts[block_id] = train_ids
-                    pending.discard(block_id)
-            if not resolved:
-                break
-        return entries, conflicts
+        unmatched = {
+            result.block_id
+            for result in results
+            if result.kind is AttributionKind.UNIDENTIFIED
+        }
+        if not unmatched:
+            return results
+        # Observational only: record why each controllable train declined
+        # these entries before they become ghosts (no state written).
+        self._log_unmatched_attribution(unmatched, blocks_joined_by_train(results))
+        named: Dict[str, str] = {}
+        for unidentified_id, block_ids in self.unidentified_trains.attribute_unmatched_entries(
+            unmatched, self._unidentified_clock()
+        ).items():
+            for block_id in block_ids:
+                named[block_id] = unidentified_id
+        return [
+            replace(result, train_id=named.get(result.block_id))
+            if result.kind is AttributionKind.UNIDENTIFIED
+            else result
+            for result in results
+        ]
 
     def _standing_conflict_blocks(self, detector) -> Set[str]:
         """The conflict blocks to match again on this read.
@@ -850,14 +859,13 @@ class SimulationController(SwitchOutputOwner):
         about to be handed to an unidentified train.
 
         Purely observational — it writes no model state and changes no
-        attribution. It exists to trace a ghost that should have been an existing
-        train: for each still-unmatched block it reports, per controllable train,
-        the one reason that train did not claim it — no calculated span at all
-        (`no_span`), no held/span block next to the entry (`not_adjacent`), or a
-        neighbour but the plausibility gate said no (`plausibility_veto`). The
-        distinction between `no_span` and the others is the whole point: a train
-        whose span went `None` around adoption, presence-unknown, or a stalled
-        tick declines every entry under it and loses each to a ghost.
+        attribution. It exists to trace an unidentified train that should have
+        been an existing train: for each still-unmatched block it reports, per
+        controllable train, the one reason that block does not touch it
+        (design_new.md "Block occupancy detection", Touching) — the train holds
+        no block at all (`no_block_list`), none of its blocks is next to the
+        entry (`not_adjacent`), or it is directional and the entry is not the
+        block on its head side (`not_on_head_side`).
         """
         center = getattr(self, "notification_center", None)
         if center is None:
@@ -870,49 +878,42 @@ class SimulationController(SwitchOutputOwner):
                 self.network.blocks.get(block_id), "reserved_for_train", None
             )
             rows: List[Dict[str, object]] = []
-            for train_id, controller in self.controllers.items():
+            for train_id in self.controllers:
                 train = self.network.trains.get(train_id)
                 if train is None or getattr(train, "is_unidentified", False):
                     continue
-                span = getattr(
-                    getattr(controller, "physics_sync", None), "current_span", None
+                gained = set(claimed.get(train_id, set()))
+                listed = sorted(
+                    {
+                        bid
+                        for bid, block in self.network.blocks.items()
+                        if getattr(block, "occupied_by", None) == train_id
+                    }
+                    | gained
                 )
-                span_blocks = (
-                    list(span.occupied_blocks or []) if span is not None else None
+                retained = sorted(self._ghost_retained_span(train_id))
+                adjacent = bool(neighbours & (set(listed) | set(retained)))
+                directional = self._train_is_directional(train_id)
+                head_side = (
+                    self._train_head_side_block(train_id, gained) if directional else None
                 )
-                held = sorted(
-                    bid
-                    for bid, block in self.network.blocks.items()
-                    if getattr(block, "occupied_by", None) == train_id
-                )
-                covered = set(span_blocks or []) | set(held) | set(
-                    claimed.get(train_id, set())
-                )
-                adjacent = bool(neighbours & covered)
-                try:
-                    can_enter = (
-                        bool(detector.can_enter(train_id, block_id))
-                        if detector.can_enter is not None
-                        else None
-                    )
-                except Exception:
-                    can_enter = "error"
-                if span is None:
-                    reason = "no_span"
+                if not listed and not retained:
+                    reason = "no_block_list"
                 elif not adjacent:
                     reason = "not_adjacent"
-                elif can_enter is False:
-                    reason = "plausibility_veto"
+                elif directional and head_side != block_id:
+                    reason = "not_on_head_side"
                 else:
                     reason = "unexpected_would_match"
                 rows.append(
                     {
                         "train_id": train_id,
                         "reason": reason,
-                        "span_blocks": span_blocks,
-                        "held_blocks": held,
+                        "block_list": listed,
+                        "retained_span": retained,
                         "adjacent": adjacent,
-                        "can_enter": can_enter,
+                        "directional": directional,
+                        "head_side": head_side,
                     }
                 )
             try:
@@ -1564,7 +1565,10 @@ class SimulationController(SwitchOutputOwner):
             input_interface=self.input_interface,
             controllers=self.controllers,
             reachable_blocks=self.unidentified_trains.reachable_blocks,
-            can_enter=self._train_could_be_entering,
+            directional=self._train_is_directional,
+            head_side=self._train_head_side_block,
+            retained_span=self._ghost_retained_span,
+            block_list=self._train_block_list,
             notify=lambda operation, message: self.notification_center.emit(
                 source="BlockOccupancyDetector",
                 operation=operation,
@@ -1645,65 +1649,42 @@ class SimulationController(SwitchOutputOwner):
                 )
             )
             return
-        entered_by_train, vacated_by_train, unmatched = detector.attribute(
-            entered, vacated, self._standing_conflict_blocks(detector)
+        # One result per changed block, with its `kind` (design_new.md "Block
+        # occupancy detection", The attribution result). The detector owns the
+        # match order and the clear rule; everything below reads `kind`.
+        results = detector.attribute(
+            entered,
+            vacated,
+            self._standing_conflict_blocks(detector),
+            self._reoffered_held_clears(detector),
         )
-
-        # A confirmed entry next to a block an ordinary train already holds is
-        # that train standing across the boundary — one train on two blocks, not
-        # a new object (design_new.md "Attribution"). This runs before the unidentified train
-        # step, so an unidentified train is minted only for current that is genuinely
-        # disconnected from every train. A block more than one train touches is
-        # a conflict: it goes to no train, and never to an unidentified train.
-        conflicts: Dict[str, List[str]] = {}
-        if unmatched:
-            adjacent, conflicts = self._entries_for_adjacent_trains(
-                unmatched, entered_by_train
-            )
-            for train_id, block_ids in adjacent.items():
-                entered_by_train.setdefault(train_id, set()).update(block_ids)
-                unmatched -= block_ids
-            unmatched -= set(conflicts)
-
-        # What is left matches no existing train and is not next to one, so it
-        # belongs to an unidentified train (design_new.md "Attribution"):
-        # `UnidentifiedTrainTracker` resolves it to an unidentified train `train_id` — a new unidentified train, or
-        # one continuing its run across an undetected switch tile — and from here
-        # the unidentified train is an ordinary train, so its slice is written and committed
-        # exactly like every other train's.
-        if unmatched:
-            # Observational only: record why each controllable train declined
-            # these entries before they become ghosts (no state written).
-            self._log_unmatched_attribution(unmatched, entered_by_train)
-            for unidentified_id, block_ids in self.unidentified_trains.attribute_unmatched_entries(
-                unmatched, self._unidentified_clock()
-            ).items():
-                entered_by_train.setdefault(unidentified_id, set()).update(block_ids)
+        results = self._name_unidentified_trains(results)
+        entered_by_train = blocks_joined_by_train(results)
 
         # A block one train has just physically entered may still be reserved
         # ahead for a different train. That train's authority runs through an
         # occupied block, so it is cut back before it can be acted on — and
         # before Observe commits the entry, which would otherwise hit the
         # `reserved_for_other_train` fatal conflict.
-        self._truncate_authority_at_occupied_reservations(entered_by_train)
+        self._truncate_authority_at_occupied_reservations(results)
 
         # An overrun entry raises the train's emergency cut-out on this same read
         # (design_new.md "Block occupancy detection", An overrun entry or a
         # conflict raises the emergency cut-out). Runs in Observe, before any
         # train plans; the overrun block still joins the block list and the head
         # still moves to its seam below.
-        self._raise_overrun_cut_outs(entered_by_train)
+        self._raise_overrun_cut_outs(results)
         # A conflict raises the cut-out for every candidate, on this read and on
         # every later read while the block still resolves as a conflict.
-        self._raise_conflict_cut_outs(conflicts)
+        self._raise_conflict_cut_outs(results)
 
-        # A confirmed clear is a real vacate only once the holder's calculated
-        # tail has reached the block's exit seam; a clear read from under a train
-        # is a detection fault that holds the block (design_new.md "Block
-        # occupancy detection", A clear read from under the train is a detection
-        # fault). This gates the raw clears into the truly-vacated set, holds the
-        # rest, reports each new fault once, and re-offers held clears.
-        vacated_by_train = self._gate_confirmed_clears(vacated_by_train)
+        # A clear on the rearmost block of its holder's list is a `vacate`; any
+        # other clear under a train is a `held_clear`, a detection fault that
+        # holds the block (design_new.md "Block occupancy detection", A clear
+        # read from under the train is a detection fault). This keeps the held
+        # set for the next read's re-offer, reports each new fault once, and
+        # records each `unowned_clear`.
+        vacated_by_train = self._record_clear_results(results)
 
         self._detected_change_train_ids = set(entered_by_train) | set(vacated_by_train)
 
@@ -1746,93 +1727,76 @@ class SimulationController(SwitchOutputOwner):
 
         self._update_presence_unknown(detector)
 
-    def _gate_confirmed_clears(
-        self, vacated_by_train: Dict[str, Set[str]]
+    def _reoffered_held_clears(self, detector) -> Set[str]:
+        """The held clears to match again on this read (design_new.md "Block
+        occupancy detection", A held clear is re-offered until it is an end
+        block).
+
+        Release follows the confirmed-clear state, not the single read on which
+        the block first went clear, so each block held on the last read is
+        matched again while the detector still reads it clear and the same
+        train still holds it. A block whose current returned is no longer a
+        clear: its entry resolves as `held`. A block released elsewhere (ghost
+        teardown, reservation truncation) is dropped.
+        """
+        confirmed = detector.confirmed_occupied
+        return {
+            block_id
+            for block_id, train_id in self._held_clear_blocks.items()
+            if block_id not in confirmed
+            and getattr(self.network.blocks.get(block_id), "occupied_by", None)
+            == train_id
+        }
+
+    def _record_clear_results(
+        self, results: List[AttributionResult]
     ) -> Dict[str, Set[str]]:
-        """Split this tick's confirmed clears into the truly vacated and the
-        held, and drive the detection-fault lifecycle.
+        """Act on this read's clear results and return train_id -> the blocks
+        each train vacates.
 
-        A block is truly vacated for its holder only once that train's calculated
-        tail has reached the block's exit seam (or the train is ghosted, or it is
-        an unidentified train, whose clears commit at once). A clear read while
-        the train still stands on the block is a detection fault: the block is
-        held — `Block.occupied_by` and its `track voltage` stay — reported once,
-        and re-offered on every later read until the tail reaches the seam or the
-        block reads current again (design_new.md "Block occupancy detection",
-        A clear read from under the train is a detection fault; The fault is
-        reported once per block; A held clear is re-offered until the tail
-        reaches the seam)."""
-        confirmed = self.block_occupancy_detector.confirmed_occupied
+        - `held_clear`: the block stays held, `Block.occupied_by` and its
+          `track voltage` stay, and the span does not move. Its fault is
+          reported on the read the block first reads clear under its holder,
+          and not again while it stays held (design_new.md "Block occupancy
+          detection", The fault is reported once per block). This read's held
+          set is kept for the next read's re-offer and for the seed, which
+          leaves these blocks out.
+        - `unowned_clear`: nothing changes, and one info event records it.
+        - `vacate`: returned for the slice write; the holder's Observe commit
+          releases the block.
+        """
+        held: Dict[str, str] = {}
+        for result in results:
+            if result.kind is AttributionKind.HELD_CLEAR:
+                held[result.block_id] = result.train_id
+                if result.block_id not in self._held_clear_blocks:
+                    self._emit_lost_detection_fault(result.train_id, result.block_id)
+            elif result.kind is AttributionKind.UNOWNED_CLEAR:
+                self._emit_unowned_clear(result.block_id)
+        self._held_clear_blocks = held
+        return blocks_vacated_by_train(results)
 
-        # This tick's transitions plus the standing held-clear set, so a held
-        # clear is re-offered every read. block_id -> holding train_id.
-        candidates: Dict[str, str] = {}
-        for train_id, block_ids in vacated_by_train.items():
-            for block_id in block_ids:
-                candidates[block_id] = train_id
-        for block_id, train_id in list(self._held_clear_blocks.items()):
-            if block_id in confirmed:
-                # Current returned under the train: the fault is over, and a
-                # later clear reports it afresh.
-                del self._held_clear_blocks[block_id]
-                continue
-            block = self.network.blocks.get(block_id)
-            if getattr(block, "occupied_by", None) != train_id:
-                # The block was released elsewhere (ghost teardown, reservation
-                # truncation); drop the stale hold.
-                del self._held_clear_blocks[block_id]
-                continue
-            candidates.setdefault(block_id, train_id)
-
-        truly: Dict[str, Set[str]] = {}
-        for block_id, train_id in candidates.items():
-            if self._tail_reached_exit_seam(train_id, block_id) or (
-                not self._train_has_confirmed_evidence(train_id, confirmed)
-            ):
-                # Vacate: the tail has reached the seam, or no block in the
-                # train's evidence set reads occupied so the train is ghosted and
-                # the ghost teardown releases the rest (design_new.md "Block
-                # occupancy detection", the ghosted branch).
-                truly.setdefault(train_id, set()).add(block_id)
-                self._held_clear_blocks.pop(block_id, None)
-            elif block_id not in self._held_clear_blocks:
-                # A clear read from under the train: hold the block, report once.
-                self._held_clear_blocks[block_id] = train_id
-                self._emit_lost_detection_fault(train_id, block_id)
-        return truly
-
-    def _tail_reached_exit_seam(self, train_id: str, block_id: str) -> bool:
-        """Whether `train_id`'s calculated tail has reached `block_id`'s exit
-        seam — the gate for vacating a block the detector reads clear. An
-        unidentified train integrates no motion, so its clears commit at once
-        (design_new.md "Block occupancy detection", An unidentified train's
-        clears commit at once)."""
-        if self.unidentified_trains.is_unidentified(train_id):
-            return True
+    def _train_block_list(self, train_id: str) -> List[str]:
+        """`train_id`'s block list ordered rear to front, or empty when the
+        train has no physics to order it by (design_new.md "Block occupancy
+        detection", The occupancy chain runs one way)."""
         train = self.network.trains.get(train_id)
-        controller = self.controllers.get(train_id)
         physics = self.physics_instances.get(train_id)
-        if train is None or controller is None or physics is None:
-            return True
-        return physics.tail_has_reached_exit_seam(train, block_id)
+        if train is None or physics is None:
+            return []
+        return physics.block_list_rear_to_front()
 
-    def _train_has_confirmed_evidence(
-        self, train_id: str, confirmed: Set[str]
-    ) -> bool:
-        """Whether any block in this train's evidence set — its span blocks plus
-        the blocks it holds through `Block.occupied_by` — still reads confirmed
-        occupied. When none does, the train is ghosted rather than standing on a
-        held-clear block (design_new.md "Block occupancy detection", the ghosted
-        branch, cross-referenced from Presence unknown)."""
-        controller = self.controllers.get(train_id)
-        if controller is None:
-            return False
-        span = controller.physics_sync.current_span
-        evidence = set(span.occupied_blocks or []) if span else set()
-        for block_id, block in self.network.blocks.items():
-            if getattr(block, "occupied_by", None) == train_id:
-                evidence.add(block_id)
-        return bool(evidence & confirmed)
+    def _emit_unowned_clear(self, block_id: str) -> None:
+        """Record a block that read clear while no train held it (design_new.md
+        "Block occupancy detection", A newly CLEAR block, `unowned_clear`)."""
+        self.notification_center.emit(
+            source="SimulationController",
+            operation="_detect_block_occupancy",
+            kind=Kind.INFO,
+            message=f"block {block_id} read clear; no train holds it",
+            entities=[block_ref(block_id)],
+            event_time=time.time(),
+        )
 
     @staticmethod
     def _conflict_condition_key(block_id: str) -> str:
@@ -1840,7 +1804,7 @@ class SimulationController(SwitchOutputOwner):
         (design_new.md "Error events", Suppression mechanism)."""
         return f"block:{block_id}:attribution_conflict"
 
-    def _raise_conflict_cut_outs(self, conflicts: Dict[str, List[str]]) -> None:
+    def _raise_conflict_cut_outs(self, results: List[AttributionResult]) -> None:
         """Latch a cut-out request for every candidate of every block whose
         attribution result this read is a `conflict` (design_new.md "Block
         occupancy detection", An overrun entry or a conflict raises the
@@ -1867,6 +1831,11 @@ class SimulationController(SwitchOutputOwner):
         conflict and a new one when its candidates change; the key is resolved
         on the first read the block is no longer a conflict.
         """
+        conflicts = {
+            result.block_id: list(result.candidates)
+            for result in results
+            if result.kind is AttributionKind.CONFLICT
+        }
         for block_id in sorted(self._conflict_blocks - set(conflicts)):
             self.notification_center.resolve_condition(
                 self._conflict_condition_key(block_id)
@@ -1902,20 +1871,16 @@ class SimulationController(SwitchOutputOwner):
                 condition_key=self._conflict_condition_key(block_id),
             )
 
-    def _raise_overrun_cut_outs(self, entered_by_train: Dict[str, Set[str]]) -> None:
+    def _raise_overrun_cut_outs(self, results: List[AttributionResult]) -> None:
         """Latch a cut-out request for every train whose attribution result this
-        read is an overrun entry (design_new.md "Block occupancy detection", An
+        read is an `overrun_entry` (design_new.md "Block occupancy detection", An
         overrun entry or a conflict raises the emergency cut-out).
 
-        An overrun entry is a block credited to a train, on its head side, that
-        is neither reserved for that train nor already in its block list, while
-        the train holds a live plan — a train with no authority cannot overrun
-        one. A block already in the train's block list never reaches here:
-        attribution resolves it as `held`, rank 1 of the match order, and
-        credits it to no train (`BlockOccupancyDetector.attribute`). That is the
-        read on which current returns under a block held through a detection
-        fault, whose reservation the train's first entry onto it consumed.
-        Observe latches
+        `BlockOccupancyDetector.attribute` decides the kind: a block credited to
+        a train that is neither reserved for it nor already in its block list,
+        while the train holds a path. A train with no path has no authority to
+        overrun, so its block is an `entry`; a block already in the train's
+        block list is `held`. Observe latches
         `phase_latches.emergency_request = "cut_out"` for that train; the same
         tick's Action step `01f2` applies it through
         `TrainController.eb.activate_cut_out()`, which de-energizes its blocks
@@ -1930,14 +1895,13 @@ class SimulationController(SwitchOutputOwner):
         no cut-out is raised for it.
         """
         calibration = getattr(self, "speed_calibration", None)
-        for train_id in sorted(entered_by_train):
-            if self.unidentified_trains.is_unidentified(train_id):
-                continue
+        overruns: Dict[str, List[str]] = {}
+        for result in results:
+            if result.kind is AttributionKind.OVERRUN_ENTRY:
+                overruns.setdefault(result.train_id, []).append(result.block_id)
+        for train_id in sorted(overruns):
             controller = self.controllers.get(train_id)
             if controller is None:
-                continue
-            # A train with no authority cannot overrun one.
-            if controller.path_projection.received_path_plan is None:
                 continue
             # A calibration pass drives the train at an unmeasured step into a
             # stretch whose far end is dead rail by construction; the pass ends
@@ -1948,16 +1912,7 @@ class SimulationController(SwitchOutputOwner):
                 and calibration.get_propulsion_override(train_id) is not None
             ):
                 continue
-            overrun_blocks = sorted(
-                block_id
-                for block_id in entered_by_train[train_id]
-                if getattr(
-                    self.network.blocks.get(block_id), "reserved_for_train", None
-                )
-                != train_id
-            )
-            if not overrun_blocks:
-                continue
+            overrun_blocks = sorted(overruns[train_id])
             # A train already cut out, or already holding a cut-out request
             # from an earlier stopped-pass read, stays that way and re-emits no
             # event.
@@ -1998,7 +1953,8 @@ class SimulationController(SwitchOutputOwner):
             kind=Kind.WARNING,
             message=(
                 f"block {block_id} read clear while {train_id} still stands on "
-                f"it; holding the block until the train's tail clears it"
+                f"it; holding the block until it reads current again or every block "
+                f"behind it clears"
             ),
             entities=[block_ref(block_id), train_ref(train_id)],
             error=ErrorRecord(
@@ -2009,7 +1965,7 @@ class SimulationController(SwitchOutputOwner):
         )
 
     def _truncate_authority_at_occupied_reservations(
-        self, entered_by_train: Dict[str, Set[str]]
+        self, results: List[AttributionResult]
     ) -> None:
         """Cut a path's reservation back when another train physically takes one
         of its reserved blocks (design_new.md "Reservation truncation", Observe
@@ -2038,10 +1994,13 @@ class SimulationController(SwitchOutputOwner):
 
         Either way the reservation is gone before Observe commits the entry,
         which is what keeps a legitimate arrival from being reported as a
-        `reserved_for_other_train` fatal conflict.
+        `reserved_for_other_train` fatal conflict. It reads every result that
+        adds a block to a train's block list (`entry`, `overrun_entry` and
+        `unidentified`, design_new.md "Block occupancy detection", The
+        attribution result).
         """
         dispatcher = self.path_dispatcher
-        for train_id, block_ids in sorted(entered_by_train.items()):
+        for train_id, block_ids in sorted(blocks_joined_by_train(results).items()):
             for block_id in sorted(block_ids):
                 block = self.network.blocks.get(block_id)
                 if block is None:

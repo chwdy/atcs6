@@ -24,7 +24,7 @@ at an authority end it had never travelled to.
 
 from typing import Dict, Set
 
-from block_occupancy import OccupancyInput
+from block_occupancy import AttributionKind, AttributionResult, OccupancyInput
 from enums import Direction, HandlePosition, PathStatus
 from network import RailwayNetwork
 from path import Path, ResourceSequenceEntry
@@ -234,7 +234,9 @@ def test_a_foreign_train_taking_a_locked_block_emergency_brakes_the_reserver():
     assert network.blocks["BLK_C"].reserved_for_train == "T1"
     assert controller.eb.active is False
 
-    sim._truncate_authority_at_occupied_reservations({"FOREIGN": {"BLK_C"}})
+    sim._truncate_authority_at_occupied_reservations(
+        [AttributionResult(AttributionKind.UNIDENTIFIED, "BLK_C", "FOREIGN")]
+    )
 
     # Observe only latches the request; it calls no EB method itself.
     latches = controller.route_hooks.phase_latches

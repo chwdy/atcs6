@@ -658,7 +658,17 @@ class UnidentifiedTrainTracker:
             neighbour = self._network.get_neighbor(current.x, current.y, exit_edge)
             if neighbour is None:
                 continue
-            entry_edge = _OPPOSITE_EDGE.get(exit_edge)
+            # Across a tunnel the far tile is entered through the tunnel's far
+            # edge, which need not be the opposite of the exit (a W↔N tunnel);
+            # between grid neighbours it is the opposite edge.
+            tunnel_far = self._network.tunnels.get((current.x, current.y, exit_edge))
+            if tunnel_far is not None and (tunnel_far[0], tunnel_far[1]) == (
+                neighbour.x,
+                neighbour.y,
+            ):
+                entry_edge = tunnel_far[2]
+            else:
+                entry_edge = _OPPOSITE_EDGE.get(exit_edge)
             if entry_edge is None or entry_edge not in (neighbour.edges or ()):
                 continue  # the two tiles do not actually share a rail
 
