@@ -233,6 +233,16 @@ class TrainPhysics:
     _correction_swept: List[Tuple[Tuple[int, int], str, str]] = field(
         default_factory=list
     )
+    # The switch tiles a detector correction carried the tail off, as
+    # (tile, entry_edge, exit_edge), waiting for the next movement report. A
+    # switch is released only when a movement report lists its tile as
+    # tail-vacated, and a correction moves the span without one; the next
+    # `integrate_movement(...)` reports them, as it does tiles the tail leaves
+    # under power (design_new.md "Block occupancy detection", A vacated block
+    # moves the span end to the seam).
+    _correction_vacated: List[Tuple[Tuple[int, int], str, str]] = field(
+        default_factory=list
+    )
 
     # =========================================================================
     # Internal Helpers
@@ -348,18 +358,22 @@ class TrainPhysics:
         # Driving the blocks to 0 V is the voltage half's job
         # (`apply_track_voltage()`).
         correction_swept, self._correction_swept = self._correction_swept, []
+        correction_vacated, self._correction_vacated = self._correction_vacated, []
 
         if not controller.power_on:
             span = controller.physics_sync.current_span
-            if correction_swept and span is not None:
+            if (correction_swept or correction_vacated) and span is not None:
                 head_is_a = controller._head_end_label() == "end_a"
                 self._work = _work_from_span(span, head_is_a)
                 frames = self._correction_frames(
                     correction_swept, span.occupied_tiles or []
                 )
-                if frames:
+                vacated_frames = self._correction_vacated_frames(
+                    correction_vacated, span.occupied_tiles or []
+                )
+                if frames or vacated_frames:
                     self._emit_span_updates(
-                        controller, train, event_time, 0.0, frames, []
+                        controller, train, event_time, 0.0, frames, vacated_frames
                     )
                     return
             self._emit_final_no_boundary_callback(controller, train, event_time, 0.0)
@@ -394,6 +408,9 @@ class TrainPhysics:
         prev_tail_locator = self._get_tail_locator()
         correction_frames = self._correction_frames(
             correction_swept, prev_occupied_tiles
+        )
+        correction_vacated_frames = self._correction_vacated_frames(
+            correction_vacated, prev_occupied_tiles
         )
 
         # 3. Resolve speed for this tick from controller-owned storage
@@ -448,8 +465,11 @@ class TrainPhysics:
             added_traversals = correction_frames + self._build_added_tile_traversals(
                 prev_occupied_tiles, new_occupied_tiles
             )
-            removed_traversals = self._build_removed_tile_traversals(
-                prev_occupied_tiles, new_occupied_tiles, prev_tail_locator
+            removed_traversals = (
+                correction_vacated_frames
+                + self._build_removed_tile_traversals(
+                    prev_occupied_tiles, new_occupied_tiles, prev_tail_locator
+                )
             )
             self._emit_span_updates(
                 controller,
@@ -466,11 +486,18 @@ class TrainPhysics:
             # fresh `TrainSpan` (cheaper on the common powered-but-stationary
             # hold tick, and the only callback _emit_span_updates would emit
             # here anyway is that same final no-boundary one). The exception is
-            # a correction that carried the head across a switch on this read:
-            # its entry still has to be reported.
-            if correction_frames and self._work is not None:
+            # a correction that carried the head onto a switch, or the tail off
+            # one, on this read: that entry or vacate still has to be reported.
+            if (correction_frames or correction_vacated_frames) and (
+                self._work is not None
+            ):
                 self._emit_span_updates(
-                    controller, train, event_time, new_speed, correction_frames, []
+                    controller,
+                    train,
+                    event_time,
+                    new_speed,
+                    correction_frames,
+                    correction_vacated_frames,
                 )
             else:
                 self._emit_final_no_boundary_callback(
@@ -898,6 +925,60 @@ class TrainPhysics:
             if frame.resource_type == "switch":
                 frames.append(frame)
         return frames
+
+    def _correction_vacated_frames(
+        self,
+        vacated: List[Tuple[Tuple[int, int], str, str]],
+        covered_tiles: List[Tuple[int, int]],
+    ) -> List[TileTraversal]:
+        """Traversal frames for the switch tiles a detector correction carried
+        the tail off, in the order the tail left them. A tile the span covers
+        again is left out."""
+        covered = {tuple(tile) for tile in covered_tiles}
+        frames: List[TileTraversal] = []
+        seen: Set[Tuple[int, int]] = set()
+        for tile, entry_edge, exit_edge in vacated:
+            tile = tuple(tile)
+            if tile in seen or tile in covered:
+                continue
+            seen.add(tile)
+            frames.append(self._make_tile_traversal(tile, entry_edge, exit_edge))
+        return frames
+
+    def _record_switch_tiles_left(
+        self, controller: "TrainController", span_before: "TrainSpan"
+    ) -> None:
+        """Queue the switch tiles a correction carried the tail off — covered by
+        the span before it, not after — for the next movement report, with the
+        edges the train used through each, read from the span before the
+        correction."""
+        span_after = controller.physics_sync.current_span
+        if span_after is None:
+            return
+        left = {tuple(tile) for tile in span_before.occupied_tiles or []} - {
+            tuple(tile) for tile in span_after.occupied_tiles or []
+        }
+        if not left or self.network is None:
+            return
+        left = {
+            tile
+            for tile in left
+            if getattr(self.network.tracks.get(tile), "switch_id", None)
+        }
+        if not left:
+            return
+        head_is_a = controller._head_end_label() == "end_a"
+        self._work = _work_from_span(span_before, head_is_a)
+        try:
+            tail_tile, tail_entry = self._get_tail_locator()
+            frames = self._walk_tile_frames(tuple(tail_tile), tail_entry, left)
+        finally:
+            self._work = None
+        self._correction_vacated.extend(
+            (frame.tile_xy, frame.entry_edge, frame.exit_edge)
+            for frame in frames
+            if frame.resource_type == "switch"
+        )
 
     def _build_added_tile_traversals(
         self,
@@ -1610,12 +1691,18 @@ class TrainPhysics:
 
         if ps.current_span is None:
             return False
+        span_before = ps.current_span
         moved = self._snap_head_to_entered(train, controller, set(entered))
         if vacated:
             moved = (
                 self._move_tail_to_vacated_seam(train, controller, set(vacated))
                 or moved
             )
+        if moved:
+            # Either move can carry the tail off a switch: the entry correction
+            # slides the whole span, and a vacate's seam is also the far seam of
+            # a 0 cm switch tile.
+            self._record_switch_tiles_left(controller, span_before)
         return moved
 
     def _snap_head_to_entered(
@@ -2173,15 +2260,17 @@ class TrainPhysics:
         is always the rearmost block of the list. The head moves with it by the
         same distance, because a span is rigid. The tail stops at the first tile
         ahead that is not in a vacated block — a switch tile included — so the
-        move never carries the tail across a switch; ordinary integration
-        carries it there and records the switch's tail-vacate.
+        move never carries the tail past the vacated block's exit seam; ordinary
+        integration carries it over the switch. A 0 cm switch tile has both its
+        seams on that point, so the tail has left it, and
+        `reconcile_to_detected_occupancy` queues its tail-vacate for the next
+        movement report.
 
         The head may move only over this train's own blocks: when the move
         would carry it onto a switch tile or into a block outside the list, the
         head stops at the exit seam of the block it is in, and the tail stops
         short of its seam by the same amount. That keeps the head off track the
-        detector has not given this train, and off a switch tile whose entry
-        only ordinary integration records.
+        detector has not given this train.
         """
         span = controller.physics_sync.current_span
         if span is None or self.network is None:
