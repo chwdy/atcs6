@@ -210,14 +210,23 @@ class BlockOccupancyDetector:
     # construction. Without it no entry is ever credited to a train it is not
     # standing next to, which is the fail-safe reading.
     reachable_blocks: Optional[Callable[[str], Set[str]]] = None
-    # Whether a given train could be the current that just appeared on a given
-    # block — it is moving, and the block is in front of it. Adjacency says two
-    # things are next to each other and nothing about which way either is going,
-    # so on its own it reads a hand-placed locomotive beside a stopped train as
-    # that train. `SimulationController` wires this to
-    # `TrainPhysics.could_be_entering`. Without it no entry is credited to an
-    # adjacent train at all, which is the fail-safe reading.
-    can_enter: Optional[Callable[[str, str], bool]] = None
+    # Whether a train is directional: it holds a live reservation
+    # (`received_path_plan` is set) and is not stopped. A directional train is
+    # touched on its head side only; any other train on either side.
+    # `SimulationController` wires it. Unwired, every train counts as
+    # directional, which is the fail-safe reading.
+    directional: Optional[Callable[[str], bool]] = None
+    # The block on a train's head side given the blocks it gained on this read
+    # (`TrainPhysics.head_side_block`). Adjacency says two things are next to
+    # each other and nothing about which way either is going, so a directional
+    # train is credited only the block in front of it. `SimulationController`
+    # wires it. Unwired, a directional train touches nothing.
+    head_side: Optional[Callable[[str, Set[str]], Optional[str]]] = None
+    # A ghosted train's retained span blocks, which stand in for its empty block
+    # list (design_new.md "Block occupancy detection", A ghosted train's
+    # retained span stands in for its block list); empty for any other train.
+    # `SimulationController` wires it.
+    retained_span: Optional[Callable[[str], Set[str]]] = None
     # A train's block list — the blocks `Block.occupied_by` names it on,
     # ordered rear to front. A newly clear block is vacated only when it is the
     # rearmost block of its holder's list, so the clear results need the order.
@@ -335,13 +344,17 @@ class BlockOccupancyDetector:
            That is the read on which current returns under a block held through
            a detection fault; every other occupied block is seeded as already
            confirmed, so it never reaches here as an entry.
-        2. The reserving train (`Block.reserved_for_train`) when it is standing
-           next to the block and could be entering it, then the train whose live
-           span covers the block, then the one train that touches the block
-           (`touching_trains_for_block`). Each credits the block to that train
-           as `entry` or `overrun_entry` (`_credited`).
-        3. `conflict` — more than one train touches it. It goes to no train.
-        4. `unidentified` — nothing above matched. `train_id` stays `None`.
+        2. `entry` — the reserving train (`Block.reserved_for_train`) touches
+           the block (`_match_entry`).
+        3. The one train that touches the block (`touching_trains_for_block`),
+           credited as `entry` or `overrun_entry` (`_credited`).
+        4. `conflict` — more than one train touches it. It goes to no train.
+        5. `unidentified` — no train touches it. `train_id` stays `None`.
+
+        A block touches a train when it is next to a block in that train's
+        block list and, for a directional train, is the block on its head side
+        (`_touches`). Nothing here reads a calculated position, except the
+        frozen span of a ghosted train (`retained_span`).
 
         `reoffered` holds blocks that stay confirmed occupied while no train is
         credited with them — a standing `conflict` block (design_new.md "Block
@@ -358,26 +371,16 @@ class BlockOccupancyDetector:
         (`Block.occupied_by`) by `_clear_results`: `vacate`, `held_clear`, or
         `unowned_clear` when no train holds it.
 
-        The adjacency condition on the reservation match is what keeps a
-        reserved-ahead corridor from swallowing a foreign occupant. A train
-        reserves the corridor in front of it before it gets there, so a
-        reservation on its own says nothing about where the locomotive is. When
-        current appears on a reserved block with a clear detected block still
-        between it and the train, the reservation is the one thing that would
-        claim it, and claiming it means the app believes its own train skipped
-        the block in between — track no detector ever confirmed. Such current is
-        a different object and belongs to an unidentified train, exactly as the
-        span and reachability matches already read it (`reachable_blocks`
-        stops at the first block, so a block with a clear block between it and
-        every train matches nobody).
-
-        Adjacency alone is still not enough, because it says two things are next
-        to each other and nothing about which way either is going. A train
-        standing at a signal and a locomotive somebody sets down in front of it
-        are adjacent; so are a train driving east and current appearing on the
-        block behind it. Neither is that train arriving. Every adjacency match
-        therefore also asks `can_enter` whether the train is moving and driving
-        toward the block (`_could_enter`).
+        Touching is what keeps a reserved-ahead corridor from swallowing a
+        foreign occupant. When current appears on a reserved block with a clear
+        detected block still between it and the train, claiming it would mean
+        the app believes its own train skipped the block in between — track no
+        detector ever confirmed. Such current is a different object and belongs
+        to an unidentified train (`reachable_blocks` stops at the first block,
+        so a block with a clear block between it and every train touches
+        nobody). Adjacency alone says nothing about which way a train is going,
+        so a directional train touches only the block on its head side: current
+        appearing behind a train driving away from it is not that train.
 
         Matching runs to a fixed point rather than in one pass, because a train
         fast enough to cross several blocks between two reads has them all
@@ -558,132 +561,102 @@ class BlockOccupancyDetector:
     def _match_entry(
         self, block_id: str, claimed: Dict[str, Set[str]]
     ) -> Optional[str]:
-        """The train a confirmed entry on `block_id` belongs to, or None.
+        """The reserving train when it touches `block_id`, or None — rank 2 of
+        the match order (design_new.md "Block occupancy detection", Match order
+        for a newly OCCUPIED block).
 
         `claimed` is what this batch has attributed so far, so a block resolved
-        earlier in the same pass counts as evidence for the next one.
+        earlier in the same pass counts as evidence for the next one. A
+        reservation is evidence among touching trains only: a train reserves
+        the corridor in front of it before it gets there, so a reservation on
+        its own says nothing about where the locomotive is.
         """
         block = self.network.blocks.get(block_id)
         reserved_for = getattr(block, "reserved_for_train", None) if block else None
-        if reserved_for is not None and self._train_is_adjacent(
-            reserved_for, block_id, claimed
-        ):
+        if reserved_for is None or self.reachable_blocks is None:
+            return None
+        if self._is_unidentified(reserved_for):
+            return None
+        neighbours = set(self.reachable_blocks(block_id))
+        if self._touches(reserved_for, block_id, neighbours, claimed):
             return reserved_for
-        return self._span_owner(block_id)
+        return None
 
     def touching_trains_for_block(
         self, block_id: str, claimed: Optional[Dict[str, Set[str]]] = None
     ) -> List[str]:
-        """Every ordinary train that touches `block_id`, sorted by train id.
+        """Every ordinary train that touches `block_id`, sorted by train id
+        (design_new.md "Block occupancy detection", Touching).
 
-        A train touches the block when it holds a block next to it and could be
-        entering it (`_could_enter`). Next to means reachable through undetected
-        track — bare switch tiles and any tile no block owns — with no other
-        block in between, which is what `reachable_blocks` walks. A train holds a
-        block through its calculated span, through `Block.occupied_by`, or
-        through `claimed`, this read's already-attributed entries — so a train
-        crossing several blocks between two reads stays one train. The span
-        counts because it is where the app is driving the train and it leads
-        confirmed occupancy on entry.
-
-        A locomotive standing across a block boundary draws current on both
-        blocks, and the far one matches no reservation and no span; one touching
-        train is what keeps that second reading one train rather than two
-        objects. More than one touching train is a `conflict` (design_new.md
-        "Block occupancy detection", Attribution, rank 5): the block goes to no
-        train. An unidentified train never touches a block, because it is never
-        energized and integrates no motion, so it enters nothing.
+        `claimed` is this read's already-attributed entries; each joins its
+        train's block list for the next pass, so a train crossing several
+        blocks between two reads stays one train. A locomotive standing across
+        a block boundary draws current on both blocks, and the far one matches
+        no reservation; one touching train is what keeps that second reading
+        one train rather than two objects. More than one touching train is a
+        `conflict` (rank 5): the block goes to no train.
         """
         if self.reachable_blocks is None:
             return []
+        claimed = claimed or {}
         neighbours = set(self.reachable_blocks(block_id))
-        touching: Set[str] = set()
-        for train_id in sorted(self.controllers):
-            if self._is_unidentified(train_id):
-                continue
-            span = getattr(
-                getattr(self.controllers[train_id], "physics_sync", None),
-                "current_span",
-                None,
-            )
-            held = set(span.occupied_blocks or []) if span is not None else set()
-            if claimed:
-                held |= claimed.get(train_id, set())
-            if held & neighbours and self._could_enter(train_id, block_id):
-                touching.add(train_id)
-        for neighbour_id in neighbours:
-            block = self.network.blocks.get(neighbour_id)
-            owner = getattr(block, "occupied_by", None) if block else None
-            if (
-                owner is not None
-                and owner not in touching
-                and not self._is_unidentified(owner)
-                and self._could_enter(owner, block_id)
-            ):
-                touching.add(owner)
-        return sorted(touching)
+        candidates = set(self.controllers)
+        for block in self.network.blocks.values():
+            owner = getattr(block, "occupied_by", None)
+            if owner is not None:
+                candidates.add(owner)
+        return sorted(
+            train_id
+            for train_id in candidates
+            if not self._is_unidentified(train_id)
+            and self._touches(train_id, block_id, neighbours, claimed)
+        )
 
-    def _could_enter(self, train_id: str, block_id: str) -> bool:
-        """Whether `train_id` could be the current that just appeared on
-        `block_id` — moving, and driving toward it rather than away.
-
-        Adjacency alone answers a different question: it says the two are next
-        to each other, which is true of a locomotive somebody set down beside a
-        train standing at a signal. This is the gate that keeps such current
-        from being read as the train (design_new.md "Power", Attribution is
-        gated on plausibility). With no gate wired nothing is plausible, so no
-        entry is credited to an adjacent train.
-        """
-        if self.can_enter is None:
-            return False
-        return bool(self.can_enter(train_id, block_id))
-
-    def _train_is_adjacent(
-        self, train_id: str, block_id: str, claimed: Dict[str, Set[str]]
+    def _touches(
+        self,
+        train_id: str,
+        block_id: str,
+        neighbours: Set[str],
+        claimed: Dict[str, Set[str]],
     ) -> bool:
-        """Whether `train_id` in particular is standing next to `block_id` and
-        could be entering it.
+        """Whether `block_id` touches `train_id`: it is next to a block in the
+        train's block list — reachable through undetected track with no other
+        block in between (`neighbours`) — and, for a directional train, it is
+        the block on the train's head side.
 
-        `touching_trains_for_block` answers for every train at once; the
-        reservation gate needs the answer for the reserving train specifically,
-        because a block may sit next to a different train than the one that
-        reserved it.
-
-        A reservation is the weakest evidence of the three, so it carries the
-        plausibility gate too: a train stopped at the end of its authority still
-        holds the reservation on the block in front of it, and current appearing
-        there while it stands still is not that train.
+        The block list is the blocks `Block.occupied_by` names the train on plus
+        the blocks `claimed` credits it on this read. For a ghosted train it is
+        its retained span, and a block of that span touches it too. An
+        unidentified train touches nothing: it is never energized and
+        integrates no motion, so it enters nothing under its own power.
         """
-        if self.reachable_blocks is None:
+        if self._is_unidentified(train_id):
             return False
-        controller = self.controllers.get(train_id)
-        span = getattr(getattr(controller, "physics_sync", None), "current_span", None)
-        standing_on = set(span.occupied_blocks or []) if span is not None else set()
-        standing_on |= claimed.get(train_id, set())
-        standing_on |= {
+        gained = set(claimed.get(train_id, set()))
+        listed = {
             bid
             for bid, block in self.network.blocks.items()
             if getattr(block, "occupied_by", None) == train_id
-        }
-        if not (standing_on & self.reachable_blocks(block_id)):
+        } | gained
+        retained = (
+            set(self.retained_span(train_id)) if self.retained_span is not None else set()
+        )
+        if block_id in retained:
+            return True
+        if not ((listed | retained) & neighbours):
             return False
-        return self._could_enter(train_id, block_id)
+        directional = (
+            self.directional(train_id) if self.directional is not None else True
+        )
+        if not directional:
+            return True
+        if self.head_side is None:
+            return False
+        return self.head_side(train_id, gained) == block_id
 
     def _is_unidentified(self, train_id: str) -> bool:
         train = self.network.trains.get(train_id)
         return bool(getattr(train, "is_unidentified", False))
-
-    def _span_owner(self, block_id: str) -> Optional[str]:
-        """The train whose live span currently covers `block_id`, if any."""
-        for train_id, controller in self.controllers.items():
-            span = getattr(
-                getattr(controller, "physics_sync", None), "current_span", None
-            )
-            if span is None:
-                continue
-            if block_id in (span.occupied_blocks or []):
-                return train_id
-        return None
 
     def _emit(self, kind: str, message: str) -> None:
         if self.notify is not None:

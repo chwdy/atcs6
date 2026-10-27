@@ -553,3 +553,17 @@ def test_a_real_train_entering_a_unidentified_held_block_is_the_ordinary_conflic
     assert bool(sim.block_manager.occupy_blocks(["BLK_1"], "T_REAL")) is False
     assert sim.failed_runtime is True
     assert network.blocks["BLK_1"].occupied_by == unidentified_id
+
+
+def test_reachable_blocks_cross_a_tunnel_whose_edges_are_not_opposite():
+    """A W↔N tunnel enters its far tile through N, not through the opposite of
+    W, so the walk must take the far edge from the tunnel. Attribution's
+    adjacency reads this walk (design_new.md "Block occupancy detection",
+    Touching)."""
+    from tests.journey.scenes.tunnel_wn_scene import TunnelWNScene
+
+    scene = TunnelWNScene()
+    sim = scene.build().sim_controller
+    tracker = sim.unidentified_trains
+    assert tracker.reachable_blocks(scene.west_block_id) == {scene.north_block_id}
+    assert tracker.reachable_blocks(scene.north_block_id) == {scene.west_block_id}

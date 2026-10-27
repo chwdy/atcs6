@@ -147,6 +147,15 @@ def test_detection_returning_clears_the_flag():
         sim._detect_block_occupancy()
 
     assert controller.presence_unknown is False
+    # The returning current is the ghosted train's own: its retained span
+    # stands in for its empty block list, so the block goes back to it rather
+    # than to an unidentified train (design_new.md "Block occupancy
+    # detection", A ghosted train's retained span stands in for its block list).
+    assert controller.physics_sync.pending_detected_entered_blocks == {"BLK_1"}
+    assert not any(
+        getattr(network.trains.get(train_id), "is_unidentified", False)
+        for train_id in sim.controllers
+    )
 
 
 def test_serialized_on_the_controller_payload():

@@ -291,12 +291,12 @@ class SimulationController(SwitchOutputOwner):
         self.block_occupancy_detector.reachable_blocks = (
             self.unidentified_trains.reachable_blocks
         )
-        # Adjacency says two things are next to each other and nothing about
-        # which way either is going, so every adjacency match is also gated on
-        # whether the train could be entering the block at all — moving, and
-        # driving toward it (design_new.md "Power", Attribution is gated on
-        # plausibility).
-        self.block_occupancy_detector.can_enter = self._train_could_be_entering
+        # Touching reads each train's block list, whether it is directional, and
+        # the block on its head side, plus a ghosted train's retained span
+        # (design_new.md "Block occupancy detection", Touching).
+        self.block_occupancy_detector.directional = self._train_is_directional
+        self.block_occupancy_detector.head_side = self._train_head_side_block
+        self.block_occupancy_detector.retained_span = self._ghost_retained_span
         # A clear is vacated only on the rearmost block of its holder's block
         # list, so the clear results need each list in order (design_new.md
         # "Block occupancy detection", A newly CLEAR block).
@@ -762,23 +762,38 @@ class SimulationController(SwitchOutputOwner):
 
         self.network.update_signals_from_blocks()
 
-    def _train_could_be_entering(self, train_id: str, block_id: str) -> bool:
-        """Whether `train_id` could be the current that just appeared on
-        `block_id` (design_new.md "Power", Attribution is gated on plausibility).
+    def _train_is_directional(self, train_id: str) -> bool:
+        """Whether `train_id` holds a live reservation (`received_path_plan` is
+        set) and is not stopped (design_new.md "Block occupancy detection",
+        Touching). A directional train is touched on its head side only."""
+        controller = self.controllers.get(train_id)
+        if controller is None:
+            return False
+        if controller.path_projection.received_path_plan is None:
+            return False
+        return not controller.is_stopped()
 
-        The physics instance owns the answer — it holds the span, the direction
-        of travel, and the speed. This is the seam that hands it to the detector,
-        which knows only blocks. An unidentified train is never a candidate: it
-        is never energized and integrates no motion, so it enters nothing under
-        its own power, and its own blocks arrive through its detected span.
-        """
+    def _train_head_side_block(
+        self, train_id: str, gained: Set[str]
+    ) -> Optional[str]:
+        """The block on `train_id`'s head side, given the blocks it gained on
+        this read (`TrainPhysics.head_side_block`)."""
         train = self.network.trains.get(train_id)
-        if train is None or getattr(train, "is_unidentified", False):
-            return False
         physics = self.physics_instances.get(train_id)
-        if physics is None:
-            return False
-        return physics.could_be_entering(block_id)
+        if train is None or physics is None:
+            return None
+        return physics.head_side_block(gained)
+
+    def _ghost_retained_span(self, train_id: str) -> Set[str]:
+        """A ghosted train's retained span blocks, which stand in for its empty
+        block list in attribution; empty for any other train (design_new.md
+        "Block occupancy detection", A ghosted train's retained span stands in
+        for its block list)."""
+        controller = self.controllers.get(train_id)
+        if controller is None or not controller.presence_unknown:
+            return set()
+        span = controller.physics_sync.current_span
+        return set(span.occupied_blocks or []) if span is not None else set()
 
     def _name_unidentified_trains(
         self, results: List[AttributionResult]
@@ -844,14 +859,13 @@ class SimulationController(SwitchOutputOwner):
         about to be handed to an unidentified train.
 
         Purely observational — it writes no model state and changes no
-        attribution. It exists to trace a ghost that should have been an existing
-        train: for each still-unmatched block it reports, per controllable train,
-        the one reason that train did not claim it — no calculated span at all
-        (`no_span`), no held/span block next to the entry (`not_adjacent`), or a
-        neighbour but the plausibility gate said no (`plausibility_veto`). The
-        distinction between `no_span` and the others is the whole point: a train
-        whose span went `None` around adoption, presence-unknown, or a stalled
-        tick declines every entry under it and loses each to a ghost.
+        attribution. It exists to trace an unidentified train that should have
+        been an existing train: for each still-unmatched block it reports, per
+        controllable train, the one reason that block does not touch it
+        (design_new.md "Block occupancy detection", Touching) — the train holds
+        no block at all (`no_block_list`), none of its blocks is next to the
+        entry (`not_adjacent`), or it is directional and the entry is not the
+        block on its head side (`not_on_head_side`).
         """
         center = getattr(self, "notification_center", None)
         if center is None:
@@ -864,49 +878,42 @@ class SimulationController(SwitchOutputOwner):
                 self.network.blocks.get(block_id), "reserved_for_train", None
             )
             rows: List[Dict[str, object]] = []
-            for train_id, controller in self.controllers.items():
+            for train_id in self.controllers:
                 train = self.network.trains.get(train_id)
                 if train is None or getattr(train, "is_unidentified", False):
                     continue
-                span = getattr(
-                    getattr(controller, "physics_sync", None), "current_span", None
+                gained = set(claimed.get(train_id, set()))
+                listed = sorted(
+                    {
+                        bid
+                        for bid, block in self.network.blocks.items()
+                        if getattr(block, "occupied_by", None) == train_id
+                    }
+                    | gained
                 )
-                span_blocks = (
-                    list(span.occupied_blocks or []) if span is not None else None
+                retained = sorted(self._ghost_retained_span(train_id))
+                adjacent = bool(neighbours & (set(listed) | set(retained)))
+                directional = self._train_is_directional(train_id)
+                head_side = (
+                    self._train_head_side_block(train_id, gained) if directional else None
                 )
-                held = sorted(
-                    bid
-                    for bid, block in self.network.blocks.items()
-                    if getattr(block, "occupied_by", None) == train_id
-                )
-                covered = set(span_blocks or []) | set(held) | set(
-                    claimed.get(train_id, set())
-                )
-                adjacent = bool(neighbours & covered)
-                try:
-                    can_enter = (
-                        bool(detector.can_enter(train_id, block_id))
-                        if detector.can_enter is not None
-                        else None
-                    )
-                except Exception:
-                    can_enter = "error"
-                if span is None:
-                    reason = "no_span"
+                if not listed and not retained:
+                    reason = "no_block_list"
                 elif not adjacent:
                     reason = "not_adjacent"
-                elif can_enter is False:
-                    reason = "plausibility_veto"
+                elif directional and head_side != block_id:
+                    reason = "not_on_head_side"
                 else:
                     reason = "unexpected_would_match"
                 rows.append(
                     {
                         "train_id": train_id,
                         "reason": reason,
-                        "span_blocks": span_blocks,
-                        "held_blocks": held,
+                        "block_list": listed,
+                        "retained_span": retained,
                         "adjacent": adjacent,
-                        "can_enter": can_enter,
+                        "directional": directional,
+                        "head_side": head_side,
                     }
                 )
             try:
@@ -1558,7 +1565,9 @@ class SimulationController(SwitchOutputOwner):
             input_interface=self.input_interface,
             controllers=self.controllers,
             reachable_blocks=self.unidentified_trains.reachable_blocks,
-            can_enter=self._train_could_be_entering,
+            directional=self._train_is_directional,
+            head_side=self._train_head_side_block,
+            retained_span=self._ghost_retained_span,
             block_list=self._train_block_list,
             notify=lambda operation, message: self.notification_center.emit(
                 source="BlockOccupancyDetector",
