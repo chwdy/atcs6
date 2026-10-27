@@ -223,6 +223,16 @@ class TrainPhysics:
     # state, resolved at emission and read back through `blocks_past_authority`
     # so the de-energize drain does not hold them either.
     _blocks_past_authority: Set[str] = field(default_factory=set)
+    # The tiles a detector correction carried the head across, as
+    # (tile, entry_edge, exit_edge), waiting for the next movement report. A
+    # switch's physical entry comes from the train's calculated traversal, and
+    # the correction's traversal is one; the next `integrate_movement(...)`
+    # reports the switch tiles among them as entered, as it does tiles the head
+    # crosses under power (design_new.md "Block occupancy detection", The
+    # correction walks through the train's own blocks only).
+    _correction_swept: List[Tuple[Tuple[int, int], str, str]] = field(
+        default_factory=list
+    )
 
     # =========================================================================
     # Internal Helpers
@@ -337,7 +347,21 @@ class TrainPhysics:
         # controller). So a train turned OFF while rolling stops by itself here.
         # Driving the blocks to 0 V is the voltage half's job
         # (`apply_track_voltage()`).
+        correction_swept, self._correction_swept = self._correction_swept, []
+
         if not controller.power_on:
+            span = controller.physics_sync.current_span
+            if correction_swept and span is not None:
+                head_is_a = controller._head_end_label() == "end_a"
+                self._work = _work_from_span(span, head_is_a)
+                frames = self._correction_frames(
+                    correction_swept, span.occupied_tiles or []
+                )
+                if frames:
+                    self._emit_span_updates(
+                        controller, train, event_time, 0.0, frames, []
+                    )
+                    return
             self._emit_final_no_boundary_callback(controller, train, event_time, 0.0)
             return
 
@@ -368,6 +392,9 @@ class TrainPhysics:
             list(self._work.occupied_tiles) if self._work is not None else []
         )
         prev_tail_locator = self._get_tail_locator()
+        correction_frames = self._correction_frames(
+            correction_swept, prev_occupied_tiles
+        )
 
         # 3. Resolve speed for this tick from controller-owned storage
         # (canonical source per design).
@@ -418,7 +445,7 @@ class TrainPhysics:
             new_occupied_tiles = (
                 list(self._work.occupied_tiles) if self._work is not None else []
             )
-            added_traversals = self._build_added_tile_traversals(
+            added_traversals = correction_frames + self._build_added_tile_traversals(
                 prev_occupied_tiles, new_occupied_tiles
             )
             removed_traversals = self._build_removed_tile_traversals(
@@ -438,10 +465,17 @@ class TrainPhysics:
             # as-is via the final no-boundary callback instead of rebuilding a
             # fresh `TrainSpan` (cheaper on the common powered-but-stationary
             # hold tick, and the only callback _emit_span_updates would emit
-            # here anyway is that same final no-boundary one).
-            self._emit_final_no_boundary_callback(
-                controller, train, event_time, new_speed
-            )
+            # here anyway is that same final no-boundary one). The exception is
+            # a correction that carried the head across a switch on this read:
+            # its entry still has to be reported.
+            if correction_frames and self._work is not None:
+                self._emit_span_updates(
+                    controller, train, event_time, new_speed, correction_frames, []
+                )
+            else:
+                self._emit_final_no_boundary_callback(
+                    controller, train, event_time, new_speed
+                )
 
         # 13. Periodic position-block sync diagnostic (no auto-correction now
         # that the controller owns occupied_blocks state via the span).
@@ -842,6 +876,28 @@ class TrainPhysics:
             resource_id=resource_id,
             block_id=block_id,
         )
+
+    def _correction_frames(
+        self,
+        swept: List[Tuple[Tuple[int, int], str, str]],
+        covered_tiles: List[Tuple[int, int]],
+    ) -> List[TileTraversal]:
+        """Traversal frames for the switch tiles a detector correction carried
+        the head across that the span still covers, in the order the head
+        crossed them. Block entries come from the detector, so only switch
+        tiles are reported; a tile the span no longer covers is left out."""
+        covered = {tuple(tile) for tile in covered_tiles}
+        frames: List[TileTraversal] = []
+        seen: Set[Tuple[int, int]] = set()
+        for tile, entry_edge, exit_edge in swept:
+            tile = tuple(tile)
+            if tile in seen or tile not in covered:
+                continue
+            seen.add(tile)
+            frame = self._make_tile_traversal(tile, entry_edge, exit_edge)
+            if frame.resource_type == "switch":
+                frames.append(frame)
+        return frames
 
     def _build_added_tile_traversals(
         self,
@@ -1599,15 +1655,19 @@ class TrainPhysics:
         moved = False
         moved_cm = 0.0
         guard = 0
+        swept: List[Tuple[Tuple[int, int], str, str]] = []
         while disagrees() and guard < 200:
             guard += 1
             step_cm = self._head_distance_to_next_tile()
-            if not self._advance_head_to_next_tile(train):
+            if not self._advance_head_to_next_tile(train, swept):
                 break  # end of track / no forward tile — cannot reconcile further
             moved = True
             moved_cm += step_cm
 
         if moved:
+            # The first tile left is the one the head started in, which it
+            # entered earlier; every later one it entered during this walk.
+            self._correction_swept.extend(swept[1:])
             ps.current_span = _span_from_work(self._work)
             gained = set(self._work.occupied_blocks or []) - blocks_before
             self._report_span_correction(train, gained, moved_cm, blocks_before)
@@ -2275,11 +2335,17 @@ class TrainPhysics:
         sim = getattr(self.controller, "simulation_controller", None)
         return getattr(sim, "unidentified_trains", None)
 
-    def _advance_head_to_next_tile(self, train: "Train") -> bool:
+    def _advance_head_to_next_tile(
+        self,
+        train: "Train",
+        swept: Optional[List[Tuple[Tuple[int, int], str, str]]] = None,
+    ) -> bool:
         """Move the head end to the next forward tile (at its entry seam) and
         retrace the tail and occupied span. Returns False when there is no
-        forward tile. Used only by reconcile_to_detected_occupancy; it records no
-        swept traversals, so it emits no movement events."""
+        forward tile. Used only by reconcile_to_detected_occupancy. It emits no
+        movement events itself; when `swept` is given it appends the tile the
+        head leaves, as (tile, entry_edge, exit_edge), for the caller to
+        report."""
         work = self._work
         if work is None:
             return False
@@ -2297,6 +2363,8 @@ class TrainPhysics:
         if next_tile is None:
             return False
         next_entry = self._entry_edge_on_next(head_tile, exit_edge, next_tile)
+        if swept is not None:
+            swept.append((head_tile, head_entry, exit_edge))
 
         if work.head_is_a:
             work.end_a_tile = next_tile
