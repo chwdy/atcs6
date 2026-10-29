@@ -40,11 +40,13 @@ These are the rules the document expects every patch to honor.
 
 ## Sentence and structure style for `design_new.md`
 
-These rules govern how a dense rule is laid out on the page. They are a pure syntax
-transform — every clause of the original must survive; nothing is added except
-quantifier words ("all three", "any of these") and first-use definitions of
-identifier-bound terms. If restructuring a bullet would change its meaning, its actor,
-or which entity owns the logic, stop and surface that instead of "simplifying" it.
+These rules govern how a dense rule is laid out on the page. Laying a rule out
+differently is a pure syntax transform — every clause of the original survives, and
+nothing is added except quantifier words ("all three", "any of these") and first-use
+definitions of identifier-bound terms. Removing a clause is a different kind of edit;
+it follows **Cutting text** below. If restructuring or cutting would change a rule's
+meaning, its actor, or which entity owns the logic, stop and surface that instead of
+"simplifying" it.
 
 1. **One rule per bullet, bold label first.** Every rule opens with a **bold label**
    naming it, followed by one short sentence stating the action. A bullet that needs
@@ -84,9 +86,68 @@ or which entity owns the logic, stop and surface that instead of "simplifying" i
    exclusion"), its bold label is that exact name, so the restructure turns
    cross-references into visible anchors instead of orphaning them.
 
+## Cutting text in `design_new.md`
+
+The doc is read mostly through AI, so each fact is stated once, at its canonical home
+(doc Authoring Rule 3), and every other site points to it instead of restating it. A
+clause may be removed when one of these holds:
+
+1. **It restates a rule whose canonical home is elsewhere.** Replace it with a pointer
+   such as "(per **Label**)", using an existing bold label or heading copied verbatim.
+   Before cutting, open the target and confirm it states the same fact at the same
+   strength (`must` / `may` / plain statement) and with the same conditions. A pointer
+   to a looser or narrower statement is wrong.
+2. **It repeats a fact stated elsewhere in the same section.** Keep it once, where it is
+   defined.
+3. **It is a reason or consequence that only restates the rule.** Keep a reason that
+   explains a non-obvious "why" an implementer would otherwise get wrong, such as an
+   ordering that prevents a race.
+4. **It is filler.** "in v1", "canonical" used as filler (keep it inside a real name such
+   as "Canonical Entity Index"), "below" / "above", and "exactly" / "explicitly" when
+   they add nothing.
+5. **It is a negative clause that rules out something nothing in the text suggests.**
+   Keep every prohibition (`must not`), every safety rule, and every negative that rules
+   out a plausible wrong implementation.
+
+Never cut:
+- a heading, or a bold label that any other section cites (check with `grep -c -F`);
+- a step ID, table row or column, schema field, state, transition, gate, refusal, or
+  hardware value;
+- a `must` / `must not` / `may` whose canonical home is the sentence being edited. A
+  requirement keyword disappears only with a whole sentence cut under item 1 or 2.
+
+Inside a canonical home (a schema table, state machine, step procedure, or a subsection
+that names itself the home), cut only under items 2–5.
+
+**Mistakes reviewers caught when shortening.** Check every merged or shortened sentence
+against this list:
+- **A call chain that blurs the actor.** "The consumer calls `helper()`, which does X,
+  then calls Y" reads as if the helper calls Y. When two entities act, give each its own
+  sentence.
+- **A data type or value as the subject.** "A `StationTarget` builds the list" moves the
+  work onto the type. Keep the entity that runs the code as the subject (the actor rule
+  above).
+- **A lost "otherwise" case.** "X, when one exists, and otherwise Y" must keep the Y.
+- **A permission turned into a restriction, or an unscoped "only".** "They do accept X"
+  is not "they accept only X"; "of the Action consumers, only the cancel consumer
+  decides" is not "only the cancel consumer decides".
+- **A dropped "while …" or "when …" exception.** "`/ato/stop` … idempotent while already
+  not engaged" cut to a pointer whose home said "idempotent while `READY`" became looser,
+  so a stop press could be ignored.
+- **A condition stretched over more clauses.** "Writes A when P, and clears B" shortened
+  to "writes A when P, clears B" reads as if P also gates B. Split the sentence instead.
+- **A colon join** that makes a list define only its last item.
+- **An implied extra writer or call** that does not exist.
+- **A dropped scoping sentence.** Removing the sentence that defines a term widens every
+  rule that uses it: "every forward span correction is reported" lost its definition and
+  so covered vacate moves too.
+- **Two rules merged into one.** When two rules name different callers or bans, merging
+  them widens a ban or drops a read source. Keep them separate.
+
 ## When you edit `design_new.md`
 
 - Sweep every cross-reference in one edit. The cross-reference drift rule means you cannot leave one section updated and another stale.
 - Pick canonical homes carefully and link other sites to them by name.
 - Match wording style to the rest of the section you are editing. Do not introduce new vocabulary mid-document.
 - When in doubt about whether a branch is reachable in v1, remove it and let the engineer raise the question if it ever surfaces again.
+- After cutting text, have a reviewer who did not do the cutting compare the old and new text sentence by sentence. The writer's own re-read missed most of the mistakes listed under **Cutting text**.
