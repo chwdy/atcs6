@@ -9,7 +9,7 @@ export type TargetResolutionFailureKind = "missing_target" | "target_unavailable
 
 export type FatalConflictKind = "occupied_by_other_train" | "reserved_for_other_train" | "switch_occupied_by_other_train" | "disabled_resource_entry" | "malformed_route_key" | "switch_intrusion";
 
-export type ValidationErrorType = "unblocked_tile" | "block_occupied" | "block_reserved" | "block_disabled" | "block_manual" | "switch_locked" | "switch_manual" | "switch_disabled" | "flank_switch_conflict";
+export type ValidationErrorType = "unblocked_tile" | "block_occupied" | "block_reserved" | "block_disabled" | "block_manual" | "switch_locked" | "switch_manual" | "switch_disabled" | "flank_switch_conflict" | "meet_way_kept";
 
 export interface ErrorRecord {
   text: string;
@@ -138,6 +138,7 @@ export interface ValidationError {
   position: [number, number] | null;
   occupied_by: string | null;
   locked_by_path: string | null;
+  kept_for_train: string | null;
 }
 
 export interface PathSegment {

@@ -187,6 +187,17 @@ class PathDispatcher:
     def _get_route_executor(self) -> Optional[RouteExecutorForPathDispatcher]:
         return self._route_executor
 
+    def _meet_way_holder(self, resource_type: str, resource_id: str) -> Optional[str]:
+        """The train the current meet assignment keeps this resource for, or
+        None (design_new.md "Resource acquisition", A meet keeps a waiting
+        train's way). Read through the injected route resolver, the same one
+        that answers priority."""
+        rx = self._get_route_executor()
+        getter = getattr(rx, "meet_way_holder", None) if rx is not None else None
+        if not callable(getter):
+            return None
+        return getter(resource_type, resource_id)
+
     def _get_controller(self, train_id: str):
         # Look up (never create) an occupant/covered controller from the injected
         # registry; controller existence is a RouteExecutor precondition.
@@ -842,6 +853,19 @@ class PathDispatcher:
                             message=f"Block {block_id} is reserved",
                         )
                     )
+            kept_for = self._meet_way_holder("block", block_id)
+            if kept_for is not None and kept_for != train_id:
+                errors.append(
+                    ValidationError(
+                        type=ValidationErrorType.MEET_WAY_KEPT,
+                        block_id=block_id,
+                        kept_for_train=kept_for,
+                        message=(
+                            f"Block {block_id} is on the way kept for {kept_for} "
+                            "in a meet"
+                        ),
+                    )
+                )
 
         for pos, required_state in path.required_switches.items():
             track = self.network.get_track(*pos)
@@ -891,6 +915,20 @@ class PathDispatcher:
                         message=f"Switch at {pos} locked",
                     )
                 )
+            if switch_entity is not None:
+                kept_for = self._meet_way_holder("switch", switch_entity.switch_id)
+                if kept_for is not None and kept_for != train_id:
+                    errors.append(
+                        ValidationError(
+                            type=ValidationErrorType.MEET_WAY_KEPT,
+                            position=pos,
+                            kept_for_train=kept_for,
+                            message=(
+                                f"Switch at {pos} is on the way kept for "
+                                f"{kept_for} in a meet"
+                            ),
+                        )
+                    )
 
         return ValidationResult(valid=len(errors) == 0, errors=errors, path=path)
 
@@ -4319,6 +4357,78 @@ class PathDispatcher:
             return None
         return max(terminals, key=lambda p: p.last_status_updated_time)
 
+    def next_call_walk_candidates(
+        self,
+        train_id: str,
+        requested_destination_block_id: str,
+        requested_destination_direction: Optional[str] = None,
+        manual_override: bool = False,
+    ) -> List[GraphWalkCandidate]:
+        """The walks this train's next acquisition call enumerates, best first,
+        before any meet key filter (design_new.md "Meet coordination", Conflict
+        detection).
+
+        With a live path that is `extend_path(...)`'s list: walks from the
+        reservation-end block that continue forward and revisit nothing the
+        path still holds. Without one it is `create_path(...)`'s list: walks
+        from the start-side span end, with no internal repeat. Meet
+        coordination builds its routes and `candidate_resource_keys` from this
+        list, so the keys it chooses are ones the next call can match. Returns
+        an empty list wherever that call would fail before choosing a walk.
+        Read-only.
+        """
+        if not train_id or not requested_destination_block_id:
+            return []
+        if requested_destination_block_id not in self.network.blocks:
+            return []
+        path = self.get_active_path(train_id)
+        if path is not None:
+            held_blocks = self._blocks_held_by(path)
+            if requested_destination_block_id in held_blocks:
+                return []
+            candidates = self._find_walk_candidates(
+                path.get_reservation_end_block_id(),
+                requested_destination_block_id,
+                train_id,
+                manual_override=manual_override,
+                direction_constraint=requested_destination_direction,
+            )
+            held_switches = self._switches_held_by(path)
+            return [
+                cand
+                for cand in candidates
+                if self._segment_continues_forward(path, cand.walk)
+                and not self._segment_would_revisit_resources(
+                    cand.walk, held_blocks, held_switches
+                )
+            ]
+        train = self._get_train(train_id)
+        if train is None:
+            return []
+        head_block = self._get_current_block_id_for_train(train)
+        if not head_block or head_block == requested_destination_block_id:
+            return []
+        start_block_id = self._resolve_create_start_block(
+            train,
+            train_id,
+            requested_destination_block_id,
+            head_block,
+            manual_override,
+        )
+        candidates = self._find_walk_candidates(
+            start_block_id,
+            requested_destination_block_id,
+            train_id,
+            manual_override=manual_override,
+            direction_constraint=requested_destination_direction,
+        )
+        empty: Set[str] = set()
+        return [
+            cand
+            for cand in candidates
+            if not self._segment_would_revisit_resources(cand.walk, empty, empty)
+        ]
+
     def get_waiting_conflict(
         self,
         train_id: str,
@@ -4447,7 +4557,12 @@ class PathDispatcher:
             if err.block_id:
                 # A block conflict: the occupied / reserved block ahead is both
                 # the failed resource and the block the waiter is stuck behind.
-                holders = self._block_conflict_holders(err)
+                # A free block on a kept way is held by the train the way is
+                # kept for (design_new.md "Contention snapshot").
+                if err.type == ValidationErrorType.MEET_WAY_KEPT:
+                    holders = (err.kept_for_train,) if err.kept_for_train else ()
+                else:
+                    holders = self._block_conflict_holders(err)
                 if not holders:
                     continue
                 return WaitingConflict(
@@ -4469,6 +4584,8 @@ class PathDispatcher:
                 if held_block is None:
                     continue
                 switch_id, holders = self._switch_conflict_holders(err)
+                if err.type == ValidationErrorType.MEET_WAY_KEPT:
+                    holders = (err.kept_for_train,) if err.kept_for_train else ()
                 if not holders:
                     continue
                 return WaitingConflict(

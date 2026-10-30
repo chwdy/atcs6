@@ -22,7 +22,7 @@ flow.
 from dataclasses import dataclass, field
 import logging
 import time
-from typing import Any, Callable, ClassVar, Dict, Iterable, List, Optional, Set, Tuple, TYPE_CHECKING, Union
+from typing import Any, Callable, ClassVar, Dict, FrozenSet, Iterable, List, Optional, Set, Tuple, TYPE_CHECKING, Union
 
 from constants import (
     DELAY_CLASS_ON_TIME_TOLERANCE_SECONDS,
@@ -46,6 +46,7 @@ if TYPE_CHECKING:
     from path import Path
     from train import Train
     from train_route import Route
+    from meet_coordination import MeetEntry
 
 logger = logging.getLogger(__name__)
 
@@ -678,26 +679,33 @@ class RouteExecutor:
         # per-train loop); retained across no ticks, so they are not latches and
         # hold no Latch-Table entry.
         #   contention_snapshot: the tick's ContentionSnapshot — `edges` (one per
-        #     holder of each blocked waiter, for wedge/meet detection). Built from
+        #     holder of each blocked waiter, for wedge detection). Built from
         #     the full PathDispatcher.get_waiting_conflict(...).
-        #   meet_assignment: train_id -> MeetCeiling capping how far it may
-        #     reserve this tick and pinning which candidate it may acquire when a
-        #     higher-priority train needs the same track.
         self.contention_snapshot: ContentionSnapshot = ContentionSnapshot()
+        #   meet_assignment: train_id -> MeetEntry for each train meet
+        #     coordination steers this tick: the walk it must take and, for a
+        #     train that waits, the passing place it may reserve no further than.
+        #   meet_kept_ways: waiting train -> its way (the resources from its head
+        #     up to and including its passing place), which no other train may
+        #     acquire or preempt; read by PathDispatcher through
+        #     `meet_way_holder(...)`.
+        #   meet_waiting_for: waiting train -> the train it lets by.
+        self.meet_assignment: Dict[str, "MeetEntry"] = {}
+        self.meet_kept_ways: Dict[str, FrozenSet[Tuple[str, str]]] = {}
+        self.meet_waiting_for: Dict[str, str] = {}
+        self._meet_way_holders: Dict[Tuple[str, str], str] = {}
         #   wedge_report: the tick's WedgeReport — the set of deadlocks present,
         #     each a set of trains that are each stopped with nowhere to go and
-        #     waiting on a resource another member holds. Built between the
+        #     waiting on a resource another member holds. Built after the
         #     contention snapshot and the meet assignment (design_new.md "Wedge
         #     detection"). Read-only; not a latch.
         self.wedge_report: WedgeReport = WedgeReport()
-        self.meet_assignment: Dict[str, "MeetCeiling"] = {}
-        # Trains for which meet coordination found no holding point on the last
-        # pass, so it emitted the live `meet_hold` diagnostic and left the key
-        # active. `MeetCoordinator` (rebuilt each tick) reconciles this set each
-        # pass and calls `NotificationCenter.resolve_condition(...)` for every
-        # train that has dropped out of it (design_new.md "Error events",
-        # Resolution and recurrence).
+        # Trains held at a passing place on the last pass, and the pairs that
+        # had no place to pass, so `MeetCoordinator` (rebuilt each tick) can call
+        # `NotificationCenter.resolve_condition(...)` for each one that is gone
+        # this pass (design_new.md "Error events", Resolution and recurrence).
         self.meet_hold_train_ids: Set[str] = set()
+        self.meet_no_place_pairs: Set[Tuple[str, str]] = set()
         # Condition keys for the wedges reported on the last pass, so the next
         # pass can call `NotificationCenter.resolve_condition(...)` for every
         # wedge that has cleared (design_new.md "Error events", Resolution and
@@ -1513,24 +1521,25 @@ class RouteExecutor:
         return ordered
 
     # ------------------------------------------------------------------
-    # Per-tick coordination (design_new.md "Contention snapshot" +
-    # "Meet coordination"). Built after order_runnable_trains and
-    # before the first train's Plan.
+    # Per-tick coordination (design_new.md "Contention snapshot",
+    # "Meet coordination", "Wedge detection"). Built after
+    # order_runnable_trains and before the first train's Plan.
     # ------------------------------------------------------------------
 
     def build_tick_coordination(self, ordered_train_ids: List[str]) -> None:
-        """Rebuild the contention snapshot and meet assignment for this tick.
+        """Rebuild the contention snapshot, meet assignment, and wedge report
+        for this tick.
 
-        design_new.md "Contention snapshot" + "Wedge detection" + "Meet
-        coordination": all three are read-only tick-start views — recomputed
-        from scratch every tick and retained across none. The order is the
-        doc's: the contention snapshot is built first; the wedge report reads
-        that snapshot's edges; meet coordination then seeds its conflict
-        detection from the same snapshot's contending pairs.
+        All three are read-only tick-start views — recomputed from scratch every
+        tick and retained across none. The order is the doc's (design_new.md
+        "Planning Kernel"): the contention snapshot first, then the meet
+        assignment, which finds its pairs from the trains' routes, then the
+        wedge report, which reads the snapshot's edges and the assignment's
+        steered trains.
         """
         self.contention_snapshot = self._build_contention_snapshot(ordered_train_ids)
+        self._build_meet_assignment(ordered_train_ids)
         self.wedge_report = self._build_wedge_report(ordered_train_ids)
-        self.meet_assignment = self._build_meet_assignment(ordered_train_ids)
 
     def _build_contention_snapshot(
         self, ordered_train_ids: List[str]
@@ -1561,20 +1570,30 @@ class RouteExecutor:
                 )
         return ContentionSnapshot(edges=edges)
 
-    def _build_meet_assignment(
-        self, ordered_train_ids: List[str]
-    ) -> Dict[str, "MeetCeiling"]:
-        """Per-tick `train_id -> MeetCeiling` (design_new.md "Meet coordination").
-
-        Delegated to `MeetCoordinator`, which reads the just-built
-        `contention_snapshot` to seed conflict detection.
-        """
+    def _build_meet_assignment(self, ordered_train_ids: List[str]) -> None:
+        """Rebuild the tick's meet assignment and the ways it keeps
+        (design_new.md "Meet coordination"). Delegated to `MeetCoordinator`."""
         from meet_coordination import MeetCoordinator
 
-        return MeetCoordinator(self).build(ordered_train_ids)
+        decision = MeetCoordinator(self).build(ordered_train_ids)
+        self.meet_assignment = decision.entries
+        self.meet_kept_ways = decision.kept_ways
+        self.meet_waiting_for = decision.waiting_for
+        self._meet_way_holders = {
+            key: train_id
+            for train_id, way in decision.kept_ways.items()
+            for key in way
+        }
+
+    def meet_way_holder(self, resource_type: str, resource_id: str) -> Optional[str]:
+        """The train the current meet assignment keeps this resource for, or
+        None (design_new.md "Meet coordination", The waiting train's way is kept
+        for it). `PathDispatcher` reads it to refuse acquisition and Preemption
+        of a resource on another train's kept way."""
+        return self._meet_way_holders.get((resource_type, resource_id))
 
     # ------------------------------------------------------------------
-    # Wedge detection (design_new.md "Wedge detection"). Built between the
+    # Wedge detection (design_new.md "Wedge detection"). Built after the
     # contention snapshot and the meet assignment, once per tick, reading
     # tick-start committed state only.
     # ------------------------------------------------------------------
@@ -1601,10 +1620,53 @@ class RouteExecutor:
             for train_id in ordered_train_ids
             if self._is_wedge_participant(train_id)
         }
-        wedges = self._find_wedges(self.contention_snapshot.edges, participants)
+        wedges = self._find_wedges(self._wedge_edges(ordered_train_ids), participants)
         report = WedgeReport(wedges=wedges)
         self._emit_wedge_events(wedges)
         return report
+
+    def _wedge_edges(self, ordered_train_ids: List[str]) -> List[ContentionEdge]:
+        """The wait-for edges wedge detection reads (design_new.md "Wedge
+        detection"): each train's edges from the contention snapshot, except for
+        a train the meet assignment steers. A steered train's edges come from a
+        fresh `get_waiting_conflict(...)` on the walk its entry chose, and a
+        train standing on its passing place contributes none — it waits there
+        by design."""
+        edges: List[ContentionEdge] = []
+        for train_id in ordered_train_ids:
+            entry = self.meet_assignment.get(train_id)
+            if entry is None:
+                edges.extend(
+                    e for e in self.contention_snapshot.edges
+                    if e.waiting_train_id == train_id
+                )
+                continue
+            ceiling = entry.meet_ceiling_block_id
+            block = self.network.blocks.get(ceiling) if ceiling else None
+            if block is not None and getattr(block, "occupied_by", None) == train_id:
+                continue
+            armed = self.find_armed_task(train_id)
+            if armed is None or self.path_dispatcher is None:
+                continue
+            keys = entry.candidate_resource_keys
+            conflict = self.path_dispatcher.get_waiting_conflict(
+                train_id,
+                armed.stored_resolved_target,
+                self._manual_override_for(train_id),
+                reservation_cap_block_id=ceiling,
+                required_candidate_resource_keys=list(keys) if keys else None,
+            )
+            if conflict is None:
+                continue
+            for holder_id in conflict.holding_train_ids:
+                edges.append(
+                    ContentionEdge(
+                        waiting_block_id=conflict.waiting_block_id,
+                        waiting_train_id=train_id,
+                        holding_train_id=holder_id,
+                    )
+                )
+        return edges
 
     def _is_wedge_participant(self, train_id: str) -> bool:
         """True when `train_id` is stopped with nowhere to go — the wedge
@@ -3594,6 +3656,11 @@ class RouteExecutor:
                 )
                 return False
 
+        # A train that waits in a meet first gives back any reservation past
+        # its passing place (design_new.md "Meet coordination", Giving back
+        # reservation past the passing place).
+        self._give_back_past_meet_ceiling(train_id)
+
         # Holding-point chunking (design_new.md "Holding-point chunking"): step
         # `66aa` owns the hold. A live reservation that ends at a holding point
         # is not extended past it until the lock end reaches it; a train standing
@@ -3662,6 +3729,38 @@ class RouteExecutor:
                 # Terminal walk — no later task on the directed walk.
                 break
         return any_success
+
+    def _give_back_past_meet_ceiling(self, train_id: str) -> None:
+        """Cut a waiting train's live reservation back to its passing place
+        (design_new.md "Meet coordination", Giving back reservation past the
+        passing place).
+
+        Cuts before the first resource past the passing place, through
+        `PathDispatcher.truncate_path_before_resource(...)`. The cut never
+        enters the train's lock, because a passing place is never behind its
+        lock end.
+        """
+        entry = self.meet_assignment.get(train_id)
+        ceiling = entry.meet_ceiling_block_id if entry is not None else None
+        if not ceiling or self.path_dispatcher is None:
+            return
+        path = self.path_dispatcher.get_active_path(train_id)
+        if path is None:
+            return
+        head_index = int(getattr(path, "current_resource_index", 0) or 0)
+        sequence = path.resource_sequence
+        for i, resource in enumerate(sequence):
+            if i < head_index:
+                continue
+            if resource.resource_type == "block" and resource.resource_id == ceiling:
+                if i + 1 < len(sequence):
+                    other = self.meet_waiting_for.get(train_id, "another train")
+                    self.path_dispatcher.truncate_path_before_resource(
+                        path.path_id,
+                        i + 1,
+                        f"meet: waits at passing place {ceiling} for {other}",
+                    )
+                return
 
     def _held_at_holding_point(self, train_id: str) -> bool:
         """True while the train's live reservation ends at a holding point the
@@ -3745,28 +3844,25 @@ class RouteExecutor:
                 if forward_dir is not None:
                     target_dir = forward_dir
 
-        # Meet-coordination ceiling + candidate pin (design_new.md "Meet
-        # coordination" + "Reservation-cap rule"):
-        # when this train carries a meet entry, pass its `candidate_resource_keys`
-        # as `required_candidate_resource_keys` so the dispatcher acquires the
-        # exact route meet coordination evaluated, and — when the entry also caps
-        # short of the real route target — keep the request at that target and
-        # pass the ceiling as the reservation cap. The dispatcher acquires toward
-        # the real target but stores no authority past the cap, so
-        # `reservation_end_block_id` lands on the ceiling while
+        # Meet entry (design_new.md "Meet coordination", Passing the entry):
+        # pass its `candidate_resource_keys` as `required_candidate_resource_keys`
+        # so the dispatcher acquires exactly the walk meet coordination chose,
+        # and — for a train that waits — keep the request at the route target and
+        # pass the passing place as the reservation cap. The dispatcher acquires
+        # toward the real target but stores no reservation past the cap, so
+        # `reservation_end_block_id` lands on the passing place while
         # `requested_destination_block_id` (and the `task_runs[...].resolved_target`
         # written on success below) stay the farther route target. The capped
-        # authority never completes, so the train holds at the ceiling. A train
-        # outside a meet passes neither constraint and requests its route target
-        # normally.
+        # reservation never completes, so the train holds at the passing place.
+        # A train with no entry passes neither constraint.
         required_candidate_resource_keys: Optional[List[Tuple[str, str, str, str]]] = None
         meet_ceiling_block: Optional[str] = None
-        ceiling = self.meet_assignment.get(train.train_id)
-        if ceiling is not None:
-            if ceiling.candidate_resource_keys:
-                required_candidate_resource_keys = list(ceiling.candidate_resource_keys)
-            if ceiling.block_id and ceiling.block_id != target_block:
-                meet_ceiling_block = ceiling.block_id
+        entry = self.meet_assignment.get(train.train_id)
+        if entry is not None:
+            if entry.candidate_resource_keys:
+                required_candidate_resource_keys = list(entry.candidate_resource_keys)
+            if entry.meet_ceiling_block_id and entry.meet_ceiling_block_id != target_block:
+                meet_ceiling_block = entry.meet_ceiling_block_id
 
         # design_new.md "`disabled` and `manual` availability flags": forward the assigned route's
         # operator override into the acquisition chain so an operator-initiated
