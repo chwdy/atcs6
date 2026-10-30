@@ -77,19 +77,17 @@ def _make_projection(
     )
 
 
-def _runtime_with_stream():
-    """A minimal runtime carrying the one event stream, so error events have
-    somewhere to land (errors are events, not entity state)."""
+def _wire_event_stream(executor):
+    """Hand the executor the one event stream, so error events have somewhere
+    to land (errors are events, not entity state)."""
     from notification_center import NotificationCenter
 
-    return SimpleNamespace(notification_center=NotificationCenter())
+    executor.wire_dependencies(notification_center=NotificationCenter())
 
 
 def _emitted_errors(executor):
     """Error-carrying events on the one stream (design_new.md "Error events")."""
-    nc = getattr(
-        getattr(executor, "simulation_controller", None), "notification_center", None
-    )
+    nc = executor.notification_center
     if nc is None:
         return []
     return [n for n in nc.peek_recent(200) if n.error is not None]
@@ -122,7 +120,7 @@ def test_reverse_at_authority_end_latches_cancel_and_emits_no_hard_error():
     dispatcher = _FakeDispatcher(train_id, active_path_id="P1", extend_result=extend_result)
 
     executor = RouteExecutor(network=MagicMock(), path_dispatcher=dispatcher)
-    executor.simulation_controller = _runtime_with_stream()
+    _wire_event_stream(executor)
     controller, latches = _make_controller()
     exec_state = _make_exec_state()
     projection = _make_projection()
@@ -173,7 +171,7 @@ def test_no_viable_path_also_latches_cancellation():
     dispatcher = _FakeDispatcher(train_id, active_path_id="P1", extend_result=extend_result)
 
     executor = RouteExecutor(network=MagicMock(), path_dispatcher=dispatcher)
-    executor.simulation_controller = _runtime_with_stream()
+    _wire_event_stream(executor)
     executor._sync_task_runs = MagicMock()
     executor._now = MagicMock(return_value=12345.0)
 
@@ -217,7 +215,7 @@ def test_temporary_failure_kinds_still_emit_a_hard_error():
     dispatcher = _FakeDispatcher(train_id, active_path_id="P1", extend_result=extend_result)
 
     executor = RouteExecutor(network=MagicMock(), path_dispatcher=dispatcher)
-    executor.simulation_controller = _runtime_with_stream()
+    _wire_event_stream(executor)
     # _sync_task_runs is a real method that touches Route internals; stub it
     # since this test only cares about the error-recording branch.
     executor._sync_task_runs = MagicMock()

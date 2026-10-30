@@ -22,7 +22,7 @@ flow.
 from dataclasses import dataclass, field
 import logging
 import time
-from typing import Any, ClassVar, Dict, Iterable, List, Optional, Set, Tuple, TYPE_CHECKING, Union
+from typing import Any, Callable, ClassVar, Dict, Iterable, List, Optional, Set, Tuple, TYPE_CHECKING, Union
 
 from constants import (
     DELAY_CLASS_ON_TIME_TOLERANCE_SECONDS,
@@ -41,6 +41,8 @@ from runtime_payloads import ErrorRecord, PathAcquisitionFailureKind, PathDispat
 
 if TYPE_CHECKING:
     from network import RailwayNetwork
+    from notification_center import NotificationCenter
+    from speed_calibration import SpeedCalibration
     from path import Path
     from train import Train
     from train_route import Route
@@ -595,14 +597,19 @@ class RouteExecutor:
         # via `history_for_train(train_id)`.
         self.execution_states: Dict[str, RouteExecutionState] = {}
         self._historical_runs: List[RouteExecutionState] = []
-        # Per design_new.md (fix #28): RouteExecutor no longer maintains its
-        # own controller registry. All lookups go through
-        # self.simulation_controller.get_or_create_controller(train_id). The
-        # shared_controllers arg is accepted for backward compatibility with
-        # tests that construct RouteExecutor in isolation; it is stored but
-        # not used for lookups — those always go through simulation_controller
-        # when one is present.
-        self._shared_controllers = shared_controllers  # kept for test compat
+        # The controller registry, keyed by train_id. SimulationController owns
+        # it (design_new.md fix #28) and passes its own `controllers` dict here,
+        # so both read the one registry; a RouteExecutor built alone (tests)
+        # starts its own.
+        self._controllers: Optional[Dict[str, TrainController]] = shared_controllers
+        # Named dependencies, handed in once by `wire_dependencies(...)`. A
+        # RouteExecutor built without a runtime (tests) leaves them unset: it
+        # emits no events, sees no calibration run, creates controllers itself,
+        # and reads wall time as its operating clock.
+        self._notification_center: Optional["NotificationCenter"] = None
+        self._speed_calibration: Optional["SpeedCalibration"] = None
+        self._create_controller: Optional[Callable[[str], TrainController]] = None
+        self._operating_clock: Optional[Callable[[], float]] = None
         # Opaque, globally-monotonic run-instance counter (design_new.md
         # "Route-run state"). Starts at 1, supplies the current value, and
         # increments after every allocation regardless of route. The resulting
@@ -703,6 +710,35 @@ class RouteExecutor:
         # keeps thin forwarders so the doc-canonical names continue to work.
         self._target_resolver = None
         self._at_target_predicates = None
+
+    def wire_dependencies(
+        self,
+        *,
+        notification_center: Optional["NotificationCenter"] = None,
+        speed_calibration: Optional["SpeedCalibration"] = None,
+        controllers: Optional[Dict[str, TrainController]] = None,
+        create_controller: Optional[Callable[[str], TrainController]] = None,
+        operating_clock: Optional[Callable[[], float]] = None,
+    ) -> None:
+        """Inject the named dependencies RouteExecutor needs: the event-log
+        NotificationCenter, the SpeedCalibration whose open runs refuse route
+        requests and drive calibration legs, the controller registry, the
+        call that creates a missing controller (raises KeyError for an unknown
+        train), and the operating clock (design_new.md "Clocks"). Called once by
+        SimulationController at construction; RouteExecutor holds no general
+        SimulationController reference of its own."""
+        self._notification_center = notification_center
+        self._speed_calibration = speed_calibration
+        if controllers is not None:
+            self._controllers = controllers
+        self._create_controller = create_controller
+        self._operating_clock = operating_clock
+
+    @property
+    def notification_center(self) -> Optional["NotificationCenter"]:
+        """The event-log sink this executor emits to, or None when unwired.
+        `MeetCoordinator` and the route-run API read it here."""
+        return self._notification_center
 
     def _get_route_target_resolver(self):
         if self._target_resolver is None:
@@ -1024,8 +1060,7 @@ class RouteExecutor:
         Services that assign several trains read this first, so they refuse the
         whole request before changing anything.
         """
-        sc = getattr(self, "simulation_controller", None)
-        calibration = getattr(sc, "speed_calibration", None) if sc is not None else None
+        calibration = self._speed_calibration
         if calibration is None or calibration.get_propulsion_override(train_id) is None:
             return None
         kind = (
@@ -1168,8 +1203,7 @@ class RouteExecutor:
         (design_new.md "Error events"). Nothing marks an event resolved, so a
         surface that must not show a stale reason gates on live state.
         """
-        sc = getattr(self, "simulation_controller", None)
-        nc = getattr(sc, "notification_center", None) if sc is not None else None
+        nc = self._notification_center
         if nc is None:
             return None
         try:
@@ -1217,23 +1251,22 @@ class RouteExecutor:
     def _get_controller(self, train: "Train") -> TrainController:
         """Get or create TrainController for a train.
 
-        Per design_new.md (fix #28): delegates to
-        ``simulation_controller.get_or_create_controller(train_id)`` when a
-        back-reference is available, so the controller registry is always
-        owned by SimulationController. Falls back to creating a standalone
-        controller (for test contexts without a SimulationController).
+        Per design_new.md (fix #28): delegates to the injected
+        `create_controller` (SimulationController.get_or_create_controller)
+        when one is wired, so the controller registry is always owned by
+        SimulationController. Falls back to creating a standalone controller
+        (for test contexts without a SimulationController).
         """
-        sc = getattr(self, "simulation_controller", None)
-        if sc is not None:
+        if self._create_controller is not None:
             try:
-                return sc.get_or_create_controller(train.train_id)
+                return self._create_controller(train.train_id)
             except KeyError:
                 pass
         # Fallback for test contexts with no SimulationController.
-        fallback = self._shared_controllers
+        fallback = self._controllers
         if fallback is None:
             fallback = {}
-            self._shared_controllers = fallback
+            self._controllers = fallback
         if train.train_id not in fallback:
             fallback[train.train_id] = create_controller_for_train(
                 train_id=train.train_id,
@@ -1246,15 +1279,10 @@ class RouteExecutor:
     def _controller_by_id(self, train_id: str) -> Optional[TrainController]:
         """Look up controller by train_id without creating it.
 
-        Per design_new.md (fix #28): delegates to SimulationController's
-        registry when present; falls back to the shared_controllers dict for
-        test contexts.
+        Per design_new.md (fix #28): reads the controller registry, which is
+        SimulationController's own when wired.
         """
-        sc = getattr(self, "simulation_controller", None)
-        if sc is not None:
-            return getattr(sc, "controllers", {}).get(train_id)
-        fallback = self._shared_controllers or {}
-        return fallback.get(train_id)
+        return (self._controllers or {}).get(train_id)
 
     def _now(self) -> float:
         """System-time Unix seconds; canonical timestamp source for v1."""
@@ -1266,14 +1294,13 @@ class RouteExecutor:
 
         Monotonic seconds of *operation*: it advances only while the session is
         running, so an operator's stop neither consumes a dwell nor makes a
-        train late. The runtime reaches the accumulator through
-        `SimulationController.operating_clock`, the seam `AppState` wires. A
-        route executor built without a runtime falls back to wall time, which
-        is the same reading for a session nothing ever stops.
+        train late. The injected `operating_clock` reads the accumulator
+        through `SimulationController.operating_clock`, the seam `AppState`
+        wires. A route executor built without a runtime falls back to wall
+        time, which is the same reading for a session nothing ever stops.
         """
-        sim = getattr(self, "simulation_controller", None)
-        clock = getattr(sim, "operating_clock", None)
-        return float(clock()) if callable(clock) else time.time()
+        clock = self._operating_clock
+        return float(clock()) if clock is not None else time.time()
 
     def _now_basis(self, route: "Route") -> float:
         """The reading of whichever clock this route's `timing_basis` names."""
@@ -1755,8 +1782,7 @@ class RouteExecutor:
         active_now: Set[str] = set()
         for wedge in wedges:
             active_now.add(self._wedge_condition_key(wedge))
-        sc = getattr(self, "simulation_controller", None)
-        nc = getattr(sc, "notification_center", None) if sc is not None else None
+        nc = self._notification_center
         if nc is not None:
             for wedge in wedges:
                 self._emit_one_wedge(nc, wedge)
@@ -2179,8 +2205,7 @@ class RouteExecutor:
         re-frames the span head between legs. A no-op for any train with no open
         auto pass.
         """
-        sc = getattr(self, "simulation_controller", None)
-        calibration = getattr(sc, "speed_calibration", None) if sc is not None else None
+        calibration = self._speed_calibration
         if calibration is None:
             return
         run = calibration.runs.get(train_id)
@@ -2718,8 +2743,7 @@ class RouteExecutor:
         """Clear a run-level error condition the first tick its predicate goes
         false (design_new.md "Error events", Resolution and recurrence).
         Idempotent, so it is safe to call on every clean tick."""
-        sc = getattr(self, "simulation_controller", None)
-        nc = getattr(sc, "notification_center", None) if sc is not None else None
+        nc = self._notification_center
         if nc is None:
             return
         try:
@@ -2757,8 +2781,7 @@ class RouteExecutor:
         predicate goes false. A discrete one-shot diagnostic (a cancellation
         reason, a broken-task skip) passes no key and is always appended.
         """
-        sc = getattr(self, "simulation_controller", None)
-        nc = getattr(sc, "notification_center", None) if sc is not None else None
+        nc = self._notification_center
         if nc is None:
             return
         try:
@@ -2802,8 +2825,7 @@ class RouteExecutor:
         with the same entity, operation, origin and payload are suppressed by
         `NotificationCenter`, so Plan may call this on every eligible tick.
         """
-        sc = getattr(self, "simulation_controller", None)
-        nc = getattr(sc, "notification_center", None) if sc is not None else None
+        nc = self._notification_center
         if nc is not None:
             try:
                 from notification_center import Kind as _Kind, train_ref as _train_ref
@@ -4473,8 +4495,7 @@ class RouteExecutor:
         # invoked it clears the field once this returns. `latch_event=True`
         # keeps the commit half of the write/commit pair out of the
         # unchanged-repeat suppression.
-        sc = self.simulation_controller
-        nc = getattr(sc, "notification_center", None) if sc is not None else None
+        nc = self._notification_center
         if nc is not None:
             try:
                 from notification_center import train_ref as _tref, route_run_ref as _rref
@@ -4665,8 +4686,7 @@ class RouteExecutor:
         (design_new.md "Event log"). Best-effort: resolves the sink defensively,
         no-ops when none is wired, and never raises into the caller."""
         try:
-            sc = getattr(self, "simulation_controller", None)
-            nc = getattr(sc, "notification_center", None) if sc is not None else None
+            nc = self._notification_center
             if nc is None:
                 return
             from notification_center import (
@@ -4710,8 +4730,8 @@ class RouteExecutor:
     ) -> Optional[Union[ResolvedRouteTarget, str]]:
         """Forward to `RouteTargetResolver.find_next_move_target(...)`.
 
-        Public because `PathDispatcher` calls it (through
-        `simulation_controller.route_executor`) during best-effort truncation
+        Public because `PathDispatcher` calls it (through its injected route
+        executor) during best-effort truncation
         to detect the reversal-trap case.
         """
         return self._get_route_target_resolver().find_next_move_target(train_id)
@@ -4720,8 +4740,8 @@ class RouteExecutor:
         """Resolved target block_ids of every `task_kind == "waypoint"` or
         `task_kind == "run"` task on this train's current RouteRun.
 
-        Public because `PathDispatcher` calls it (through
-        `simulation_controller.route_executor`) during best-effort truncation:
+        Public because `PathDispatcher` calls it (through its injected route
+        executor) during best-effort truncation:
         per design_new.md "`create_path()` flow" item 11, a stored live
         authority's terminal block must never land on a pass-through waypoint
         target or a run's direction-seed target. Waypoints are consumed by

@@ -31,8 +31,7 @@ def _task_error(executor, run, walk_position: int) -> Optional[dict]:
     """The task's current error, read from the event stream. An event about a
     task names both a `"route_run"` ref and a `"walk_position"` ref, so this
     task-level filter finds it."""
-    nc = getattr(getattr(executor, "simulation_controller", None),
-                 "notification_center", None)
+    nc = getattr(executor, "notification_center", None)
     if nc is None:
         return None
     try:

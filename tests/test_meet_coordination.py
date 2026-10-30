@@ -173,7 +173,7 @@ class _MeetBuildStub:
         )
         self.contention_snapshot = snapshot
         self._priorities = priorities
-        self.simulation_controller = None
+        self.notification_center = None
 
     def _effective_priority_for(self, tid):
         return self._priorities.get(tid, 5)

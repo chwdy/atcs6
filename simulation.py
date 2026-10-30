@@ -374,7 +374,16 @@ class SimulationController(SwitchOutputOwner):
                 controllers=self.controllers,
             )
         if self.route_executor is not None:
-            self.route_executor.simulation_controller = self
+            # The same named-dependency injection for RouteExecutor. The clock
+            # is passed as a call that reads `self.operating_clock` each time,
+            # because `AppState` replaces that seam after construction.
+            self.route_executor.wire_dependencies(
+                notification_center=self.notification_center,
+                speed_calibration=self.speed_calibration,
+                controllers=self.controllers,
+                create_controller=self.get_or_create_controller,
+                operating_clock=lambda: self.operating_clock(),
+            )
 
         # Wire BlockManager so it can report fatal physical-entry conflicts
         # via enter_failed_runtime(...) and read network topology directly.

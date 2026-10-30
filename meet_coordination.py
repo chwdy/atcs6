@@ -413,8 +413,7 @@ class MeetCoordinator:
         while the condition persists, and `_reconcile_no_holding_point()`
         resolves the key the first pass the train is no longer held."""
         self._no_holding_point_trains.add(train_id)
-        sc = getattr(self._re, "simulation_controller", None)
-        nc = getattr(sc, "notification_center", None) if sc is not None else None
+        nc = getattr(self._re, "notification_center", None)
         if nc is None:
             return
         try:
@@ -450,8 +449,7 @@ class MeetCoordinator:
         is no longer held. The train is tracked in the same held-set so that
         reconciliation resolves the condition."""
         self._no_holding_point_trains.add(train_id)
-        sc = getattr(self._re, "simulation_controller", None)
-        nc = getattr(sc, "notification_center", None) if sc is not None else None
+        nc = getattr(self._re, "notification_center", None)
         if nc is None:
             return
         try:
@@ -508,8 +506,7 @@ class MeetCoordinator:
         is the condition's predicate going false."""
         held_now = self._no_holding_point_trains
         previous: Set[str] = getattr(self._re, "meet_hold_train_ids", set())
-        sc = getattr(self._re, "simulation_controller", None)
-        nc = getattr(sc, "notification_center", None) if sc is not None else None
+        nc = getattr(self._re, "notification_center", None)
         if nc is not None:
             for train_id in previous - held_now:
                 try:

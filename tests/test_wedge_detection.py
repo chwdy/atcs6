@@ -132,9 +132,7 @@ def _fake_controller(stopped=True, has_plan=True, reason="reservation_stop", cur
 
 def _executor_with_controllers(controllers):
     ex = _executor()
-    ex.simulation_controller = SimpleNamespace(
-        controllers=controllers, notification_center=None
-    )
+    ex.wire_dependencies(controllers=controllers)
     return ex
 
 
@@ -171,7 +169,7 @@ def test_missing_controller_is_not_a_participant():
 def _executor_with_center():
     ex = _executor()
     nc = NotificationCenter()
-    ex.simulation_controller = SimpleNamespace(notification_center=nc, controllers={})
+    ex.wire_dependencies(notification_center=nc, controllers={})
     return ex, nc
 
 
