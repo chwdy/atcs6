@@ -496,7 +496,7 @@ class PathDispatcher:
         ``RailwayPathfinder.get_reachable_endpoints`` — the dispatcher
         keeps this entry point for existing callers; the traversal
         itself lives in the pathfinder home (design_new.md
-        "Pathfinding-home migration").
+        "Operational pathfinding home").
         """
         return self._pathfinder.get_reachable_endpoints(
             start_block_id, include_stations
@@ -742,15 +742,18 @@ class PathDispatcher:
                 train_min_radius_cm = train.min_radius_cm
                 train_max_speed_kmh = train.max_speed
                 train_max_slope_percent = train.max_slope
-        return self._pathfinder.find_ordered_walk(
-            start_block_id=start_block_id,
-            end_block_id=end_block_id,
+        request = self._pathfinder.block_walk_query(
+            start_block_id,
+            end_block_id,
             direction_constraint=direction_constraint,
             manual_override=manual_override,
             train_min_radius_cm=train_min_radius_cm,
             train_max_speed_kmh=train_max_speed_kmh,
             train_max_slope_percent=train_max_slope_percent,
         )
+        if request is None:
+            return []
+        return self._pathfinder.find_ordered_walk(request)
 
     # ========================================================================
     # Validation

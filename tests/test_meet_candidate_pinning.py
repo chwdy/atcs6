@@ -68,8 +68,9 @@ def _routing_train(net, train_id="T1", tile_x=0, block_id="BLOCK_A"):
 def _keys(disp, start, end, direction="forward"):
     """The pinned key list a meet calc would emit for the best `start -> end`
     candidate (the same shared pathfinder Plan and meet coordination use)."""
-    cands = disp._pathfinder.find_ordered_walk(
-        start, end, direction_constraint=direction
+    pf = disp._pathfinder
+    cands = pf.find_ordered_walk(
+        pf.block_walk_query(start, end, direction_constraint=direction)
     )
     assert cands, f"expected a walk {start} -> {end}"
     return PathDispatcher._ordered_walk_keys(cands[0].ordered_walk)

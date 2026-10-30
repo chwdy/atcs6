@@ -1,6 +1,6 @@
 """One-way blocks are a pathfinding filter, not a wait-for-clear blocker.
 
-Per design_new.md "`create_path()` flow" and "Pathfinding-home migration"
+Per design_new.md "`create_path()` flow" and "Operational pathfinding home"
 (the `query_graph_walks` contract), candidate search rejects any candidate
 **whose traversal violates** a block's `Block.allowed_travel_directions`
 when `manual_override == False` — every traversed block, not just the
@@ -62,8 +62,9 @@ def test_search_rejects_walks_crossing_one_way_block_in_reverse():
     network.blocks[ONE_WAY].allowed_travel_directions = {"forward"}
 
     start = dispatcher._get_current_block_id_for_train(network.trains[TRAIN])
-    candidates = dispatcher._pathfinder.find_ordered_walk(
-        start, TARGET_WITH_ALTERNATIVE
+    pf = dispatcher._pathfinder
+    candidates = pf.find_ordered_walk(
+        pf.block_walk_query(start, TARGET_WITH_ALTERNATIVE)
     )
     assert candidates, "a direction-legal walk around the loop must survive"
     for cand in candidates:
@@ -137,7 +138,8 @@ def test_extend_path_fails_no_viable_path_not_blocked_no_growth():
     # Derive the leg's terminal direction from the winning walk geometry so
     # the setup does not depend on the block's ordered-tiles orientation.
     start = dispatcher._get_current_block_id_for_train(network.trains[TRAIN])
-    cands = dispatcher._pathfinder.find_ordered_walk(start, "PLT_ML_10_A_BLOCK")
+    pf = dispatcher._pathfinder
+    cands = pf.find_ordered_walk(pf.block_walk_query(start, "PLT_ML_10_A_BLOCK"))
     assert cands, "setup: no walk from the yard to PLT_ML_10_A_BLOCK"
     terminal_dir = next(
         (
@@ -188,8 +190,9 @@ def test_manual_override_still_bypasses_one_way_policy():
     network.blocks[ONE_WAY].allowed_travel_directions = {"forward"}
     start = dispatcher._get_current_block_id_for_train(network.trains[TRAIN])
 
-    candidates = dispatcher._pathfinder.find_ordered_walk(
-        start, TARGET_WITH_ALTERNATIVE, manual_override=True
+    pf = dispatcher._pathfinder
+    candidates = pf.find_ordered_walk(
+        pf.block_walk_query(start, TARGET_WITH_ALTERNATIVE, manual_override=True)
     )
     crosses_one_way = any(
         any(

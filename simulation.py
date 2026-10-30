@@ -1214,11 +1214,14 @@ class SimulationController(SwitchOutputOwner):
 
         This is the sequence itself. Points are dropped before block voltages,
         and each half is its controller's non-recording device write, so this
-        call touches no recorded model field and is safe from any thread —
-        including the Real Hardware `OutputWatchdog` daemon, which is the sole
-        direct caller. Every runtime-thread caller goes through
-        `enter_output_safe_state()` instead, which advances the safe-state
-        generation and reconciles the recorded fields afterwards.
+        call touches no recorded model field and is safe from any thread.
+        It has two direct callers: the Real Hardware `OutputWatchdog` daemon,
+        and process shutdown (`shutdown.py` `_apply_safe_state`), which writes
+        the safe state before it closes the device (design_new.md Power,
+        Runtime-thread callers reach the sequence through
+        `SimulationController.enter_output_safe_state()`). Every runtime-thread
+        caller goes through `enter_output_safe_state()` instead, which advances
+        the safe-state generation and reconciles the recorded fields afterwards.
         """
         if self.switch_power_controller is not None:
             self.switch_power_controller.de_energize_device_outputs()

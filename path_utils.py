@@ -30,7 +30,7 @@ from enums import Direction
 class GraphLocator:
     """Tile-precise locator used by the operational graph query API.
 
-    Canonical home: design_new.md "Pathfinding-home migration" subsection.
+    Canonical home: design_new.md "`GraphWalkCandidate` payload" subsection.
 
     Fields:
         tile: Tile coordinate anchoring the locator.
@@ -60,7 +60,7 @@ class GraphLocator:
 class DirectedBlockFrame:
     """Terminal directed block frame returned inside GraphWalkCandidate.
 
-    Canonical home: design_new.md "Pathfinding-home migration" subsection.
+    Canonical home: design_new.md "`GraphWalkCandidate` payload" subsection.
 
     Fields:
         block_id: Block whose directed traversal is represented.
@@ -78,11 +78,28 @@ class DirectedBlockFrame:
     exit_edge: Literal["N", "E", "S", "W"]
 
 
+@dataclass(frozen=True)
+class ReservationEnd:
+    """The reservation-end input to
+    `RailwayNetwork.project_reservation_boundary_delta(...)`.
+
+    Canonical home: design_new.md "Boundary-projection helper".
+
+    Fields:
+        block_id: The reservation-end block.
+        terminal_frame: The directed frame the reservation traverses that
+            block in.
+    """
+
+    block_id: str
+    terminal_frame: DirectedBlockFrame
+
+
 @dataclass
 class GraphWalkStep:
     """One resource step inside an ordered_walk list.
 
-    Canonical home: design_new.md "Pathfinding-home migration" subsection.
+    Canonical home: design_new.md "`GraphWalkCandidate` payload" subsection.
 
     Fields:
         step_index: Zero-based step index inside ordered_walk.
@@ -115,7 +132,7 @@ class GraphWalkStep:
 class GraphWalkQuery:
     """Request payload for RailwayPathfinder.query_graph_walks(...).
 
-    Canonical home: design_new.md "Pathfinding-home migration" subsection.
+    Canonical home: design_new.md "Operational pathfinding home" subsection.
 
     Fields:
         start_locator: Tile-precise start locator.

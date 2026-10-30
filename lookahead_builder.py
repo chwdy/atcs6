@@ -514,40 +514,42 @@ class LookaheadBuilder:
 
         # The head→authority-end clearance is the in-walk locator-to-locator
         # projection owned by `RailwayPathfinder.measure_along_walk`
-        # (design_new.md, "Pathfinding-home migration"): sum the forward tile lengths from the
+        # (design_new.md, "Operational pathfinding home"): sum the forward tile lengths from the
         # head's tile through the authority end, netting out the head's already-
         # traversed in-tile offset. `head_distance_cm` carries that offset (and
         # is negative in the freshly-departed recovery anchor, which the helper
         # nets back in). This reproduces the incremental `cumulative_distance_cm`
         # the placement loop above tracks; that accumulation stays for per-tile
         # block/station/signal placement.
-        clearance_cm = self._measure_head_to_authority_clearance(
-            head_tile=head_tile,
+        head_walk = self._build_head_walk(
             head_resource_index=head_resource_index,
             head_tile_index=head_tile_index,
-            head_distance_cm=head_distance_cm,
             resource_sequence=resource_sequence,
+        )
+        clearance_cm = self._measure_head_to_authority_clearance(
+            head_walk=head_walk,
+            head_tile=head_tile,
+            head_distance_cm=head_distance_cm,
         )
 
         # Calculate effective safety margin (5cm for platform, 25cm otherwise)
         effective_safety_margin = self._c.atc.effective_safety_margin()
         # Target stop point is clearance minus safety margin.
         # `reservation_boundary_delta_cm` is the forward distance from the head to
-        # the safety-margin-adjusted authority boundary; with an active path,
-        # that is the same axis as the speed_curves samples. The boundary
-        # projection is owned by `RailwayNetwork.project_authority_boundary_delta`
-        # (design_new.md, "Pathfinding-home migration"): the head→authority-end clearance just walked is
-        # carried in the head locator, and the authority end is the final block
-        # resource's directed frame.
+        # the safety-margin-adjusted reservation boundary, the same value as
+        # `target_stop_cm`; with an active path, that is the same axis as the
+        # speed_curves samples. The boundary projection is owned by
+        # `RailwayNetwork.project_reservation_boundary_delta` (design_new.md
+        # "Boundary-projection helper"), which measures along the same head walk.
         target_stop_cm = max(0.0, clearance_cm - effective_safety_margin)
-        reservation_boundary_delta_cm = (
-            self._project_authority_boundary_delta(
-                head_tile=head_tile,
-                head_block_id=head_block_id,
-                clearance_cm=clearance_cm,
-                resource_sequence=resource_sequence,
-                safety_margin_cm=effective_safety_margin,
-            )
+        reservation_boundary_delta_cm = self._project_reservation_boundary_delta(
+            head_walk=head_walk,
+            head_tile=head_tile,
+            head_block_id=head_block_id,
+            head_distance_cm=head_distance_cm,
+            resource_sequence=resource_sequence,
+            safety_margin_cm=effective_safety_margin,
+            fallback_cm=target_stop_cm,
         )
 
         # Determine override reason code for the forced-zero ATC case. EB
@@ -655,30 +657,23 @@ class LookaheadBuilder:
             ]
         return payload
 
-    def _measure_head_to_authority_clearance(
+    def _build_head_walk(
         self,
-        head_tile: Optional[Tuple[int, int]],
         head_resource_index: int,
         head_tile_index: int,
-        head_distance_cm: float,
         resource_sequence: List[Any],
-    ) -> float:
-        """Measure the head→authority-end clearance via
-        `RailwayPathfinder.measure_along_walk` (design_new.md, "Pathfinding-home migration").
+    ) -> List[Any]:
+        """The live reservation's directed walk from the head's resolved
+        occurrence through the reservation end, one `GraphWalkStep` per tile.
 
-        Builds the forward directed walk (one `GraphWalkStep` per tile, from the
-        head's position through the authority end) out of `resource_sequence`,
-        anchors the head locator with its in-tile offset (`head_distance_cm`),
-        and delegates the cumulative tile-length projection to the shared helper.
-        The result equals the inline `max(0, cumulative_distance_cm)` the
-        placement loop tracks.
+        `head_resource_index` / `head_tile_index` are the head's occurrence on
+        `resource_sequence` (per the Head-mapping rule), so a lapping
+        reservation that lists a tile twice starts at the right one.
         """
-        from path_utils import GraphLocator, GraphWalkStep
-        from railway_pathfinder import RailwayPathfinder
+        from path_utils import GraphWalkStep
 
         ordered_walk: List[GraphWalkStep] = []
         step_index = 0
-        last_tile: Optional[Tuple[int, int]] = None
         for r_idx in range(head_resource_index, len(resource_sequence)):
             resource = resource_sequence[r_idx]
             tile_start = head_tile_index if r_idx == head_resource_index else 0
@@ -700,80 +695,100 @@ class LookaheadBuilder:
                         length_cm=tile_length,
                     )
                 )
-                last_tile = (x, y)
                 step_index += 1
+        return ordered_walk
 
-        if not ordered_walk or head_tile is None or last_tile is None:
+    def _measure_head_to_authority_clearance(
+        self,
+        head_walk: List[Any],
+        head_tile: Optional[Tuple[int, int]],
+        head_distance_cm: float,
+    ) -> float:
+        """Measure the head→reservation-end clearance via
+        `RailwayPathfinder.measure_along_walk` (design_new.md "Operational
+        pathfinding home").
+
+        Sums the forward tile lengths of `head_walk` from the head's tile
+        through the reservation end, netting out the head's already-traversed
+        in-tile offset (`head_distance_cm`, which is negative in the
+        freshly-departed recovery anchor and is netted back in). The result
+        equals the inline `max(0, cumulative_distance_cm)` the placement loop
+        tracks.
+        """
+        from path_utils import GraphLocator
+        from railway_pathfinder import RailwayPathfinder
+
+        if not head_walk or head_tile is None:
             return 0.0
 
         pathfinder = RailwayPathfinder(self._c.network)
         head_locator = GraphLocator(tile=head_tile, distance_cm=head_distance_cm)
-        end_locator = GraphLocator(tile=last_tile)
-        return pathfinder.measure_along_walk(
-            ordered_walk, head_locator, end_locator
-        )
+        end_locator = GraphLocator(tile=head_walk[-1].tile)
+        return pathfinder.measure_along_walk(head_walk, head_locator, end_locator)
 
-    def _project_authority_boundary_delta(
+    def _project_reservation_boundary_delta(
         self,
+        head_walk: List[Any],
         head_tile: Optional[Tuple[int, int]],
         head_block_id: Optional[str],
-        clearance_cm: float,
+        head_distance_cm: float,
         resource_sequence: List[Any],
         safety_margin_cm: float,
+        fallback_cm: float,
     ) -> float:
-        """Build the head locator + authority-end frame and route the boundary
-        projection through `RailwayNetwork.project_authority_boundary_delta`
-        (design_new.md, "Pathfinding-home migration").
+        """Build the head locator and the reservation end and route the
+        boundary projection through `RailwayNetwork.project_reservation_boundary_delta`
+        (design_new.md "Boundary-projection helper").
 
-        The head→authority-end clearance the lookahead walk just produced is
-        carried on the head locator's `distance_cm`; the authority end is the
-        final block resource of `resource_sequence`. The network helper owns the
-        safety-margin subtraction and the at-rest clamp.
+        The reservation end is the last block resource of `resource_sequence`,
+        with its directed frame as the terminal frame. With no head walk or no
+        block resource there is no reservation end to project to, and the
+        caller's `fallback_cm` (the head's `target_stop_cm`) is returned.
         """
-        from path_utils import GraphLocator, DirectedBlockFrame
+        from path_utils import DirectedBlockFrame, GraphLocator, ReservationEnd
 
+        if not head_walk or head_tile is None:
+            return fallback_cm
+
+        end_resource = None
+        for entry in reversed(resource_sequence):
+            if getattr(entry, "resource_type", None) == "block":
+                end_resource = entry
+                break
+        if end_resource is None:
+            return fallback_cm
+
+        edge_to_direction = {
+            "N": Direction.NORTH,
+            "E": Direction.EAST,
+            "S": Direction.SOUTH,
+            "W": Direction.WEST,
+        }
+        terminal_frame = DirectedBlockFrame(
+            block_id=end_resource.resource_id,
+            block_direction="forward",
+            path_tiles=[
+                (t.x, t.y, edge_to_direction.get(t.exit_edge))
+                for t in end_resource.path_tiles
+            ],
+            entry_edge=end_resource.entry_edge or "N",
+            exit_edge=end_resource.exit_edge or "N",
+        )
         head_locator = GraphLocator(
-            tile=head_tile if head_tile is not None else (0, 0),
+            tile=head_tile,
             resource_type="block" if head_block_id else None,
             resource_id=head_block_id,
             block_id=head_block_id,
-            distance_cm=clearance_cm,
+            edge=head_walk[0].entry_edge,
+            distance_cm=head_distance_cm,
         )
-
-        # Authority end = the last block resource in the tail→authority walk.
-        authority_resource = None
-        for entry in reversed(resource_sequence):
-            if getattr(entry, "resource_type", None) == "block":
-                authority_resource = entry
-                break
-
-        authority_end: Optional[DirectedBlockFrame] = None
-        if authority_resource is not None:
-            edge_to_direction = {
-                "N": Direction.NORTH,
-                "E": Direction.EAST,
-                "S": Direction.SOUTH,
-                "W": Direction.WEST,
-            }
-            tiles = [
-                (t.x, t.y, edge_to_direction.get(t.exit_edge))
-                for t in authority_resource.path_tiles
-            ]
-            authority_end = DirectedBlockFrame(
-                block_id=authority_resource.resource_id,
-                block_direction="forward",
-                path_tiles=tiles,
-                entry_edge=authority_resource.entry_edge or "N",
-                exit_edge=authority_resource.exit_edge or "N",
-            )
-
-        if authority_end is None:
-            # No block resource in the walk — preserve the inline arithmetic.
-            return max(0.0, max(0.0, clearance_cm) - safety_margin_cm)
-
-        return self._c.network.project_authority_boundary_delta(
+        return self._c.network.project_reservation_boundary_delta(
+            ordered_walk=head_walk,
             head_locator=head_locator,
-            authority_end=authority_end,
+            reservation_end=ReservationEnd(
+                block_id=end_resource.resource_id,
+                terminal_frame=terminal_frame,
+            ),
             safety_margin_cm=safety_margin_cm,
         )
 

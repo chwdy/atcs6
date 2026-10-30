@@ -325,15 +325,17 @@ class MeetCoordinator:
         train = (self._re.network.trains.get(train_id)
                  if self._re.network else None)
         try:
-            candidates = pathfinder.find_ordered_walk(
+            request = pathfinder.block_walk_query(
                 start,
                 target,
                 direction_constraint=direction,
-                max_candidates=max_candidates,
                 train_min_radius_cm=getattr(train, "min_radius_cm", None),
                 train_max_speed_kmh=getattr(train, "max_speed", None),
                 train_max_slope_percent=getattr(train, "max_slope", None),
             )
+            if request is None:
+                return []
+            candidates = pathfinder.find_ordered_walk(request)[:max_candidates]
         except Exception:
             return []
         return list(candidates or [])
