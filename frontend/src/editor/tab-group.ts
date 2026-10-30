@@ -685,7 +685,7 @@ export class TabGroup {
    *  itself the moment any one of them happened to share the deleted entity.
    *  Returns true when the group ended up empty (mirrors closeTab's
    *  contract). */
-  async closeStaleTab(editorType: string, editorId: string): Promise<boolean> {
+  async closeStaleTab(editorType: string, editorId: string | null): Promise<boolean> {
     const tab = this.tabs.find((t) => t.editorType === editorType && t.editorId === editorId);
     if (tab) {
       return this.closeTab(tab.tabId);

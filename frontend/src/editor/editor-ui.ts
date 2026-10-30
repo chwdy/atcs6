@@ -1379,7 +1379,7 @@ export class EditorUIHandler {
 
   /** Close the tab pointing at a now-missing entity in every open group —
    *  the home sidebar and any spawned windows alike. */
-  async closeStaleSecondaryTab(editorType: string, editorId: string): Promise<void> {
+  async closeStaleSecondaryTab(editorType: string, editorId: string | null): Promise<void> {
     for (const { group } of this.allTabGroups()) {
       await group.closeStaleTab(editorType, editorId);
       this.closeGroupWindowIfEmpty(group);

@@ -145,11 +145,10 @@ export class PathEditorHandler {
     if (this.renderer.clearRoutePreview) {
       this.renderer.clearRoutePreview();
     }
-    if (this.editor._currentEditorType === 'path-setup') {
-      // Exiting the route tool closes its panel outright — don't restore a
-      // panel that happened to be open before, so the sidebar never lingers.
-      await this.editor.hideSecondarySidebar();
-    }
+    // Close only the Create Path tab, in whichever window holds it. The
+    // window's other tabs stay open; the window hides only when that tab was
+    // its last one. Does nothing when no Create Path tab is open.
+    await this.editor.closeEditorTab('path-setup', null);
     if (this.cachedNetwork) {
       this.renderer.requestRedraw();
     }
@@ -322,6 +321,10 @@ export class PathEditorHandler {
         7000
       );
       await window.app?.refreshNetwork();
+      // Keep the window open: show the train that just got the route in the
+      // window that held the Create Path panel, before resetRouteToolState
+      // closes that panel's tab. The operator starts the train from its panel.
+      await this.editor.showTrainControlPanel(trainId);
       await this.resetRouteToolState();
       // The path is acquired asynchronously by the sim loop; if it can't be
       // found, surface that instead of leaving the train idle with no feedback.

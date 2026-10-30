@@ -2814,6 +2814,13 @@ export class Editor {
     return this.uiHandler.closeStaleSecondaryTab(editorType, id);
   }
 
+  /** Close the tab with this editor type + id in whichever window holds it.
+   *  A window left with no tabs hides (home) or closes (spawned). `id` is
+   *  null for panels with no entity, such as the Create Path setup panel. */
+  closeEditorTab(editorType: string, id: string | null): Promise<void> {
+    return this.uiHandler.closeStaleSecondaryTab(editorType, id);
+  }
+
   enterRouteToolMode(): any {
     return this.pathHandler?.enterRouteToolMode();
   }

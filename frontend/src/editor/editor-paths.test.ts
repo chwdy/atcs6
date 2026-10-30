@@ -1,4 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+vi.mock('../lib/toast', () => ({ showToast: vi.fn() }));
 
 import { PathEditorHandler, orderPathsForList } from './editor-paths';
 
@@ -69,5 +71,83 @@ describe('path status color semantics', () => {
   it('active stays green (success)', () => {
     expect(h.getPathAccent('active')).toBe('success');
     expect(h.getPathStatusColor('active')).toBe('var(--success-color)');
+  });
+});
+
+describe('Quick Route success', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('keeps the window open: shows the routed train, then closes only the Create Path tab', async () => {
+    vi.stubGlobal('document', { getElementById: () => null });
+    vi.stubGlobal('window', { app: { refreshNetwork: vi.fn(async () => {}) } });
+    const calls: string[] = [];
+    const endTrack = { x: 5, y: 0, block_section_id: 'BLK_END' };
+    const editor: any = {
+      _currentEditorType: 'path-setup',
+      api: { createRoute: vi.fn(async () => ({})), assignRoute: vi.fn(async () => ({})) },
+      renderer: { requestRedraw: vi.fn() },
+      cachedNetwork: { tracks: [endTrack] },
+      highlighter: { clear: vi.fn() },
+      pathToolState: {
+        active: true,
+        trainId: 'T1',
+        reachableEndpoints: ['BLK_END'],
+        reachablePositions: new Set(),
+      },
+      showTrainControlPanel: vi.fn(async (id: string) => {
+        calls.push(`show ${id}`);
+        editor._currentEditorType = 'train-control';
+      }),
+      closeEditorTab: vi.fn(async (type: string, id: string | null) => {
+        calls.push(`close ${type} ${id}`);
+      }),
+      hideSecondarySidebar: vi.fn(async () => {
+        calls.push('hide');
+      }),
+    };
+    const handler = new PathEditorHandler(editor);
+    handler.watchQuickRoutePathResult = vi.fn(async () => {});
+
+    await handler.handleRouteSecondClick({ x: 5, y: 0 }, endTrack);
+
+    // The train panel opens first, in the window the Create Path tab sits in;
+    // closing that tab afterwards leaves the window up. The whole window is
+    // never hidden.
+    expect(calls).toEqual(['show T1', 'close path-setup null']);
+    expect(editor.api.assignRoute).toHaveBeenCalledWith('T1', expect.stringMatching(/^ROUTE_QR_/));
+    expect(handler.pathToolState.active).toBe(false);
+  });
+});
+
+describe('Quick Route cancel', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('closes only the Create Path tab and never hides the whole window', async () => {
+    vi.stubGlobal('document', { getElementById: () => null });
+    const calls: string[] = [];
+    const editor: any = {
+      _currentEditorType: 'path-setup',
+      renderer: { requestRedraw: vi.fn(), clearRoutePreview: vi.fn() },
+      cachedNetwork: { tracks: [] },
+      highlighter: { clear: vi.fn() },
+      pathToolState: { active: true, trainId: 'T1', reachableEndpoints: [], reachablePositions: new Set() },
+      closeEditorTab: vi.fn(async (type: string, id: string | null) => {
+        calls.push(`close ${type} ${id}`);
+      }),
+      hideSecondarySidebar: vi.fn(async () => {
+        calls.push('hide');
+      }),
+    };
+    const handler = new PathEditorHandler(editor);
+
+    // Esc (leaving the tool) and right-click (cancelling a pick) both end here.
+    await handler.exitRouteToolMode();
+
+    expect(calls).toEqual(['close path-setup null']);
+    expect(handler.pathToolState.active).toBe(false);
   });
 });
