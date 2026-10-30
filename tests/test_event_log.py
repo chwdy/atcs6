@@ -225,10 +225,11 @@ def test_detector_diagnostic_is_stamped_wall_clock():
     assert emitted[-1].event_time > time.time() - 60.0
 
 
-# --- NotificationCenter is the only runtime sink -----------------------------
-# design_new.md "Out of Scope": "Logging beyond NotificationCenter | None |
-# NotificationCenter is the only runtime sink | Component-local logging is
-# forbidden by design." Routine traces must not exist in domain code. The
+# --- NotificationCenter is the only runtime event sink -----------------------
+# design_new.md "Out of Scope", Logging beyond NotificationCenter:
+# NotificationCenter is the only runtime event sink, and component-local logging
+# is forbidden by design (the detector reading log records detector readings,
+# not events). Routine traces must not exist in domain code. The
 # surviving `logger.warning/error/exception` calls are each the last-resort
 # fallback for a NotificationCenter emit that itself raised — without them an
 # emit failure would be silent — so they are allowed and asserted separately.

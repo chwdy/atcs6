@@ -68,6 +68,15 @@ BRAKING_LOCK_LIMIT_MARGIN_KMH: float = 5.0
 # operator running a long session may raise it.
 NOTIFICATION_RETENTION_ROWS: int = 10000
 
+# Detector reading log files (design_new.md "Event log", Detector reading log).
+# A file that has grown past DETECTOR_READING_LOG_MAX_FILE_BYTES is closed and
+# the next line starts a new one, which opens by listing every block. Opening a
+# file deletes the oldest files until the folder holds no more than
+# DETECTOR_READING_LOG_MAX_TOTAL_BYTES. A 10-minute Simulation run of demo_6
+# (163 blocks, 17 trains) writes about 1 MB, so the budget keeps days of runs.
+DETECTOR_READING_LOG_MAX_FILE_BYTES: int = 20 * 1024 * 1024
+DETECTOR_READING_LOG_MAX_TOTAL_BYTES: int = 200 * 1024 * 1024
+
 # Delay-class on-time tolerance per design_new.md "RouteTaskRun schema"
 # (delay_class). A task's actual elapsed travel time is compared with its
 # expected `task_time`: elapsed below `task_time - tol` is "early", above

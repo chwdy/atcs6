@@ -14,6 +14,7 @@ import time
 from typing import Any, Dict, List
 
 from app_state import AppState
+from detector_reading_log import FULL_LAYOUT
 from services.exceptions import NotFoundError, ValidationError
 
 
@@ -98,6 +99,10 @@ def load_layout(state: AppState, name: str) -> Dict[str, Any]:
                 )
 
             state.sim_controller.network = state.network
+            # A loaded layout may reuse every block id, so the reading log is
+            # told outright rather than left to notice a changed block set
+            # (design_new.md "Event log", Detector reading log).
+            state.sim_controller.detector_reading_log.request_full(FULL_LAYOUT)
             state.last_autosave_time = time.time()
         return result
     finally:

@@ -237,8 +237,8 @@ class BlockOccupancyDetector:
     _off_counts: Dict[str, int] = field(default_factory=dict)
     _confirmed: Set[str] = field(default_factory=set)
     # Last raw read + a monotonically increasing read counter, recorded every
-    # `step()` for the /api/hardware/occupancy/raw debug endpoint. Diagnostic
-    # read-back only: nothing in the runtime consumes these.
+    # `step()` for the /api/hardware/occupancy/raw debug endpoint and the
+    # detector reading log. Read-back only: no runtime decision reads these.
     _last_raw: Dict[str, bool] = field(default_factory=dict)
     _read_count: int = 0
 
@@ -269,6 +269,12 @@ class BlockOccupancyDetector:
         vacated = self._confirmed - new_confirmed
         self._confirmed = new_confirmed
         return entered, vacated
+
+    @property
+    def last_raw(self) -> Dict[str, bool]:
+        """The map the last `step()` read from `read_block_currents()`, before
+        debounce. The detector reading log records it once per pass."""
+        return self._last_raw
 
     def debug_snapshot(self) -> Dict[str, object]:
         """What the last `step()` saw, per block: the raw pre-debounce read, the

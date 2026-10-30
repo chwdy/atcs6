@@ -183,6 +183,7 @@ def bootstrap_runtime(
     setup_train: bool = True,
     scene: str | None = None,
     event_log_path: str | None = None,
+    detector_reading_log_dir: str | os.PathLike | None = None,
 ) -> tuple[RailwayNetwork, PathDispatcher, SimulationController, PersistenceManager]:
     """Bootstrap the full runtime environment.
 
@@ -195,6 +196,10 @@ def bootstrap_runtime(
             stream to this append-only JSONL file so a run's record outlives
             the session (design_new.md "Event log", Persistence). `None` (the
             default, used by unit tests) keeps the stream in memory only.
+        detector_reading_log_dir: When set, write the per-pass record of what
+            every block detector read into files in this directory
+            (design_new.md "Event log", Detector reading log). `None` (the
+            default, used by unit tests) leaves that log off.
 
     Returns:
         Tuple of (network, path_dispatcher, sim_controller, persistence_manager).
@@ -255,6 +260,10 @@ def bootstrap_runtime(
     )
     if sim_controller.power_controller:
         sim_controller.power_controller._sim_controller = sim_controller
+    # design_new.md "Event log", Detector reading log: opt-in like the event
+    # log above, so only the real server writes reading files.
+    if detector_reading_log_dir:
+        sim_controller.detector_reading_log.enable(detector_reading_log_dir)
 
     if demo and setup_train:
         setup_demo_train(network, path_dispatcher, sim_controller, scene=scene)

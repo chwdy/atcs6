@@ -298,6 +298,7 @@ def main() -> None:
     prime_hid_runloop()
 
     from bootstrap import bootstrap_runtime
+    from detector_reading_log import DETECTOR_READING_LOG_DIR
     from runtime import start_all_threads
 
     network, path_dispatcher, sim_controller, persistence_manager = bootstrap_runtime(
@@ -307,6 +308,9 @@ def main() -> None:
         # NotificationCenter stream to an append-only JSONL on disk so an
         # operator can review an earlier run's incidents later.
         event_log_path="event_log.jsonl",
+        # design_new.md "Event log", Detector reading log: what every block
+        # detector read, pass by pass, in the per-machine `.runtime/` folder.
+        detector_reading_log_dir=DETECTOR_READING_LOG_DIR,
     )
 
     simulation_lock = threading.Lock()

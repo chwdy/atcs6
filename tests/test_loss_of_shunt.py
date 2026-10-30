@@ -334,8 +334,8 @@ def test_current_returning_under_a_held_block_is_not_an_overrun():
     head_entries = []
     detect = sim._detect_block_occupancy
 
-    def detect_and_record():
-        detect()
+    def detect_and_record(*args, **kwargs):
+        detect(*args, **kwargs)
         detector_reads.append(set(controller.physics_sync.pending_detected_entered_blocks))
 
     sim._detect_block_occupancy = detect_and_record

@@ -59,6 +59,7 @@ from block_occupancy import (
     blocks_joined_by_train,
     blocks_vacated_by_train,
 )
+from detector_reading_log import DetectorReadingLog
 from hardware.safety import SafeStateError
 from hardware.watchdog import WatchdogTripRecord
 from notification_center import (
@@ -228,6 +229,13 @@ class SimulationController(SwitchOutputOwner):
         # Wall time the current pass started; the accrual measures from it when
         # no previous pass stands behind this one.
         self._pass_started_wall_time: Optional[float] = None
+
+        # The per-pass record of what every block detector read (design_new.md
+        # "Event log", Detector reading log). Off until `enable(...)`: the real
+        # server enables it at boot; tests and scenario runs leave it off.
+        self.detector_reading_log = DetectorReadingLog(
+            notification_center=self.notification_center
+        )
 
         # Initialize components with shared controllers. The block/switch power
         # output interfaces come from the session-build override (real backend)
@@ -501,11 +509,9 @@ class SimulationController(SwitchOutputOwner):
         # "Clocks"). The operating clock advances by the uncapped wall x speed
         # delta when the caller supplies it, so a hitch or a high playback
         # multiplier never makes a schedule measure short.
-        self.operating_clock_advance(
-            operating_delta_seconds
-            if operating_delta_seconds is not None
-            else delta_seconds
-        )
+        if operating_delta_seconds is None:
+            operating_delta_seconds = delta_seconds
+        self.operating_clock_advance(operating_delta_seconds)
 
         # The per-train lookahead memo is a tick-local optimization: it is only
         # ever read/written while this flag is True, so every between-tick /
@@ -525,7 +531,11 @@ class SimulationController(SwitchOutputOwner):
             # controller; each train commits its slice in Observe through the normal
             # on_controller_progress flow, and the precise position is snapped to the
             # block seam where the hardware leads it.
-            self._detect_block_occupancy()
+            self._detect_block_occupancy(
+                pass_kind="tick",
+                delta_seconds=delta_seconds,
+                operating_delta_seconds=operating_delta_seconds,
+            )
             # A detector read that failed just escalated to hardware failure and
             # revoked output; a hardware-backed session must not run Plan/Action
             # this tick (design_new.md "Power", The affected hardware-backed
@@ -1126,7 +1136,9 @@ class SimulationController(SwitchOutputOwner):
         net._lookahead_memo_active = True
         net.bump_lookahead_world_version()
         try:
-            self._detect_block_occupancy()
+            # No clock advances on a stopped pass, so its line in the detector
+            # reading log carries zero deltas.
+            self._detect_block_occupancy(pass_kind="stopped")
             # A failed detector read escalated to hardware failure; a stopped
             # hardware-backed poll then commits nothing (design_new.md "Power",
             # The affected hardware-backed operation loop stops).
@@ -1596,7 +1608,12 @@ class SimulationController(SwitchOutputOwner):
         self.activation_issues = list(issues)
         return failures
 
-    def _detect_block_occupancy(self) -> None:
+    def _detect_block_occupancy(
+        self,
+        pass_kind: str = "tick",
+        delta_seconds: float = 0.0,
+        operating_delta_seconds: float = 0.0,
+    ) -> None:
         """The global detector read at the front of Observe: read every block's
         current detector, debounce, attribute confirmed transitions to trains,
         and stash each train's entered/vacated block slice for its Observe
@@ -1604,6 +1621,12 @@ class SimulationController(SwitchOutputOwner):
         "Block occupancy detection"). The controller drains its slice in
         on_physics_updated and the existing on_controller_progress flow commits
         Block.occupied_by.
+
+        A read that succeeds is written to the detector reading log before
+        attribution runs, with the pass's timing: `pass_kind`
+        ("tick" for a running pass, "stopped" for `poll_hardware_occupancy`)
+        and the two deltas this pass advanced the clocks by (zero on a stopped
+        pass). See design_new.md "Event log", Detector reading log.
 
         Also records which trains this tick's read attributed a block change to,
         in `_detected_change_train_ids`. The movement callback consumes and clears
@@ -1649,6 +1672,19 @@ class SimulationController(SwitchOutputOwner):
                 )
             )
             return
+        # Record the read (`detector.last_raw`, the map as read, before the
+        # debounce counted it) before attribution runs, so a later failure in
+        # this pass cannot lose the reading that led to it. The log catches its
+        # own failures; it never raises into the tick.
+        self.detector_reading_log.record_pass(
+            pass_kind=pass_kind,
+            wall_time=self._pass_started_wall_time,
+            simulation_time=self.simulation_time,
+            delta_seconds=delta_seconds,
+            operating_delta_seconds=operating_delta_seconds,
+            detector=detector,
+            environment=self.operation_mode.value,
+        )
         # One result per changed block, with its `kind` (design_new.md "Block
         # occupancy detection", The attribution result). The detector owns the
         # match order and the clear rule; everything below reads `kind`.
