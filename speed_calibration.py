@@ -323,10 +323,36 @@ class SpeedCalibration:
     by the caller — the service layer — before `start` / `start_lighting`.
     """
 
-    def __init__(self, simulation_controller=None) -> None:
-        self._sc = simulation_controller
+    def __init__(self) -> None:
         self.runs: Dict[str, CalibrationRun] = {}
         self.lighting_runs: Dict[str, LightingCalibrationRun] = {}
+        # Named dependencies, handed in by `wire_dependencies(...)`. Unwired
+        # (the unit tests drive the state machine directly), there is no
+        # controller to read, the operating clock reads 0, nothing is emitted,
+        # and the environment is unknown.
+        self._controllers = None
+        self._operating_clock = None
+        self._notification_center = None
+        self._operation_mode = None
+
+    def wire_dependencies(
+        self,
+        *,
+        controllers=None,
+        operating_clock=None,
+        notification_center=None,
+        operation_mode=None,
+    ) -> None:
+        """Inject the named dependencies calibration needs: the controller
+        registry, the operating clock every interval is measured against
+        (design_new.md "Clocks"), the event-log sink, and a call returning the
+        active operating environment. Called once by SimulationController at
+        construction; calibration holds no SimulationController reference of
+        its own."""
+        self._controllers = controllers
+        self._operating_clock = operating_clock
+        self._notification_center = notification_center
+        self._operation_mode = operation_mode
 
     # -- lifecycle --------------------------------------------------------
 
@@ -821,9 +847,8 @@ class SpeedCalibration:
         pass drives without ever queuing an operator command. Returns `None` when
         no auto pass is open for the train or the pass wants nothing this tick.
         """
-        sc = self._sc
         run = self.runs.get(train_id)
-        if sc is None or run is None:
+        if run is None:
             return None
         if not run.is_measuring:
             return None
@@ -855,8 +880,7 @@ class SpeedCalibration:
         return blocks[-1] if framed_head == "end_b" else blocks[0]
 
     def _controller(self, train_id: str):
-        sc = self._sc
-        controllers = getattr(sc, "controllers", None) if sc is not None else None
+        controllers = self._controllers
         if not controllers:
             return None
         return controllers.get(train_id)
@@ -875,9 +899,8 @@ class SpeedCalibration:
     def _operating_time(self) -> float:
         """`AppState.operating_time`, the clock every calibration interval is
         measured against."""
-        sc = self._sc
-        clock = getattr(sc, "operating_clock", None) if sc is not None else None
-        if callable(clock):
+        clock = self._operating_clock
+        if clock is not None:
             try:
                 return float(clock())
             except Exception:
@@ -1199,10 +1222,11 @@ class SpeedCalibration:
     def _is_simulation(self) -> bool:
         """True only when the active environment is Simulation, so lighting
         calibration skips the Hardware-Setup `current_sense_min_drive_v` bound.
-        Unknown env (no simulation controller) keeps the bound conservatively."""
+        Unknown env (none wired) keeps the bound conservatively."""
         from enums import OperationMode
 
-        return getattr(self._sc, "operation_mode", None) is OperationMode.SIMULATION
+        get = self._operation_mode
+        return get is not None and get() is OperationMode.SIMULATION
 
     @staticmethod
     def _reanchored_curve(profile, anchor: float) -> List[Tuple[float, float]]:
@@ -1234,8 +1258,7 @@ class SpeedCalibration:
         its own (design_new.md "Speed calibration" / "Lighting-voltage
         calibration").
         """
-        sc = self._sc
-        nc = getattr(sc, "notification_center", None) if sc is not None else None
+        nc = self._notification_center
         if nc is None:
             return
         try:

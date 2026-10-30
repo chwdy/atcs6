@@ -291,7 +291,7 @@ class SimulationController(SwitchOutputOwner):
         # every confirmed entry that matches no existing train. It creates and
         # retires the unidentified train `Train` records; their block commits then run through
         # the ordinary per-train chain like any other train's.
-        self.unidentified_trains = UnidentifiedTrainTracker(network, self)
+        self.unidentified_trains = UnidentifiedTrainTracker(network)
         # Attribution needs the tracker's undetected-track walk to decide whether
         # a train could physically be standing on a block it reserved, so the
         # detector gets it as soon as the tracker exists (design_new.md "Power",
@@ -341,7 +341,16 @@ class SimulationController(SwitchOutputOwner):
         # stream owned by NotificationCenter.
         from speed_calibration import SpeedCalibration
 
-        self.speed_calibration = SpeedCalibration(self)
+        self.speed_calibration = SpeedCalibration()
+        # The clock and the environment are passed as calls that read the
+        # current value, because `AppState` replaces the clock seam after
+        # construction and an activation changes the environment.
+        self.speed_calibration.wire_dependencies(
+            controllers=self.controllers,
+            operating_clock=lambda: self.operating_clock(),
+            notification_center=self.notification_center,
+            operation_mode=lambda: self.operation_mode,
+        )
 
         # Bumped by every safe-state entry. A `CalibrationRun` captures it when
         # it opens and compares the live value before issuing each command and
@@ -434,6 +443,19 @@ class SimulationController(SwitchOutputOwner):
                 lambda: self.environment_active
             )
             self.switch_manager.active_path_getter = self._active_path_for_train
+
+        # The unidentified-train tracker creates and retires its trains'
+        # controllers and physics, and hands blocks between unidentified trains
+        # through the BlockManager, so it is wired once that exists. The
+        # BlockManager is passed as a call that reads the current one.
+        self.unidentified_trains.wire_dependencies(
+            controllers=self.controllers,
+            physics_instances=self.physics_instances,
+            create_controller=self.get_or_create_controller,
+            create_physics=self.get_or_create_physics,
+            block_manager=lambda: self.block_manager,
+            notification_center=self.notification_center,
+        )
 
     def _active_path_for_train(self, train_id: str):
         """Return `train_id`'s active `Path`, or `None`.

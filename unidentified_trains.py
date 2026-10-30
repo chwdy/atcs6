@@ -35,7 +35,7 @@ back to `False`.
 from __future__ import annotations
 
 import time
-from typing import TYPE_CHECKING, Dict, List, Optional, Set, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Set, Tuple
 
 from constants import UNIDENTIFIED_GAP_HOLD_S
 from network import _OPPOSITE_EDGE
@@ -45,7 +45,6 @@ from train_span import SpanEndLocator, TrainSpan
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from block import Block
     from network import RailwayNetwork
-    from simulation import SimulationController
 
 
 _EDGES: Tuple[str, ...] = ("N", "E", "S", "W")
@@ -54,13 +53,19 @@ _EDGES: Tuple[str, ...] = ("N", "E", "S", "W")
 class UnidentifiedTrainTracker:
     """The unidentified-train side of the global detector read."""
 
-    def __init__(
-        self,
-        network: "RailwayNetwork",
-        simulation_controller: "SimulationController",
-    ) -> None:
+    def __init__(self, network: "RailwayNetwork") -> None:
         self._network = network
-        self._sim = simulation_controller
+        # Named dependencies, handed in by `wire_dependencies(...)`: the
+        # runtime's controller and physics registries and the calls that create
+        # an entry in each, so a minted train gets its controller and physics
+        # and a retired one loses them; a call returning the BlockManager that
+        # hands a block between unidentified trains; and the event-log sink.
+        self._controllers: Dict[str, Any] = {}
+        self._physics_instances: Dict[str, Any] = {}
+        self._create_controller: Optional[Callable[[str], Any]] = None
+        self._create_physics: Optional[Callable[[str], Any]] = None
+        self._block_manager: Optional[Callable[[], Any]] = None
+        self._notification_center: Optional[Any] = None
 
         # Monotonic id source. A retired unidentified train's `train_id` is never reused
         # (design_new.md "Creation and identity"), so this only ever counts up.
@@ -82,6 +87,27 @@ class UnidentifiedTrainTracker:
         # unidentified_id -> the blocks it held at the last reconcile that found it
         # holding anything, which is where `_blocks_before_gap` comes from.
         self._last_held_blocks: Dict[str, Set[str]] = {}
+
+    def wire_dependencies(
+        self,
+        *,
+        controllers: Dict[str, Any],
+        physics_instances: Dict[str, Any],
+        create_controller: Callable[[str], Any],
+        create_physics: Callable[[str], Any],
+        block_manager: Callable[[], Any],
+        notification_center: Optional[Any] = None,
+    ) -> None:
+        """Inject the named dependencies the tracker needs (design_new.md
+        "Power", Unidentified trains). Called once by SimulationController at
+        construction, after its BlockManager exists; the tracker holds no
+        SimulationController reference of its own."""
+        self._controllers = controllers
+        self._physics_instances = physics_instances
+        self._create_controller = create_controller
+        self._create_physics = create_physics
+        self._block_manager = block_manager
+        self._notification_center = notification_center
 
     # ------------------------------------------------------------------
     # Reads
@@ -179,7 +205,7 @@ class UnidentifiedTrainTracker:
         """
         if not vacated:
             return
-        controller = self._sim.controllers.get(unidentified_id)
+        controller = self._controllers.get(unidentified_id)
         if controller is None:
             return
         still_held = (self._held_blocks(unidentified_id) | set(entered)) - set(vacated)
@@ -324,7 +350,7 @@ class UnidentifiedTrainTracker:
         if block is None or block.occupied_by == unidentified_id:
             return
         previous = block.occupied_by
-        manager = self._sim.block_manager
+        manager = self._block_manager() if self._block_manager is not None else None
         if manager is None or not self.is_unidentified(previous):
             return
         manager.on_block_tail_vacated(block_id, previous, None)
@@ -362,8 +388,8 @@ class UnidentifiedTrainTracker:
             )
 
         self._network.add_train(train)
-        self._sim.get_or_create_controller(train_id)
-        self._sim.get_or_create_physics(train_id)
+        self._create_controller(train_id)
+        self._create_physics(train_id)
         self._created_at[train_id] = now
 
         self._emit(
@@ -399,8 +425,8 @@ class UnidentifiedTrainTracker:
         train = self._network.trains.get(unidentified_id)
         profile_id = getattr(train, "speed_profile_id", None) if train else None
         self._network.remove_train(unidentified_id)
-        self._sim.controllers.pop(unidentified_id, None)
-        self._sim.physics_instances.pop(unidentified_id, None)
+        self._controllers.pop(unidentified_id, None)
+        self._physics_instances.pop(unidentified_id, None)
         profiles = getattr(self._network, "speed_profiles", None)
         if profiles is not None and profile_id:
             profiles.remove(profile_id)
@@ -425,7 +451,7 @@ class UnidentifiedTrainTracker:
         track the detector allows, which is the safe reading for a train nobody
         is driving (design_new.md "Span"). Returns True when the span changed.
         """
-        controller = self._sim.controllers.get(unidentified_id)
+        controller = self._controllers.get(unidentified_id)
         if controller is None:
             return False
         previous = controller.physics_sync.current_span
@@ -716,7 +742,7 @@ class UnidentifiedTrainTracker:
     # ------------------------------------------------------------------
 
     def _emit(self, operation: str, message: str, train_id: str) -> None:
-        center = getattr(self._sim, "notification_center", None)
+        center = self._notification_center
         if center is None:
             return
         from notification_center import Kind, train_ref
