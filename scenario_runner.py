@@ -147,8 +147,6 @@ class ScenarioRunner:
         network = RailwayNetwork()
         path_dispatcher = PathDispatcher(network)
         sim_controller = SimulationController(network, path_dispatcher)
-        if sim_controller.power_controller:
-            sim_controller.power_controller._sim_controller = sim_controller
         persistence_manager = PersistenceManager()
 
         state = AppState(

@@ -524,7 +524,7 @@ class TestBlockPowerController:
 
         sim = _FakeSim()
         # Stash the fake sim so test fixtures can register their trains.
-        bp = BlockPowerController(_sim_controller=sim)
+        bp = BlockPowerController()
         bp._fake_sim = sim
         return bp
 

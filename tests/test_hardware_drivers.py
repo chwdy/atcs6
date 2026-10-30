@@ -142,7 +142,6 @@ def test_virtual_transport_fault_enters_the_runtime_hardware_failure_path():
         switch_output={},
     )
     sim.power_controller.output_interface = track
-    sim.power_controller._sim_controller = sim
     dev.set_fault("i2c_write_error")
 
     assert sim.power_controller.set_block_voltage("BLK_0", 8.0) is False

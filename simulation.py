@@ -248,6 +248,7 @@ class SimulationController(SwitchOutputOwner):
             if self._block_output_interface_override is not None
             else BlockPowerController(network)
         )
+        self._wire_power_controller()
         network.power_controller = self.power_controller
         self.switch_output_interface = (
             self._switch_output_interface_override
@@ -1467,6 +1468,16 @@ class SimulationController(SwitchOutputOwner):
             return [str(exc)]
         return None
 
+    def _wire_power_controller(self) -> None:
+        """Hand the block power controller its named dependencies: the event
+        sink, the controller registry, and the hardware-failure latch. Called
+        each time this controller builds a BlockPowerController."""
+        self.power_controller.wire_dependencies(
+            notification_center=self.notification_center,
+            controllers=self.controllers,
+            enter_hardware_failure=self.enter_hardware_failure,
+        )
+
     def activate_interfaces(
         self,
         environment: OperationMode,
@@ -1561,7 +1572,7 @@ class SimulationController(SwitchOutputOwner):
             if block_output_interface is not None
             else BlockPowerController(self.network)
         )
-        self.power_controller._sim_controller = self
+        self._wire_power_controller()
         self.network.power_controller = self.power_controller
         self.switch_output_interface = (
             switch_output_interface

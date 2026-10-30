@@ -16,7 +16,7 @@ import logging
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional, Set, TYPE_CHECKING
+from typing import Any, Callable, Dict, Optional, Set, TYPE_CHECKING
 
 logger = logging.getLogger(__name__)
 
@@ -171,13 +171,16 @@ class BlockPowerController:
     # order to rail polarity).
     min_voltage: float = -MAX_TRACK_VOLTAGE
 
-    # SimulationController back-reference, set by bootstrap so this
-    # controller can fetch the live `TrainController` (for the operational
-    # state machine) and the live `TrainPhysics` (canonical home of
-    # `track_voltage` per design_new.md "Block power-controller role"). This
-    # controller does not read controller-owned manual-mode state directly —
-    # it asks `TrainPhysics.compute_track_voltage(...)` for the scalar.
-    _sim_controller: Optional[Any] = None
+    # Named dependencies, handed in by `wire_dependencies(...)`: the event-log
+    # sink, the controller registry (for the ghost check in the de-energize
+    # sweep), and the call that latches a hardware failure when a voltage write
+    # fails. A bare admin/test controller with none wired logs its failures
+    # instead of emitting them, latches nothing, and skips the ghost check.
+    # This controller does not read controller-owned manual-mode state — it
+    # asks `TrainPhysics.compute_track_voltage(...)` for the scalar.
+    _notification_center: Optional[Any] = None
+    _controllers: Optional[Dict[str, Any]] = None
+    _enter_hardware_failure: Optional[Callable[[Any], None]] = None
 
     # Blocks whose voltage write the driver has already refused. Reporting is
     # once-per-block: a train sits on a block for thousands of ticks, and the
@@ -191,6 +194,23 @@ class BlockPowerController:
     # "Power", Block power-controller role). It is exposed on the live frontend
     # payload but never persisted (see `RailwayNetwork.to_dict`).
     _recorded_voltages: Dict[str, float] = field(default_factory=dict)
+
+    def wire_dependencies(
+        self,
+        *,
+        notification_center: Optional[Any] = None,
+        controllers: Optional[Dict[str, Any]] = None,
+        enter_hardware_failure: Optional[Callable[[Any], None]] = None,
+    ) -> None:
+        """Inject the named dependencies this controller needs: the event-log
+        NotificationCenter, the controller registry, and
+        `SimulationController.enter_hardware_failure` (design_new.md "Power",
+        Hardware I/O failure is fatal to the physical session). Called by
+        SimulationController each time it builds a BlockPowerController; this
+        controller holds no general SimulationController reference of its own."""
+        self._notification_center = notification_center
+        self._controllers = controllers
+        self._enter_hardware_failure = enter_hardware_failure
 
     def get_recorded_voltage(self, block_id: str) -> float:
         """The last voltage recorded as having reached `block_id`'s rail, or `0`.
@@ -297,9 +317,8 @@ class BlockPowerController:
     def _latch_hardware_failure(
         self, block_id: str, voltage: float, message: str
     ) -> None:
-        controller = self._sim_controller
-        enter = getattr(controller, "enter_hardware_failure", None)
-        if not callable(enter):
+        enter = self._enter_hardware_failure
+        if enter is None:
             return
         from runtime_payloads import HardwareFailure
 
@@ -316,9 +335,7 @@ class BlockPowerController:
 
     def _emit_unreachable(self, block_id: str, voltage: float) -> None:
         """Report a block the output driver cannot drive (once per block)."""
-        center = None
-        if self._sim_controller is not None:
-            center = getattr(self._sim_controller, "notification_center", None)
+        center = self._notification_center
         if center is None:
             logger.warning(
                 "Track voltage %.2fV for block %s was refused by the output "
@@ -384,9 +401,7 @@ class BlockPowerController:
         """Report a failed block-voltage readback transaction (design_new.md
         "Power", the block-voltage read surface). Diagnostic only — it never
         enters the hardware-failure lifecycle."""
-        center = None
-        if self._sim_controller is not None:
-            center = getattr(self._sim_controller, "notification_center", None)
+        center = self._notification_center
         if center is None:
             logger.warning(
                 "Block-voltage readback for block %s failed", block_id
@@ -464,9 +479,9 @@ class BlockPowerController:
         excluded too — it is frozen inert and commands no voltage — so a block
         held only by a ghost is driven to ``0`` as well, mirroring the per-tick
         drain (design_new.md "Power", Ghosted trains). The ghost check needs the
-        live `TrainController`, reached through the `_sim_controller`
-        back-reference; a bare admin/test call with no back-reference falls back
-        to the unidentified-only test.
+        live `TrainController`, read from the injected controller registry; a
+        bare admin/test controller with none wired falls back to the
+        unidentified-only test.
 
         The per-tick path is event-driven: `BlockManager` queues each block as
         its holder clears, `TrainPhysics` reports each block that left its
@@ -478,11 +493,7 @@ class BlockPowerController:
             return
         exempt = skip or set()
         trains = getattr(self.network, "trains", {}) or {}
-        controllers = (
-            getattr(self._sim_controller, "controllers", {}) or {}
-            if self._sim_controller is not None
-            else {}
-        )
+        controllers = self._controllers or {}
         for block_id, block in self.network.blocks.items():
             if block_id in exempt:
                 continue

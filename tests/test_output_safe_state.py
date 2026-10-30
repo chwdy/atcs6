@@ -54,7 +54,6 @@ def hardware_session(watchdog_timeout_s=None):
         switch_output_interface=switch_out,
         environment_active=True,
     )
-    sim.power_controller._sim_controller = sim
     return dev, sim
 
 

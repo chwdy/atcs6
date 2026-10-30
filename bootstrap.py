@@ -258,8 +258,6 @@ def bootstrap_runtime(
         environment_active=environment_active,
         activation_issues=activation_issues,
     )
-    if sim_controller.power_controller:
-        sim_controller.power_controller._sim_controller = sim_controller
     # design_new.md "Event log", Detector reading log: opt-in like the event
     # log above, so only the real server writes reading files.
     if detector_reading_log_dir:

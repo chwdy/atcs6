@@ -45,7 +45,11 @@ def power_controller(unreachable):
     pc = BlockPowerController(
         network=network, output_interface=RefusingTrackDriver(unreachable)
     )
-    pc._sim_controller = sim
+    pc.wire_dependencies(
+        notification_center=sim.notification_center,
+        controllers=sim.controllers,
+        enter_hardware_failure=sim.enter_hardware_failure,
+    )
     return network, sim, pc
 
 
