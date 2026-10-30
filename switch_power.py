@@ -26,7 +26,7 @@ The module includes:
 """
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Optional, TYPE_CHECKING
+from typing import Any, Callable, Dict, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from network import RailwayNetwork
@@ -121,14 +121,35 @@ class SwitchPowerController:
         self,
         network: Optional["RailwayNetwork"] = None,
         output_interface: Optional[SwitchOutput] = None,
-        *,
-        sim_controller: Optional[Any] = None,
     ) -> None:
         self.network = network
         self.output_interface: SwitchOutput = (
             output_interface if output_interface is not None else SimulatedSwitchDriver()
         )
-        self._sim_controller = sim_controller
+        # Named dependencies, handed in by `wire_dependencies(...)`. An editor
+        # or unit setup with none wired reports nothing for an unissued throw
+        # and reads the feed block's voltage through `network.power_controller`.
+        self._notification_center: Optional[Any] = None
+        self._enter_hardware_failure: Optional[Callable[[Any], None]] = None
+        self._power_controller: Optional[Any] = None
+
+    def wire_dependencies(
+        self,
+        *,
+        notification_center: Optional[Any] = None,
+        enter_hardware_failure: Optional[Callable[[Any], None]] = None,
+        power_controller: Optional[Any] = None,
+    ) -> None:
+        """Inject the named dependencies this controller needs: the event-log
+        NotificationCenter and `SimulationController.enter_hardware_failure`,
+        which an unissued throw reports to (design_new.md "Power", An unissued
+        throw is fatal to a hardware-backed session), and the
+        BlockPowerController whose block feeds a switch's rails. Called by
+        SimulationController each time it builds the power controllers; this
+        controller holds no general SimulationController reference of its own."""
+        self._notification_center = notification_center
+        self._enter_hardware_failure = enter_hardware_failure
+        self._power_controller = power_controller
 
 
     # ------------------------------------------------------------------
@@ -169,11 +190,8 @@ class SwitchPowerController:
         self, switch_id: str, target_state: int, reason: str
     ) -> None:
         """Report an unissued throw: one warning event, then the hardware
-        failure latch. No-op when no runtime is wired (editor/unit setups)."""
-        controller = self._sim_controller
-        if controller is None:
-            return
-        center = getattr(controller, "notification_center", None)
+        failure latch. No-op when neither is wired (editor/unit setups)."""
+        center = self._notification_center
         if center is not None:
             from notification_center import Kind, switch_ref
             from runtime_payloads import ErrorRecord
@@ -189,8 +207,8 @@ class SwitchPowerController:
                 )
             except Exception:
                 pass
-        enter = getattr(controller, "enter_hardware_failure", None)
-        if callable(enter):
+        enter = self._enter_hardware_failure
+        if enter is not None:
             from runtime_payloads import HardwareFailure
 
             enter(
@@ -236,7 +254,7 @@ class SwitchPowerController:
         source_block_id = self.feed_block_id(switch_id)
         if source_block_id is None:
             return None
-        power_controller = getattr(self._sim_controller, "power_controller", None)
+        power_controller = self._power_controller
         if power_controller is None and self.network is not None:
             power_controller = getattr(self.network, "power_controller", None)
         if power_controller is None:

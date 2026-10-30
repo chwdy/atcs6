@@ -188,7 +188,10 @@ def test_an_unissued_throw_is_reported_by_the_switch_power_controller(raises):
     runtime = _RecordingRuntime()
     net, _sw = _standard_switch_network()
     net.switch_output_interface = FailingInterface()
-    net.switch_power_controller._sim_controller = runtime
+    net.switch_power_controller.wire_dependencies(
+        notification_center=runtime.notification_center,
+        enter_hardware_failure=runtime.enter_hardware_failure,
+    )
     manager_events = []
     mgr = SwitchManager(
         switches=net.switches,
