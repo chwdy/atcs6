@@ -2746,9 +2746,14 @@ class SimulationController(SwitchOutputOwner):
                 path_dispatcher=self.path_dispatcher,
                 route_executor=self.route_executor,
             )
-            # Wire the back-reference so the controller can reach the
-            # NotificationCenter and other simulation services.
-            controller.simulation_controller = self
+            # Hand the controller its named dependencies. The environment is
+            # passed as a call that reads `self.operation_mode` each time,
+            # because an activation changes it.
+            controller.wire_dependencies(
+                notification_center=self.notification_center,
+                speed_calibration=self.speed_calibration,
+                operation_mode=lambda: self.operation_mode,
+            )
             # Per design_new.md "Ownership split", live operational state
             # (`state`, `active_cab`, `commands.engaged`, `control_mode`) lives
             # exclusively on the controller; we no longer inherit it from
@@ -2761,11 +2766,20 @@ class SimulationController(SwitchOutputOwner):
         """Get or create a TrainPhysics for the given train."""
         if train.train_id not in self.physics_instances:
             controller = self._get_or_create_controller(train)
-            self.physics_instances[train.train_id] = create_physics_for_train(
+            physics = create_physics_for_train(
                 train_id=train.train_id,
                 network=self.network,
                 controller=controller,
             )
+            # The detector is passed as a call that reads
+            # `self.block_occupancy_detector` each time, because an activation
+            # builds a new one.
+            physics.wire_dependencies(
+                notification_center=self.notification_center,
+                occupancy_detector=lambda: self.block_occupancy_detector,
+                unidentified_trains=self.unidentified_trains,
+            )
+            self.physics_instances[train.train_id] = physics
         return self.physics_instances[train.train_id]
 
     def get_controller(self, train_id: str) -> Optional[TrainController]:

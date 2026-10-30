@@ -150,13 +150,11 @@ def test_start_route_is_refused_while_calibrating(state, monkeypatch):
     override = CalibrationPropulsionOverride(kind="power_percent", value=0.0)
     monkeypatch.setattr(
         controller,
-        "simulation_controller",
+        "_speed_calibration",
         SimpleNamespace(
-            speed_calibration=SimpleNamespace(
-                get_propulsion_override=lambda tid: override
-                if tid == train_id
-                else None
-            )
+            get_propulsion_override=lambda tid: override
+            if tid == train_id
+            else None
         ),
     )
 

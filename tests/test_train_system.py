@@ -895,8 +895,8 @@ class TestTrainStateTransitions:
         sources, so its driving mode must not change underneath it — the
         operator ends the pass first (design_new.md "set_mode", "calibration
         outranks ATO"). The open-pass signal is
-        `SpeedCalibration.get_propulsion_override(train_id) is not None`, reached
-        through the `simulation_controller` back-reference.
+        `SpeedCalibration.get_propulsion_override(train_id) is not None`, read
+        through the controller's injected SpeedCalibration.
         """
         from types import SimpleNamespace
 
@@ -907,7 +907,7 @@ class TestTrainStateTransitions:
         # auto pass returns value=0.0 — still non-None — and a lighting run is
         # always non-None; both must block the mode change.)
         override = SimpleNamespace(kind="power_percent", value=0.0)
-        controller.simulation_controller = SimpleNamespace(
+        controller.wire_dependencies(
             speed_calibration=SimpleNamespace(
                 get_propulsion_override=(
                     lambda tid: override if tid == controller.train_id else None
@@ -932,7 +932,7 @@ class TestTrainStateTransitions:
         train, controller, network = create_test_train_with_controller(
             powered=True
         )
-        controller.simulation_controller = SimpleNamespace(
+        controller.wire_dependencies(
             speed_calibration=SimpleNamespace(
                 get_propulsion_override=lambda tid: None
             )

@@ -50,9 +50,7 @@ def _make_controller(override=None):
     controller.powered = True
     controller.commands.control_mode = "manual"
     if override is not None:
-        controller.simulation_controller = SimpleNamespace(
-            speed_calibration=_OpenRun("T1", override)
-        )
+        controller.wire_dependencies(speed_calibration=_OpenRun("T1", override))
     return controller
 
 

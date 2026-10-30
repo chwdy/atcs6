@@ -107,7 +107,7 @@ class TestRaceConditionFix:
         )
         _notes = [
             n.message
-            for n in controller.simulation_controller.notification_center.peek_recent(200)
+            for n in controller.notification_center.peek_recent(200)
         ]
         assert any("overspeed" in note.lower() for note in _notes), (
             f"Should have an overspeed EB event, got: {_notes}"
@@ -392,7 +392,7 @@ class TestATCOverspeedWarning:
     def _warnings(controller):
         # There is no per-controller toast queue: the events go straight to the
         # one stream (design_new.md "Runtime notifications").
-        nc = controller.simulation_controller.notification_center
+        nc = controller.notification_center
         return [
             n for n in nc.peek_recent(200)
             if "overspeed warning" in n.message

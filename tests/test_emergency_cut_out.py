@@ -128,25 +128,23 @@ def test_serialization_round_trips_cut_out():
     assert restored.eb.cut_out is True
 
 
-class _ActiveEnvironment:
-    """Stands in for the SimulationController the gate reads `operation_mode`
-    (the doc's `active_environment`) from."""
-
-    def __init__(self, mode):
-        self.operation_mode = mode
+def _wire_active_environment(controller, mode):
+    """Hand the controller an active environment (the doc's
+    `active_environment`), the value the gate reads."""
+    controller.wire_dependencies(operation_mode=lambda: mode)
 
 
 def test_operator_cut_out_is_gated_to_hardware():
     _network, controller = _make_powered_controller()
 
     # Simulation: the operator-initiated cut-out is not offered.
-    controller.simulation_controller = _ActiveEnvironment(OperationMode.SIMULATION)
+    _wire_active_environment(controller, OperationMode.SIMULATION)
     result = controller.commands.activate_cut_out_cmd()
     assert result.success is False
     assert controller.eb.cut_out is False
 
     # Virtual Hardware: accepted.
-    controller.simulation_controller = _ActiveEnvironment(OperationMode.VIRTUAL_HARDWARE)
+    _wire_active_environment(controller, OperationMode.VIRTUAL_HARDWARE)
     result = controller.commands.activate_cut_out_cmd()
     assert result.success
     assert controller.eb.active is True
@@ -164,11 +162,11 @@ def test_operator_cut_out_reads_the_active_environment_not_the_selected_one(
     monkeypatch.setattr(
         operation_environment, "_selected", OperationMode.VIRTUAL_HARDWARE
     )
-    controller.simulation_controller = _ActiveEnvironment(OperationMode.SIMULATION)
+    _wire_active_environment(controller, OperationMode.SIMULATION)
     assert controller.commands.activate_cut_out_cmd().success is False
 
     monkeypatch.setattr(operation_environment, "_selected", OperationMode.SIMULATION)
-    controller.simulation_controller = _ActiveEnvironment(OperationMode.REAL_HARDWARE)
+    _wire_active_environment(controller, OperationMode.REAL_HARDWARE)
     assert controller.commands.activate_cut_out_cmd().success is True
 
 

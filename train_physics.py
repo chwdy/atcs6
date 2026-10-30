@@ -42,6 +42,7 @@ from dataclasses import dataclass, field
 from typing import (
     TYPE_CHECKING,
     Any,
+    Callable,
     Dict,
     Iterable,
     Iterator,
@@ -243,6 +244,30 @@ class TrainPhysics:
     _correction_vacated: List[Tuple[Tuple[int, int], str, str]] = field(
         default_factory=list
     )
+
+    # Named dependencies, handed in by `wire_dependencies(...)`: the event-log
+    # sink, a call that returns the runtime's current `BlockOccupancyDetector`
+    # (an activation builds a new one), and the `UnidentifiedTrainTracker`. A
+    # physics instance built alone (unit tests) has none: it logs instead of
+    # emitting and runs without the detector and tracker reads.
+    _notification_center: Optional[Any] = None
+    _occupancy_detector: Optional[Callable[[], Any]] = None
+    _unidentified_trains: Optional[Any] = None
+
+    def wire_dependencies(
+        self,
+        *,
+        notification_center: Optional[Any] = None,
+        occupancy_detector: Optional[Callable[[], Any]] = None,
+        unidentified_trains: Optional[Any] = None,
+    ) -> None:
+        """Inject the named dependencies TrainPhysics needs. Called by
+        SimulationController when it creates the instance; physics holds no
+        SimulationController reference and does not reach one through its
+        controller."""
+        self._notification_center = notification_center
+        self._occupancy_detector = occupancy_detector
+        self._unidentified_trains = unidentified_trains
 
     # =========================================================================
     # Internal Helpers
@@ -1809,8 +1834,7 @@ class TrainPhysics:
         is_overrun = len(gained) >= OVERRUN_REPORT_MIN_BLOCKS
         hardware_blocks = sorted(gained)
         span_before = sorted(span_blocks_before)
-        sc = getattr(self.controller, "simulation_controller", None)
-        center = getattr(sc, "notification_center", None) if sc is not None else None
+        center = self._notification_center
         if center is None:
             log = logger.warning if is_overrun else logger.info
             log(
@@ -2405,24 +2429,15 @@ class TrainPhysics:
         return getattr(track, "block_id", None) if track else None
 
     def _block_occupancy_detector(self):
-        """The runtime's `BlockOccupancyDetector`, or None in an isolated unit
-        test. Reached through the controller's `SimulationController`
-        back-reference physics already uses elsewhere, the same way
-        `_unidentified_tracker` reaches its tracker. `BlockManager` no longer
-        carries a `SimulationController` (design_new.md "Block-manager model"),
-        so physics reaches the runtime through its own controller instead."""
-        sim = getattr(self.controller, "simulation_controller", None)
-        return getattr(sim, "block_occupancy_detector", None)
+        """The runtime's current `BlockOccupancyDetector`, or None in an
+        isolated unit test, through the injected `occupancy_detector` call."""
+        get = self._occupancy_detector
+        return get() if get is not None else None
 
     def _unidentified_tracker(self):
-        """The runtime's `UnidentifiedTrainTracker`, or None in an isolated unit test.
-
-        Reached through the controller's `SimulationController` back-reference,
-        so physics keeps no `SimulationController` reference of its own and does
-        not depend on `BlockManager` carrying one.
-        """
-        sim = getattr(self.controller, "simulation_controller", None)
-        return getattr(sim, "unidentified_trains", None)
+        """The runtime's `UnidentifiedTrainTracker`, or None in an isolated
+        unit test, as injected by `wire_dependencies(...)`."""
+        return self._unidentified_trains
 
     def _advance_head_to_next_tile(
         self,
@@ -2505,10 +2520,7 @@ class TrainPhysics:
 
         expected_blocks = self._get_blocks_for_train(train)
         if expected_blocks != self._last_occupied_blocks:
-            sc = getattr(self.controller, "simulation_controller", None)
-            nc = (
-                getattr(sc, "notification_center", None) if sc is not None else None
-            )
+            nc = self._notification_center
             emitted = False
             if nc is not None:
                 try:

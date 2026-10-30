@@ -389,6 +389,43 @@ class TrainController:
         # and the wrapper just above its `_impl`. Stores `(key, payload)`.
         self._lookahead_memo = None
 
+        # Named dependencies, handed in by `wire_dependencies(...)`: the
+        # event-log sink, the SpeedCalibration whose open runs drive this
+        # train, and a call that returns the active operating environment. A
+        # controller built alone (unit tests) has none: it emits nothing, sees
+        # no calibration run, and reads no environment.
+        self._notification_center = None
+        self._speed_calibration = None
+        self._operation_mode = None
+
+    def wire_dependencies(
+        self,
+        *,
+        notification_center=None,
+        speed_calibration=None,
+        operation_mode=None,
+    ) -> None:
+        """Inject the named dependencies TrainController needs: the event-log
+        NotificationCenter, the SpeedCalibration (design_new.md "Speed
+        calibration", Controller owns calibration output), and a call returning
+        `SimulationController.operation_mode`, which an activation changes.
+        Called by SimulationController when it creates the controller; the
+        controller holds no SimulationController reference of its own."""
+        self._notification_center = notification_center
+        self._speed_calibration = speed_calibration
+        self._operation_mode = operation_mode
+
+    @property
+    def notification_center(self):
+        """The event-log sink this controller emits to, or None when unwired.
+        Its `Notifications` part reads it here."""
+        return self._notification_center
+
+    def current_operation_mode(self):
+        """The active operating environment, or None when unwired."""
+        get = self._operation_mode
+        return get() if get is not None else None
+
     def _get_lookahead_builder(self):
         if self._lookahead_builder is None:
             from lookahead_builder import LookaheadBuilder
@@ -1130,8 +1167,7 @@ class TrainController:
         is excluded, as are EB and power-off, which end the whole pass at Action
         step `26f5`.
         """
-        sc = getattr(self, "simulation_controller", None)
-        calibration = getattr(sc, "speed_calibration", None) if sc is not None else None
+        calibration = self._speed_calibration
         if calibration is None:
             return
         driving_pct = self._calibration_power_percent_override()
@@ -1153,11 +1189,10 @@ class TrainController:
         reads `CALIBRATING` (design_new.md "Controller state machine").
 
         `SpeedCalibration.get_propulsion_override(train_id) is not None`, read
-        through the `simulation_controller` back-reference; False when the
-        runtime is absent (unit-test controllers), where no run can be open.
+        through the injected SpeedCalibration; False when none is wired
+        (unit-test controllers), where no run can be open.
         """
-        sc = getattr(self, "simulation_controller", None)
-        calibration = getattr(sc, "speed_calibration", None) if sc is not None else None
+        calibration = self._speed_calibration
         if calibration is None:
             return False
         return calibration.get_propulsion_override(self.train_id) is not None
@@ -1167,16 +1202,14 @@ class TrainController:
 
         design_new.md "Speed calibration", Controller owns calibration output: a
         calibration pass drives through `SpeedCalibration.get_propulsion_override`
-        rather than through operator commands. Reached through the
-        `simulation_controller` back-reference — the same channel
-        `TrainPhysics`'s lighting-voltage read already uses. Returns
-        None off-pass, when the runtime is absent (unit-test controllers), or for
+        rather than through operator commands, read through the injected
+        SpeedCalibration. Returns
+        None off-pass, when none is wired (unit-test controllers), or for
         the union's `track_voltage` variant (a lighting run, which still drives
         through its own physics read), so the ordinary manual source drives in
         every one of those cases.
         """
-        sc = getattr(self, "simulation_controller", None)
-        calibration = getattr(sc, "speed_calibration", None) if sc is not None else None
+        calibration = self._speed_calibration
         if calibration is None:
             return None
         override = calibration.get_propulsion_override(self.train_id)
@@ -1191,15 +1224,14 @@ class TrainController:
         design_new.md "Lighting-voltage calibration", Where it lives: a lighting
         run drives through the shared `SpeedCalibration.get_propulsion_override`
         accessor's `track_voltage` variant, so neither the controller nor
-        `TrainPhysics` reaches into the run registry. Reached through the same
-        `simulation_controller` back-reference the speed-calibration override
-        read above already uses. Returns None off-run, when the runtime is absent
+        `TrainPhysics` reaches into the run registry. Read through the same
+        injected SpeedCalibration as the speed-calibration override above.
+        Returns None off-run, when none is wired
         (unit-test controllers), or for the union's `power_percent` variant (a
         speed pass, handled in the manual branch), so the ordinary voltage source
         drives in every one of those cases.
         """
-        sc = getattr(self, "simulation_controller", None)
-        calibration = getattr(sc, "speed_calibration", None) if sc is not None else None
+        calibration = self._speed_calibration
         if calibration is None:
             return None
         override = calibration.get_propulsion_override(self.train_id)
@@ -2374,8 +2406,7 @@ class TrainController:
         no-ops when none is wired (isolated unit-test controllers), and never
         raises into the caller."""
         try:
-            sc = getattr(self, "simulation_controller", None)
-            nc = getattr(sc, "notification_center", None) if sc is not None else None
+            nc = self._notification_center
             if nc is None:
                 return
             from notification_center import (

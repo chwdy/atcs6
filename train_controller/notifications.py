@@ -54,8 +54,7 @@ class Notifications:
         wired (isolated unit-test controllers), and never raises into the
         caller — a reporting failure must not change what the controller did.
         """
-        sc = getattr(self._c, "simulation_controller", None)
-        nc = getattr(sc, "notification_center", None) if sc is not None else None
+        nc = self._c.notification_center
         if nc is None:
             return
         try:

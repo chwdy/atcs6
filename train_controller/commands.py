@@ -199,8 +199,7 @@ class OperatorCommands:
         """
         from enums import OperationMode
 
-        sim_controller = getattr(self._c, "simulation_controller", None)
-        active = getattr(sim_controller, "operation_mode", None)
+        active = self._c.current_operation_mode()
         if active not in (OperationMode.VIRTUAL_HARDWARE, OperationMode.REAL_HARDWARE):
             return CommandResult(
                 False, "Emergency cut-out is only available on a hardware environment"
@@ -426,10 +425,9 @@ class OperatorCommands:
         # ATO/manual sources, so its driving mode must not change underneath it
         # — the operator ends the pass first (design_new.md "set_mode":
         # rejected while `SpeedCalibration.get_propulsion_override(train_id)` is
-        # not None; "calibration outranks ATO"). Reached through the same
-        # `simulation_controller` back-reference the controller's own
-        # calibration-output read uses; it is None in unit-test controllers,
-        # where no pass can be open. `get_propulsion_override(...) is not None`
+        # not None; "calibration outranks ATO"). Read through the same injected
+        # SpeedCalibration the controller's own calibration-output read uses;
+        # it is None in unit-test controllers, where no pass can be open. `get_propulsion_override(...) is not None`
         # (not the power-percent-only read) so an open lighting run is covered
         # too — a stopped auto pass returns value=0.0, still non-None.
         if c.calibration_run_open():
