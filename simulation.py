@@ -2362,6 +2362,19 @@ class SimulationController(SwitchOutputOwner):
         # transaction resumes from the retained last span.
         if controller.presence_unknown:
             self._freeze_lost_train_controller(controller)
+            # Detection returning on a block next to the retained span is
+            # credited to the ghost, but the flag still holds this pass: that
+            # block is not on its span and not yet held by it. The entry still
+            # has to be committed, or the block is never the ghost's again
+            # (design_new.md "Movement feedback runs only when movement is
+            # calculated; detection feedback always runs", Running pass,
+            # ghost). Only an entry counts as such a change: a clear on the
+            # rising edge is already covered by the ghost's release of every
+            # block it held.
+            if controller.physics_sync.pending_detected_entered_blocks:
+                controller.build_detected_progress_report(time.time())
+                self._commit_train_observe(controller, train)
+                return
             self._sync_persistent_train_state(train, controller)
             return
 

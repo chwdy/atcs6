@@ -380,3 +380,69 @@ def test_lost_train_refuses_commands_and_never_runs_physics():
         span.end_b.tile,
         span.end_b.distance_cm,
     ) == old_frame
+
+
+def _place_with_dispatcher(network, head_x=1):
+    """`place(...)`, but with a `PathDispatcher`, so Observe's progress drain
+    commits occupancy the way a running session does."""
+    from path_dispatcher import PathDispatcher
+
+    sim = SimulationController(network, PathDispatcher(network))
+    train = Train(
+        train_id="T",
+        consist=[TrainCar(car_id="c1", car_type="LOCOMOTIVE", length_cm=40.0)],
+        max_speed=80.0,
+    )
+    network.add_train(train)
+    controller = sim._get_or_create_controller(train)
+    controller.physics_sync.current_span = network.place_train(
+        train, head_x, 0, Direction.EAST
+    )
+    return sim, train, controller
+
+
+def test_ghost_entry_off_its_span_is_committed_while_the_flag_holds():
+    """Current returning on the block behind a ghost's retained span goes to the
+    ghost, but that block is not on its span and not yet held by it, so the flag
+    still holds on that pass. The entry is committed anyway, through the
+    detected-only report, so the block is the ghost's and the flag clears on the
+    next read (design_new.md "Movement feedback runs only when movement is
+    calculated; detection feedback always runs", Running pass, ghost)."""
+
+    network = build_line(5)
+    sim, train, controller = _place_with_dispatcher(network)
+    release_all_blocks(network)
+    fake = FakeDetectorInput(detected={f"BLK_{i}" for i in range(5)}, live=set())
+    sim.block_occupancy_detector.input_interface = fake
+    sim.update(0.1)
+    assert controller.presence_unknown is True
+
+    fake.live = {"BLK_0"}
+    for _ in range(sim.block_occupancy_detector.on_threshold + 1):
+        if network.blocks["BLK_0"].occupied_by is not None:
+            break
+        sim.update(0.1)
+        assert controller.physics_sync.current_span.occupied_blocks == ["BLK_1"]
+
+    assert network.blocks["BLK_0"].occupied_by == "T"
+    sim.update(0.1)
+    assert controller.presence_unknown is False
+
+
+def test_rising_edge_on_a_clear_reports_no_skipped_release():
+    """The clear that raises the flag is a vacate of a block the ghost's release
+    has already dropped, so no detected-only report is built for it and no
+    "release skipped" warning follows."""
+
+    network = build_line(5)
+    sim, train, controller = _place_with_dispatcher(network)
+    assert network.blocks["BLK_1"].occupied_by == "T"
+    sim.block_occupancy_detector.input_interface = FakeDetectorInput(
+        detected={f"BLK_{i}" for i in range(5)}, live=set()
+    )
+    for _ in range(sim.block_occupancy_detector.off_threshold + 2):
+        sim.update(0.1)
+
+    assert controller.presence_unknown is True
+    ops = [n.operation for n in sim.notification_center.peek_recent(100)]
+    assert "on_block_tail_vacated" not in ops
