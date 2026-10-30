@@ -30,6 +30,7 @@ import { updateTileDetails } from './panels/tile-debug-inspector';
 import { showConfirmModal, showFormModal } from './lib/helpers';
 import { setLabelSpacing } from './lib/constants';
 import { api } from './lib/api';
+import { NetworkPoller } from './lib/network-poll';
 import { sessionControls, sessionHint, sessionLabel } from './lib/session-controls';
 import { stateManager } from './lib/state-manager';
 import { showToast } from './lib/toast';
@@ -60,6 +61,12 @@ class App {
   followTrainEnabled: boolean;
   /** Re-checks whether the tool rail fits; installed by watchToolRailFit(). */
   fitToolRail: (() => void) | null = null;
+  /** Polls the network, getting the layout only when it changed. */
+  networkPoller = new NetworkPoller((layoutVersion) => api.getNetwork(layoutVersion));
+  /** Station groups for the renderer's labels. They are layout, so they are
+   *  fetched again only when the layout changed (or the last fetch failed). */
+  stationGroups: any[] = [];
+  stationGroupsStale = true;
 
   constructor() {
     this.renderer = new Renderer('rail-canvas');
@@ -898,7 +905,8 @@ class App {
       // Still update the cache and trains panel, but don't redraw directly
       // The setCachedNetwork call will trigger re-validation of hover state
       try {
-        const network = await api.getNetwork();
+        const { network, layoutChanged } = await this.networkPoller.poll();
+        if (layoutChanged) this.stationGroupsStale = true;
         this.currentNetwork = network;
 
         // NEW: Update StateManager cache
@@ -918,17 +926,23 @@ class App {
     }
 
     try {
-      const network = await api.getNetwork();
+      const { network, layoutChanged } = await this.networkPoller.poll();
 
-      // Pull station groups alongside so the renderer can draw station
-      // labels at the centroid of each station's platforms. Failure here
-      // shouldn't block the rest of the render.
-      try {
-        const stationResp = await api.listStationGroups();
-        network.stations = stationResp?.stations || [];
-      } catch (_) {
-        network.stations = [];
+      // Pull station groups so the renderer can draw station labels at the
+      // centroid of each station's platforms. They are layout, so fetch them
+      // only when the layout changed. Failure here shouldn't block the rest
+      // of the render; the next poll tries again.
+      if (layoutChanged || this.stationGroupsStale) {
+        try {
+          const stationResp = await api.listStationGroups();
+          this.stationGroups = stationResp?.stations || [];
+          this.stationGroupsStale = false;
+        } catch (_) {
+          this.stationGroups = [];
+          this.stationGroupsStale = true;
+        }
       }
+      network.stations = this.stationGroups;
 
       this.currentNetwork = network;
 

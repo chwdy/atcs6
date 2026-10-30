@@ -4533,6 +4533,31 @@ The `TrainRoster` is the catalog of locomotives the operator owns. It is persist
 - **`waiting_for_block_id` is recomputed, not retained.** During composite read-model assembly, `RouteExecutor` resolves `RouteExecutor.find_armed_task(train_id)` and the run's manual override, then passes that request to the `PathDispatcher.get_waiting_for_block_id(...)` projection with `reservation_cap_block_id=None` and `required_candidate_resource_keys=None`, matching the tick-start contention view. The read model does not reimplement the walk or ask the dispatcher to discover route-owned target state. Acquisition retries may change the result tick to tick, which is why it is recomputed rather than retained; it feeds the "show stuck" overlay.
 - **Other endpoints must preserve the ownership split.** Other detail endpoints may present the same owned data in a different wrapper, but they must preserve this ownership split and must not merge controller-owned, dispatcher-owned, or route-owned live fields back into `Train.to_dict()`.
 
+**Layout version** (canonical home; referenced elsewhere by name)
+
+- **The `GET /api/network` endpoint serves the composite runtime snapshot in two parts.** The layout part is every field that changes only when the layout is edited, as the table lists. The live part is every other field.
+- **`layout_version` names one layout.** It is a hash of the layout part, and the endpoint computes it on every read. No component stores it or bumps it. Two reads of the same layout carry the same `layout_version`, across a server restart too.
+- **When a request's `layout_version` query parameter equals the current `layout_version`, then the reply leaves the layout part out.** That reply:
+  - carries `layout_unchanged: true` and the current `layout_version`;
+  - omits the sections in the table's first row, and the `blocks`, `switches`, and `tracks` keys;
+  - carries `live_blocks` (`block_id` -> that block's live fields), `live_switches` (`switch_id` -> that switch's live fields), and `live_tracks` (one entry of `x`, `y`, and the live fields for each tile that holds a switch or a signal);
+  - carries every other snapshot key unchanged, the six sibling payload groups included.
+- **Any other request gets the full snapshot.** When the parameter is missing or names another version, then the reply is the full snapshot plus `layout_version` and `layout_unchanged: false`.
+- **The frontend rebuilds the full snapshot from a live-only reply.**
+  - The frontend keeps the layout part of the last full reply and lays each `live_*` entry over the matching cached entity.
+  - When an entity's live fields did not change, then the frontend keeps the same object for it, so its change check skips that entity without comparing fields.
+  - When a live-only reply names a version other than the one the frontend holds, then the frontend asks for the full snapshot instead of using that reply.
+  - The frontend fetches station groups (`GET /api/station`) again only after a full reply, or after its last fetch of them failed.
+
+| Snapshot key | Layout part |
+| --- | --- |
+| `platforms`, `station_groups`, `tunnels`, `speed_profiles`, `train_roster` | the whole section |
+| `blocks` | per block: `block_id`, `name`, `length_cm`, `min_radius_cm`, `grade_percent`, `is_holding_point`, `speed_limit_kmh`, `allowed_travel_directions`, `ordered_tiles`, `segment_ids`, `segments` |
+| `switches` | per switch: `switch_id`, `x`, `y`, `main_length_cm`, `diverge_length_cm`, `main_radius_cm`, `diverge_radius_cm`, `switch_type`, `name`, `notes` |
+| `tracks` | per tile: every field, except `switch_state`, `switch_states`, and `signals` on a tile that holds a switch or a signal (`is_switch`, or a non-empty `signal_ids`) |
+
+- Why this shape: the frontend polls this endpoint several times a second while a session runs, and the layout is most of the snapshot. A hash means no edit path has to remember to bump a version. A field wrongly placed in the layout part costs a full reply on each poll where it changes, and never leaves the frontend showing stale data.
+
 **Elapsed values are server-owned**
 
 - A payload that carries a duration carries it as a number the runtime computed. A client renders it and never derives one from its own clock, because a browser clock cannot see a stop, a playback multiplier, or the server's own time (see **Clocks** under the **Units contract**).

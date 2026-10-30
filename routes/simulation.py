@@ -10,6 +10,7 @@ from flask import jsonify, request
 
 from app_state import AppState
 from services import ValidationError, train_service
+from network_poll import build_network_poll_reply
 from simulation import build_network_payload
 
 
@@ -29,7 +30,14 @@ def register(app, state: AppState) -> None:
             )
         payload["simulation_running"] = state.simulation_running
         payload["simulation_speed"] = state.simulation_speed
-        return jsonify(payload)
+        # The poller passes the layout_version it holds; when it still
+        # matches, the reply leaves the layout out (design_new.md "Data Flow
+        # To UI", Layout version).
+        return jsonify(
+            build_network_poll_reply(
+                payload, request.args.get("layout_version")
+            )
+        )
 
     def _matches_query(event, needle: str) -> bool:
         """Free-text match over the two human-readable fields plus the origin

@@ -27,7 +27,7 @@
  */
 export interface LayoutDataClient {
   // --- Network fetch (the payload the renderer draws) + layout export ---
-  getNetwork(): Promise<any>;
+  getNetwork(layoutVersion?: string): Promise<any>;
   getNetworkSteps(): Promise<any>;
   getNetworkStats(): Promise<any>;
 

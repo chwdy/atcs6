@@ -101,8 +101,11 @@ export class API implements LayoutDataClient, SimClient {
     }
   }
 
-  async getNetwork(): Promise<any> {
-    return this._request('/network', {}, 'getNetwork');
+  /** With `layoutVersion`, the reply leaves the layout out while it still
+   *  matches (see lib/network-poll.ts). Without it, the full network. */
+  async getNetwork(layoutVersion?: string): Promise<any> {
+    const query = layoutVersion ? `?layout_version=${encodeURIComponent(layoutVersion)}` : '';
+    return this._request(`/network${query}`, {}, 'getNetwork');
   }
 
   /**

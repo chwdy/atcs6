@@ -1,0 +1,176 @@
+"""`GET /api/network` sends the layout only when it changed.
+
+design_new.md "Data Flow To UI", **Layout version**: the reply names the layout
+with `layout_version`, a hash of the layout part. When the request carries the
+current version, the reply leaves the layout out and carries only the live
+fields; any other request gets the full snapshot.
+"""
+
+import contextlib
+import copy
+import io
+import threading
+from datetime import datetime
+
+import pytest
+
+import bootstrap
+from app_factory import create_app
+from app_state import AppState
+from network_poll import (
+    BLOCK_LAYOUT_FIELDS,
+    LAYOUT_SECTIONS,
+    build_network_poll_reply,
+    layout_version,
+    split_network_payload,
+)
+from path_dispatcher import PathDispatcher
+from persistence import PersistenceManager
+from simulation import SimulationController, build_network_payload
+
+SIBLING_GROUPS = (
+    "trains",
+    "controllers_by_train_id",
+    "dispatcher_progress_by_train_id",
+    "assigned_routes_by_train_id",
+    "route_runs_by_train_id",
+    "operator_status_by_train_id",
+)
+
+
+@pytest.fixture
+def client(tmp_path):
+    with contextlib.redirect_stdout(io.StringIO()):
+        network = bootstrap.create_demo_network("demo_main")
+    path_dispatcher = PathDispatcher(network)
+    state = AppState(
+        network=network,
+        path_dispatcher=path_dispatcher,
+        sim_controller=SimulationController(network, path_dispatcher),
+        persistence_manager=PersistenceManager(storage_dir=str(tmp_path)),
+        simulation_lock=threading.Lock(),
+        simulation_running=False,
+        simulation_speed=1.0,
+        last_update_time=datetime.now(),
+    )
+    app = create_app(state)
+    app.config["TESTING"] = True
+    with app.test_client() as c:
+        c.state = state
+        yield c
+
+
+def test_request_without_version_gets_full_snapshot(client):
+    body = client.get("/api/network").get_json()
+    assert body["layout_unchanged"] is False
+    assert len(body["layout_version"]) == 32
+    assert body["tracks"] and body["blocks"]
+    for key in LAYOUT_SECTIONS:
+        assert key in body
+    assert "live_blocks" not in body
+
+
+def test_request_with_current_version_gets_live_fields_only(client):
+    full = client.get("/api/network").get_json()
+    body = client.get(
+        f"/api/network?layout_version={full['layout_version']}"
+    ).get_json()
+
+    assert body["layout_unchanged"] is True
+    assert body["layout_version"] == full["layout_version"]
+    for key in (*LAYOUT_SECTIONS, "tracks", "blocks", "switches"):
+        assert key not in body
+    for key in SIBLING_GROUPS:
+        assert key in body
+    assert body["session_state"] == full["session_state"]
+
+    assert set(body["live_blocks"]) == set(full["blocks"])
+    for live in body["live_blocks"].values():
+        assert not BLOCK_LAYOUT_FIELDS & set(live)
+        assert "state" in live and "occupied_by" in live
+    assert set(body["live_switches"]) == set(full["switches"])
+
+    live_tiles = {(t["x"], t["y"]) for t in body["live_tracks"]}
+    expected = {
+        (t["x"], t["y"])
+        for t in full["tracks"]
+        if t["is_switch"] or t["signal_ids"]
+    }
+    assert live_tiles == expected
+    assert expected, "demo_main has switches and signals"
+
+
+def test_request_with_other_version_gets_full_snapshot(client):
+    body = client.get("/api/network?layout_version=stale").get_json()
+    assert body["layout_unchanged"] is False
+    assert body["tracks"]
+
+
+def test_layout_edit_changes_version(client):
+    before = client.get("/api/network").get_json()["layout_version"]
+    block = next(iter(client.state.network.blocks.values()))
+    block.speed_limit_kmh = (block.speed_limit_kmh or 0) + 7
+    body = client.get(f"/api/network?layout_version={before}").get_json()
+    assert body["layout_unchanged"] is False
+    assert body["layout_version"] != before
+
+
+def _payload():
+    with contextlib.redirect_stdout(io.StringIO()):
+        network = bootstrap.create_demo_network("demo_main")
+    return build_network_payload(
+        network, SimulationController(network, PathDispatcher(network))
+    )
+
+
+def test_live_fields_do_not_change_version():
+    payload = _payload()
+    version = layout_version(split_network_payload(payload)[0])
+
+    changed = copy.deepcopy(payload)
+    block = next(iter(changed["blocks"].values()))
+    block.update(state="occupied", occupied_by="T9", current_voltage=6.0)
+    switch = next(iter(changed["switches"].values()))
+    switch.update(position=1, occupied_by="T9")
+    tile = next(t for t in changed["tracks"] if t["is_switch"])
+    tile["switch_state"] = 1
+    changed["simulation_time"] = 99.0
+
+    assert layout_version(split_network_payload(changed)[0]) == version
+    reply = build_network_poll_reply(changed, version)
+    assert reply["layout_unchanged"] is True
+    assert reply["live_blocks"][block["block_id"]]["occupied_by"] == "T9"
+
+
+def test_layout_field_changes_version():
+    payload = _payload()
+    version = layout_version(split_network_payload(payload)[0])
+    changed = copy.deepcopy(payload)
+    next(iter(changed["blocks"].values()))["ordered_tiles"].append([99, 99, "E"])
+    assert layout_version(split_network_payload(changed)[0]) != version
+
+
+@pytest.mark.scene("demo_5")
+def test_version_holds_while_trains_run():
+    """Four trains running the demo_5 loop change block state on many ticks
+    and never change the layout version."""
+    from tests.journey.scenes.demo_5_scene import Demo5Scene
+
+    fixture = Demo5Scene().build()
+    network, sim = fixture.network, fixture.sim_controller
+
+    def read():
+        payload = build_network_payload(network, sim)
+        live = {
+            bid: (b["state"], b["occupied_by"]) for bid, b in payload["blocks"].items()
+        }
+        return layout_version(split_network_payload(payload)[0]), live
+
+    version, live_before = read()
+    for tick in range(300):
+        sim.update(0.1)
+        if tick % 20 == 0:
+            assert read()[0] == version, f"layout version changed at tick {tick}"
+    version_after, live_after = read()
+    assert version_after == version
+    assert live_after != live_before, "trains should have moved"

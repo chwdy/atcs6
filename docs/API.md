@@ -31,7 +31,17 @@ Serves static files (CSS, JavaScript, images, etc.) from the `static/` directory
 
 Get complete railway network state.
 
-**Response:**
+**Query parameter:** `layout_version` (optional). Every reply carries
+`layout_version`, a hash of the layout part of the snapshot. When the request
+passes the current value, the reply leaves the layout out: it carries
+`layout_unchanged: true` and `live_blocks`, `live_switches` and `live_tracks`
+(only the fields that change during a run) instead of `tracks`, `blocks`,
+`switches`, `platforms`, `station_groups`, `tunnels`, `speed_profiles` and
+`train_roster`. Otherwise the reply is the full snapshot with
+`layout_unchanged: false`. See design_new.md "Data Flow To UI", **Layout
+version**, and `frontend/src/lib/network-poll.ts`.
+
+**Response (full snapshot, abridged):**
 
 ```json
 {
