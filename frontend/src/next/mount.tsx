@@ -46,8 +46,8 @@ export interface NextHost extends LocomotivesHost {
 }
 
 /**
- * Pick a screen. Editor and Operate are today's two editor modes, each with its own
- * regions (./editor, ./operate). Hardware Setup is its own screen
+ * Pick a screen. Editor and Operate are today's two editor modes, each with
+ * its own regions (./editor, ./operate). Hardware Setup is its own screen
  * (./hardware). Locomotives is its own screen (./locomotives), in Operate
  * mode.
  */
