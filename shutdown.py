@@ -257,6 +257,18 @@ def _release_run_marker() -> None:
         pass
 
 
+def release_run_marker_before_exec() -> None:
+    """Drop our marker just before this process replaces itself with `os.execv`.
+
+    An exec skips atexit, so `_finalize` never releases the marker. The new
+    image keeps our pid, finds the marker, sees that pid alive -- its own -- and
+    would report a second server serving this checkout. The restart route
+    drives the outputs to the safe state before it execs, so this run does end
+    on its own feet.
+    """
+    _release_run_marker()
+
+
 def read_last_shutdown() -> Optional[dict[str, Any]]:
     """The most recent shutdown record, for `/api/server/shutdown-report`."""
     return _read_json(LAST_SHUTDOWN_PATH)
