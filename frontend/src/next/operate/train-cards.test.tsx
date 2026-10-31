@@ -104,12 +104,18 @@ describe('TrainCardsRow', () => {
     expect(host.selectTrain).toHaveBeenCalledTimes(1);
   });
 
+  it('colours each card edge by whether the train needs the operator', () => {
+    // T_ATO stands with no route, so it waits on the operator; T_MAN moves.
+    expect(card('T_ATO').dataset.tone).toBe('warn');
+    expect(card('T_MAN').dataset.tone).toBe('ok');
+  });
+
   it('marks the selected train\'s card', () => {
     act(() => {
       selection.value = { kind: 'train', id: 'T_ATO' };
     });
-    expect(card('T_ATO').classList.contains('is-selected')).toBe(true);
-    expect(card('T_MAN').classList.contains('is-selected')).toBe(false);
+    expect(card('T_ATO').classList.contains('row-selected')).toBe(true);
+    expect(card('T_MAN').classList.contains('row-selected')).toBe(false);
   });
 
   it('follows the next poll', async () => {

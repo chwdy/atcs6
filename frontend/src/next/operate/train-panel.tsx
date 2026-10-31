@@ -101,7 +101,7 @@ export function TrainPanel({ host, trainId }: { host: OperateHost; trainId: stri
     if (gone) setSelection(host, null);
   }, [gone]);
   if (!view) {
-    return <div class="op-panel-empty">Train {trainId} is no longer on the layout.</div>;
+    return <div class="empty-state empty-state-warn">Train {trainId} is no longer on the layout.</div>;
   }
   return (
     <div class="tc-panel train-control-panel op-train-panel" data-train-id={trainId}>
@@ -521,17 +521,30 @@ function PowerPercentBlock({ view, disabled }: { view: TrainView; disabled: bool
   );
 }
 
+/** The route picker's first line: what the list holds, or why it is empty. */
+export function routePickerPrompt(
+  routes: ReadonlyArray<unknown> | null,
+  readError: string | null,
+): string {
+  if (routes === null) return readError === null ? 'Reading the routes…' : 'Could not read the routes';
+  return routes.length ? 'Choose a route…' : 'No routes yet';
+}
+
 /** The route this train runs: assign or unassign one, open it or its run,
  *  and the path tools, which act on the map. */
 function RouteSection({ host, view }: { host: OperateHost; view: TrainView }) {
-  const [routes, setRoutes] = useState<Array<{ route_id: string; name?: string }>>([]);
+  // Null until the first read answers, so "No routes yet" is never said
+  // before the routes were read, or after a read failed.
+  const [routes, setRoutes] = useState<Array<{ route_id: string; name?: string }> | null>(null);
+  const [readError, setReadError] = useState<string | null>(null);
   const [picked, setPicked] = useState('');
   usePoll(async () => {
     try {
       const resp = await api.getRoutes();
       setRoutes(Array.isArray(resp?.routes) ? resp.routes : []);
-    } catch {
-      /* the next read tries again */
+      setReadError(null);
+    } catch (err: any) {
+      setReadError(String(err?.message || err || 'no answer'));
     }
   }, 5000);
 
@@ -586,8 +599,8 @@ function RouteSection({ host, view }: { host: OperateHost; view: TrainView }) {
           value={picked}
           onChange={(e) => setPicked(e.currentTarget.value)}
         >
-          <option value="">{routes.length ? 'Choose a route…' : 'No routes yet'}</option>
-          {routes.map((r) => (
+          <option value="">{routePickerPrompt(routes, readError)}</option>
+          {(routes ?? []).map((r) => (
             <option key={r.route_id} value={r.route_id}>
               {r.name || r.route_id}
             </option>
@@ -597,6 +610,11 @@ function RouteSection({ host, view }: { host: OperateHost; view: TrainView }) {
           Assign
         </button>
       </div>
+      {readError !== null && (
+        <div class="banner banner-warn op-route-stale" role="status">
+          Could not read the routes ({readError}). Trying again.
+        </div>
+      )}
       <div class="op-row">
         {assigned && (
           <button type="button" class="rr-flat-btn" onClick={() => void unassign()}>

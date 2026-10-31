@@ -74,7 +74,7 @@ export function LocomotiveList() {
                 <li key={entry.entry_id}>
                   <button
                     type="button"
-                    class={isPicked(sel, 'roster', entry.entry_id) ? 'nloco-row selected' : 'nloco-row'}
+                    class={isPicked(sel, 'roster', entry.entry_id) ? 'nloco-row row-selected' : 'nloco-row'}
                     aria-pressed={isPicked(sel, 'roster', entry.entry_id)}
                     onClick={() => pick({ kind: 'roster', entryId: entry.entry_id })}
                   >
@@ -90,7 +90,7 @@ export function LocomotiveList() {
         {entries.length > 0 && (
           <button
             type="button"
-            class={sel?.kind === 'new' ? 'nloco-add selected' : 'nloco-add'}
+            class={sel?.kind === 'new' ? 'nloco-add row-selected' : 'nloco-add'}
             onClick={() => pick({ kind: 'new' })}
           >
             <i class="ti ti-plus" aria-hidden="true" /> Add locomotive
@@ -107,7 +107,7 @@ export function LocomotiveList() {
                 <li key={train.id}>
                   <button
                     type="button"
-                    class={isPicked(sel, 'train', train.id) ? 'nloco-row selected' : 'nloco-row'}
+                    class={isPicked(sel, 'train', train.id) ? 'nloco-row row-selected' : 'nloco-row'}
                     aria-pressed={isPicked(sel, 'train', train.id)}
                     onClick={() => pick({ kind: 'train', trainId: train.id })}
                   >
@@ -127,7 +127,7 @@ export function LocomotiveList() {
             <li key={p.profile_id}>
               <button
                 type="button"
-                class={isPicked(sel, 'profile', p.profile_id) ? 'nloco-row selected' : 'nloco-row'}
+                class={isPicked(sel, 'profile', p.profile_id) ? 'nloco-row row-selected' : 'nloco-row'}
                 aria-pressed={isPicked(sel, 'profile', p.profile_id)}
                 onClick={() => pick({ kind: 'profile', profileId: p.profile_id })}
               >

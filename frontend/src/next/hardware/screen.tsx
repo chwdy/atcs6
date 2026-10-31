@@ -227,7 +227,7 @@ export function HardwareSetupScreen({ actions }: { actions: HardwareScreenAction
               <li key={s.id}>
                 <button
                   type="button"
-                  class="nhs-step"
+                  class={current === s.id ? 'nhs-step row-selected' : 'nhs-step'}
                   data-mark={mark}
                   aria-current={current === s.id ? 'step' : undefined}
                   aria-label={`Step ${s.id}, ${s.title}: ${mark === 'done' ? 'done' : status}`}

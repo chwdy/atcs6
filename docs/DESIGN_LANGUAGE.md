@@ -13,7 +13,8 @@ Three layers, with one rule per layer.
 - **Tokens** → [base/tokens.css](../static/css/base/tokens.css) (§1). Refer to
   them by variable name in CSS, never by hex literal.
 - **Shared compositional primitives** → [components/status-blocks.css](../static/css/components/status-blocks.css)
-  (§6 banner + accent helpers, §7 chip, §11 status header). Every editor
+  (§6 banner + accent helpers, §7 chip, §10 empty state, §11 status
+  header, §12 selected row). Every editor
   panel that needs a status header, a chip, a banner, or a left-border
   accent consumes these classes directly — `.status-header`, `.chip`,
   `.banner`, `.accent-*`. Don't redefine the same shape under a feature
@@ -272,8 +273,8 @@ renderer reads those tokens once into a cached palette
 ([canvas-palette.ts](../frontend/src/lib/canvas-palette.ts)) and repaints when the
 canvas theme changes (CSS custom properties read back from JS as the unresolved
 `var(...)` string, so the palette must hold concrete hex — the same literal-hex
-rule as the chrome tokens above). Both axes are driven from the Display popover
-(§13); the chrome default follows the OS `prefers-color-scheme`, and the canvas
+rule as the chrome tokens above). Both axes are picked in the top bar's View menu
+(§13 Header-anchored menu); the chrome default follows the OS `prefers-color-scheme`, and the canvas
 defaults to dark — the original drawing-board.
 
 ### Surfaces
@@ -551,7 +552,7 @@ Icon-only buttons (refresh, close, expand) take an icon as their only child — 
 ### Flat ghost (in-container button)
 
 For buttons sitting inside a grouped container — a segmented cluster, a
-toolbar row, a tool sidebar — drop the per-button border. Affordance comes
+toolbar row, a tool bar — drop the per-button border. Affordance comes
 from a hover bg-tint, not a hairline.
 
 ```css
@@ -943,9 +944,11 @@ border to the accent (`--accent-hover` once checked); a `.disabled` wrapper
 drops the whole control to 40% opacity.
 
 - **A set of flags stacks into a grid, not a row of segments.** Independent
-  display toggles — the debug panel's Track Bits / Coordinates / Signals /
-  … — lay out as a 2-column grid so the eye runs down a column of labels.
-  Each is its own boolean; none excludes another.
+  flags inside a panel lay out as a 2-column grid so the eye runs down a
+  column of labels. Each is its own boolean; none excludes another. The
+  canvas layers (track bits, coordinates, block voltage, …) are flags of
+  this kind too, but they are not in a panel: they are toggle rows in the
+  top bar's View menu (§13 Header-anchored menu).
 - **Use the styled box, never a bare native input.** `.checkbox-custom` is
   the canonical chrome; a raw `<input type="checkbox">` renders the OS
   default, which ignores the token palette and breaks the dark theme. Every
@@ -960,7 +963,8 @@ drops the whole control to 40% opacity.
 
 Reference: `.checkbox-wrapper` / `.checkbox-custom` / `.checkbox-label` in
 [components/design-system.css](../static/css/components/design-system.css);
-the multi-flag grid is `.debug-controls` in the same file.
+the multi-flag grid is `.debug-controls` in the same file (no panel uses it
+since the canvas layers moved to the View menu).
 
 ### Two views of one value (visual editor + control set)
 
@@ -1052,20 +1056,26 @@ Reference: `.tc-power-slider`, `.tc-handle-slider` in
 
 ### Read-only in Operate mode (the structural lock)
 
-The Inspect tool stays live in Operate mode, so the entity inspectors
-(block, switch, platform, station, signal, tunnel) still open while the
-railway runs. But the physical layout is frozen once you are operating, so those
-panels go **read-only for structural edits**: names, geometry (length /
-radius / speed), the create / extend / remove / delete buttons, and signal
-and tunnel config are all disabled. A one-line hint at the top of the panel
+The physical layout is frozen once you are operating. Picking the Operate
+or Locomotives screen turns the lock on, and picking Editor turns it off.
+
+A click on the map in Operate opens Operate's own panel for what it hit: a
+train, a block or a switch. Those panels are built from operational
+controls only, so there is nothing in them to lock. Any other record opened
+on Operate — a platform, station, signal, tunnel or segment, or one of the
+lists — still shows its Editor panel in the right panel. That panel goes
+**read-only for structural edits**: names, geometry (length / radius /
+speed), the create / extend / remove / delete buttons, and signal and
+tunnel config are all disabled. A one-line hint at the top of the panel
 (`.sim-lock-hint`, info accent + lock glyph) says why, and each frozen
 control dims to `opacity: 0.55`.
 
 What stays live is the **operational** set — the controls a dispatcher uses
 while running the railroad: the availability segment (Normal / Manual /
-Disabled), the allowed-travel-direction segment, the switch **Toggle State**,
-and panel navigation links (flank cross-links, "Manage Logical Stations",
-"All Stations"). These keep full contrast, so the live dispatch controls read
+Disabled), the allowed-travel-direction segment, and panel navigation links
+(flank cross-links, "Manage Logical Stations", "All Stations"). Operate's
+block and switch panels hold the same set, plus the switch's **Throw to …**
+button. These keep full contrast, so the live dispatch controls read
 clearly against the dimmed structure. The split line is simple: **typed
 property fields and structure-mutating buttons freeze; segmented dispatch
 toggles and navigation stay live.**
@@ -1080,7 +1090,9 @@ creates and runs those freely while operating ("full dispatcher freedom").
 
 Reference: `applyStructuralLock` in
 [lib/helpers.ts](../frontend/src/lib/helpers.ts); `.sim-lock-hint` /
-`.sim-locked` in [layout/shell.css](../static/css/layout/shell.css).
+`.sim-locked` in [layout/shell.css](../static/css/layout/shell.css); the
+list of locked panel types (`STRUCTURAL`) in
+[next/operate/panel-host.ts](../frontend/src/next/operate/panel-host.ts).
 
 ---
 
@@ -1111,7 +1123,7 @@ The **meaningful** identifier is the value. Opaque internal ids
 captions, not in the title slot — the user's eye is looking for the
 entity, not the database key.
 
-### B. Three-column row (inspector body)
+### B. Three-column row (right panel body)
 
 ```
 ┌─ name (mono, 11em) ─┬─ badge (4.5em) ─┬─ value (mono, 1fr) ─┐
@@ -1286,8 +1298,8 @@ Three patterns for showing a row's status:
    `.banner-value` / `.banner-text` in
    [components/status-blocks.css](../static/css/components/status-blocks.css).
 
-3. **Source badge**: a small color-coded pill (used by inspector to show
-   `stored / property / latch / external`). Background is the accent color
+3. **Source badge**: a small color-coded pill (used by the Logs panel's
+   Diagnostics tab to show `stored / property / latch / external`). Background is the accent color
    at full opacity, text is a deep complementary color (e.g.
    `--info-color` bg + `#001a22` text).
 
@@ -1337,9 +1349,9 @@ each one is individually correct. The canonical base class is `.chip` /
 - **Double-click-to-fit**: double-clicking a floating window's header resizes
   it to its content's natural size (clamped to the viewport and to the
   window's min/max), without moving its top-left anchor — the same corner it
-  grows from when dragged. Only the header triggers this; a tab's own
-  double-click is claimed for pin-promotion (§12 "Tab strip"). Shared by
-  every floating window (`FloatingWindow.fitToContent`,
+  grows from when dragged. Only the header triggers this. It applies to the
+  right panel while it is popped out and to the two floating windows left
+  from the old layout (Surfaces). Shared by every floating window (`FloatingWindow.fitToContent`,
   [window-manager.ts](../frontend/src/lib/window-manager.ts)).
 - **Coarse-pointer sizing**: resize-handle and drag-handle hit areas scale up
   under `matchMedia('(pointer: coarse)')` — a touch/stylus hardware panel —
@@ -1382,6 +1394,7 @@ sizes across a single row.
 - **Loading**: same shape, replace italic with subdued spinner glyph if needed.
 - **Status-colored empty**: `.empty-state-warn` / `.empty-state-error` keep the shape but recolor the text to `--warning-color` / `--danger-color` and drop the italic (the color carries the meaning) — e.g. "Train no longer exists", "Error: …".
 - **Error in a row**: `border-left: 3px solid var(--danger-color)` + `background-color: rgba(232, 63, 91, 0.08)` + value text in `var(--danger-color)`.
+- **A failed read is never an empty list.** A list the panel reads from the server shows "Loading…" until the first answer, and the empty line only after a read that worked. When no read has worked yet, it says so with `.empty-state-error` ("Could not read the routes: … Trying again."). When a later read fails, it keeps the last list and puts a §6 `.banner-warn` over it saying the list may be out of date. A picker fed by a read follows the same rule in its first option ("Reading the routes…", "Could not read the routes"). Reference: `PolledBody` in [next/operate/left-list.tsx](../frontend/src/next/operate/left-list.tsx); `routePickerPrompt` in [next/operate/train-panel.tsx](../frontend/src/next/operate/train-panel.tsx).
 
 ---
 
@@ -1426,9 +1439,10 @@ background: linear-gradient(180deg, rgba(0, 212, 255, 0.04), var(--bg-dark) 70%)
 
 References: the **`.entity-card`
 family** in [components/common.css](../static/css/components/common.css) —
-the compact (4–6px padding) card used for every entity readout in the
-Properties pane (block / signal / switch / station / train) and the
-train-editor header. It is **one** shared container, not five per-entity
+the compact (4–6px padding) card used for the entity readouts in the
+Editor right panel's tile, block and station panels. Operate's train,
+block and switch panels open with a §11 status header instead. It is
+**one** shared container, not five per-entity
 classes: the 3px left-border is driven by a `--card-accent` custom property
 the renderer sets inline — a dynamic state color for block / switch / signal
 (aspect), or a static palette value for fixed identities (station =
@@ -1649,6 +1663,110 @@ the write (see §4 indeterminate checkbox).
 Reference: `.ms-*` in [layout/shell.css](../static/css/layout/shell.css),
 consumed by `editor-multi-select.ts`.
 
+### Composing a step-by-step screen
+
+A job the operator does in a fixed order gets a list of steps, not a
+dialog or a set of tabs. The Hardware Setup screen, which walks
+design_new.md "Setting up the hardware and going live", is the reference.
+
+- **The list on the left names every step, in order.** Each row shows the
+  step's number in a round mark, its title, and one muted line of where it
+  stands ("0 of 6 chips proven", "In Setup"). A done step's number turns
+  into a check. A step the current choice does not need shows `–`, and
+  opening it says why ("Simulation never reads the Hardware Setup, so it
+  skips this step"). The picked step is a selected row (§12).
+- **Marks are worked out, never stored.** The list reads the same facts the
+  steps act on — the session state, the saved setup, the chip proofs — and
+  decides every mark from them. A step done somewhere else (Activate in the
+  top bar) shows as done here too, and nothing asks the operator to tick a
+  step off.
+- **Opening the screen shows the first step that is not done.** After that
+  it keeps the step the operator picked.
+- **The picked step reads top to bottom:** its number and title, with a
+  Done chip once it is done; a short intro in plain words saying what the
+  step is for; the step's content; and a `Next: <title>` outline button.
+  The step's main action is the accent-tint CTA (§3). When that action is
+  not available now, a warning note says why and links to the step that
+  fixes it ("Enter Setup in step 3").
+
+Reference: `SETUP_STEPS` / `stepMarks` / `firstOpenStep` in
+[next/hardware/steps.ts](../frontend/src/next/hardware/steps.ts);
+`StepFrame` in
+[next/hardware/screen.tsx](../frontend/src/next/hardware/screen.tsx);
+`.nhs-step*` in [next/hardware.css](../static/css/next/hardware.css).
+
+### One button for a run of checks
+
+When a job is many independent checks that need no one watching, offer one
+button and end in one summary, not a button per check. **Test the rig** in
+Hardware Setup step 4 is the reference: it scans the bus, checks every
+block's detectors and throws every switch.
+
+- **The button sits in a row with one muted line beside it.** At rest the
+  line says what the run does and that it asks nothing. While it runs, the
+  button reads `Testing…` and is disabled, and the line says what the run
+  is doing now ("Checking BLK_3 (2 of 5)…"). When the run cannot start, the
+  line says why ("Save the setup in step 2 first").
+- **A failed check does not stop the run.** One bad wire must not hide the
+  state of the others, so every check runs and each failure becomes a line.
+- **The summary opens with one sentence** — "2 checks failed.", "Nothing
+  failed. Some checks still need you.", "Every check passed." — then up to
+  three groups of §12 rows, each shown only when it has lines, in this
+  order: **Failed** (danger left border, ✕), **Still needs you** (warning
+  border, hand), **Proved** (success border, check). Failures come first
+  because they are what the operator acts on.
+- **Each line names the thing and says what to do next.** "BLK_3: its bit
+  did not change while the block was driven. Check the wire from the
+  block's detector to hc165-1 bit 7." Lines that say the same thing about
+  several records merge into one ("BLK_1, BLK_2 and BLK_3: each bit
+  followed the drive."), so the summary stays short (Repetition blindness).
+- **The run updates the records it checked.** A chip the run proved shows
+  as proven on its own card too, so the summary is not the only place the
+  result lives.
+
+Reference: `runRigTest` in
+[next/hardware/rig-test.ts](../frontend/src/next/hardware/rig-test.ts);
+`RigTest` / `RigSummary` in
+[next/hardware/screen.tsx](../frontend/src/next/hardware/screen.tsx);
+`.nhs-rig-*` in [next/hardware.css](../static/css/next/hardware.css).
+
+### A card the operator acts on (the train card)
+
+Operate's cards row has one card per train, and it is the reference for a
+card that stands for one record the operator acts on as a whole (Container
+matches data):
+
+- **Left edge:** a §6 status stripe that says whether the train needs the
+  operator, so that train stands out when the eye runs along the row. It is
+  read from the train's hold reason (design_new.md "Hold reason"):
+  danger for the emergency brake or cut-out or a lost train; warning when it
+  waits on the operator or a failed plan (unidentified, ATO not started, no
+  route, planning failed); info when the railway makes it wait (a dwell, the
+  end of its reservation, the ATC limit, a pending action, a calibration
+  run); success while it moves; none when it stands by choice or the whole
+  session is stopped, which the top bar already says.
+- **Head line:** the train's name, then its `train_status` and `ato_status`
+  as §7 state chips.
+- **Hero:** the speed, large, with its unit, and the ATC limit beside it in
+  small text — the number the driver watches next to the number that bounds
+  it.
+- **One line of why** while the train stands: its hold reason, cut with an
+  ellipsis and shown whole in the tooltip.
+- **One main control,** chosen from the train's state: Go or Stop for ATO,
+  Start route, Power on, Release, or a small handle for manual driving. The
+  card carries only the next thing to do; every control lives in the
+  train's right panel.
+- **A click on the card selects the train,** the same as picking it on the
+  map, and a pick on the map marks the card. A click on the card's control
+  acts and does not select. To the keyboard the card is a button: Enter or
+  Space selects it.
+
+Reference: `TrainCardsRow` in
+[next/operate/train-cards.tsx](../frontend/src/next/operate/train-cards.tsx);
+`cardControl` and `trainCardTone` in
+[next/operate/train-display.ts](../frontend/src/next/operate/train-display.ts);
+`.op-card*` in [next/operate.css](../static/css/next/operate.css).
+
 ---
 
 ## 12. Composing list rows (rows vs cards)
@@ -1786,14 +1904,20 @@ every list.
   the row's contents stay whatever container the data calls for — a §11
   card-as-row or a §12 comparable-record row. Don't build a bespoke
   selected-row layout.
+- **A status edge survives the pick.** A row with a §6 left stripe sets its
+  colour in `--row-status-color`; the selected mark recolours the other
+  three sides and leaves the left edge that colour, so picking a train card
+  never hides whether the train needs the operator.
+- **One class, everywhere.** Every list adds `.row-selected` to its picked
+  row and writes no selected rule of its own. The rule doubles the class so
+  it outranks a list's own base and `:hover` rules whatever order the
+  stylesheets load in.
 
-Today the saved-layout list is the only consumer; when a second list needs a
-picked-row state, promote the border-plus-tint into a shared class rather than
-re-authoring it per list (the promotion rule in "Where the primitives live").
-
-Reference: `.layout-item.selected` in
-[components/modals.css](../static/css/components/modals.css), applied by the
-Load-Layout list in [app.ts](../frontend/src/app.ts).
+Reference: `.row-selected` in
+[components/status-blocks.css](../static/css/components/status-blocks.css),
+used by the saved-layout list ([app.ts](../frontend/src/app.ts)), Operate's
+left list and train cards, the Hardware Setup step list, and the
+Locomotives list.
 
 ### Action modifiers must touch their action
 
@@ -2403,7 +2527,8 @@ clears when the panel closes or the placement commits. Reference:
 ### Debug overlays
 
 A separate, toggle-gated layer of diagnostic marks drawn over the world layer
-when the debug display toggles are on (the §4 `.debug-controls` checkbox grid):
+when their canvas layers are on (the View menu's Layers sections; `LAYERS` in
+[lib/canvas-layers.ts](../frontend/src/lib/canvas-layers.ts)):
 per-tile track-bit dots and a numeric bits readout, `(x, y)` coordinate labels,
 N/E/S/W edge labels, switch-state badges, and dead-end markers. These are
 developer aids, not production state — off by default, and they never carry
@@ -2482,6 +2607,20 @@ the §10 actionable empty state wherever the empty collection has an
 obvious next action, and write the line in plain words ("No routes
 yet — a route is a reusable plan of stops"), never a bare "No data."
 
+An empty layout is the biggest empty state, so it gets a card of its own.
+On the Editor and Operate screens, a layout with no track shows a centred
+card with three choices:
+
+- **Start from a loop** builds a small oval with one train and a route
+  round it, then opens Operate with that train picked — three clicks from
+  an empty app to a moving train.
+- **Open a layout** opens the saved-layout list.
+- **Draw from scratch** opens the Editor with the Track tool picked and
+  keeps the card away.
+
+Reference: `StartCard` in
+[next/first-run/start-card.tsx](../frontend/src/next/first-run/start-card.tsx).
+
 ### Every edit is reversible or confirmed
 
 The editing contract (§5C) is auto-apply: segment clicks and field
@@ -2528,9 +2667,9 @@ out when there's room (Density follows task); the compact cryptic form
 goes in the `title` tooltip, not on the screen.
 
 **Tooltips carry the how.** Every tool and non-obvious control gets a
-`title`: what it does, then how to use it — the tool sidebar's
-"Trace (click two tracks to select the connecting path…)" is the
-pattern. A newcomer should never have to leave the screen to learn a
+`title`: what it does, then how to use it — the Editor options row's
+Trace ("Click two pieces of track to select the track between them…") is
+the pattern. A newcomer should never have to leave the screen to learn a
 control.
 
 ### The cursor answers "can I do this here?"
@@ -2545,10 +2684,16 @@ toast naming the reason, not silence.
 
 ### Input model
 
-Desktop, mouse-first. Keyboard accelerators exist (Space clears the
-selection, Delete removes selected tracks, Alt+Left opens a detail
-panel's parent list) and are named in the control tooltips — there is
-no hidden-shortcut layer a newcomer must discover. Controls are sized
+Desktop, mouse-first. Keyboard accelerators exist and are named where
+the control is — in its tooltip, or as the key badge on an Editor tool
+bar button — so there is no hidden-shortcut layer a newcomer must
+discover:
+
+- Number keys 1–8 pick the Editor tool bar's tools, in bar order.
+- Space clears the selection; Delete removes selected tracks.
+- Alt+Left opens a detail panel's parent list, and Ctrl/Cmd+W closes the
+  panel. Both act on the Editor right panel's panels only.
+- Enter or Space selects a focused train card. Controls are sized
 for pointer precision (28px controls, 14px checkboxes, 6px resizers);
 touch is out of scope.
 
@@ -2562,8 +2707,7 @@ same change.
 
 | What | Where | Target | Trigger |
 |------|-------|--------|---------|
-| Private copies of the segmented control | `.tc-seg-btn` in [train-control.css](../static/css/features/train-control.css), `.tm-seg-btn` in [train-monitor.css](../static/css/features/train-monitor.css) | Fold onto `.switch-btn` (§3) | Next touch of either panel |
+| Private copies of the segmented control | `.tc-seg-btn` in [train-control.css](../static/css/features/train-control.css) (also used by Operate's train panel, [next/operate/train-panel.tsx](../frontend/src/next/operate/train-panel.tsx)), `.tm-seg-btn` in [train-monitor.css](../static/css/features/train-monitor.css) | Fold onto `.switch-btn` (§3) | Next touch of either panel |
 | Pre-token literals — spacing, type sizes, radii, z-index written as raw values | all of `static/css` | Compose from the §1 scale tokens (`--space-*`, `--font-size-*`, `--radius-*`, `--z-*`); consolidate off-ramp values (13px type, 5/7/9px gaps, 3px small radii) to the nearest step | When touching the declaration |
-| Canvas state marks hard-code hex — signal lamps, route status fills (incl. `#00ff88`), switch badges and locks, train mode tints | `renderer-{signals,routes,tracks,trains}.ts` | Consume §1 tokens / a tokenized canvas palette (§17 Rules) | When touching each renderer |
-| Passive empty states where a creation action exists | route / train / run list panels | §10 `.empty-state-action` with a `.btn-accent` CTA (§19) | When touching each panel |
+| Canvas state marks hard-code hex — route status fills (incl. `#00ff88`) and the route flash (`232, 63, 91`), switch badges and locks, train mode tints. Signal lamps already read the canvas palette | `renderer-{routes,tracks,trains}.ts` | Consume §1 tokens / a tokenized canvas palette (§17 Rules) | When touching each renderer |
 | Fixed-dark code surface in a panel — JSON viewer well + neon-green text | `.json-viewer-content` / `.json-content-view` (`#0d1020` / `#00ff88`) in [routes-paths.css](../static/css/features/routes-paths.css) | Either tokenize to surface tokens, or formally bless as a constant "code block" surface like the canvas (§1 Themes) | Next View-Full-JSON / routes-paths touch |

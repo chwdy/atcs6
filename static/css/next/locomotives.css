@@ -128,13 +128,6 @@ html[data-screen="locomotives"][data-loco-canvas="shown"] .workspace > .canvas-c
     background-color: var(--bg-hover);
 }
 
-/* Selected row (DESIGN_LANGUAGE.md §12): accent border plus a faint tint. */
-.nloco-row.selected,
-.nloco-add.selected {
-    border-color: var(--accent-color);
-    background-color: rgba(var(--accent-rgb), 0.15);
-}
-
 .nloco-row-name {
     min-width: 0;
     overflow: hidden;

@@ -204,7 +204,7 @@ describe('Locomotives screen', () => {
     await settle();
     act(() => panel.jumpTo('class47'));
     expect(selection.value).toEqual({ kind: 'profile', profileId: 'class47', fromPanel: true });
-    expect(rowNamed('class47').classList.contains('selected')).toBe(true);
+    expect(rowNamed('class47').classList.contains('row-selected')).toBe(true);
     expect(panel.shows).toHaveLength(1);
     expect(reveal).toHaveBeenCalledTimes(1);
   });
@@ -215,7 +215,7 @@ describe('Locomotives screen', () => {
     act(() => panel.jumpTo('inst_R1'));
     await settle();
     expect(selection.value).toEqual({ kind: 'roster', entryId: 'R1' });
-    expect(rowNamed('Class 47 #2').classList.contains('selected')).toBe(true);
+    expect(rowNamed('Class 47 #2').classList.contains('row-selected')).toBe(true);
     // Shown again so the locomotive row names the train placed from it.
     expect(panel.shows[panel.shows.length - 1]).toEqual(['inst_R1', 'T1']);
     expect(reveal).toHaveBeenCalledTimes(1);
@@ -252,6 +252,6 @@ describe('Locomotives screen', () => {
       'saveRosterEntry'
     );
     expect(selection.value).toEqual({ kind: 'roster', entryId: 'ROSTER-NEW' });
-    expect(rowNamed('Class 66').classList.contains('selected')).toBe(true);
+    expect(rowNamed('Class 66').classList.contains('row-selected')).toBe(true);
   });
 });

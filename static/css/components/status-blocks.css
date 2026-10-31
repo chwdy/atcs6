@@ -296,6 +296,19 @@
     line-height: 1.4;
 }
 
+/* ---- §12 Selected row ----
+   The one mark for the picked row of a single-select list: an accent
+   border and a faint accent tint, brighter than hover. The class is doubled
+   so it outranks a list's own base and :hover rules, whatever order the
+   stylesheets load in. A row with a §6 status edge keeps that edge while
+   picked: the row sets --row-status-color, and the left border stays it. */
+.row-selected.row-selected,
+.row-selected.row-selected:hover {
+    border-color: var(--accent-color);
+    border-left-color: var(--row-status-color, var(--accent-color));
+    background-color: rgba(var(--accent-rgb), 0.15);
+}
+
 /* ---- §10 Empty / loading / error state ----
    The canonical empty-state shape. Every panel that needs an "empty" or
    "loading" message consumes .empty-state directly instead of minting a

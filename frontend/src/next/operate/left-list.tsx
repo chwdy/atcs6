@@ -84,7 +84,7 @@ function Row({
   onClick: () => void;
 }) {
   return (
-    <button type="button" class={selected ? 'op-list-row is-selected' : 'op-list-row'} onClick={onClick}>
+    <button type="button" class={selected ? 'op-list-row row-selected' : 'op-list-row'} onClick={onClick}>
       <span class="op-list-row-text">
         <span class="op-list-row-label">{label}</span>
         {meta && <span class="op-list-row-meta">{meta}</span>}
@@ -94,21 +94,88 @@ function Row({
   );
 }
 
-function Empty({ children }: { children: ComponentChildren }) {
-  return <div class="op-list-empty">{children}</div>;
+/** An empty list (DESIGN_LANGUAGE.md §10): one plain line, and the button
+ *  that fills the list when there is one. */
+function Empty({
+  children,
+  action,
+}: {
+  children: ComponentChildren;
+  action?: { label: string; run: () => void };
+}) {
+  if (!action) return <div class="empty-state">{children}</div>;
+  return (
+    <div class="empty-state-action">
+      <span>{children}</span>
+      <button type="button" class="btn btn-accent btn-sm" onClick={action.run}>
+        <i class="ti ti-plus" aria-hidden="true" /> {action.label}
+      </button>
+    </div>
+  );
 }
 
-/** Read a list from its endpoint every `periodMs` while the section shows. */
-function usePolledList<T>(read: () => Promise<T[]>, periodMs: number): T[] | null {
-  const [items, setItems] = useState<T[] | null>(null);
+/** A list read from its own endpoint: the last list read, and why the latest
+ *  read failed, if it did. */
+export interface PolledList<T> {
+  items: T[] | null;
+  error: string | null;
+}
+
+/** Read a list from its endpoint every `periodMs` while the section shows. A
+ *  failed read keeps the last list and says so, so a server that stopped
+ *  answering never looks like an empty layout. */
+function usePolledList<T>(read: () => Promise<T[]>, periodMs: number): PolledList<T> {
+  const [list, setList] = useState<PolledList<T>>({ items: null, error: null });
   usePoll(async () => {
     try {
-      setItems(await read());
-    } catch {
-      /* keep what was shown; the next read tries again */
+      const items = await read();
+      setList({ items, error: null });
+    } catch (err: any) {
+      const error = String(err?.message || err || 'no answer');
+      setList((prev) => ({ items: prev.items, error }));
     }
   }, periodMs);
-  return items;
+  return list;
+}
+
+/**
+ * What a list read from its endpoint shows: "Loading…" before the first
+ * answer, the reason when no read has worked yet, the empty line when the
+ * list is empty, and otherwise the rows, under a note while the latest read
+ * failed.
+ */
+export function PolledBody<T>({
+  list,
+  what,
+  empty,
+  children,
+}: {
+  list: PolledList<T>;
+  /** The list's name in a sentence: "routes", "route runs". */
+  what: string;
+  empty: ComponentChildren;
+  children: (items: T[]) => ComponentChildren;
+}) {
+  const { items, error } = list;
+  if (items === null) {
+    if (error === null) return <div class="empty-state">Loading…</div>;
+    return (
+      <div class="empty-state empty-state-error" role="status">
+        Could not read the {what}: {error}. Trying again.
+      </div>
+    );
+  }
+  if (items.length === 0 && error === null) return <>{empty}</>;
+  return (
+    <>
+      {error !== null && (
+        <div class="banner banner-warn op-list-stale" role="status">
+          Could not read the {what} just now ({error}). This is the last list read; trying again.
+        </div>
+      )}
+      {items.length === 0 ? empty : children(items)}
+    </>
+  );
 }
 
 /** Whether today's panel shown in the right panel is this one. */
@@ -124,7 +191,11 @@ function TrainsList({ host }: { host: OperateHost }) {
   liveVersion.value;
   const trains = trainViews();
   const sel = selection.value;
-  if (trains.length === 0) return <Empty>No trains yet. Place one on the map.</Empty>;
+  if (trains.length === 0) {
+    return (
+      <Empty action={{ label: 'Place train', run: () => host.editor.showAddTrainDialog() }}>No trains yet.</Empty>
+    );
+  }
   return (
     <>
       {trains.map((v) => {
@@ -146,82 +217,92 @@ function TrainsList({ host }: { host: OperateHost }) {
 
 function RoutesList({ host }: { host: OperateHost }) {
   const routes = usePolledList<any>(async () => (await api.getRoutes())?.routes ?? [], 5000);
-  if (routes === null) return <Empty>Loading…</Empty>;
-  if (routes.length === 0) return <Empty>No routes yet. Press New to make one.</Empty>;
   return (
-    <>
-      {routes.map((r) => (
-        <Row
-          key={r.route_id}
-          label={r.name || r.route_id}
-          meta={r.name ? r.route_id : undefined}
-          selected={showing('route-editor', r.route_id)}
-          onClick={() => void host.editor.routeHandler?.showRouteEditor(r.route_id)}
-        />
-      ))}
-    </>
+    <PolledBody
+      list={routes}
+      what="routes"
+      empty={
+        <Empty action={{ label: 'New route', run: () => void host.editor.routeHandler?.createNewRoute() }}>
+          No routes yet. A route is a reusable plan of stops.
+        </Empty>
+      }
+    >
+      {(items) =>
+        items.map((r) => (
+          <Row
+            key={r.route_id}
+            label={r.name || r.route_id}
+            meta={r.name ? r.route_id : undefined}
+            selected={showing('route-editor', r.route_id)}
+            onClick={() => void host.editor.routeHandler?.showRouteEditor(r.route_id)}
+          />
+        ))
+      }
+    </PolledBody>
   );
 }
 
 function PathsList({ host }: { host: OperateHost }) {
   const paths = usePolledList<any>(() => api.getPaths(), 3000);
-  if (paths === null) return <Empty>Loading…</Empty>;
-  if (paths.length === 0) return <Empty>No paths. Draw one from a train's Route section.</Empty>;
   return (
-    <>
-      {paths.map((p) => (
-        <Row
-          key={p.path_id}
-          label={p.path_id}
-          meta={[p.train_id, p.status].filter(Boolean).join(' · ')}
-          selected={showing('path', p.path_id)}
-          onClick={() => void host.editor.showPathEditor(p.path_id)}
-        />
-      ))}
-    </>
+    <PolledBody list={paths} what="paths" empty={<Empty>No paths. Draw one from a train's Route section.</Empty>}>
+      {(items) =>
+        items.map((p) => (
+          <Row
+            key={p.path_id}
+            label={p.path_id}
+            meta={[p.train_id, p.status].filter(Boolean).join(' · ')}
+            selected={showing('path', p.path_id)}
+            onClick={() => void host.editor.showPathEditor(p.path_id)}
+          />
+        ))
+      }
+    </PolledBody>
   );
 }
 
 function RouteRunsList({ host }: { host: OperateHost }) {
   const runs = usePolledList<any>(() => api.getRouteRuns(), 3000);
-  if (runs === null) return <Empty>Loading…</Empty>;
-  if (runs.length === 0) return <Empty>No route runs yet. Start a route to make one.</Empty>;
   return (
-    <>
-      {runs.map((run) => (
-        <Row
-          key={run.run_number}
-          label={`#${run.run_number} ${run.route_id ?? ''}`.trim()}
-          meta={[run.train_id, run.display_state ?? run.state].filter(Boolean).join(' · ')}
-          selected={showing('route-run-editor', run.run_number)}
-          onClick={() => void host.editor.routeRunHandler?.showRouteRunEditor(Number(run.run_number))}
-        />
-      ))}
-    </>
+    <PolledBody list={runs} what="route runs" empty={<Empty>No route runs yet. Start a route to make one.</Empty>}>
+      {(items) =>
+        items.map((run) => (
+          <Row
+            key={run.run_number}
+            label={`#${run.run_number} ${run.route_id ?? ''}`.trim()}
+            meta={[run.train_id, run.display_state ?? run.state].filter(Boolean).join(' · ')}
+            selected={showing('route-run-editor', run.run_number)}
+            onClick={() => void host.editor.routeRunHandler?.showRouteRunEditor(Number(run.run_number))}
+          />
+        ))
+      }
+    </PolledBody>
   );
 }
 
 function StationsList({ host }: { host: OperateHost }) {
   const stations = usePolledList<any>(async () => (await api.listStationGroups())?.stations ?? [], 10000);
-  if (stations === null) return <Empty>Loading…</Empty>;
-  if (stations.length === 0) {
-    return <Empty>No stations on this layout. Draw platforms in the Editor, then group them into a station.</Empty>;
-  }
   return (
-    <>
-      {stations.map((s) => {
-        const platforms = Array.isArray(s.platform_ids) ? s.platform_ids.length : 0;
-        return (
-          <Row
-            key={s.station_id}
-            label={s.name || s.station_id}
-            meta={`${platforms} platform${platforms === 1 ? '' : 's'}`}
-            selected={showing('station-group-detail', s.station_id)}
-            onClick={() => void host.editor.stationGroupHandler?.showStationDetail(s.station_id)}
-          />
-        );
-      })}
-    </>
+    <PolledBody
+      list={stations}
+      what="stations"
+      empty={<Empty>No stations on this layout. Draw platforms in the Editor, then group them into a station.</Empty>}
+    >
+      {(items) =>
+        items.map((s) => {
+          const platforms = Array.isArray(s.platform_ids) ? s.platform_ids.length : 0;
+          return (
+            <Row
+              key={s.station_id}
+              label={s.name || s.station_id}
+              meta={`${platforms} platform${platforms === 1 ? '' : 's'}`}
+              selected={showing('station-group-detail', s.station_id)}
+              onClick={() => void host.editor.stationGroupHandler?.showStationDetail(s.station_id)}
+            />
+          );
+        })
+      }
+    </PolledBody>
   );
 }
 

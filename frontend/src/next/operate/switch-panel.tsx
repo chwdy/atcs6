@@ -29,7 +29,7 @@ export function positionName(position: unknown): string {
 export function SwitchPanel({ host, switchId }: { host: OperateHost; switchId: string }) {
   liveVersion.value;
   const sw: any = stateManager.get('switches', switchId);
-  if (!sw) return <div class="op-panel-empty">Switch {switchId} is no longer on the layout.</div>;
+  if (!sw) return <div class="empty-state empty-state-warn">Switch {switchId} is no longer on the layout.</div>;
 
   const position = sw.position === 1 ? 1 : 0;
   const locks: any[] = Array.isArray(sw.locks) ? sw.locks : [];

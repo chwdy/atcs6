@@ -460,11 +460,6 @@
     margin-bottom: 4px;
 }
 
-.layouts-list-compact .layout-item.selected {
-    border-color: var(--accent-color);
-    background-color: rgba(var(--accent-rgb), 0.15);
-}
-
 .layouts-list-compact .layout-item-name {
     margin-bottom: 0;
     font-size: 0.9rem;

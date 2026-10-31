@@ -77,11 +77,6 @@ html[data-screen="hardware"] .app-body > .content-area {
     background-color: var(--bg-hover);
 }
 
-.nhs-step[aria-current="step"] {
-    background-color: rgba(var(--accent-rgb), 0.12);
-    border-color: rgba(var(--accent-rgb), 0.5);
-}
-
 .nhs-step-mark {
     flex: 0 0 22px;
     height: 22px;

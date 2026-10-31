@@ -64,6 +64,51 @@ export function atoStatusChip(status: string): string {
   return map[status] || 'chip-muted';
 }
 
+/** The colour of a train card's left edge (DESIGN_LANGUAGE.md §6), so the
+ *  train that needs the operator stands out in the row. */
+export type CardTone = 'danger' | 'warn' | 'info' | 'ok' | 'none';
+
+/** `no_reservation` / `reservation_end` details that are a failure, not a
+ *  wait (design_new.md "Error events" origins). `meet_hold`, a block id,
+ *  or no detail is the railway making the train wait. */
+const FAILED_PLANNING = new Set(['planning_failed', 'task_skipped', 'run_stalled', 'wedge']);
+
+/**
+ * The card's edge, read from `hold_reason` (design_new.md "Hold reason"):
+ * - danger: the emergency brake or cut-out, or the detectors lost the train;
+ * - warn: the train waits on the operator or on a failure — unidentified,
+ *   ATO not started, no route, or planning failed;
+ * - info: the railway makes it wait — a calibration run, a pending action,
+ *   a dwell, the end of its reservation, the ATC limit;
+ * - ok: it is moving;
+ * - none: it stands by choice (powered off, the driver's handle at rest),
+ *   or the whole session is stopped, which the top bar already says.
+ */
+export function trainCardTone(view: TrainView): CardTone {
+  const hold = view.operatorStatus?.hold_reason as { code?: string; detail?: string | null } | null | undefined;
+  if (!hold?.code) return view.controller?.is_stopped === false ? 'ok' : 'none';
+  switch (hold.code) {
+    case 'emergency_cut_out':
+    case 'emergency_brake':
+    case 'detection_lost':
+      return 'danger';
+    case 'unidentified':
+    case 'ato_not_engaged':
+    case 'no_route':
+      return 'warn';
+    case 'no_reservation':
+    case 'reservation_end':
+      return FAILED_PLANNING.has(hold.detail ?? '') ? 'warn' : 'info';
+    case 'calibrating':
+    case 'pending_action':
+    case 'dwelling':
+    case 'atc_limit':
+      return 'info';
+    default:
+      return 'none';
+  }
+}
+
 /** The one-line hold reason, only while the train stands. */
 export function holdLine(view: TrainView): string | null {
   if (!(view.controller?.is_stopped ?? true)) return null;

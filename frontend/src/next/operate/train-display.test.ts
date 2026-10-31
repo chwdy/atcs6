@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { TrainView } from './live';
-import { atoStatus, cardControl, holdLine, trainStatus } from './train-display';
+import { atoStatus, cardControl, holdLine, trainCardTone, trainStatus } from './train-display';
 
 function view(controller: any, extra: Partial<TrainView> = {}): TrainView {
   return {
@@ -67,5 +67,45 @@ describe('status words', () => {
       'No route is assigned.'
     );
     expect(holdLine(view({ is_stopped: false }, { operatorStatus: { hold_reason: hold } }))).toBeNull();
+  });
+});
+
+describe('trainCardTone: the card edge says whether the train needs the operator', () => {
+  const held = (code: string, detail: string | null = null) =>
+    view({ is_stopped: true }, { operatorStatus: { hold_reason: { code, question: 2, detail } } });
+
+  it('is green while the train moves and blank while it stands for no reason', () => {
+    expect(trainCardTone(view({ is_stopped: false }, { operatorStatus: { hold_reason: null } }))).toBe('ok');
+    expect(trainCardTone(view({ is_stopped: true }, { operatorStatus: { hold_reason: null } }))).toBe('none');
+    expect(trainCardTone(view(undefined))).toBe('none');
+  });
+
+  it('keeps danger for the emergency brake, the cut-out and a lost train', () => {
+    expect(trainCardTone(held('emergency_brake'))).toBe('danger');
+    expect(trainCardTone(held('emergency_cut_out'))).toBe('danger');
+    expect(trainCardTone(held('detection_lost'))).toBe('danger');
+  });
+
+  it('warns when the train waits on the operator', () => {
+    expect(trainCardTone(held('unidentified'))).toBe('warn');
+    expect(trainCardTone(held('ato_not_engaged'))).toBe('warn');
+    expect(trainCardTone(held('no_route'))).toBe('warn');
+  });
+
+  it('tells a failed plan from the railway making the train wait', () => {
+    expect(trainCardTone(held('no_reservation', 'planning_failed'))).toBe('warn');
+    expect(trainCardTone(held('reservation_end', 'wedge'))).toBe('warn');
+    expect(trainCardTone(held('no_reservation', 'meet_hold'))).toBe('info');
+    expect(trainCardTone(held('reservation_end', 'BLK_3'))).toBe('info');
+    expect(trainCardTone(held('no_reservation'))).toBe('info');
+    expect(trainCardTone(held('dwelling'))).toBe('info');
+    expect(trainCardTone(held('atc_limit', 'signal_red'))).toBe('info');
+  });
+
+  it('leaves the edge blank when the train stands by choice or the session is stopped', () => {
+    expect(trainCardTone(held('powered_off'))).toBe('none');
+    expect(trainCardTone(held('driver_idle'))).toBe('none');
+    expect(trainCardTone(held('paused'))).toBe('none');
+    expect(trainCardTone(held('halted', 'layout_emergency_cut_out'))).toBe('none');
   });
 });

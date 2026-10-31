@@ -22,6 +22,7 @@ import {
   cardControl,
   holdLine,
   speedText,
+  trainCardTone,
   trainStatus,
   trainStatusChip,
 } from './train-display';
@@ -32,7 +33,7 @@ export function TrainCardsRow({ host }: { host: OperateHost }) {
   const sel = selection.value;
   return (
     <div class="op-cards" role="region" aria-label="Trains">
-      {trains.length === 0 && <div class="op-cards-empty">No trains yet. Place one on the map.</div>}
+      {trains.length === 0 && <div class="empty-state op-cards-empty">No trains yet. Place one on the map.</div>}
       {trains.map((view) => (
         <TrainCard
           key={view.id}
@@ -85,7 +86,8 @@ export function TrainCard({
   };
   return (
     <div
-      class={selected ? 'op-card is-selected' : 'op-card'}
+      class={selected ? 'op-card row-selected' : 'op-card'}
+      data-tone={trainCardTone(view)}
       role="button"
       tabIndex={0}
       aria-pressed={selected}

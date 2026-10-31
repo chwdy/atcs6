@@ -119,11 +119,6 @@ html[data-screen="operate"] #train-monitor-bar {
     background-color: var(--bg-hover);
 }
 
-.op-list-row.is-selected {
-    background-color: rgba(var(--accent-rgb), 0.14);
-    border-color: rgba(var(--accent-rgb), 0.45);
-}
-
 .op-list-row-text {
     flex: 1;
     min-width: 0;
@@ -147,10 +142,9 @@ html[data-screen="operate"] #train-monitor-bar {
     color: var(--text-tertiary);
 }
 
-.op-list-empty {
-    padding: var(--space-6) var(--space-8);
-    font-size: var(--font-size-body);
-    color: var(--text-secondary);
+/* A failed read over the last list read (left-list.tsx PolledBody). */
+.op-list-stale {
+    margin: var(--space-4) 0;
 }
 
 /* ---- Right panel ---- */
@@ -203,13 +197,6 @@ html[data-screen="operate"] #train-monitor-bar {
     display: none;
 }
 
-.op-panel-empty {
-    padding: var(--space-16) 0;
-    text-align: center;
-    font-size: var(--font-size-body);
-    color: var(--text-secondary);
-}
-
 /* ---- Train cards row ---- */
 
 .op-cards {
@@ -225,10 +212,9 @@ html[data-screen="operate"] #train-monitor-bar {
     z-index: var(--z-shell);
 }
 
+/* The shape is .empty-state; in the row it only needs centring. */
 .op-cards-empty {
     align-self: center;
-    font-size: var(--font-size-body);
-    color: var(--text-secondary);
 }
 
 /* + Place train and Hold all end the row and stay in view while it scrolls. */
@@ -253,18 +239,23 @@ html[data-screen="operate"] #train-monitor-bar {
     padding: var(--space-8) var(--space-10);
     background-color: var(--bg-dark);
     border: 1px solid var(--border-color);
+    border-left: 3px solid var(--row-status-color, var(--border-color));
     border-radius: var(--control-radius-sm);
     cursor: pointer;
 }
 
 .op-card:hover {
     border-color: var(--text-tertiary);
+    border-left-color: var(--row-status-color, var(--text-tertiary));
 }
 
-.op-card.is-selected {
-    border-color: var(--accent-color);
-    box-shadow: inset 0 0 0 1px var(--accent-color);
-}
+/* The left edge says whether the train needs the operator
+   (DESIGN_LANGUAGE.md §6; trainCardTone in train-display.ts). The colour
+   is a custom property so the §12 selected mark keeps it. */
+.op-card[data-tone="danger"] { --row-status-color: var(--danger-color); }
+.op-card[data-tone="warn"] { --row-status-color: var(--warning-color); }
+.op-card[data-tone="info"] { --row-status-color: var(--info-color); }
+.op-card[data-tone="ok"] { --row-status-color: var(--success-color); }
 
 .op-card:focus-visible {
     outline: 2px solid var(--accent-hover);

@@ -497,9 +497,9 @@ class App {
       listEl.querySelectorAll<HTMLElement>('.layout-item').forEach(item => {
         item.addEventListener('click', () => {
           // Clear previous selection
-          listEl.querySelectorAll('.layout-item').forEach(el => el.classList.remove('selected'));
-          // Select this one
-          item.classList.add('selected');
+          listEl.querySelectorAll('.layout-item').forEach(el => el.classList.remove('row-selected'));
+          // Select this one (DESIGN_LANGUAGE.md §12 Selected row)
+          item.classList.add('row-selected');
           // Populate name field
           (document.getElementById('layout-name') as HTMLInputElement).value = item.dataset.name ?? '';
         });

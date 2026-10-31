@@ -107,7 +107,7 @@ export function BlockPanel({ host, blockId }: { host: OperateHost; blockId: stri
     return () => host.editor.renderer?.clearBlockDirectionFocus?.();
   }, [blockId]);
 
-  if (!block) return <div class="op-panel-empty">Block {blockId} is no longer on the layout.</div>;
+  if (!block) return <div class="empty-state empty-state-warn">Block {blockId} is no longer on the layout.</div>;
 
   const state = String(block.state || 'free');
   const occupant = block.occupied_by as string | null;
