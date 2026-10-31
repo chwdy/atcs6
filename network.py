@@ -1869,6 +1869,39 @@ class RailwayNetwork(SwitchOutputOwner):
             })
         return out
 
+    def _saved_speed_profiles(self) -> dict:
+        """Every registered profile except the seeded pair each unidentified train carries.
+
+        An unidentified train is runtime only, so nothing about it is written to
+        saved state (design_new.md "Unidentified trains", Runtime only). Its
+        instance profile is left out, and so is the model profile that instance
+        derives from when no saved profile or saved train still uses that model.
+        """
+        saved = self.speed_profiles.to_dict()
+        unidentified_profile_ids = {
+            t.speed_profile_id
+            for t in self.trains.values()
+            if t.is_unidentified and t.speed_profile_id
+        }
+        if not unidentified_profile_ids:
+            return saved
+        model_ids = {
+            (saved.get(pid) or {}).get("derived_from")
+            for pid in unidentified_profile_ids
+        } - {None}
+        for pid in unidentified_profile_ids:
+            saved.pop(pid, None)
+        named_by_saved_trains = {
+            t.speed_profile_id for t in self.trains.values() if not t.is_unidentified
+        }
+        for model_id in model_ids:
+            still_used = model_id in named_by_saved_trains or any(
+                data.get("derived_from") == model_id for data in saved.values()
+            )
+            if not still_used:
+                saved.pop(model_id, None)
+        return saved
+
     def to_layout_dict(self) -> dict:
         """Layout-only serialization used by persistence.
 
@@ -1893,7 +1926,7 @@ class RailwayNetwork(SwitchOutputOwner):
             ],
             "station_groups": [s.to_dict() for s in self.station_groups.values()],
             "train_roster": self.train_roster.to_dict(),
-            "speed_profiles": self.speed_profiles.to_dict(),
+            "speed_profiles": self._saved_speed_profiles(),
             "switches": {
                 k: v.to_layout_dict() for k, v in self.switches.items()
             },

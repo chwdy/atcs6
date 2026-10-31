@@ -427,9 +427,12 @@ class UnidentifiedTrainTracker:
         self._network.remove_train(unidentified_id)
         self._controllers.pop(unidentified_id, None)
         self._physics_instances.pop(unidentified_id, None)
+        # Remove the seeded pair: the instance and the model profile it was the
+        # only one deriving from (design_new.md "Unidentified trains", Retirement
+        # teardown step 3).
         profiles = getattr(self._network, "speed_profiles", None)
         if profiles is not None and profile_id:
-            profiles.remove(profile_id)
+            profiles.remove_pair(profile_id)
 
         self._emit(
             "unidentified_train_retired",

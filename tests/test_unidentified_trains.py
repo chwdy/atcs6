@@ -331,6 +331,8 @@ def test_an_unidentified_train_holding_nothing_when_the_window_ends_is_retired()
     tick(sim)
     unidentified_id = only_unidentified(network)
     profile_id = network.trains[unidentified_id].speed_profile_id
+    model_id = network.speed_profiles.get(profile_id).derived_from
+    assert model_id is not None
 
     detector.current = {}
     tick(sim, times=OCCUPANCY_OFF_THRESHOLD)
@@ -342,6 +344,7 @@ def test_an_unidentified_train_holding_nothing_when_the_window_ends_is_retired()
     assert unidentified_id not in sim.controllers
     assert unidentified_id not in sim.physics_instances
     assert network.speed_profiles.get(profile_id) is None
+    assert network.speed_profiles.get(model_id) is None
 
 
 def test_a_retired_unidentified_trains_train_id_is_never_reused():
@@ -522,9 +525,16 @@ def test_an_unidentified_train_is_not_written_to_saved_state():
     tick(sim)
     unidentified_id = only_unidentified(network)
 
-    saved_ids = {t["id"] for t in network.to_layout_dict()["trains"]}
+    profile_id = network.trains[unidentified_id].speed_profile_id
+    model_id = network.speed_profiles.get(profile_id).derived_from
+
+    saved = network.to_layout_dict()
+    saved_ids = {t["id"] for t in saved["trains"]}
 
     assert unidentified_id not in saved_ids
+    # Nor is the seeded profile pair it carries.
+    assert profile_id not in saved["speed_profiles"]
+    assert model_id not in saved["speed_profiles"]
 
 
 def test_an_unidentified_train_is_in_the_live_payload_so_it_shows_as_itself():
