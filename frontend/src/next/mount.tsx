@@ -2,11 +2,13 @@
  * Entry point of the ?ui=next layout (docs/ui-layout-rewrite-plan.md).
  *
  * The new layout is built next to today's, in the same page. Opened with
- * `?ui=next`, it marks <html data-ui="next">, which hides each of today's
- * regions that a new one has replaced (static/css/layout/next-top-bar.css),
- * and mounts the new regions. Regions not rebuilt yet keep working as today,
+ * `?ui=next`, it marks <html data-ui="next"> and <html data-screen="…">,
+ * which hide each of today's regions that a new one has replaced
+ * (static/css/layout/next-top-bar.css and each screen's stylesheet), and
+ * mounts the new regions. Regions not rebuilt yet keep working as today,
  * so the app stays fully usable under the flag at every phase.
  */
+import { effect } from '@preact/signals';
 import { render } from 'preact';
 
 import { screen, type Screen } from './state';
@@ -78,6 +80,11 @@ export function topBarActions(host: NextHost): TopBarActions {
 /** Mark the page as running the new layout and mount the regions built so far. */
 export function mountNextUI(host: NextHost): void {
   document.documentElement.dataset.ui = 'next';
+  // <html data-screen> names the picked screen, so each screen's CSS can hide
+  // today's regions only while that screen is the one showing.
+  effect(() => {
+    document.documentElement.dataset.screen = screen.value;
+  });
   const oldHeader = document.querySelector('.app-header');
   const slot = document.createElement('div');
   slot.className = 'next-top-bar-slot';

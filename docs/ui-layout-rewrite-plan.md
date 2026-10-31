@@ -326,7 +326,9 @@ Each phase ends with the app working and `./run_all_tests.sh` green. The new
 layout is built next to the old one, in the same page, and opened with
 `?ui=next`: the flag marks `<html data-ui="next">`, which hides each of
 today's regions that a new one has replaced, and mounts the new regions
-(`frontend/src/next/mount.tsx`). Regions not rebuilt yet keep working as
+(`frontend/src/next/mount.tsx`). `<html data-screen="editor|hardware|operate|locomotives">`
+names the picked screen, so a screen hides today's regions only while it
+is showing. Regions not rebuilt yet keep working as
 today, so the app stays fully usable under the flag at every phase, and
 without the flag nothing changes until phase 8 switches the default.
 
