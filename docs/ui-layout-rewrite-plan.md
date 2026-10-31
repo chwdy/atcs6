@@ -359,7 +359,18 @@ yet:
 | Logs menu | Opens today's Event Log, Raw Occupancy and Diagnostics windows | Phase 6 |
 | Settings menu → Setup tools | Opens today's Occupancy Bench and Virtual Bench windows | Phase 4 |
 | View menu → Layers | Flips the Debug Info checkboxes in the Settings dialog, which the renderer reads | Layers get their own state |
-| Hold all | Stays on the canvas | Phase 2 |
+| Hold all | In the Operate train cards row; stays on the canvas on the other screens | Phase 8 |
+
+Phase 2 (Operate) is done on `claude/ui-next-operate-ba82da`. The train
+cards row, the train panel, the block panel, the switch panel and the left
+list are Preact. These parts of the Operate screen still reach today's code:
+
+| Operate part | Does for now | Until |
+|--------------|--------------|-------|
+| A route, path, route run or station picked in the left list; Add Train; an unidentified train; the path tools' panels | Today's panel for it, shown as it is inside the right panel (`next/operate/panel-host.ts`, through `Editor.nextPanelHost`) | Each panel is ported |
+| Look-ahead section | Today's Train Monitor graph and Upcoming list, moved into the section while it is open | The monitor is ported |
+| Calibrate button | Switches to the Locomotives tab; the train stays App's selected train | Phase 5 |
+| Switch panel's Lock section | Shows who holds the switch (`Switch.locks`, `train_protection_claims`); design_new.md has no operator lock command | A spec decision |
 
 ---
 

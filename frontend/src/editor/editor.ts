@@ -82,6 +82,26 @@ export interface HostApp {
 }
 
 /**
+ * ?ui=next: a rebuilt screen that shows the selection and the inspector's
+ * panels in its own right panel instead of today's secondary sidebar (the
+ * Operate screen, frontend/src/next/operate/panel-host.ts). Each method
+ * returns true when the screen took the request, and false to leave it to
+ * today's inspector.
+ */
+export interface NextPanelHost {
+  /** A tile was picked on the map. */
+  selectTile(tile: any): boolean;
+  /** A train's controls were asked for. */
+  showTrain(trainId: string): boolean;
+  /** A panel's HTML, as today's inspector would show it. */
+  showPanel(title: string, content: string): boolean;
+  /** The open panel was asked to close. */
+  hidePanel(): boolean;
+  /** The panel with this editor type and id should close if it is open. */
+  closePanel(editorType: string, editorId: string | null): void;
+}
+
+/**
  * Identity text for one entity row: its display name, with its stable id on the
  * second line.
  *
@@ -179,6 +199,8 @@ export class Editor {
   // menu — EditorUIHandler.openAsOwnTab), read and cleared by the tab group
   // that ends up hosting the panel so it opens as its own kept tab.
   _openNextPanelAsOwnTab = false;
+  // ?ui=next: set while a rebuilt screen owns the right panel (see NextPanelHost).
+  nextPanelHost: NextPanelHost | null = null;
   // Assigned lazily by event handlers.
   hasPanned = false;
   signalValidationTimeout: any = null;
@@ -356,6 +378,7 @@ export class Editor {
       this.renderer?.setTrainGhostPreview?.(null);
       if (this.activeMode?.toolName === 'place-train') this.exitMode();
     }
+    if (this.nextPanelHost?.showPanel(title, content)) return;
     return this.uiHandler.showSecondarySidebar(title, content);
   }
 
@@ -385,6 +408,7 @@ export class Editor {
     // uiHandler.hideSecondarySidebar() takes no args (it ignored `options` in
     // the classic code too); keep the param on the facade for callers.
     this.highlighter.clear(['peek', 'pair']);
+    if (this.nextPanelHost?.hidePanel()) return;
     return this.uiHandler.hideSecondarySidebar();
   }
 
@@ -739,6 +763,7 @@ export class Editor {
   }
 
   async showTrainControlPanel(trainId: any): Promise<any> {
+    if (this.nextPanelHost?.showTrain(trainId)) return;
     return this.trainHandler?.showTrainControlPanel(trainId);
   }
 
@@ -2358,6 +2383,7 @@ export class Editor {
 
     this.selectedElement = tile;
 
+    if (!options.force && this.nextPanelHost?.selectTile(tile)) return;
     if (options.force) {
       this.uiHandler.showRequestedPanel(() => this.showTileEditor(tile));
     } else if (!this.uiHandler.isSecondaryPanelPinned()) {
@@ -2814,6 +2840,7 @@ export class Editor {
    *  type + id). Used when a panel-open request finds its entity gone, so a
    *  stale restored tab clears itself instead of surfacing an error. */
   closeStaleEditorTab(editorType: string, id: string): Promise<void> {
+    this.nextPanelHost?.closePanel(editorType, id);
     return this.uiHandler.closeStaleSecondaryTab(editorType, id);
   }
 
@@ -2821,6 +2848,7 @@ export class Editor {
    *  A window left with no tabs hides (home) or closes (spawned). `id` is
    *  null for panels with no entity, such as the Create Path setup panel. */
   closeEditorTab(editorType: string, id: string | null): Promise<void> {
+    this.nextPanelHost?.closePanel(editorType, id);
     return this.uiHandler.closeStaleSecondaryTab(editorType, id);
   }
 
