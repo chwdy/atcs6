@@ -350,6 +350,9 @@ class SimulationController(SwitchOutputOwner):
             operating_clock=lambda: self.operating_clock(),
             notification_center=self.notification_center,
             operation_mode=lambda: self.operation_mode,
+            block_holder=lambda block_id: getattr(
+                self.network.blocks.get(block_id), "occupied_by", None
+            ),
         )
 
         # Bumped by every safe-state entry. A `CalibrationRun` captures it when

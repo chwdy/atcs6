@@ -242,10 +242,11 @@ def test_the_runtime_tick_arms_the_pass_as_a_one_off_route(state):
     assert leg_route.mode == RouteMode.ONE_OFF
     assert train_id in leg_route.assigned_train_ids
     assert leg_route.manual_override is False
-    # One task: a stop at the far outer block.
-    assert len(leg_route.tasks) == 1
-    assert leg_route.tasks[0].task_kind == "stop"
-    assert leg_route.tasks[0].task_location.block_id == far_block
+    # Two tasks: a waypoint at the measured block, then a stop at the far outer
+    # block, so the path crosses the measured block on its way.
+    assert [t.task_kind for t in leg_route.tasks] == ["waypoint", "stop"]
+    assert leg_route.tasks[0].task_location.block_id == block_id
+    assert leg_route.tasks[1].task_location.block_id == far_block
 
     # The leg has real authority (a path), and the step's power drives the train
     # back through get_propulsion_override, not a zero no-authority cap.
