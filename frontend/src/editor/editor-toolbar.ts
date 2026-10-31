@@ -37,9 +37,14 @@ export class ToolbarHandler {
   }
 
   /**
-   * Delegated click handler for the tool palette. A group button toggles its
+   * Delegated click handler for the tool palette. A group button opens its
    * flyout popover; a tool button (in the rail or a popover) is dispatched and
    * the popover is closed.
+   *
+   * A click never closes a group's popover. Hovering the button has usually
+   * opened it already, so a toggle would close the menu the moment the user
+   * clicks to use it. The popover closes when the pointer leaves the group, on
+   * an outside click, on Escape, or once a tool is picked.
    */
   async _onToolbarClick(e: Event): Promise<void> {
     const t = e.target as HTMLElement;
@@ -47,9 +52,9 @@ export class ToolbarHandler {
     const groupBtn = t.closest<HTMLElement>('.tool-group-btn');
     if (groupBtn) {
       const group = groupBtn.closest<HTMLElement>('.tool-group');
-      const wasOpen = group?.classList.contains('open');
+      if (!group || group.classList.contains('open')) return;
       this._closeToolPopovers();
-      if (group && !wasOpen) this._openGroupPopover(group);
+      this._openGroupPopover(group);
       return;
     }
 

@@ -30,6 +30,7 @@ import { showToast } from '../lib/toast';
 import { showConfirmModal } from '../lib/helpers';
 import {
   activateUnavailableReason,
+  ENVIRONMENT_LABELS,
   sessionHint,
   sessionLabel,
   setupToolsAllowed,
@@ -1445,11 +1446,7 @@ function nextChipId(kind: string): string {
 
 // --- footer gate -----------------------------------------------------------
 function gateHtml(): string {
-  const labels: Record<string, string> = {
-    simulation: 'Simulation',
-    virtual_hardware: 'Virtual Hardware',
-    real_hardware: 'Real Hardware',
-  };
+  const labels = ENVIRONMENT_LABELS;
   const choices = Object.entries(labels).map(([value, label]) =>
     `<button type="button" class="btn hw-btn-sm ${environmentInfo.selected === value ? 'btn-accent' : 'btn-secondary'}" data-hw="environment" data-id="${value}">${label}</button>`
   ).join(' ');

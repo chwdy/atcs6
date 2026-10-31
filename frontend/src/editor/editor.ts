@@ -1017,15 +1017,18 @@ export class Editor {
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') this._closeToolPopovers();
     });
-    // Number keys 1-9 activate the Nth tool tile (or open its group) — the badge
-    // shown on each rail tile. Ignored while typing in a field or with a modifier.
+    // Number keys 1-9 activate the rail tile whose badge shows that number (or
+    // open its group). A number is fixed per tile across modes, so a key whose
+    // tile the mode hides does nothing. Ignored while typing in a field or with
+    // a modifier.
     document.addEventListener('keydown', (e) => {
       if (e.key < '1' || e.key > '9' || e.metaKey || e.ctrlKey || e.altKey) return;
       const el = document.activeElement as HTMLElement | null;
       const tag = (el?.tagName || '').toLowerCase();
       if (tag === 'input' || tag === 'textarea' || tag === 'select' || el?.isContentEditable) return;
-      const tiles = this.$id('tool-groups')?.querySelectorAll<HTMLElement>('.tool-launch');
-      const tile = tiles?.[Number(e.key) - 1];
+      const tile = this.$id('tool-groups')?.querySelector<HTMLElement>(
+        `.tool-launch[data-rail-num="${e.key}"]`
+      );
       if (tile) {
         e.preventDefault();
         tile.click();

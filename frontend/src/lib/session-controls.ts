@@ -13,6 +13,20 @@ export interface SessionStateView {
   halt_reason: string | null;
 }
 
+/** The operating environments' names, as the header and Hardware Setup show
+ *  them (design_new.md "Session mode and operating environment"). */
+export const ENVIRONMENT_LABELS: Record<string, string> = {
+  simulation: 'Simulation',
+  virtual_hardware: 'Virtual Hardware',
+  real_hardware: 'Real Hardware',
+};
+
+/** The name of an operating environment, or '' before the first snapshot. */
+export function environmentLabel(environment: string | null | undefined): string {
+  if (!environment) return '';
+  return ENVIRONMENT_LABELS[environment] ?? environment;
+}
+
 const HALT_LABELS: Record<string, string> = {
   layout_emergency_cut_out: 'Emergency stop',
   hardware_failure: 'hardware failure',
@@ -44,16 +58,16 @@ export function sessionHint(state: SessionStateView | null | undefined): string 
   if (!state) return '';
   if (state.value === 'live') return 'Trains may be driven.';
   if (state.value === 'paused') return 'Time is frozen. Press Play to resume.';
-  if (state.value === 'setup') return 'Building and testing the rig. Activate to go live.';
+  if (state.value === 'setup') return 'Building and testing the rig. Press Activate to go live.';
   switch (state.halt_reason) {
     case 'layout_emergency_cut_out':
       return 'Every train is cut out. Press Reset to release them.';
     case 'hardware_failure':
-      return 'Repair the device, then activate the environment again.';
+      return 'Repair the device, then press Activate.';
     case 'runtime_failure':
       return 'Sort the conflict out on the layout, then clear it.';
     case 'not_activated':
-      return 'Activate the environment in Hardware setup to go live.';
+      return 'Press Activate to go live.';
     default:
       return '';
   }
@@ -67,6 +81,9 @@ export interface SessionControls {
   playPauseEnabled: boolean;
   /** Reset appears only after Emergency stop. */
   resetVisible: boolean;
+  /** Activate appears in the header when activating is the way to Live: from
+   *  Setup, and from a halt for `not_activated` or `hardware_failure`. */
+  activateVisible: boolean;
 }
 
 /** Which session controls the header offers for this state and environment. */
@@ -81,6 +98,10 @@ export function sessionControls(
     playPause: value === 'live' ? 'pause' : 'play',
     playPauseEnabled: inSimulation && (value === 'live' || value === 'paused'),
     resetVisible: value === 'halted' && state?.halt_reason === 'layout_emergency_cut_out',
+    activateVisible:
+      value === 'setup' ||
+      (value === 'halted' &&
+        (state?.halt_reason === 'not_activated' || state?.halt_reason === 'hardware_failure')),
   };
 }
 

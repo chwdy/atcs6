@@ -129,12 +129,14 @@ by name for forms, detail pages, and canvas work too.
 Where UI lives. One mode toggle, and a fixed set of regions — every
 feature has exactly one natural home.
 
-The top bar's `Editor | Simulation` toggle is the app's primary split:
+The top bar's `Editor | Operate` toggle is the app's primary split:
 **Editor** is for building the layout (drawing track, configuring
-blocks, switches, stations), **Simulation** is for running it (driving
+blocks, switches, stations), **Operate** is for running it (driving
 trains, monitoring, routes). A surface that edits structure belongs to
 Editor mode; a surface that observes or commands live trains belongs to
-Simulation.
+Operate mode. The button reads Operate in every operating environment
+(design_new.md "Session mode and operating environment"), so the word
+"Simulation" in the UI only ever names the operating environment.
 
 | Region | What lives there |
 |--------|------------------|
@@ -158,9 +160,13 @@ those fits, raise it as a doc question before inventing a new region.
 The top bar reads in three zones, laid out with
 `grid-template-columns: 1fr auto 1fr`:
 
-- **Left** — the brand wordmark and transport: Play, restart, and the
-  speed-preset segment.
-- **Center** — the `Editor | Simulation` mode split (the app's primary
+- **Left** — the brand wordmark, the session state, and transport. The
+  session state chip names the operating environment in muted text, then
+  the session state (`Real Hardware · Halted — not activated`); right
+  after it sits **Activate**, shown only while activating is the way to
+  Live (Setup, or Halted for `not_activated` or `hardware_failure`). Then
+  Play, restart, and the speed-preset segment.
+- **Center** — the `Editor | Operate` mode split (the app's primary
   split) followed by the file commands (New / Save / Load).
 - **Right** — view toggles (panel show/hide, Inspector) and app settings
   (theme, settings).
@@ -582,6 +588,8 @@ color: var(--accent-hover);
 - The tile is taller than the standard 28px control because it stacks an icon glyph (~16px) above a tiny label (~8px) — that vertical stack is the whole point of the pattern.
 - No border on the tile itself. The `--bg-dark` fill against the panel's `--bg-panel` is what gives each tile its shape; grouping comes from the category dividers above the grid, not from per-tile boxes.
 - Icons are Tabler glyphs (`<i class="ti ti-… tool-icon"></i>`), looked up through the icon roster like every other button — see Icons above. Labels are 1-2 words at ~8px.
+- A group capsule opens its flyout on hover or on click, and a click never closes it: hover has usually opened it already, so a toggle would shut the menu the moment the user clicks to use it. The flyout closes when the pointer leaves the group, on an outside click, on Escape, or once a tool is picked.
+- Each rail capsule's number badge (and its number-key shortcut) is fixed across modes: it is the capsule's place among every tool in every mode. When Operate mode hides a capsule, the numbers skip it rather than shifting the ones below — Train is 8 in both modes.
 
 Reference: `.tool-btn` in
 [components/tools.css](../static/css/components/tools.css).
@@ -1080,11 +1088,11 @@ Disabled state across both: `opacity: 0.4`, `cursor: not-allowed`.
 Reference: `.tc-power-slider`, `.tc-handle-slider` in
 [features/train-control.css](../static/css/features/train-control.css).
 
-### Read-only in Simulation (the structural lock)
+### Read-only in Operate mode (the structural lock)
 
-The Inspect tool stays live in Simulation mode, so the entity inspectors
-(block, switch, platform, station, signal, tunnel) still open while a sim
-runs. But the physical layout is frozen once you are operating, so those
+The Inspect tool stays live in Operate mode, so the entity inspectors
+(block, switch, platform, station, signal, tunnel) still open while the
+railway runs. But the physical layout is frozen once you are operating, so those
 panels go **read-only for structural edits**: names, geometry (length /
 radius / speed), the create / extend / remove / delete buttons, and signal
 and tunnel config are all disabled. A one-line hint at the top of the panel
@@ -1106,7 +1114,7 @@ shared `applyStructuralLock` helper disables everything else. The two segment
 render helpers (`renderAvailabilitySegment`, `renderDirectionSegment`) carry
 the marker, so all four entity panels inherit it. Operational panels (path,
 route, train, speed profile) never call the lock at all — the dispatcher
-creates and runs those freely while simulating ("full dispatcher freedom").
+creates and runs those freely while operating ("full dispatcher freedom").
 
 Reference: `applyStructuralLock` in
 [lib/helpers.ts](../frontend/src/lib/helpers.ts); `.sim-lock-hint` /
@@ -1555,7 +1563,7 @@ the row's own click target.
 
 A card whose body collapses behind a native `<details>` / `<summary>`
 toggle. Used for "I might want to look at this, but not by default"
-(debug zone, advanced settings). The card itself follows the Standard
+(the train panel's Details, advanced settings). The card itself follows the Standard
 card styling. Summary row is 10px UPPERCASE weight-600 `--text-secondary`
 with a rotating `▸` caret that points down when open. (`--text-secondary`
 rather than the `--text-tertiary` used for field labels: a disclosure

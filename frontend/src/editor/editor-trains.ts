@@ -44,6 +44,10 @@ function inHardwareEnvironment(): boolean {
   return env === 'virtual_hardware' || env === 'real_hardware';
 }
 
+/** Whether the train panel's Details section is open. Kept across re-renders
+ *  and across trains, so a user who reads the details keeps seeing them. */
+let trainDetailsOpen = false;
+
 export class TrainEditorHandler {
   editor: EditorHost;
   _trainId: string | null;
@@ -1313,28 +1317,6 @@ export class TrainEditorHandler {
                         <div>? No occupancy detected under this train — nothing on the track backs its position. It may have been picked up or run somewhere undetected.</div>
                         <button id="train-presence-remove-btn" class="btn btn-sm btn-danger-ghost mt-4"><i class="ti ti-trash"></i> Remove train</button>
                     </div>` : ''}
-                    <dl class="tc-status-fields">
-                        <div class="tc-field">
-                            <dt class="tc-field-label">Plan ID</dt>
-                            <dd class="tc-field-value tc-val-info" id="train-plan-id-val" title="${planId || ''}">${planId || '—'}</dd>
-                        </div>
-                        <div class="tc-field">
-                            <dt class="tc-field-label">Run ID</dt>
-                            <dd class="tc-field-value" id="train-run-id-val" title="${runId || ''}">${runId ? middleTruncate(runId, 22) : '—'}</dd>
-                        </div>
-                        <div class="tc-field">
-                            <dt class="tc-field-label">Path</dt>
-                            <dd class="tc-field-value train-ato-path-display" id="train-path-id-val" title="${pathName || ''}">${truncatedPath}</dd>
-                        </div>
-                        <div class="tc-field">
-                            <dt class="tc-field-label">Path Index</dt>
-                            <dd class="tc-field-value" id="train-path-index-val">${pathIndexStr}</dd>
-                        </div>
-                        <div class="tc-field tc-field-wide">
-                            <dt class="tc-field-label">Next Destination</dt>
-                            <dd class="tc-field-value train-ato-destination-display" title="${destinationName || ''}">${destinationName}</dd>
-                        </div>
-                    </dl>
                 </section>
 
                 <!-- ZONE 2: TRAIN STATUS — HMI (cab-style display) -->
@@ -1455,82 +1437,111 @@ export class TrainEditorHandler {
                     </div>
                 </section>
 
-                <!-- ZONE 4: DEBUG -->
+                <!-- ZONE 4: DETAILS — everything a driver does not need while
+                     driving, closed by default so the controls above stay in
+                     view. Its open state survives a re-render. -->
                 <section class="tc-section tc-section-debug">
-                    <div class="tc-section-title">Debug</div>
-                    <div id="train-control-debug-section" class="train-control-debug-section hidden"></div>
+                    <details class="tc-disclosure" id="train-details"${trainDetailsOpen ? ' open' : ''}>
+                        <summary>Details</summary>
+                        <div class="tc-disclosure-body">
+                            <div class="tc-section-subtitle">Route</div>
+                            <dl class="tc-status-fields">
+                                <div class="tc-field">
+                                    <dt class="tc-field-label">Plan ID</dt>
+                                    <dd class="tc-field-value tc-val-info" id="train-plan-id-val" title="${planId || ''}">${planId || '—'}</dd>
+                                </div>
+                                <div class="tc-field">
+                                    <dt class="tc-field-label">Run ID</dt>
+                                    <dd class="tc-field-value" id="train-run-id-val" title="${runId || ''}">${runId ? middleTruncate(runId, 22) : '—'}</dd>
+                                </div>
+                                <div class="tc-field">
+                                    <dt class="tc-field-label">Path</dt>
+                                    <dd class="tc-field-value train-ato-path-display" id="train-path-id-val" title="${pathName || ''}">${truncatedPath}</dd>
+                                </div>
+                                <div class="tc-field">
+                                    <dt class="tc-field-label">Path Index</dt>
+                                    <dd class="tc-field-value" id="train-path-index-val">${pathIndexStr}</dd>
+                                </div>
+                                <div class="tc-field tc-field-wide">
+                                    <dt class="tc-field-label">Next Destination</dt>
+                                    <dd class="tc-field-value train-ato-destination-display" title="${destinationName || ''}">${destinationName}</dd>
+                                </div>
+                            </dl>
+                            <div id="train-control-debug-section" class="train-control-debug-section hidden"></div>
 
-                    <div id="train-debug-geometry" class="train-control-debug-section hidden">
-                        <div class="tc-section-subtitle">Train geometry</div>
-                        <dl class="tc-status-fields tc-span-grid">
-                            <div class="tc-field">
-                                <dt class="tc-field-label" id="train-span-end-a-label">End A ${leadingA ? '(HEAD)' : '(TAIL)'}</dt>
-                                <dd class="tc-field-value train-pos-display" id="train-span-end-a-tile">${endATileStr}</dd>
+                            <div id="train-debug-geometry" class="train-control-debug-section hidden">
+                                <div class="tc-section-subtitle">Train geometry</div>
+                                <dl class="tc-status-fields tc-span-grid">
+                                    <div class="tc-field">
+                                        <dt class="tc-field-label" id="train-span-end-a-label">End A ${leadingA ? '(HEAD)' : '(TAIL)'}</dt>
+                                        <dd class="tc-field-value train-pos-display" id="train-span-end-a-tile">${endATileStr}</dd>
+                                    </div>
+                                    <div class="tc-field">
+                                        <dt class="tc-field-label" id="train-span-end-b-label">End B ${leadingA ? '(TAIL)' : '(HEAD)'}</dt>
+                                        <dd class="tc-field-value" id="train-span-end-b-tile">${endBTileStr}</dd>
+                                    </div>
+                                    <div class="tc-field">
+                                        <dt class="tc-field-label">End A dist</dt>
+                                        <dd class="tc-field-value" id="train-span-end-a-dist">${endADistStr}</dd>
+                                    </div>
+                                    <div class="tc-field">
+                                        <dt class="tc-field-label">End B dist</dt>
+                                        <dd class="tc-field-value" id="train-span-end-b-dist">${endBDistStr}</dd>
+                                    </div>
+                                    <div class="tc-field">
+                                        <dt class="tc-field-label">End A edge</dt>
+                                        <dd class="tc-field-value" id="train-span-end-a-edge">${endAEdgeStr}</dd>
+                                    </div>
+                                    <div class="tc-field">
+                                        <dt class="tc-field-label">End B edge</dt>
+                                        <dd class="tc-field-value" id="train-span-end-b-edge">${endBEdgeStr}</dd>
+                                    </div>
+                                    <div class="tc-field">
+                                        <dt class="tc-field-label">Facing</dt>
+                                        <dd class="tc-field-value train-dir-display">${controller?.facing_direction || '—'}</dd>
+                                    </div>
+                                    <div class="tc-field">
+                                        <dt class="tc-field-label">Block</dt>
+                                        <dd class="tc-field-value">${train.block_section_id || '—'}</dd>
+                                    </div>
+                                </dl>
+                                <div class="tc-section-subtitle">Properties (read-only)</div>
+                                <dl class="tc-status-fields">
+                                    <div class="tc-field">
+                                        <dt class="tc-field-label">Car #</dt>
+                                        <dd class="tc-field-value" id="train-status-car-val">${train.car_number || '—'}</dd>
+                                    </div>
+                                    <div class="tc-field">
+                                        <dt class="tc-field-label">Length</dt>
+                                        <dd class="tc-field-value" id="train-status-length-val">${train.length_cm || 0} cm</dd>
+                                    </div>
+                                    <div class="tc-field">
+                                        <dt class="tc-field-label">Max Speed</dt>
+                                        <dd class="tc-field-value" id="train-status-maxspeed-val">${train.max_speed || 100} km/h</dd>
+                                    </div>
+                                    <div class="tc-field">
+                                        <dt class="tc-field-label">Speed Profile</dt>
+                                        <dd class="tc-field-value flex gap-8">
+                                            <span class="font-mono">${train.speed_profile_id || 'default'}</span>
+                                            <span class="flex-1"></span>
+                                            <button id="train-edit-profile-btn" class="rr-flat-btn" data-profile-id="${train.speed_profile_id || 'default'}">Edit profile →</button>
+                                        </dd>
+                                    </div>
+                                </dl>
+                                <div class="tc-section-subtitle">Maintenance</div>
+                                <dl class="tc-status-fields">
+                                    <div class="tc-field">
+                                        <dt class="tc-field-label">Distance</dt>
+                                        <dd class="tc-field-value" id="train-status-distance-val" title="Cumulative distance travelled">${formatDistanceCm(train.total_distance_cm || 0)}</dd>
+                                    </div>
+                                    <div class="tc-field">
+                                        <dt class="tc-field-label">Run time</dt>
+                                        <dd class="tc-field-value" id="train-status-runtime-val" title="Cumulative powered-on time">${formatDuration(train.total_run_time_seconds || 0)}</dd>
+                                    </div>
+                                </dl>
                             </div>
-                            <div class="tc-field">
-                                <dt class="tc-field-label" id="train-span-end-b-label">End B ${leadingA ? '(TAIL)' : '(HEAD)'}</dt>
-                                <dd class="tc-field-value" id="train-span-end-b-tile">${endBTileStr}</dd>
-                            </div>
-                            <div class="tc-field">
-                                <dt class="tc-field-label">End A dist</dt>
-                                <dd class="tc-field-value" id="train-span-end-a-dist">${endADistStr}</dd>
-                            </div>
-                            <div class="tc-field">
-                                <dt class="tc-field-label">End B dist</dt>
-                                <dd class="tc-field-value" id="train-span-end-b-dist">${endBDistStr}</dd>
-                            </div>
-                            <div class="tc-field">
-                                <dt class="tc-field-label">End A edge</dt>
-                                <dd class="tc-field-value" id="train-span-end-a-edge">${endAEdgeStr}</dd>
-                            </div>
-                            <div class="tc-field">
-                                <dt class="tc-field-label">End B edge</dt>
-                                <dd class="tc-field-value" id="train-span-end-b-edge">${endBEdgeStr}</dd>
-                            </div>
-                            <div class="tc-field">
-                                <dt class="tc-field-label">Facing</dt>
-                                <dd class="tc-field-value train-dir-display">${controller?.facing_direction || '—'}</dd>
-                            </div>
-                            <div class="tc-field">
-                                <dt class="tc-field-label">Block</dt>
-                                <dd class="tc-field-value">${train.block_section_id || '—'}</dd>
-                            </div>
-                        </dl>
-                        <div class="tc-section-subtitle">Properties (read-only)</div>
-                        <dl class="tc-status-fields">
-                            <div class="tc-field">
-                                <dt class="tc-field-label">Car #</dt>
-                                <dd class="tc-field-value" id="train-status-car-val">${train.car_number || '—'}</dd>
-                            </div>
-                            <div class="tc-field">
-                                <dt class="tc-field-label">Length</dt>
-                                <dd class="tc-field-value" id="train-status-length-val">${train.length_cm || 0} cm</dd>
-                            </div>
-                            <div class="tc-field">
-                                <dt class="tc-field-label">Max Speed</dt>
-                                <dd class="tc-field-value" id="train-status-maxspeed-val">${train.max_speed || 100} km/h</dd>
-                            </div>
-                            <div class="tc-field">
-                                <dt class="tc-field-label">Speed Profile</dt>
-                                <dd class="tc-field-value flex gap-8">
-                                    <span class="font-mono">${train.speed_profile_id || 'default'}</span>
-                                    <span class="flex-1"></span>
-                                    <button id="train-edit-profile-btn" class="rr-flat-btn" data-profile-id="${train.speed_profile_id || 'default'}">Edit profile →</button>
-                                </dd>
-                            </div>
-                        </dl>
-                        <div class="tc-section-subtitle">Maintenance</div>
-                        <dl class="tc-status-fields">
-                            <div class="tc-field">
-                                <dt class="tc-field-label">Distance</dt>
-                                <dd class="tc-field-value" id="train-status-distance-val" title="Cumulative distance travelled">${formatDistanceCm(train.total_distance_cm || 0)}</dd>
-                            </div>
-                            <div class="tc-field">
-                                <dt class="tc-field-label">Run time</dt>
-                                <dd class="tc-field-value" id="train-status-runtime-val" title="Cumulative powered-on time">${formatDuration(train.total_run_time_seconds || 0)}</dd>
-                            </div>
-                        </dl>
-                    </div>
+                        </div>
+                    </details>
 
                     <details class="tc-disclosure">
                         <summary>Edit Properties</summary>
@@ -1561,6 +1572,10 @@ export class TrainEditorHandler {
         `;
 
     this.editor.showSecondarySidebar(`${trainId}`, content);
+
+    document.getElementById('train-details')?.addEventListener('toggle', (e) => {
+      trainDetailsOpen = (e.currentTarget as HTMLDetailsElement).open;
+    });
 
     // Check debug checkbox immediately and update visibility
     const debugCheckbox = document.getElementById('debug-show-train-position') as HTMLInputElement | null;

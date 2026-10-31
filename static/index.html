@@ -38,7 +38,13 @@
                     <h1>RAIL</h1>
                 </div>
                 <div class="simulation-controls">
-                    <span id="session-state-chip" class="session-chip" title="">—</span>
+                    <!-- The header's answer to "can trains move?": the operating
+                         environment and the session state, then the one button
+                         that gets to Live when that button is Activate. -->
+                    <span id="session-state-chip" class="session-chip" title=""><span class="session-chip-env" id="session-chip-env"></span><span class="session-chip-state" id="session-chip-state">—</span></span>
+                    <button id="btn-session-activate" class="btn btn-primary" type="button" title="Activate the selected environment" hidden>
+                        <i class="ti ti-power"></i> Activate
+                    </button>
                     <button id="btn-play-pause" class="btn btn-primary" title="Play" aria-label="Play">
                         <i class="ti ti-player-play"></i>
                     </button>
@@ -57,7 +63,7 @@
             <div class="header-zone header-zone-center">
                 <div class="mode-switch" role="group" aria-label="Mode">
                     <button id="mode-edit" class="mode-btn active">Editor</button>
-                    <button id="mode-sim" class="mode-btn">Simulation</button>
+                    <button id="mode-sim" class="mode-btn">Operate</button>
                 </div>
                 <div class="layout-controls">
                     <button id="btn-new-layout" class="btn" title="New Layout"><i class="ti ti-file-plus"></i> New</button>

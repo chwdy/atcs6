@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { Editor } from './editor';
+import { ToolbarHandler } from './editor-toolbar';
 import { SimEditorPlugin } from './sim-plugin';
+import { railKey, railNumbers } from './tool-registry';
 
 // The plugin hook is exercised on the prototype with a hand-built `this` — the
 // full Editor constructor needs a DOM, but registerPlugin itself is pure glue.
@@ -82,5 +84,58 @@ describe('tool registry', () => {
     };
     const ids = Editor.prototype._collectToolContributions.call(ctx).map((t: any) => t.id);
     expect(ids).toEqual(['inspect', 'path']);
+  });
+});
+
+describe('tool rail', () => {
+  const allTools = (): any[] => [
+    ...Editor.prototype.coreTools.call({}),
+    ...new SimEditorPlugin().tools({} as any),
+  ];
+
+  it('numbers each rail button by its place across every mode', () => {
+    const tools = allTools();
+    const numbers = railNumbers(tools);
+    const num = (key: string) => numbers.get(key);
+    expect(num('tool:inspect')).toBe(1);
+    expect(num('group:Selection')).toBe(2);
+    expect(num('group:Train')).toBe(8);
+    expect(num('group:Route')).toBe(9);
+    // Operate mode hides Selection and Segment, but the buttons it still shows
+    // keep the numbers they have in Editor mode.
+    const simKeys = new Set(tools.filter((t) => t.availableIn.includes('sim')).map(railKey));
+    expect(simKeys.has('group:Selection')).toBe(false);
+    expect(simKeys.has('group:Train')).toBe(true);
+  });
+
+  it('a click on a group whose menu hover already opened keeps it open', async () => {
+    const group = { classList: { contains: (c: string) => c === 'open' } };
+    const groupBtn = { closest: (sel: string) => (sel === '.tool-group' ? group : null) };
+    const target = {
+      closest: (sel: string) => (sel === '.tool-group-btn' ? groupBtn : null),
+    };
+    const handler = new ToolbarHandler({} as any);
+    handler._closeToolPopovers = vi.fn();
+    handler._openGroupPopover = vi.fn();
+
+    await handler._onToolbarClick({ target } as any);
+
+    expect(handler._closeToolPopovers).not.toHaveBeenCalled();
+    expect(handler._openGroupPopover).not.toHaveBeenCalled();
+  });
+
+  it('a click on a closed group opens its menu', async () => {
+    const group = { classList: { contains: () => false } };
+    const groupBtn = { closest: (sel: string) => (sel === '.tool-group' ? group : null) };
+    const target = {
+      closest: (sel: string) => (sel === '.tool-group-btn' ? groupBtn : null),
+    };
+    const handler = new ToolbarHandler({} as any);
+    handler._closeToolPopovers = vi.fn();
+    handler._openGroupPopover = vi.fn();
+
+    await handler._onToolbarClick({ target } as any);
+
+    expect(handler._openGroupPopover).toHaveBeenCalledWith(group);
   });
 });

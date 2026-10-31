@@ -143,21 +143,29 @@ textarea {
     line-height: 1;
 }
 
-/* ---- Primary CTA: Play / Pause (the one filled accent button) ---- */
+/* ---- Primary CTA: Play / Pause and Activate — the filled accent buttons.
+   They are never both actionable: Activate shows only while activating is the
+   way to Live, and Play is pressable only while Live or Paused. ---- */
 .app-header #btn-play-pause {
     width: var(--control-height-sm);
     padding: 0;
     justify-content: center;
 }
 
-.app-header #btn-play-pause.btn-primary {
+.app-header #btn-session-activate {
+    margin-right: 8px;
+}
+
+.app-header #btn-play-pause.btn-primary,
+.app-header #btn-session-activate.btn-primary {
     background-color: var(--accent-color);
     color: #fff;
     border: 1px solid var(--accent-color);
     font-weight: 600;
 }
 
-.app-header #btn-play-pause.btn-primary:hover {
+.app-header #btn-play-pause.btn-primary:hover,
+.app-header #btn-session-activate.btn-primary:hover:not(:disabled) {
     background-color: var(--accent-hover);
     border-color: var(--accent-hover);
     color: #fff;
@@ -168,7 +176,8 @@ textarea {
 }
 
 /* ---- Session state chip — the header's one answer to "is the layout
-   live?" (design_new.md "Session state"). Live reads success; a halt reads
+   live?" (design_new.md "Session state"). It names the operating environment
+   in muted text, then the session state. Live reads success; a halt reads
    danger only for a failure or Emergency stop; Paused, Setup and
    not-activated stay neutral. A long halt label is cut with an ellipsis; the
    full label and the way back are in the tooltip. ---- */
@@ -176,7 +185,7 @@ textarea {
     display: inline-flex;
     align-items: center;
     height: var(--control-height-sm);
-    max-width: 180px;
+    max-width: 300px;
     padding: 0 8px;
     margin-right: 8px;
     border: 1px solid var(--border-color);
@@ -207,9 +216,29 @@ textarea {
     border-color: var(--danger-color);
 }
 
+.session-chip-env {
+    color: var(--text-tertiary);
+    font-weight: 500;
+}
+
+.session-chip-env:not(:empty)::after {
+    content: "·";
+    margin: 0 6px;
+}
+
+.session-chip-state {
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* Narrow headers drop the environment name first; it stays in the tooltip. */
 @media (max-width: 1360px) {
     .session-chip {
         max-width: 120px;
+    }
+
+    .session-chip-env {
+        display: none;
     }
 }
 

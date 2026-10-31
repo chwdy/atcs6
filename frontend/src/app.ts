@@ -16,7 +16,7 @@ import { SimRendererOverlay } from './renderer/sim-overlay';
 import { Editor } from './editor/editor';
 import { SimEditorPlugin } from './editor/sim-plugin';
 import { TrainMonitor } from './panels/train-monitor';
-import { runtimeNoun, updateFatalBanner } from './panels/fatal-banner';
+import { updateFatalBanner } from './panels/fatal-banner';
 import { startRestartReconnectFlow } from './ui/restart-flow';
 import {
   startConnectionMonitor,
@@ -31,7 +31,7 @@ import { showConfirmModal, showFormModal } from './lib/helpers';
 import { setLabelSpacing } from './lib/constants';
 import { api } from './lib/api';
 import { NetworkPoller } from './lib/network-poll';
-import { sessionControls, sessionHint, sessionLabel } from './lib/session-controls';
+import { environmentLabel, sessionControls, sessionHint, sessionLabel } from './lib/session-controls';
 import { stateManager } from './lib/state-manager';
 import { showToast } from './lib/toast';
 
@@ -209,25 +209,14 @@ class App {
       });
     }
 
-    // After a hardware failure, Activate is the way back once the device is
-    // repaired: it clears the halt and starts the railway over (design_new.md
-    // "Power", Recovery is reactivation).
-    const activateFatalBtn = document.getElementById('btn-activate-fatal') as HTMLButtonElement | null;
-    if (activateFatalBtn) {
-      activateFatalBtn.addEventListener('click', async () => {
-        activateFatalBtn.disabled = true;
-        try {
-          await api.activateOperationEnvironment();
-          showToast('Activated — every train is off. Press Start route to run a train.', 'success', 5000);
-          await this.refreshNetwork();
-          await refreshHardwarePanel();
-        } catch (e: any) {
-          console.error('[App] Activate failed:', e);
-          showToast(activationBlockMessage(e) || 'Could not activate: ' + (e?.message ?? e), 'error', 8000);
-        } finally {
-          activateFatalBtn.disabled = false;
-        }
-      });
+    // Activate starts the selected environment over with the saved Hardware
+    // Setup (design_new.md "Activation starts the railway over"). The header
+    // offers it from Setup and from a not-activated halt; the fatal banner
+    // offers it after a hardware failure, once the device is repaired
+    // ("Power", Recovery is reactivation).
+    for (const id of ['btn-session-activate', 'btn-activate-fatal']) {
+      const btn = document.getElementById(id) as HTMLButtonElement | null;
+      btn?.addEventListener('click', () => void this.activateEnvironment(btn));
     }
 
     const restartFatalBtn = document.getElementById('btn-restart-fatal') as HTMLButtonElement | null;
@@ -314,10 +303,30 @@ class App {
     this.setupLayoutControls();
   }
 
+  /** Activate the selected environment; `btn` is disabled while it runs. */
+  async activateEnvironment(btn: HTMLButtonElement): Promise<void> {
+    btn.disabled = true;
+    try {
+      await api.activateOperationEnvironment();
+      showToast('Activated — every train is off. Press Start route to run a train.', 'success', 5000);
+      await this.refreshNetwork();
+      await refreshHardwarePanel();
+    } catch (e: any) {
+      console.error('[App] Activate failed:', e);
+      showToast(activationBlockMessage(e) || 'Could not activate: ' + (e?.message ?? e), 'error', 8000);
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
   /**
-   * Switch the header Editor/Simulation toggle and gate the tool palette.
+   * Switch the header Editor/Operate toggle and gate the tool palette.
    *
-   * In Simulation mode the layout must not change, so every tool that builds
+   * The header names the operation session mode "Operate" in every operating
+   * environment (design_new.md "Session mode and operating environment"), so
+   * the word "Simulation" means only the environment.
+   *
+   * In Operate mode the layout must not change, so every tool that builds
    * or deletes track, blocks, paths, platforms, trains or routes is disabled.
    * Only the plain Select tool (to pick/inspect entities, including trains)
    * and the read-only viewer panels (data-tool ending in `-panel`) stay live.
@@ -330,7 +339,6 @@ class App {
 
     document.getElementById('mode-edit')!.classList.toggle('active', !isSim);
     document.getElementById('mode-sim')!.classList.toggle('active', isSim);
-    this.syncRuntimeNounUI(this.currentNetwork);
 
     if (!this.editor) return;
 
@@ -358,19 +366,6 @@ class App {
     }
   }
 
-  /** Stop calling a railway with real detectors on it a simulation.
-   *
-   *  design_new.md "Run modes": the header split is editor mode versus
-   *  operation mode, and what operation mode *is* depends on the hardware —
-   *  once block occupancy is read from real detectors the app is operating a
-   *  layout, not simulating one. The mode button and the play/pause tooltip
-   *  follow `occupancy_is_real`; nothing else about the split changes. */
-  syncRuntimeNounUI(network: any): void {
-    const noun = runtimeNoun(network);
-    const modeBtn = document.getElementById('mode-sim');
-    if (modeBtn && modeBtn.textContent !== noun) modeBtn.textContent = noun;
-  }
-
   /** Show the session state and offer the controls it allows (design_new.md
    *  "Session state"). `isSimulationRunning` means the session is Live. */
   syncSessionUI(network: any): void {
@@ -378,17 +373,24 @@ class App {
     this.sessionState = state;
     this.isSimulationRunning = state?.value === 'live';
 
+    this.operationEnvironment = network?.operation_environment ?? null;
     const chip = document.getElementById('session-state-chip');
     if (chip) {
+      const env = environmentLabel(this.operationEnvironment);
       const label = sessionLabel(state);
-      if (chip.textContent !== label) chip.textContent = label;
-      chip.title = sessionHint(state);
+      const envEl = document.getElementById('session-chip-env');
+      const stateEl = document.getElementById('session-chip-state');
+      if (envEl && envEl.textContent !== env) envEl.textContent = env;
+      if (stateEl && stateEl.textContent !== label) stateEl.textContent = label;
+      const hint = sessionHint(state);
+      chip.title = [env ? `${env}: ${label}.` : `${label}.`, hint].filter(Boolean).join(' ');
       chip.dataset.state = state?.value ?? '';
       chip.dataset.halt = state?.halt_reason ?? '';
     }
 
-    this.operationEnvironment = network?.operation_environment ?? null;
     const controls = sessionControls(state, network?.operation_environment);
+    const activateBtn = document.getElementById('btn-session-activate');
+    if (activateBtn) activateBtn.hidden = !controls.activateVisible;
     const playBtn = document.getElementById('btn-play-pause') as HTMLButtonElement | null;
     if (playBtn) {
       playBtn.hidden = !controls.playbackVisible;
@@ -796,7 +798,7 @@ class App {
       if (result?.warning) {
         showToast(`Warning: ${result.warning}`, 'warning');
       } else if (result?.hardware === 'applied') {
-        showToast("This layout's hardware configuration was applied — activate the environment to run on it", 'info');
+        showToast("This layout's hardware configuration was applied — press Activate to run on it", 'info');
       }
 
       this.closeModal(document.getElementById('load-layout-modal'));
@@ -982,7 +984,6 @@ class App {
 
       // Surface a fatal-conflict halt (failed_runtime) if one is active.
       updateFatalBanner(network, this.renderer);
-      this.syncRuntimeNounUI(network);
       noteRequestSuccess();
     } catch (e: any) {
       console.error('[App] Failed to refresh network:', e);

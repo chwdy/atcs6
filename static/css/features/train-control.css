@@ -29,7 +29,7 @@
 
 /* Card-bearing zones reach the panel edges — the inner card (.tc-section-task
    itself, or .tc-hmi inside .tc-section-status) carries its own internal
-   padding. Text-content zones (Controls / Debug) keep horizontal padding so
+   padding. Text-content zones (Controls / Details) keep horizontal padding so
    their labels and inputs stay inset from the sidebar walls. */
 .tc-section-controls,
 .tc-section-debug {
@@ -468,7 +468,7 @@
    all live in .tc-controls-pair, each stacking its label above a full-width
    segment. Power + Mode share the first line; the wider 3-button Cab takes its
    own full line below (see .tc-row-cab) so its buttons never get squeezed.
-   Scoped to .tc-section-controls so the shared .tc-row used by the Debug-zone
+   Scoped to .tc-section-controls so the shared .tc-row used by the Details-zone
    property inputs is untouched. The 46px label width applies to the remaining
    inline rows here (e.g. manual "Input"). */
 .tc-section-controls { gap: 5px; }
@@ -851,7 +851,7 @@
 }
 
 /* ============================================================================
-   FOUR-ZONE LAYOUT (Task / Status / Controls / Debug)
+   FOUR-ZONE LAYOUT (Task / Status / Controls / Details)
    Reuses .tc-section base. The Task zone (.tc-section-task) carries the OBC
    accent border; the others are semantic wrappers.
    ============================================================================ */

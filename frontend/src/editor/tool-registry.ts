@@ -65,12 +65,19 @@ export interface RenderToolbarOptions {
  * Only tools whose `availableIn` includes `mode` are rendered, and a group left
  * with no tools is omitted entirely — so operation (sim) mode shows a clean
  * palette. Existing children are replaced, so this is safe to call repeatedly.
+ *
+ * Each rail button's number (its badge and its number-key shortcut) is its
+ * place among every contribution in every mode, so a button keeps its number
+ * when the mode hides the buttons before it — Train is 8 in both modes, and
+ * the numbers simply skip the hidden ones.
  */
 export function renderToolGroups(
   contributions: ToolContribution[],
   mount: HTMLElement,
   { activeToolId, mode }: RenderToolbarOptions,
 ): void {
+  const numbers = railNumbers(contributions);
+
   // Bucket the mode-available tools by group, preserving first-seen order.
   const order: (string | null)[] = [];
   const byGroup = new Map<string | null, ToolContribution[]>();
@@ -86,16 +93,36 @@ export function renderToolGroups(
   }
 
   mount.replaceChildren();
-  let railIndex = 0;
   for (const group of order) {
     const tools = byGroup.get(group)!;
     if (group === null) {
       // Ungrouped (the default Inspect tool): a direct rail button.
-      for (const c of tools) mount.appendChild(buildRailButton(c, activeToolId, (railIndex += 1)));
+      for (const c of tools) {
+        mount.appendChild(buildRailButton(c, activeToolId, numbers.get(railKey(c))!));
+      }
       continue;
     }
-    mount.appendChild(buildGroup(group, tools, activeToolId, (railIndex += 1)));
+    mount.appendChild(buildGroup(group, tools, activeToolId, numbers.get(railKey(tools[0]))!));
   }
+}
+
+/** The rail button a contribution sits on: its own (ungrouped) or its group's. */
+export function railKey(c: ToolContribution): string {
+  return c.group === null ? `tool:${c.id}` : `group:${c.group}`;
+}
+
+/**
+ * Every rail button's number, keyed by `railKey`: first-seen order across all
+ * contributions, whatever their modes, so a button's number does not depend on
+ * which mode is showing.
+ */
+export function railNumbers(contributions: ToolContribution[]): Map<string, number> {
+  const numbers = new Map<string, number>();
+  for (const c of contributions) {
+    const key = railKey(c);
+    if (!numbers.has(key)) numbers.set(key, numbers.size + 1);
+  }
+  return numbers;
 }
 
 /** A full-width rail button for a single tool (e.g. Inspect). */
@@ -108,6 +135,7 @@ function buildRailButton(
   btn.type = 'button';
   btn.className = c.id === activeToolId ? 'tool-launch active' : 'tool-launch';
   btn.dataset.tool = c.id;
+  btn.dataset.railNum = String(num);
   // The visible label is hidden in the compact rail (.sidebar--compact), so the
   // name has to survive as a tooltip / accessible name.
   btn.title = c.label;
@@ -139,6 +167,7 @@ function buildGroup(
   const trigger = document.createElement('button');
   trigger.type = 'button';
   trigger.className = 'tool-launch tool-group-btn';
+  trigger.dataset.railNum = String(num);
   trigger.setAttribute('aria-haspopup', 'true');
   trigger.setAttribute('aria-expanded', 'false');
   // See buildRailButton: the compact rail hides the label, so name the group
