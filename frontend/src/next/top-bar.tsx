@@ -20,6 +20,7 @@ import {
 } from '../lib/session-controls';
 import { themeManager, type ThemeChannel } from '../lib/theme';
 import { readCanvasLayers } from './canvas-layers';
+import { logsOpen } from './logs/state';
 import { MenuButton, type MenuSection } from './menu';
 import { NEXT_STEP_BUTTON, nextStep, type NextStep } from './next-step';
 import { operationEnvironment, screen, sessionState, simulationSpeed, type Screen } from './state';
@@ -46,6 +47,8 @@ export interface TopBarActions {
   clearConflict(): Promise<void>;
   emergencyStop(): Promise<void>;
   toggleWindow(name: ToolWindow): void;
+  /** Open or close the Logs panel (plan §8). */
+  toggleLogs(): void;
   openSettings(): void;
   restartServer(): Promise<void>;
 }
@@ -96,21 +99,15 @@ export function TopBar({ actions }: { actions: TopBarActions }) {
           </button>
         </div>
         <div>
-          <MenuButton
-            label="Logs"
-            icon="ti ti-list-search"
-            title="Event log, detectors and diagnostics"
-            align="right"
-            sections={() => [
-              {
-                items: [
-                  { label: 'Event log', icon: 'ti ti-list-search', onSelect: () => actions.toggleWindow('eventLog') },
-                  { label: 'Detectors', icon: 'ti ti-activity-heartbeat', detail: 'raw occupancy', onSelect: () => actions.toggleWindow('occupancyMonitor') },
-                  { label: 'Diagnostics', icon: 'ti ti-microscope', onSelect: () => actions.toggleWindow('diagnosticsPanel') },
-                ],
-              },
-            ]}
-          />
+          <button
+            type="button"
+            class="btn ntb-logs"
+            title="Show or hide the Logs panel: event log, detectors and diagnostics"
+            aria-pressed={logsOpen.value}
+            onClick={actions.toggleLogs}
+          >
+            <i class="ti ti-list-search" aria-hidden="true" /> Logs
+          </button>
           <MenuButton label="View" icon="ti ti-palette" title="Themes and canvas layers" align="right" sections={viewSections} />
           <MenuButton
             icon="ti ti-settings"

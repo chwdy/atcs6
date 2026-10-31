@@ -16,6 +16,8 @@ import { mountEditorScreen } from './editor/screen';
 import { mountHardwareSetup } from './hardware/screen';
 import { showHardwareSetup } from './hardware/state';
 import { mountLocomotivesScreen, type LocomotivesHost } from './locomotives';
+import { mountLogsPanel } from './logs/logs-panel';
+import { toggleLogs } from './logs/state';
 import { screen, type Screen } from './state';
 import { TopBar, type TopBarActions, type ToolWindow } from './top-bar';
 
@@ -78,6 +80,7 @@ export function topBarActions(host: NextHost): TopBarActions {
     clearConflict: () => host.clearFatalConflict(),
     emergencyStop: () => host.emergencyStop(),
     toggleWindow,
+    toggleLogs,
     openSettings: () => host.openSettings(),
     restartServer: () => host.restartServer(),
   };
@@ -102,4 +105,5 @@ export function mountNextUI(host: NextHost): void {
     showScreen: (next) => showScreen(host, next),
   });
   mountLocomotivesScreen(host, () => showScreen(host, 'locomotives'));
+  mountLogsPanel();
 }

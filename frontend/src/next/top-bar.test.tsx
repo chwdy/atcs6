@@ -3,6 +3,7 @@ import { render } from 'preact';
 import { act } from 'preact/test-utils';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { logsOpen } from './logs/state';
 import { operationEnvironment, screen, sessionState } from './state';
 import { TopBar, type TopBarActions } from './top-bar';
 
@@ -20,6 +21,7 @@ function fakeActions(): TopBarActions {
     clearConflict: vi.fn(async () => {}),
     emergencyStop: vi.fn(async () => {}),
     toggleWindow: vi.fn(),
+    toggleLogs: vi.fn(),
     openSettings: vi.fn(),
     restartServer: vi.fn(async () => {}),
   };
@@ -81,10 +83,16 @@ describe('TopBar', () => {
     expect(actions.emergencyStop).toHaveBeenCalledTimes(1);
   });
 
-  it('opens a tool window from the Logs menu, and the menu closes', () => {
-    act(() => buttonNamed(root, 'Logs').click());
-    act(() => buttonNamed(root, 'Event log').click());
-    expect(actions.toggleWindow).toHaveBeenCalledWith('eventLog');
-    expect(root.querySelector('.ntb-menu')).toBeNull();
+  it('toggles the Logs panel from Logs, and shows it pressed while open', () => {
+    buttonNamed(root, 'Logs').click();
+    expect(actions.toggleLogs).toHaveBeenCalledTimes(1);
+    expect(buttonNamed(root, 'Logs').getAttribute('aria-pressed')).toBe('false');
+    act(() => {
+      logsOpen.value = true;
+    });
+    expect(buttonNamed(root, 'Logs').getAttribute('aria-pressed')).toBe('true');
+    act(() => {
+      logsOpen.value = false;
+    });
   });
 });

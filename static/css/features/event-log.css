@@ -13,7 +13,8 @@
    The template lives in a custom property so the header and the rows cannot
    drift apart. */
 
-.floating-window[data-window-id="event-log"] .floating-window-content {
+.floating-window[data-window-id="event-log"] .floating-window-content,
+.nlp-events {
     font-family: var(--font-main);
     font-size: 12px;
     display: flex;

@@ -8,7 +8,8 @@
    the extra lines that explain it. That way the panel is scannable at rest and
    only gets dense where something is happening. */
 
-.floating-window[data-window-id="occupancy-monitor"] .floating-window-content {
+.floating-window[data-window-id="occupancy-monitor"] .floating-window-content,
+.nlp-detectors {
     font-family: var(--font-main);
     font-size: 12px;
 }

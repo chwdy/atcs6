@@ -32,6 +32,7 @@ import {
     saveWindowState,
     ensureRegistered,
 } from '../lib/window-persistence';
+import { logsPanelReplacesWindows } from '../next/logs/replaced-windows';
 
 // ---------------------------------------------------------------------------
 // Snapshot shapes returned by GET /api/hardware/occupancy/raw. Loosely typed and
@@ -273,9 +274,9 @@ const DEFAULT_WIDTH = 540;
 const DEFAULT_HEIGHT = 420;
 const MIN_WIDTH = 380;
 const MAX_WIDTH = 960;
-const FLASH_MS = 900;
+export const FLASH_MS = 900;
 
-const REFRESH_OPTIONS = [
+export const REFRESH_OPTIONS = [
     { label: '10 Hz', hz: 10 },
     { label: '4 Hz', hz: 4 },
     { label: '1 Hz', hz: 1 },
@@ -283,7 +284,7 @@ const REFRESH_OPTIONS = [
     { label: 'On-demand', hz: 0 },
 ];
 
-const FILTER_OPTIONS: Array<{ label: string; value: OccupancyFilter }> = [
+export const FILTER_OPTIONS: Array<{ label: string; value: OccupancyFilter }> = [
     { label: 'All blocks', value: 'all' },
     { label: 'Occupied only', value: 'occupied' },
     { label: 'Settling only', value: 'settling' },
@@ -642,6 +643,7 @@ class OccupancyMonitor {
 
 function bootstrap(): void {
     if (window.occupancyMonitor) return; // idempotent
+    if (logsPanelReplacesWindows()) return; // ?ui=next: the Logs panel's Detectors tab
     window.occupancyMonitor = new OccupancyMonitor();
     window.occupancyMonitor.init();
 }

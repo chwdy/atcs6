@@ -8,7 +8,8 @@
 
 /* Diagnostics' own font-size baseline for everything mounted inside the
    shared .floating-window-content. */
-.floating-window[data-window-id="diagnostics"] .floating-window-content {
+.floating-window[data-window-id="diagnostics"] .floating-window-content,
+.nlp-diagnostics {
     font-family: var(--font-main);
     font-size: 12px;
 }
