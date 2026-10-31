@@ -206,6 +206,9 @@ class MeetCoordinator:
             target.requested_destination_direction,
             self._re._manual_override_for(train_id),
         )
+        # A route's required walk is the train's only candidate here
+        # (design_new.md Planning Kernel step `66aa`, Required walk).
+        candidates = self._re.required_walk_candidates(train_id, candidates)
         if not candidates:
             return None
 

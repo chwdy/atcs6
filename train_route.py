@@ -21,7 +21,7 @@ The module provides:
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Tuple, Union
 
 from runtime_payloads import ErrorRecord
 
@@ -430,6 +430,12 @@ class Route:
     # standoff"). Set True only on a speed-calibration leg's one-off route;
     # every other route leaves it False.
     zero_reservation_end_standoff: bool = False
+    # The one way every reservation for a run on this route must follow, as the
+    # ordered `(resource_type, resource_id, entry_edge, exit_edge)` list of that
+    # walk, or None (design_new.md "Route data"; canonical home Planning Kernel
+    # step `66aa`, Required walk). Only a speed-calibration leg route carries
+    # one; RouteExecutor sets it when it builds the leg route at step `c9e1`.
+    required_walk_keys: Optional[List[Tuple[str, str, str, str]]] = None
     # Which clock this route's task durations measure against (design_new.md
     # "Route data"). `"operating"` measures them against
     # `AppState.operating_time`, so an operator stop neither consumes a dwell
@@ -573,6 +579,11 @@ class Route:
             "priority": self.priority,
             "manual_override": self.manual_override,
             "zero_reservation_end_standoff": self.zero_reservation_end_standoff,
+            "required_walk_keys": (
+                [list(key) for key in self.required_walk_keys]
+                if self.required_walk_keys is not None
+                else None
+            ),
             "timing_basis": self.timing_basis,
             "start_mode": self.start_mode.value,
             "start_task_index": self.start_task_index,
@@ -614,6 +625,11 @@ class Route:
             manual_override=bool(data.get("manual_override", False)),
             zero_reservation_end_standoff=bool(
                 data.get("zero_reservation_end_standoff", False)
+            ),
+            required_walk_keys=(
+                [tuple(str(part) for part in key) for key in data["required_walk_keys"]]
+                if data.get("required_walk_keys") is not None
+                else None
             ),
             timing_basis=(
                 "realtime" if data.get("timing_basis") == "realtime" else "operating"

@@ -142,6 +142,93 @@ def test_a_stretch_no_leg_can_drive_as_set_fails_the_pass(state):
     assert _switch_positions(state) == before
 
 
+def _walk_blocks(keys):
+    blocks = []
+    for resource_type, resource_id, _entry, _exit in keys:
+        if resource_type == "block" and (not blocks or blocks[-1] != resource_id):
+            blocks.append(resource_id)
+    return blocks
+
+
+def test_the_leg_route_carries_the_walk_it_was_checked_on(state):
+    """design_new.md Planning Kernel step `66aa`, Required walk: the leg route
+    stores the checked walk as `Route.required_walk_keys`, and every
+    reservation for the leg follows it."""
+    _place(state, (9, 13), "WEST")
+    run = train_service.calibrate_train(state, TRAIN, measured_block_id=UP)
+    state.sim_controller.update(0.1)
+
+    leg_route = state.sim_controller.route_executor.route_registry[
+        run.active_leg_route_id
+    ]
+    assert _walk_blocks(leg_route.required_walk_keys) == [RIGHT, UP, LEFT]
+
+
+def test_a_leg_that_loses_its_walk_fails_the_pass(state):
+    """design_new.md "Speed calibration", A leg that loses its walk fails the
+    pass: the measured block is made `manual` after the leg armed and before its
+    path was acquired, so no walk lies on the leg's way any more. The pass ends
+    at once rather than waiting with no step timeout running."""
+    _place(state, (9, 13), "WEST")
+    before = _switch_positions(state)
+    rex = state.sim_controller.route_executor
+    original_arm = rex._arm_calibration_leg
+
+    def arm_then_lose_the_walk(*args, **kwargs):
+        original_arm(*args, **kwargs)
+        state.network.blocks[UP].manual = True
+
+    rex._arm_calibration_leg = arm_then_lose_the_walk
+    run = train_service.calibrate_train(state, TRAIN, measured_block_id=UP)
+    _leg_path_blocks(state, ticks=5)
+
+    assert run.phase == PHASE_FAILED
+    assert "lost its way" in run.failure_reason
+    assert RIGHT in run.failure_reason and LEFT in run.failure_reason
+    assert state.path_dispatcher.active_path_id_by_train(TRAIN) is None
+    assert _switch_positions(state) == before
+
+
+def test_a_failed_pass_with_no_leg_route_assigned_latches_no_teardown(state):
+    """design_new.md "Speed calibration", How a run is ended: a failed pass
+    deactivates the leg route only when one is assigned."""
+    _place(state, (9, 13), "WEST")
+    run = train_service.calibrate_train(state, TRAIN, measured_block_id=UP)
+    sim = state.sim_controller
+    calibration = sim.speed_calibration
+    controller = sim.get_or_create_controller(TRAIN)
+    assert run.active_leg_route_id is None
+    calibration.plan_tick = lambda train_id: calibration.fail(run, "a test fault")
+
+    sim.route_executor._prepare_calibration_leg(TRAIN, controller)
+
+    assert run.phase == PHASE_FAILED
+    assert controller.route_hooks.phase_latches.route_deactivate is False
+
+
+def test_any_cap_that_lowers_the_drive_discards_the_crossing():
+    """design_new.md "A capped crossing is discarded": the reason the cap
+    lowered the drive does not matter."""
+    from types import SimpleNamespace
+
+    from enums import AtcLimitReasonCode
+    from train_controller import TrainController
+
+    tainted = []
+    fake = SimpleNamespace(
+        train_id=TRAIN,
+        _speed_calibration=SimpleNamespace(
+            taint_current_crossing=lambda train_id, reason: tainted.append(reason)
+        ),
+        _calibration_power_percent_override=lambda: 40.0,
+        atc=SimpleNamespace(_last_limit_reason_code=AtcLimitReasonCode.NO_RESERVATION),
+    )
+
+    TrainController._taint_calibration_crossing_on_cap(fake)
+
+    assert len(tainted) == 1
+
+
 def _run_pass(state, run, *, until_step, ticks=9000):
     sim = state.sim_controller
     for _ in range(ticks):

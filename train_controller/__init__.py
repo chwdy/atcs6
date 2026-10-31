@@ -1156,17 +1156,15 @@ class TrainController:
         rather than banked, and the pass goes on. Only a pass actively driving a
         crossing is affected.
 
-        An ATC `CAUTION` block ahead and a posted block `SPEED_LIMIT` lower the
-        drive without ending the pass, and so does the leg's own reservation-end
-        braking (`RESERVATION_STOP`): it reaches back into a crossing being timed
-        only when the stretch is too short for the step (the leg drives to the far
-        seam of its far outer block, per "A calibration leg holds no reservation-end
-        standoff"), so tainting it there is how a too-short stretch is caught —
-        `taint_current_crossing(...)` marks a crossing only while one is being
-        timed. `NO_RESERVATION` is the leg losing its authority, a lifecycle event
-        that ends the pass through `SpeedCalibration.run_still_valid(...)`, so it
-        is excluded, as are EB and power-off, which end the whole pass at Action
-        step `26f5`.
+        Every cap that lowers the drive taints the crossing, whatever its
+        reason; the reason code only names it in the report. The leg's own
+        reservation-end braking (`RESERVATION_STOP`) reaches back into a crossing
+        being timed only when the stretch is too short for the step (the leg
+        drives to the far seam of its far outer block, per "A calibration leg
+        holds no reservation-end standoff"), so tainting it there is how a
+        too-short stretch is caught — `taint_current_crossing(...)` marks a
+        crossing only while one is being timed. EB and power-off end the whole
+        pass separately, at Action step `26f5`.
         """
         calibration = self._speed_calibration
         if calibration is None:
@@ -1174,6 +1172,9 @@ class TrainController:
         driving_pct = self._calibration_power_percent_override()
         if driving_pct is None or driving_pct <= 0.0:
             return
+        # Any cap that lowered the calibration drive discards the crossing
+        # (design_new.md "A capped crossing is discarded"); the reason code only
+        # names it in the report.
         reason_code = self.atc._last_limit_reason_code
         if reason_code == AtcLimitReasonCode.CAUTION:
             reason = "CAUTION restriction during a measured crossing"
@@ -1181,8 +1182,10 @@ class TrainController:
             reason = "block speed limit during a measured crossing"
         elif reason_code == AtcLimitReasonCode.RESERVATION_STOP:
             reason = "reservation-end braking during a measured crossing"
+        elif reason_code is not None:
+            reason = f"ATC limit ({reason_code.value}) during a measured crossing"
         else:
-            return
+            reason = "ATC limit during a measured crossing"
         calibration.taint_current_crossing(self.train_id, reason)
 
     def calibration_run_open(self) -> bool:
