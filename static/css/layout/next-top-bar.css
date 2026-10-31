@@ -1,0 +1,109 @@
+/* ============================================================================
+   ?ui=next top bar (docs/ui-layout-rewrite-plan.md §3;
+   frontend/src/next/top-bar.tsx).
+
+   The new top bar carries the `app-header` class, so it takes today's header
+   styles (height, surface, 32px controls, zone hairlines, session chip, mode
+   switch). This file holds only what differs, and every rule that touches
+   today's layout is scoped to html[data-ui="next"], so without the flag the
+   page is unchanged.
+   ============================================================================ */
+
+/* Today's regions that the new layout has replaced. */
+html[data-ui="next"] .app-header:not(.next-top-bar) {
+    display: none;
+}
+
+/* Emergency stop and Reset are in the top bar now. Hold all stays on the
+   canvas until the Operate screen's train cards take it (plan §5). */
+html[data-ui="next"] .session-bar #btn-emergency-stop,
+html[data-ui="next"] .session-bar #btn-reset-layout {
+    display: none !important;
+}
+
+/* The slot only places the top bar in the page's column; it draws nothing. */
+.next-top-bar-slot {
+    display: contents;
+}
+
+/* Two zones in one row rather than today's three-column grid: the right zone
+   (status control, Emergency stop, menus) is wider than the left, so a
+   centred middle column would overlap it at 1440px. */
+.next-top-bar {
+    display: flex;
+    justify-content: space-between;
+}
+
+.ntb-status {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+/* The session chip is a button here: it opens Hardware Setup. */
+.next-top-bar .ntb-chip {
+    margin-right: 0;
+    background: transparent;
+    font-family: inherit;
+    cursor: pointer;
+}
+
+.next-top-bar .ntb-chip:hover {
+    border-color: var(--accent-color);
+}
+
+/* The next-step button (Activate, Play, Reset): the filled accent CTA. */
+.next-top-bar .btn-primary {
+    background-color: var(--accent-color);
+    border: 1px solid var(--accent-color);
+    color: #fff;
+    font-weight: 600;
+}
+
+.next-top-bar .btn-primary:hover:not(:disabled) {
+    background-color: var(--accent-hover);
+    border-color: var(--accent-hover);
+    color: #fff;
+}
+
+/* Emergency stop reads as the stop button at rest and fills on hover, the
+   same danger treatment as the canvas session bar's button it replaces. */
+.next-top-bar .ntb-estop {
+    color: var(--danger-color);
+    border-color: rgba(var(--danger-rgb), 0.5);
+    font-weight: 600;
+}
+
+.next-top-bar .ntb-estop:hover:not(:disabled) {
+    background-color: var(--danger-color);
+    border-color: var(--danger-color);
+    color: #fff;
+}
+
+/* ---- Drop-down menus (frontend/src/next/menu.tsx). The menu box reuses
+   .tile-context-menu; these rules hang it under its button instead of at the
+   pointer. ---- */
+.ntb-menu-wrap {
+    position: relative;
+    display: inline-flex;
+}
+
+.next-top-bar .ntb-caret {
+    font-size: 12px;
+    opacity: 0.7;
+}
+
+.ntb-menu {
+    position: absolute;
+    top: calc(100% + 6px);
+    max-height: calc(100vh - 80px);
+    overflow-y: auto;
+}
+
+.ntb-menu--left {
+    left: 0;
+}
+
+.ntb-menu--right {
+    right: 0;
+}

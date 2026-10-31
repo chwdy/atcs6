@@ -36,6 +36,9 @@ export default defineConfig({
       output: { entryFileNames: '[name].js' },
     },
   },
+  // The ?ui=next layout (docs/ui-layout-rewrite-plan.md) writes its panels as
+  // Preact components in .tsx files; compile their JSX against Preact.
+  esbuild: { jsx: 'automatic', jsxImportSource: 'preact' },
   server: {
     // `npm run dev` runs Vite's HMR server for module work in later phases and
     // proxies API calls through to the running Flask app. Set ATCS6_API_PORT to
@@ -45,6 +48,8 @@ export default defineConfig({
   },
   test: {
     // Vitest picks up co-located unit tests next to the modules they cover.
-    include: ['src/**/*.test.ts'],
+    // Component tests (.test.tsx) render into happy-dom; each one opts in with
+    // a `// @vitest-environment happy-dom` comment, so the rest stay in node.
+    include: ['src/**/*.test.ts', 'src/**/*.test.tsx'],
   },
 });

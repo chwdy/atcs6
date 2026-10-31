@@ -323,12 +323,16 @@ change to these is a spec edit first.
 ## 11. Phases
 
 Each phase ends with the app working and `./run_all_tests.sh` green. The new
-layout is built next to the old one and opened with `?ui=next`, so the
-current UI keeps working until phase 8 switches the default.
+layout is built next to the old one, in the same page, and opened with
+`?ui=next`: the flag marks `<html data-ui="next">`, which hides each of
+today's regions that a new one has replaced, and mounts the new regions
+(`frontend/src/next/mount.tsx`). Regions not rebuilt yet keep working as
+today, so the app stays fully usable under the flag at every phase, and
+without the flag nothing changes until phase 8 switches the default.
 
 | Phase | What | Size | Needs |
 |-------|------|------|-------|
-| 0 | Add Preact, signals and happy-dom; a `?ui=next` entry that mounts an empty page with the canvas in it; signals over `stateManager`; the shared poll-while-visible helper | Small | — |
+| 0 | Add Preact, signals and happy-dom; the `?ui=next` flag; signals for the session state, fed by the existing network poll; the shared poll-while-visible helper | Small | — |
 | 1 | Top bar (§3): layout menu, screen tabs, status control with its next-step button, Emergency stop, Logs, View, Settings | Medium | 0 |
 | 2 | Operate screen (§5): train cards row, train panel, block and switch panels, left lists, placement | Large | 1 |
 | 3 | Editor screen (§4): flat tool bar, options row, entity panels, Advanced tile bits | Large | 1 |
@@ -341,6 +345,19 @@ current UI keeps working until phase 8 switches the default.
 
 After phase 1, phases 2, 3, 4, 5 and 6 touch different screens and can run
 in parallel, each in its own session and branch.
+
+**Progress.** Phases 0 and 1 are done on `claude/ui-next`. Until the later
+phases land, the new top bar reaches today's layout for what is not rebuilt
+yet:
+
+| Top bar control | Does for now | Until |
+|-----------------|--------------|-------|
+| Hardware Setup tab | Opens today's Hardware Setup dialog | Phase 4 |
+| Locomotives tab | Operate mode with the Speed Profiles panel open | Phase 5 |
+| Logs menu | Opens today's Event Log, Raw Occupancy and Diagnostics windows | Phase 6 |
+| Settings menu → Setup tools | Opens today's Occupancy Bench and Virtual Bench windows | Phase 4 |
+| View menu → Layers | Flips the Debug Info checkboxes in the Settings dialog, which the renderer reads | Layers get their own state |
+| Hold all | Stays on the canvas | Phase 2 |
 
 ---
 

@@ -34,6 +34,8 @@ import { NetworkPoller } from './lib/network-poll';
 import { environmentLabel, sessionControls, sessionHint, sessionLabel } from './lib/session-controls';
 import { stateManager } from './lib/state-manager';
 import { showToast } from './lib/toast';
+import { isNextUI, mountNextUI } from './next/mount';
+import { followEditorMode, updateFromNetwork } from './next/state';
 
 class App {
   renderer: any;
@@ -101,6 +103,8 @@ class App {
     this.followTrainEnabled = false;
 
     this.setupControls();
+    // ?ui=next: mount the rebuilt regions over today's (docs/ui-layout-rewrite-plan.md).
+    if (isNextUI()) mountNextUI(this);
 
     this.setupDebugPanel();
     setupSettingsPanel(() => this.refreshNetwork());
@@ -125,89 +129,14 @@ class App {
 
 
   setupControls(): void {
-    // Play/Pause exists only in Simulation: Play from Paused, Pause from Live
-    // (design_new.md "Session state"). The server decides; the header follows
-    // the session state the next snapshot carries rather than guessing.
-    const playPauseBtn = document.getElementById('btn-play-pause')!;
-    playPauseBtn.addEventListener('click', async () => {
-      const action = this.isSimulationRunning ? 'stop' : 'start';
-      try {
-        await api.controlSimulation(action);
-      } catch (e: any) {
-        console.error('[App] Play/Pause error:', e);
-        showToast(e?.data?.message || e?.message || 'Play/Pause was refused', 'warning', 4000);
-      }
-      await this.refreshNetwork();
-    });
-
-    // Emergency stop: the one kill switch, in every environment. It runs at
-    // once — no confirmation — because it is the button pressed when
-    // something is about to go wrong.
-    document.getElementById('btn-emergency-stop')?.addEventListener('click', async () => {
-      try {
-        const result = await api.layoutEmergencyStop();
-        showToast(result?.message || 'Emergency stop', 'warning', 4000);
-      } catch (e: any) {
-        console.error('[App] Emergency stop failed:', e);
-        showToast('Emergency stop failed: ' + (e?.message ?? e), 'error', 6000);
-      }
-      await this.refreshNetwork();
-    });
-
-    // Reset releases every train after Emergency stop; each ATO train then
-    // waits for Go and each manual train for driver input.
-    document.getElementById('btn-reset-layout')?.addEventListener('click', async () => {
-      try {
-        const result = await api.resetLayoutCutOut();
-        showToast(result?.message || 'Reset', 'success', 4000);
-      } catch (e: any) {
-        showToast('Reset was refused: ' + (e?.message ?? e), 'warning', 5000);
-      }
-      await this.refreshNetwork();
-    });
-
-    // Hold all: ATO stop on every ATO train, keeping its reservation.
-    document.getElementById('btn-hold-all')?.addEventListener('click', async () => {
-      try {
-        const result = await api.holdAll();
-        const n = (result?.stopped_train_ids || []).length;
-        showToast(`Held ${n} ATO train${n === 1 ? '' : 's'}. Press Go on each to resume.`, 'info', 4000);
-      } catch (e: any) {
-        showToast('Hold all failed: ' + (e?.message ?? e), 'error', 5000);
-      }
-      await this.refreshNetwork();
-    });
-
-    // Clearing is the ordinary way out of a fatal conflict: the operator has
-    // gone and sorted it out on the layout, and the session carries on rather
-    // than losing the whole layout state to a process restart. Every train comes
-    // back OFF, so nothing moves until it is powered up deliberately.
+    // Each control runs one of the session action methods below
+    // (togglePlayPause, emergencyStop, …), which say what it does.
+    document.getElementById('btn-play-pause')!.addEventListener('click', () => void this.togglePlayPause());
+    document.getElementById('btn-emergency-stop')?.addEventListener('click', () => void this.emergencyStop());
+    document.getElementById('btn-reset-layout')?.addEventListener('click', () => void this.resetLayout());
+    document.getElementById('btn-hold-all')?.addEventListener('click', () => void this.holdAll());
     const clearFatalBtn = document.getElementById('btn-clear-fatal') as HTMLButtonElement | null;
-    if (clearFatalBtn) {
-      clearFatalBtn.addEventListener('click', async () => {
-        const confirmed = await showConfirmModal({
-          title: 'Clear the conflict?',
-          message: 'Only clear this once the track is actually sorted out — two trains claimed the same place, and the app cannot see that you have fixed it.',
-          detail: 'Every train comes back powered off and stopped. Nothing moves until you power it up again.',
-          confirmText: 'Clear',
-          cancelText: 'Cancel',
-          confirmVariant: 'danger'
-        });
-        if (!confirmed) return;
-
-        clearFatalBtn.disabled = true;
-        try {
-          await api.clearFatalConflict();
-          showToast('Conflict cleared — every train is off.', 'success', 4000);
-          await this.refreshNetwork();
-        } catch (e: any) {
-          console.error('[App] Clear conflict failed:', e);
-          showToast('Could not clear the conflict: ' + (e?.message ?? e), 'error', 5000);
-        } finally {
-          clearFatalBtn.disabled = false;
-        }
-      });
-    }
+    clearFatalBtn?.addEventListener('click', () => void this.clearFatalConflict(clearFatalBtn));
 
     // Activate starts the selected environment over with the saved Hardware
     // Setup (design_new.md "Activation starts the railway over"). The header
@@ -248,43 +177,12 @@ class App {
       });
     }
 
-    document.getElementById('btn-restart-server')!.addEventListener('click', async () => {
-      const confirmed = await showConfirmModal({
-        title: 'Restart Server?',
-        message: 'The server process will exit and relaunch.',
-        detail: 'Unsaved layout edits will be flushed to autosave first. The page will reload automatically when the server is back (~3–5s).',
-        confirmText: 'Restart',
-        cancelText: 'Cancel',
-        confirmVariant: 'danger'
-      });
-      if (!confirmed) return;
-
-      try {
-        await api.restartServer();
-      } catch (e: any) {
-        console.error('[App] Restart request failed:', e);
-        showToast('Could not reach server to restart.', 'error', 4000);
-        return;
-      }
-
-      this.stopSimulationPolling();
-      this.updatePlaybackUI(false);
-      startRestartReconnectFlow();
-    });
+    document.getElementById('btn-restart-server')!.addEventListener('click', () => void this.restartServer());
 
     document.querySelectorAll<HTMLElement>('.speed-btn').forEach(btn => {
-      btn.addEventListener('click', async (e) => {
+      btn.addEventListener('click', (e) => {
         const speed = parseFloat((e.currentTarget as HTMLElement).dataset.speed ?? '');
-        if (!Number.isFinite(speed)) return;
-        try {
-          await api.controlSimulation('set_speed', speed);
-        } catch (err: any) {
-          console.error('[App] set_speed error:', err);
-          showToast(`Failed to set speed: ${err.message}`, 'error', 2000);
-          return;
-        }
-        this.syncSpeedPresetUI(speed);
-        showToast(`Speed set to ${speed}x`, 'info', 1000);
+        if (Number.isFinite(speed)) void this.setSimulationSpeed(speed);
       });
     });
 
@@ -303,9 +201,133 @@ class App {
     this.setupLayoutControls();
   }
 
-  /** Activate the selected environment; `btn` is disabled while it runs. */
-  async activateEnvironment(btn: HTMLButtonElement): Promise<void> {
-    btn.disabled = true;
+  // ── Session and layout actions ────────────────────────────────────────
+  // Each header control calls one of these, so the ?ui=next top bar
+  // (frontend/src/next/top-bar.tsx) runs exactly the same code as today's.
+
+  /** Play from Paused, Pause from Live; Play/Pause exists only in Simulation
+   *  (design_new.md "Session state"). The server decides; the header follows
+   *  the session state the next snapshot carries rather than guessing. */
+  async togglePlayPause(): Promise<void> {
+    const action = this.isSimulationRunning ? 'stop' : 'start';
+    try {
+      await api.controlSimulation(action);
+    } catch (e: any) {
+      console.error('[App] Play/Pause error:', e);
+      showToast(e?.data?.message || e?.message || 'Play/Pause was refused', 'warning', 4000);
+    }
+    await this.refreshNetwork();
+  }
+
+  /** Set the Simulation speed multiplier. */
+  async setSimulationSpeed(speed: number): Promise<void> {
+    try {
+      await api.controlSimulation('set_speed', speed);
+    } catch (err: any) {
+      console.error('[App] set_speed error:', err);
+      showToast(`Failed to set speed: ${err.message}`, 'error', 2000);
+      return;
+    }
+    this.syncSpeedPresetUI(speed);
+    showToast(`Speed set to ${speed}x`, 'info', 1000);
+  }
+
+  /** Emergency stop: the one kill switch, in every environment. It runs at
+   *  once — no confirmation — because it is the button pressed when
+   *  something is about to go wrong. */
+  async emergencyStop(): Promise<void> {
+    try {
+      const result = await api.layoutEmergencyStop();
+      showToast(result?.message || 'Emergency stop', 'warning', 4000);
+    } catch (e: any) {
+      console.error('[App] Emergency stop failed:', e);
+      showToast('Emergency stop failed: ' + (e?.message ?? e), 'error', 6000);
+    }
+    await this.refreshNetwork();
+  }
+
+  /** Reset releases every train after Emergency stop; each ATO train then
+   *  waits for Go and each manual train for driver input. */
+  async resetLayout(): Promise<void> {
+    try {
+      const result = await api.resetLayoutCutOut();
+      showToast(result?.message || 'Reset', 'success', 4000);
+    } catch (e: any) {
+      showToast('Reset was refused: ' + (e?.message ?? e), 'warning', 5000);
+    }
+    await this.refreshNetwork();
+  }
+
+  /** Hold all: ATO stop on every ATO train, keeping its reservation. */
+  async holdAll(): Promise<void> {
+    try {
+      const result = await api.holdAll();
+      const n = (result?.stopped_train_ids || []).length;
+      showToast(`Held ${n} ATO train${n === 1 ? '' : 's'}. Press Go on each to resume.`, 'info', 4000);
+    } catch (e: any) {
+      showToast('Hold all failed: ' + (e?.message ?? e), 'error', 5000);
+    }
+    await this.refreshNetwork();
+  }
+
+  /** Clearing is the ordinary way out of a fatal conflict: the operator has
+   *  gone and sorted it out on the layout, and the session carries on rather
+   *  than losing the whole layout state to a process restart. Every train
+   *  comes back OFF, so nothing moves until it is powered up deliberately.
+   *  `btn`, when given, is disabled while it runs. */
+  async clearFatalConflict(btn?: HTMLButtonElement): Promise<void> {
+    const confirmed = await showConfirmModal({
+      title: 'Clear the conflict?',
+      message: 'Only clear this once the track is actually sorted out — two trains claimed the same place, and the app cannot see that you have fixed it.',
+      detail: 'Every train comes back powered off and stopped. Nothing moves until you power it up again.',
+      confirmText: 'Clear',
+      cancelText: 'Cancel',
+      confirmVariant: 'danger'
+    });
+    if (!confirmed) return;
+
+    if (btn) btn.disabled = true;
+    try {
+      await api.clearFatalConflict();
+      showToast('Conflict cleared — every train is off.', 'success', 4000);
+      await this.refreshNetwork();
+    } catch (e: any) {
+      console.error('[App] Clear conflict failed:', e);
+      showToast('Could not clear the conflict: ' + (e?.message ?? e), 'error', 5000);
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  /** Ask, then restart the server process; the page reloads once it is back. */
+  async restartServer(): Promise<void> {
+    const confirmed = await showConfirmModal({
+      title: 'Restart Server?',
+      message: 'The server process will exit and relaunch.',
+      detail: 'Unsaved layout edits will be flushed to autosave first. The page will reload automatically when the server is back (~3–5s).',
+      confirmText: 'Restart',
+      cancelText: 'Cancel',
+      confirmVariant: 'danger'
+    });
+    if (!confirmed) return;
+
+    try {
+      await api.restartServer();
+    } catch (e: any) {
+      console.error('[App] Restart request failed:', e);
+      showToast('Could not reach server to restart.', 'error', 4000);
+      return;
+    }
+
+    this.stopSimulationPolling();
+    this.updatePlaybackUI(false);
+    startRestartReconnectFlow();
+  }
+
+  /** Activate the selected environment; `btn`, when given, is disabled while
+   *  it runs. */
+  async activateEnvironment(btn?: HTMLButtonElement): Promise<void> {
+    if (btn) btn.disabled = true;
     try {
       await api.activateOperationEnvironment();
       showToast('Activated — every train is off. Press Start route to run a train.', 'success', 5000);
@@ -315,7 +337,7 @@ class App {
       console.error('[App] Activate failed:', e);
       showToast(activationBlockMessage(e) || 'Could not activate: ' + (e?.message ?? e), 'error', 8000);
     } finally {
-      btn.disabled = false;
+      if (btn) btn.disabled = false;
     }
   }
 
@@ -339,6 +361,7 @@ class App {
 
     document.getElementById('mode-edit')!.classList.toggle('active', !isSim);
     document.getElementById('mode-sim')!.classList.toggle('active', isSim);
+    followEditorMode(mode);
 
     if (!this.editor) return;
 
@@ -435,61 +458,41 @@ class App {
     match.classList.add('active');
   }
 
+  /** Open the Save Layout dialog, with the existing layouts listed for
+   *  overwriting. */
+  async openSaveLayoutDialog(): Promise<void> {
+    this.openModal(document.getElementById('save-layout-modal'));
+    (document.getElementById('layout-name') as HTMLInputElement).value = '';
+    (document.getElementById('layout-description') as HTMLTextAreaElement).value = '';
+    document.getElementById('layout-name')!.focus();
+    await this.loadSaveLayoutsList();
+  }
+
+  /** Open the Load Layout dialog. */
+  async openLoadLayoutDialog(): Promise<void> {
+    this.openModal(document.getElementById('load-layout-modal'));
+    await this.loadLayoutsList();
+  }
+
+  /** Open the Settings dialog (Display + Debug Info controls). Closing is
+   *  handled by the generic modal machinery in setupLayoutControls. */
+  openSettings(): void {
+    this.openModal(document.getElementById('settings-modal'));
+  }
+
+  /** Open the Hardware Setup dialog, reloading the persisted config so it
+   *  always reflects what is on disk. */
+  openHardwareSetup(): void {
+    this.openModal(document.getElementById('hardware-modal'));
+    void refreshHardwarePanel();
+  }
+
   setupLayoutControls(): void {
-    const newBtn = document.getElementById('btn-new-layout');
-    const saveBtn = document.getElementById('btn-save-layout');
-    const loadBtn = document.getElementById('btn-load-layout');
-    const saveModal = document.getElementById('save-layout-modal');
-    const loadModal = document.getElementById('load-layout-modal');
-
-    // New layout button
-    if (newBtn) {
-      newBtn.addEventListener('click', async () => {
-        await this.newLayout();
-      });
-    }
-
-    // Open save modal
-    if (saveBtn) {
-      saveBtn.addEventListener('click', async () => {
-        this.openModal(saveModal);
-        (document.getElementById('layout-name') as HTMLInputElement).value = '';
-        (document.getElementById('layout-description') as HTMLTextAreaElement).value = '';
-        document.getElementById('layout-name')!.focus();
-        // Load existing layouts for overwrite selection
-        await this.loadSaveLayoutsList();
-      });
-    }
-
-    // Open load modal
-    if (loadBtn) {
-      loadBtn.addEventListener('click', async () => {
-        this.openModal(loadModal);
-        await this.loadLayoutsList();
-      });
-    }
-
-    // Open settings modal (hosts the Display + Debug Info controls). Closing is
-    // handled by the generic modal machinery below (close button, backdrop,
-    // Escape), so only the open handler is wired here.
-    const settingsBtn = document.getElementById('btn-settings');
-    const settingsModal = document.getElementById('settings-modal');
-    if (settingsBtn) {
-      settingsBtn.addEventListener('click', () => {
-        this.openModal(settingsModal);
-      });
-    }
-
-    // Hardware setup modal. Reload the persisted config each open so it always
-    // reflects what is on disk; closing uses the generic modal machinery.
-    const hardwareBtn = document.getElementById('btn-hardware');
-    const hardwareModal = document.getElementById('hardware-modal');
-    if (hardwareBtn) {
-      hardwareBtn.addEventListener('click', () => {
-        this.openModal(hardwareModal);
-        void refreshHardwarePanel();
-      });
-    }
+    document.getElementById('btn-new-layout')?.addEventListener('click', () => void this.newLayout());
+    document.getElementById('btn-save-layout')?.addEventListener('click', () => void this.openSaveLayoutDialog());
+    document.getElementById('btn-load-layout')?.addEventListener('click', () => void this.openLoadLayoutDialog());
+    document.getElementById('btn-settings')?.addEventListener('click', () => this.openSettings());
+    document.getElementById('btn-hardware')?.addEventListener('click', () => this.openHardwareSetup());
 
     // Save layout confirm
     const confirmSaveBtn = document.getElementById('btn-confirm-save');
@@ -976,6 +979,7 @@ class App {
 
       // Sync the session state and the header's session controls.
       this.syncSessionUI(network);
+      updateFromNetwork(network);
 
       // Sync speed-preset active state with server state
       if (typeof network.simulation_speed === 'number') {

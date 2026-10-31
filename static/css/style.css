@@ -2,6 +2,7 @@
 @import url('./base/themes.css');
 @import url('./base/layout-themes.css');
 @import url('./layout/shell.css');
+@import url('./layout/next-top-bar.css');
 @import url('./layout/floating-window.css');
 @import url('./components/tools.css');
 @import url('./components/context-menu.css');
