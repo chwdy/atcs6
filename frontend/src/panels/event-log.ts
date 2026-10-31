@@ -54,6 +54,7 @@ import {
     saveWindowState,
     ensureRegistered,
 } from '../lib/window-persistence';
+import { logsPanelReplacesWindows } from '../next/logs/replaced-windows';
 
 // ---------------------------------------------------------------------------
 // The event shape returned by GET /api/event-log. Read defensively: the
@@ -108,7 +109,7 @@ export const EMPTY_FILTER: EventLogFilter = {
     persisted: false,
 };
 
-const LEVEL_OPTIONS: { value: LevelFilter; label: string }[] = [
+export const LEVEL_OPTIONS: { value: LevelFilter; label: string }[] = [
     { value: 'all', label: 'All levels' },
     { value: 'error', label: 'Error' },
     { value: 'warning', label: 'Warning' },
@@ -116,7 +117,7 @@ const LEVEL_OPTIONS: { value: LevelFilter; label: string }[] = [
     { value: 'debug', label: 'Debug' },
 ];
 
-const RATE_OPTIONS = [
+export const RATE_OPTIONS = [
     { value: 0, label: 'Paused' },
     { value: 1, label: '1 Hz' },
     { value: 2, label: '2 Hz' },
@@ -135,7 +136,7 @@ const TOOL_RAIL_CLEARANCE = 110;
 
 /** How many events the panel keeps in its own scrollback. Independent of the
  *  server's retention: this bounds the DOM, not the record. */
-const MAX_ROWS = 1000;
+export const MAX_ROWS = 1000;
 
 // ---------------------------------------------------------------------------
 // Pure derivations — exported for the unit tests, which run in Node with no DOM.
@@ -735,6 +736,7 @@ class EventLog {
 
 function bootstrap(): void {
     if ((window as any).eventLog) return; // idempotent
+    if (logsPanelReplacesWindows()) return; // ?ui=next: the Logs panel's Event log tab
     (window as any).eventLog = new EventLog();
     (window as any).eventLog.init();
 }

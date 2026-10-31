@@ -1,0 +1,175 @@
+/* ============================================================================
+   ?ui=next Logs panel (docs/ui-layout-rewrite-plan.md §8;
+   frontend/src/next/logs/logs-panel.tsx).
+
+   One panel along the bottom of the window with a tab strip. It is the last
+   flex item in .app-container's column, so opening it shortens .app-body (the
+   canvas and the screen above it) instead of covering it. The tabs reuse the
+   old windows' row styles (features/event-log.css, occupancy-monitor.css,
+   diagnostics.css); this file holds the panel itself and the few places where
+   a full-width strip needs different sizing from a floating window.
+
+   Nothing here applies without ?ui=next: the panel is only mounted under the
+   flag.
+   ============================================================================ */
+
+/* The slot only places the panel in the page's column; it draws nothing. */
+.next-logs-slot {
+    display: contents;
+}
+
+.next-logs {
+    position: relative;
+    flex: 0 0 auto;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    background-color: var(--bg-panel);
+    border-top: 1px solid var(--border-color);
+    z-index: var(--z-shell);
+    font-family: var(--font-main);
+    font-size: 12px;
+}
+
+/* The drag handle: a row resizer (DESIGN_LANGUAGE.md §8), 6px tall, centred
+   on the panel's top border, accent on hover, drag and keyboard focus. Taller
+   on a touch screen (lib/dpi.ts coarsePointerScale). */
+.nlp-resizer {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: calc(-3px * var(--nlp-handle-scale, 1));
+    height: calc(6px * var(--nlp-handle-scale, 1));
+    z-index: 2;
+    cursor: ns-resize;
+    background-color: transparent;
+    touch-action: none;
+    outline: none;
+}
+
+.nlp-resizer:hover,
+.nlp-resizer:active,
+.nlp-resizer:focus-visible {
+    background-color: var(--accent-color);
+}
+
+/* ---- Tab strip (DESIGN_LANGUAGE.md §3 "Tab strip") ---- */
+.nlp-strip {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 0 8px;
+    border-bottom: 1px solid var(--border-color);
+    flex: 0 0 auto;
+}
+
+.nlp-tabs {
+    display: flex;
+    gap: 2px;
+}
+
+.nlp-tab-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 6px 6px;
+    margin-bottom: -1px;
+    border: none;
+    border-bottom: 2px solid transparent;
+    background: none;
+    color: var(--text-secondary);
+    font-family: var(--font-main);
+    font-size: 11px;
+    cursor: pointer;
+}
+
+.nlp-tab-btn:hover {
+    background-color: var(--bg-hover);
+    color: var(--text-primary);
+}
+
+.nlp-tab-btn.active {
+    color: var(--accent-hover);
+    border-bottom-color: var(--accent-color);
+}
+
+.nlp-tab-btn .ti {
+    font-size: 13px;
+}
+
+/* Close: a flat ghost icon button (DESIGN_LANGUAGE.md §3), since it sits in
+   the strip rather than alone on a panel body. */
+.nlp-close {
+    align-self: center;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: var(--control-height-xs);
+    height: var(--control-height-xs);
+    margin: 2px 0;
+    padding: 0;
+    border: none;
+    border-radius: var(--control-radius-sm);
+    background-color: transparent;
+    color: var(--text-secondary);
+    cursor: pointer;
+}
+
+.nlp-close:hover {
+    background-color: var(--bg-hover);
+    color: var(--accent-hover);
+}
+
+/* ---- The tab on show ---- */
+.nlp-body {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.nlp-pane {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+/* The old windows' scrolling regions need a min-height to scroll inside a
+   flex column instead of pushing the footer off the bottom. */
+.nlp-pane .occ-body,
+.nlp-pane .diagnostics-panel-body {
+    min-height: 0;
+}
+
+/* In a floating window each picker shares the window's width. Across the
+   full width of the screen that would stretch two selects over the whole
+   screen, so they keep a fixed width here. */
+.next-logs .occ-field,
+.next-logs .diagnostics-panel-field {
+    flex: 0 0 180px;
+}
+
+/* The detector table's columns are fractions of its width. Spread across the
+   whole screen, a block's reading sits too far from its name to read across,
+   so the table keeps about the floating window's widest width. */
+.nlp-detectors .occ-head,
+.nlp-detectors .occ-row,
+.nlp-detectors .occ-link {
+    max-width: 960px;
+}
+
+/* The floating window's 11em name column cut most property names short; the
+   strip has the width to show them whole. */
+.nlp-diagnostics .diagnostics-row {
+    grid-template-columns: 20em 4.5em 1fr;
+}
+
+/* ---- The top bar's Logs control shows pressed while the panel is open. ---- */
+.next-top-bar .ntb-logs[aria-pressed='true'] {
+    background-color: rgba(var(--accent-rgb), 0.18);
+    border-color: var(--accent-color);
+    color: var(--accent-hover);
+}

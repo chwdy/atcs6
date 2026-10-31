@@ -356,7 +356,7 @@ yet:
 |-----------------|--------------|-------|
 | Hardware Setup tab | Opens today's Hardware Setup dialog | Phase 4 |
 | Locomotives tab | Operate mode with the Speed Profiles panel open | Phase 5 |
-| Logs menu | Opens today's Event Log, Raw Occupancy and Diagnostics windows | Phase 6 |
+| Logs | Phase 6 done: opens and closes the Logs panel, with Event log, Detectors and Diagnostics tabs. The Virtual inputs tab is not built yet | Phase 4 has moved the Virtual Bench into Hardware Setup |
 | Settings menu → Setup tools | Opens today's Occupancy Bench and Virtual Bench windows | Phase 4 |
 | View menu → Layers | Flips the Debug Info checkboxes in the Settings dialog, which the renderer reads | Layers get their own state |
 | Hold all | Stays on the canvas | Phase 2 |

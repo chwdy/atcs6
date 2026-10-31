@@ -11,6 +11,8 @@
 import { effect } from '@preact/signals';
 import { render } from 'preact';
 
+import { mountLogsPanel } from './logs/logs-panel';
+import { toggleLogs } from './logs/state';
 import { screen, type Screen } from './state';
 import { TopBar, type TopBarActions, type ToolWindow } from './top-bar';
 
@@ -72,6 +74,7 @@ export function topBarActions(host: NextHost): TopBarActions {
     clearConflict: () => host.clearFatalConflict(),
     emergencyStop: () => host.emergencyStop(),
     toggleWindow,
+    toggleLogs,
     openSettings: () => host.openSettings(),
     restartServer: () => host.restartServer(),
   };
@@ -90,4 +93,5 @@ export function mountNextUI(host: NextHost): void {
   slot.className = 'next-top-bar-slot';
   oldHeader?.parentElement?.insertBefore(slot, oldHeader);
   render(<TopBar actions={topBarActions(host)} />, slot);
+  mountLogsPanel();
 }

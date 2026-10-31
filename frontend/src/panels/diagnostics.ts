@@ -25,6 +25,7 @@ import {
     ensureRegistered,
     type WindowState,
 } from '../lib/window-persistence';
+import { logsPanelReplacesWindows } from '../next/logs/replaced-windows';
 // Shapes of the inspector snapshot the backend returns from
 // GET /api/inspector/entity/train/<id>. Loosely typed — the panel only reads
 // these members and is defensive about missing ones.
@@ -944,6 +945,7 @@ interface InspectorSnapshot {
 
     function bootstrap() {
         if (window.diagnosticsPanel) return; // idempotent
+        if (logsPanelReplacesWindows()) return; // ?ui=next: the Logs panel's Diagnostics tab
         window.diagnosticsPanel = new DiagnosticsPanel();
         window.diagnosticsPanel.init();
     }
