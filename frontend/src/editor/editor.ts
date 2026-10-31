@@ -184,6 +184,13 @@ export class Editor {
   signalValidationTimeout: any = null;
   _lastValidatedPosition: any = null;
   _pendingTunnelEndpoint: any = null;
+  // Set by the ?ui=next layout (frontend/src/next/), null under today's layout.
+  // onToolChange hears every change of the active tool, so the new tool bar
+  // can show it. tileClickPanel decides what a plain Select click on a tile
+  // opens on the screen showing; it returns false to fall back to today's
+  // behavior (see updateSecondaryEditorForTile).
+  onToolChange: ((toolId: string) => void) | null = null;
+  tileClickPanel: ((tile: any) => boolean) | null = null;
   // Resolves on the first setCachedNetwork; deferred init awaits it so it can
   // validate against the loaded scene. See whenNetworkReady.
   _networkReady: Promise<void>;
@@ -608,6 +615,7 @@ export class Editor {
   }
 
   updateSecondaryEditorForTile(track: any): any {
+    if (this.tileClickPanel?.(track)) return;
     return this.uiHandler.updateSecondaryEditorForTile(track);
   }
 
@@ -1651,6 +1659,7 @@ export class Editor {
     // can't linger over a new selection/build.
     this.clearInspectHighlight();
     this._syncToolbarActive();
+    this.onToolChange?.(toolName);
   }
 
   /**

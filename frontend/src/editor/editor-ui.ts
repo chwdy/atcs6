@@ -45,6 +45,10 @@ export class EditorUIHandler {
   homeTabGroup!: TabGroup;
   homeWindow!: FloatingWindow;
   sidebarSectionStorageKey: string;
+  /** Set by the ?ui=next layout, where every panel opens in the one right
+   *  panel: a split-off window restored from today's layout never receives a
+   *  panel (docs/ui-layout-rewrite-plan.md §12, decision 2). */
+  singlePanel = false;
 
   private persistenceEnv: WindowPersistenceEnv = browserWindowPersistenceEnv();
 
@@ -592,6 +596,9 @@ export class EditorUIHandler {
    *  there are none. That is the same situation as having no window at all, and
    *  callers answer it the same way: spawn a new group (see openInNewGroup). */
   private resolveTargetGroup(): TabGroup | null {
+    if (this.singlePanel) {
+      return this.homeTabGroup;
+    }
     if (this.editor._activeTabGroupForRestore) {
       return this.editor._activeTabGroupForRestore;
     }
@@ -797,7 +804,9 @@ export class EditorUIHandler {
   }
 
   isSecondaryPanelPinned(): boolean {
-    return this.homeTabGroup.isPinned();
+    // The one right panel has no pin; a pin saved by today's layout must not
+    // stop it following the selection.
+    return !this.singlePanel && this.homeTabGroup.isPinned();
   }
 
   async closeActiveSecondaryTab(): Promise<void> {

@@ -361,6 +361,15 @@ yet:
 | View menu → Layers | Flips the Debug Info checkboxes in the Settings dialog, which the renderer reads | Layers get their own state |
 | Hold all | Stays on the canvas | Phase 2 |
 
+**Phase 3 (Editor screen)** is done on `claude/ui-next-editor-7edced`. What it
+still borrows from today's layout:
+
+| Editor screen part | Does for now | Until |
+|--------------------|--------------|-------|
+| Right panel body | Shows today's entity panels (segment, block, switch, signal, platform, station, tunnel, tile, and the three lists): today's panel body, title and back link move into the right panel while the Editor screen shows | Each panel is ported to Preact |
+| Tile panel's Advanced section | Today's track-bit editor, moved into a closed section after the tile panel draws | The tile panel is ported |
+| Track → Extend | Not offered: Track has Draw and Remove, because Draw already joins track drawn from an existing end | Extend needs its own behavior first |
+
 ---
 
 ## 12. Decisions (taken 2026-10-30)
