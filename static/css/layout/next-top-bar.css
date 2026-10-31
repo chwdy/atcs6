@@ -58,7 +58,9 @@
 
 /* ---- Drop-down menus (frontend/src/next/menu.tsx). The menu box reuses
    .tile-context-menu; these rules hang it under its button instead of at the
-   pointer. ---- */
+   pointer. They name both classes because components/context-menu.css loads
+   after this file: with one class each, its `position: fixed` would win, and
+   `top: 100%` of the window would put the menu just below the screen. ---- */
 .ntb-menu-wrap {
     position: relative;
     display: inline-flex;
@@ -69,17 +71,17 @@
     opacity: 0.7;
 }
 
-.ntb-menu {
+.tile-context-menu.ntb-menu {
     position: absolute;
     top: calc(100% + 6px);
     max-height: calc(100vh - 80px);
     overflow-y: auto;
 }
 
-.ntb-menu--left {
+.tile-context-menu.ntb-menu--left {
     left: 0;
 }
 
-.ntb-menu--right {
+.tile-context-menu.ntb-menu--right {
     right: 0;
 }
