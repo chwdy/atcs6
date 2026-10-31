@@ -7,6 +7,8 @@
  * out and sends only the live fields (`live_blocks`, `live_switches`,
  * `live_tracks`). This poller keeps the layout from the last full reply and
  * lays the live fields over it, so callers always get the full network shape.
+ * Messages from the network stream (`lib/network-stream.ts`) carry the same
+ * replies and go through the same cache, through `apply`.
  *
  * An entity whose live fields did not change keeps the same object from poll
  * to poll, so StateManager's change check (`a === b`) skips it without
@@ -79,16 +81,29 @@ export class NetworkPoller {
 
   constructor(private readonly fetchNetwork: (layoutVersion?: string) => Promise<any>) {}
 
-  async poll(): Promise<NetworkPollResult> {
-    const reply = await this.fetchNetwork(this.layout ? this.layoutVersion ?? undefined : undefined);
-    if (!reply?.layout_unchanged) return this.takeFullReply(reply);
+  /** The `layout_version` of the cached layout, or undefined when none is
+   *  cached. Naming it gets a reply without the layout while it still holds. */
+  get heldLayoutVersion(): string | undefined {
+    return this.layout ? this.layoutVersion ?? undefined : undefined;
+  }
 
-    // A reply for a version other than the one now held: a full reply from a
-    // request sent later already replaced the layout. Ask for the full
-    // network rather than lay these live fields over a different layout.
-    if (!this.layout || reply.layout_version !== this.layoutVersion) {
-      return this.takeFullReply(await this.fetchNetwork());
-    }
+  async poll(): Promise<NetworkPollResult> {
+    const reply = await this.fetchNetwork(this.heldLayoutVersion);
+    return this.apply(reply) ?? this.takeFullReply(await this.fetchNetwork());
+  }
+
+  /**
+   * Take one reply, from the poll or from the network stream: a full reply
+   * replaces the cached layout, a live-only reply is laid over it.
+   *
+   * Returns null for a live-only reply that names a version other than the
+   * one now held (a full reply sent later already replaced the layout): the
+   * caller asks for the full network rather than lay these live fields over a
+   * different layout.
+   */
+  apply(reply: any): NetworkPollResult | null {
+    if (!reply?.layout_unchanged) return this.takeFullReply(reply);
+    if (!this.layout || reply.layout_version !== this.layoutVersion) return null;
     return { network: this.merge(reply), layoutChanged: false };
   }
 

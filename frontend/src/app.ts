@@ -30,7 +30,8 @@ import { updateTileDetails } from './panels/tile-debug-inspector';
 import { showConfirmModal, showFormModal } from './lib/helpers';
 import { setLabelSpacing } from './lib/constants';
 import { api } from './lib/api';
-import { NetworkPoller } from './lib/network-poll';
+import { NetworkPoller, type NetworkPollResult } from './lib/network-poll';
+import { NetworkStream } from './lib/network-stream';
 import { environmentLabel, sessionControls, sessionHint, sessionLabel } from './lib/session-controls';
 import { stateManager } from './lib/state-manager';
 import { showToast } from './lib/toast';
@@ -43,7 +44,8 @@ class App {
   editor: any;
   trainMonitor: any;
 
-  simulationInterval: ReturnType<typeof setInterval> | null;
+  /** The server's network stream, which polls only while it is down. */
+  networkStream: NetworkStream | null = null;
   currentNetwork: any;
   hasInitiallyCentered: boolean;
   hasInitiallySelected: boolean;
@@ -87,7 +89,6 @@ class App {
     this.editor.stateManager = stateManager;
     this.trainMonitor = new TrainMonitor();
 
-    this.simulationInterval = null;
     this.currentNetwork = null;
     this.hasInitiallyCentered = false;
     this.hasInitiallySelected = false;
@@ -121,10 +122,10 @@ class App {
       console.warn('[App] Connection monitor init failed:', e)
     );
     this.refreshNetwork();
-    // The network poll (block/switch state, incl. hardware occupancy) runs
+    // The network updates (block/switch state, incl. hardware occupancy) run
     // continuously regardless of play/pause: the backend keeps committing
     // hardware occupancy while stopped (real mode), so the client must keep
-    // asking or the layout freezes at whatever it looked like at the last
+    // listening or the layout freezes at whatever it looked like at the last
     // Pause. Play/Pause only toggles simulation ticking on the server.
     this.startSimulationPolling();
   }
@@ -905,14 +906,16 @@ class App {
     return date.toLocaleDateString();
   }
 
-  async refreshNetwork(): Promise<void> {
+  /** Show the network: `pushed`, a message from the network stream, or
+   *  else one read of `GET /api/network`. */
+  async refreshNetwork(pushed?: NetworkPollResult): Promise<void> {
     // Skip refresh if editor is actively using a tool that needs hover preview
     // This prevents flickering when moving the mouse with signal/station tools
     if (this.editor && this.editor.isToolActive()) {
       // Still update the cache and trains panel, but don't redraw directly
       // The setCachedNetwork call will trigger re-validation of hover state
       try {
-        const { network, layoutChanged } = await this.networkPoller.poll();
+        const { network, layoutChanged } = pushed ?? (await this.networkPoller.poll());
         if (layoutChanged) this.stationGroupsStale = true;
         this.currentNetwork = network;
 
@@ -933,7 +936,7 @@ class App {
     }
 
     try {
-      const { network, layoutChanged } = await this.networkPoller.poll();
+      const { network, layoutChanged } = pushed ?? (await this.networkPoller.poll());
 
       // Pull station groups so the renderer can draw station labels at the
       // centroid of each station's platforms. They are layout, so fetch them
@@ -993,9 +996,9 @@ class App {
       noteRequestSuccess();
     } catch (e: any) {
       console.error('[App] Failed to refresh network:', e);
-      // The 200ms sim poll is the fastest thing the page does, so it is where
-      // a dead server shows up first. An HTTP error is ignored inside — the
-      // server answered, so it is alive.
+      // While the network stream is down this runs every 200 ms, so it is
+      // where a dead server shows up first. An HTTP error is ignored inside —
+      // the server answered, so it is alive.
       noteRequestFailure(e);
     }
   }
@@ -1390,45 +1393,52 @@ class App {
   }
 
   /**
-   * Start polling for simulation updates (train movement, signal changes)
-   * Only runs when simulation is active
+   * Start the live network updates: the server's network stream, or a read
+   * of `GET /api/network` every 200 ms while the stream is down
+   * (design_new.md "Data Flow To UI", Network stream).
    */
   startSimulationPolling(): void {
-    if (this.simulationInterval) return;
-    this.simulationInterval = setInterval(async () => {
-      await this.refreshNetwork();
+    if (this.networkStream) return;
+    this.networkStream = new NetworkStream({
+      poller: this.networkPoller,
+      onMessage: async (result) => {
+        await this.refreshNetwork(result);
+        this.refreshSelectedTrain();
+      },
+      pollOnce: async () => {
+        await this.refreshNetwork();
+        this.refreshSelectedTrain();
+      },
+    });
+    this.networkStream.start();
+  }
 
-      // Phase 4 COMPLETE: All panels now use StateManager subscriptions
-      // No manual editor refresh needed - subscriptions handle all updates
+  /** After each network update: the selected train's debug panel and its
+   *  lookahead. */
+  refreshSelectedTrain(): void {
+    if (!this.selectedTrainId) return;
+    const train = stateManager.get('trains', this.selectedTrainId);
+    if (!train) return;
+    // Train Control Panel updates via subscription
+    // Only update debug panel here
+    this.updateTrainDebugPanel(train);
 
-      if (this.selectedTrainId) {
-        const train = stateManager.get('trains', this.selectedTrainId);
-        if (train) {
-          // Train Control Panel updates via subscription
-          // Only update debug panel here
-          this.updateTrainDebugPanel(train);
-
-          // Always refresh the lookahead for the selected train.
-          // The StateManager subscription only fires on train-data
-          // changes, so a parked train (e.g. EB latched, speed=0,
-          // position frozen) would leave the monitor stale even
-          // though signals, switches, and clearance ahead can still
-          // be evolving on the server. The throttle inside
-          // fetchTrainLookahead caps the actual fetch rate.
-          this.fetchTrainLookahead(this.selectedTrainId, train);
-        }
-      }
-    }, 200);
+    // Always refresh the lookahead for the selected train.
+    // The StateManager subscription only fires on train-data
+    // changes, so a parked train (e.g. EB latched, speed=0,
+    // position frozen) would leave the monitor stale even
+    // though signals, switches, and clearance ahead can still
+    // be evolving on the server. The throttle inside
+    // fetchTrainLookahead caps the actual fetch rate.
+    this.fetchTrainLookahead(this.selectedTrainId, train);
   }
 
   /**
-   * Stop simulation polling
+   * Stop the live network updates
    */
   stopSimulationPolling(): void {
-    if (this.simulationInterval) {
-      clearInterval(this.simulationInterval);
-      this.simulationInterval = null;
-    }
+    this.networkStream?.stop();
+    this.networkStream = null;
     // One final refresh to show stopped state
     this.refreshNetwork();
   }

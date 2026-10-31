@@ -22,13 +22,14 @@
 import { showToast } from '../lib/toast';
 
 const HEALTH_POLL_MS = 1000;
-// Two consecutive failures before the banner. A single failed poll is usually
-// a request that raced the 200ms sim tick, and flashing a scary banner at
-// every blip trains people to ignore it.
+// Two consecutive failures before the banner. A single failed request is
+// usually a blip, and flashing a scary banner at every blip trains people to
+// ignore it.
 const FAILURES_BEFORE_BANNER = 2;
-// The 200ms sim poll only runs while the simulation is playing. Sitting in the
-// editor with it paused, nothing would ever touch the server, so a dead one
-// would go unnoticed until the next click. This is the idle floor.
+// While the network stream is open the page sends no requests of its own (the
+// 200 ms network poll runs only while the stream is down), so a failed request
+// may never come. This is the idle floor: it notices a dead or restarted
+// server even then.
 const IDLE_PROBE_MS = 5000;
 
 interface ShutdownRecord {

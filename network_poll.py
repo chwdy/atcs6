@@ -152,8 +152,20 @@ def build_network_poll_reply(
     version = layout_version(layout_part)
 
     if client_layout_version != version:
-        return {**payload, "layout_version": version, "layout_unchanged": False}
+        return full_reply(payload, version)
+    return live_only_reply(payload, live_part, version)
 
+
+def full_reply(payload: Dict[str, Any], version: str) -> Dict[str, Any]:
+    """The whole snapshot, named with its `layout_version`."""
+    return {**payload, "layout_version": version, "layout_unchanged": False}
+
+
+def live_only_reply(
+    payload: Dict[str, Any], live_part: Dict[str, Any], version: str
+) -> Dict[str, Any]:
+    """The snapshot with the layout part left out and `live_part` (from
+    `split_network_payload`) in its place."""
     omitted = set(LAYOUT_SECTIONS) | {"blocks", "switches", "tracks"}
     reply = {k: v for k, v in payload.items() if k not in omitted}
     reply.update(live_part)
