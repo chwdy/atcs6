@@ -4678,43 +4678,29 @@ class PathDispatcher:
     def _candidate_matches_pinned_keys(
         cls, ordered_walk, required_keys: Optional[List[CandidateResourceKey]]
     ) -> bool:
-        """True when this acquisition's candidate is the exact route the meet
-        calc pinned (design_new.md "Meet coordination").
+        """True when this acquisition's candidate is exactly the walk the
+        caller pinned (design_new.md "Path And PathDispatcher", `create_path()`
+        flow step 4).
 
-        `required_keys` is the full head -> target key list the meet calc chose;
-        the candidate's own key list must appear as one contiguous run inside it,
-        anchored at the candidate's first step. On `create_path(...)` the
-        candidate is the whole head -> target route, so the run is the list
-        itself; on `extend_path(...)` it is a forward tail (authority-end ->
-        target), so the run is that tail of the same route. The tail's first step
-        is the anchor: its `entry_edge` is the walk's back-edge fallback and can
-        differ from the same tile's entry mid-route (a curved authority-end
-        tile), so the anchor matches on `(type, id, exit_edge)` and every step
-        after it on the full `(type, id, entry_edge, exit_edge)` frame — which is
-        what pins the traversal direction through the contested zone.
+        `required_keys` start where this call starts — the start-side span end
+        for `create_path(...)`, the reservation end for `extend_path(...)` —
+        because meet coordination and the required walk build them from the
+        same enumeration (`next_call_walk_candidates`). So the candidate must
+        have the same steps, in the same order, from the first to the last. The
+        first step matches on `(type, id, exit_edge)` only: its `entry_edge` is
+        the walk's back-edge fallback and can differ from the same tile's entry
+        mid-route (a curved reservation-end tile). Every later step matches on
+        the full `(type, id, entry_edge, exit_edge)` frame, which pins the
+        traversal direction.
         """
         required = [tuple(k) for k in (required_keys or [])]
-        if not required:
-            return False
         cand = cls._ordered_walk_keys(ordered_walk)
-        m, n = len(cand), len(required)
-        if m == 0 or m > n:
+        if not required or len(cand) != len(required):
             return False
-        for start in range(n - m + 1):
-            match = True
-            for j in range(m):
-                rk = required[start + j]
-                ck = cand[j]
-                if j == 0:
-                    if (ck[0], ck[1], ck[3]) != (rk[0], rk[1], rk[3]):
-                        match = False
-                        break
-                elif ck != rk:
-                    match = False
-                    break
-            if match:
-                return True
-        return False
+        first_c, first_r = cand[0], required[0]
+        if (first_c[0], first_c[1], first_c[3]) != (first_r[0], first_r[1], first_r[3]):
+            return False
+        return cand[1:] == required[1:]
 
     def get_active_path_progress(self, train_id: str) -> Optional[Dict[str, Any]]:
         """Read-only projection of dispatcher state for a single train.
