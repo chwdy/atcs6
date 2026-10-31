@@ -314,6 +314,8 @@ class VirtualBench {
      *  Fetched on open rather than polled — it changes only in the setup modal. */
     private _config: any = null;
     private _visible = false;
+    /** Built by `mountInto`: no window, and nothing saved. */
+    private _embedded = false;
     private _refreshHz = 4;
     private _filter: BenchFilter = 'all';
     private _showRaw = false;
@@ -370,6 +372,31 @@ class VirtualBench {
             void this._pollOnce();
             this._startPolling();
         }
+    }
+
+    /** Build the bench inside `host`, with no window around it, and start
+     *  reading the rig. The ?ui=next Hardware Setup screen hosts the bench
+     *  this way, in step 4 (docs/ui-layout-rewrite-plan.md §7). That screen
+     *  covers the layout, so Place on canvas is left out. */
+    mountInto(host: HTMLElement): void {
+        this._embedded = true;
+        this._buildContentDom(host);
+        this._placeBtnEl.hidden = true;
+        this._wireControls();
+        this._rateSelectEl.value = String(this._refreshHz);
+        this._filterSelectEl.value = this._filter;
+        this._rawToggleEl.checked = this._showRaw;
+        this._visible = true;
+        this._render();
+        void this._loadConfig();
+        void this._pollOnce();
+        this._startPolling();
+    }
+
+    /** Stop reading the rig, for a bench built by `mountInto`. */
+    unmount(): void {
+        this._visible = false;
+        this._stopPolling();
     }
 
     // ----- window chrome ---------------------------------------------------
@@ -1287,6 +1314,7 @@ class VirtualBench {
     // ----- persistence -----------------------------------------------------
 
     private _persist(): void {
+        if (this._embedded) return;
         saveWindowState(this._persistenceEnv, WINDOW_ID, {
             geometry: this._window.getGeometry(),
             floating: true,
@@ -1298,6 +1326,14 @@ class VirtualBench {
             },
         });
     }
+}
+
+/** Build a Virtual Bench inside `host`; `close()` stops it. This copy has no
+ *  window and saves no window state. */
+export function mountVirtualBench(host: HTMLElement): { close(): void } {
+    const bench = new VirtualBench();
+    bench.mountInto(host);
+    return { close: () => bench.unmount() };
 }
 
 function bootstrap(): void {

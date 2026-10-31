@@ -504,6 +504,10 @@ class OccupancyBench {
     private _inflight = false;
 
     private _visible = false;
+    /** Built by `mountInto`: no window around it. */
+    private _embedded = false;
+    /** The open `mountInto` started, which `unmount` waits for. */
+    private _entering: Promise<void> | null = null;
     private _schematic: BenchSchematic | null = null;
     private _blockIds: string[] = [];
     private _states: Record<string, BenchBlockState> = {};
@@ -534,6 +538,33 @@ class OccupancyBench {
         this._wireToggleButton();
         this._render();
         if (this._visible) void this._enter();
+    }
+
+    /** Build the bench inside `host`, with no window around it, and open it.
+     *  The ?ui=next Hardware Setup screen hosts the bench this way, in step 4
+     *  (docs/ui-layout-rewrite-plan.md §7). */
+    mountInto(host: HTMLElement): Promise<void> {
+        this._embedded = true;
+        this._buildContentDom(host);
+        this._visible = true;
+        this._render();
+        this._entering = this._enter();
+        return this._entering;
+    }
+
+    /** Close a bench built by `mountInto`, giving the controller back. An
+     *  open still in flight finishes first, so it cannot take the controller
+     *  after the close. */
+    async unmount(): Promise<void> {
+        this._visible = false;
+        await this._entering;
+        this._stopPolling();
+        await this._leave();
+    }
+
+    /** Whether the bench holds the controller. */
+    isOpen(): boolean {
+        return this._open;
     }
 
     // ----- window chrome ---------------------------------------------------
@@ -958,14 +989,17 @@ class OccupancyBench {
         if (!this._open) {
             this._statusEl.hidden = false;
             this._statusEl.className = 'bench-status bench-status-info';
-            this._statusEl.textContent = 'The bench is closed. Reopen the panel to take the rig.';
+            this._statusEl.textContent = this._embedded
+                ? 'The bench is closed. Fold this section and open it again to take the rig.'
+                : 'The bench is closed. Reopen the panel to take the rig.';
             return;
         }
         this._statusEl.hidden = false;
         this._statusEl.className = 'bench-status bench-status-info';
-        this._statusEl.textContent =
-            'The bench holds every bound block at one voltage. The layout beside it ' +
-            'still shows what the app believes, so compare the two. Closing this window ends the bench.';
+        this._statusEl.textContent = this._embedded
+            ? 'The bench holds every bound block at one voltage. Folding this section ends the bench.'
+            : 'The bench holds every bound block at one voltage. The layout beside it ' +
+              'still shows what the app believes, so compare the two. Closing this window ends the bench.';
     }
 
     private _renderStage(): void {
@@ -1199,6 +1233,14 @@ export function anchorClass(leftPercent: number): string {
     if (leftPercent > 66) return 'bench-block-right';
     if (leftPercent < 34) return 'bench-block-left';
     return 'bench-block-centre';
+}
+
+/** Build an Occupancy Bench inside `host` and open it; `close()` closes it.
+ *  This copy has no window and saves no window state. */
+export function mountOccupancyBench(host: HTMLElement): { close(): Promise<void>; isOpen(): boolean } {
+    const bench = new OccupancyBench();
+    void bench.mountInto(host);
+    return { close: () => bench.unmount(), isOpen: () => bench.isOpen() };
 }
 
 function bootstrap(): void {
