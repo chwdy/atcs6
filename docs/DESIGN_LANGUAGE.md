@@ -160,9 +160,13 @@ those fits, raise it as a doc question before inventing a new region.
 The top bar reads in three zones, laid out with
 `grid-template-columns: 1fr auto 1fr`:
 
-- **Left** — the brand wordmark and transport: Play, restart, and the
-  speed-preset segment.
-- **Center** — the `Editor | Simulation` mode split (the app's primary
+- **Left** — the brand wordmark, the session state, and transport. The
+  session state chip names the operating environment in muted text, then
+  the session state (`Real Hardware · Halted — not activated`); right
+  after it sits **Activate**, shown only while activating is the way to
+  Live (Setup, or Halted for `not_activated` or `hardware_failure`). Then
+  Play, restart, and the speed-preset segment.
+- **Center** — the `Editor | Operate` mode split (the app's primary
   split) followed by the file commands (New / Save / Load).
 - **Right** — view toggles (panel show/hide, Inspector) and app settings
   (theme, settings).

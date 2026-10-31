@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   activateUnavailableReason,
+  environmentLabel,
   sessionControls,
   sessionHint,
   sessionLabel,
@@ -29,7 +30,20 @@ describe('sessionLabel', () => {
 describe('sessionHint', () => {
   it('names the way back from each halt', () => {
     expect(sessionHint({ value: 'halted', halt_reason: 'layout_emergency_cut_out' })).toMatch(/Reset/);
-    expect(sessionHint({ value: 'halted', halt_reason: 'hardware_failure' })).toMatch(/activate/);
+    expect(sessionHint({ value: 'halted', halt_reason: 'hardware_failure' })).toMatch(/Activate/);
+    expect(sessionHint({ value: 'halted', halt_reason: 'not_activated' })).toMatch(/Activate/);
+  });
+});
+
+describe('environmentLabel', () => {
+  it('names each operating environment', () => {
+    expect(environmentLabel('simulation')).toBe('Simulation');
+    expect(environmentLabel('virtual_hardware')).toBe('Virtual Hardware');
+    expect(environmentLabel('real_hardware')).toBe('Real Hardware');
+  });
+
+  it('is empty before the first snapshot', () => {
+    expect(environmentLabel(null)).toBe('');
   });
 });
 
@@ -41,6 +55,7 @@ describe('sessionControls', () => {
       playPause: 'pause',
       playPauseEnabled: true,
       resetVisible: false,
+      activateVisible: false,
     });
   });
 
@@ -63,6 +78,19 @@ describe('sessionControls', () => {
     );
     expect(c.playPauseEnabled).toBe(false);
     expect(c.resetVisible).toBe(true);
+    expect(c.activateVisible).toBe(false);
+  });
+
+  it('offers Activate in the header only where activating is the way to Live', () => {
+    const shows = (value: string, halt_reason: string | null) =>
+      sessionControls({ value, halt_reason }, 'real_hardware').activateVisible;
+    expect(shows('setup', null)).toBe(true);
+    expect(shows('halted', 'not_activated')).toBe(true);
+    expect(shows('halted', 'hardware_failure')).toBe(true);
+    expect(shows('live', null)).toBe(false);
+    expect(shows('paused', null)).toBe(false);
+    expect(shows('halted', 'runtime_failure')).toBe(false);
+    expect(shows('halted', 'layout_emergency_cut_out')).toBe(false);
   });
 });
 
