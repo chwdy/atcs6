@@ -240,8 +240,9 @@
         </div>
     </div>
 
-    <!-- Settings Modal — opened by the toolbar gear button. Hosts the Display
-         settings and Debug Info controls that used to live in the sidebar. -->
+    <!-- Settings Modal — opened from the top bar's gear menu. Hosts the Display
+         settings (label spacing, model scale) and the Advanced runtime numbers.
+         The map's layers are in the top bar's View menu (lib/canvas-layers.ts). -->
     <div id="settings-modal" class="modal">
         <div class="modal-content">
             <div class="modal-header">
@@ -249,113 +250,6 @@
                 <button class="close-btn" data-close-modal>&times;</button>
             </div>
             <div class="modal-body">
-                <section class="settings-section">
-                    <h4 class="settings-section-title">Debug Info</h4>
-                    <div class="debug-group">
-                        <h5 class="debug-group-title">Track</h5>
-                        <div class="debug-controls">
-                            <label class="checkbox-wrapper" title="Show Track Bits">
-                                <input type="checkbox" id="debug-show-bits" class="checkbox-input" />
-                                <span class="checkbox-custom"></span>
-                                <span class="checkbox-label">Track Bits</span>
-                            </label>
-                            <label class="checkbox-wrapper" title="Show Coordinates">
-                                <input type="checkbox" id="debug-show-coords" class="checkbox-input" />
-                                <span class="checkbox-custom"></span>
-                                <span class="checkbox-label">Coordinates</span>
-                            </label>
-                            <label class="checkbox-wrapper" title="Show Edge Labels (N/E/S/W)">
-                                <input type="checkbox" id="debug-show-edges" class="checkbox-input" />
-                                <span class="checkbox-custom"></span>
-                                <span class="checkbox-label">Edge Labels</span>
-                            </label>
-                            <label class="checkbox-wrapper" title="Draw each track tile's internal forward-travel direction, derived from its block's tile order. Backward is the opposite. Visual debug only.">
-                                <input type="checkbox" id="debug-show-tile-directions" class="checkbox-input" />
-                                <span class="checkbox-custom"></span>
-                                <span class="checkbox-label">Forward dir</span>
-                            </label>
-                        </div>
-                    </div>
-
-                    <div class="debug-group">
-                        <h5 class="debug-group-title">Blocks</h5>
-                        <div class="debug-controls">
-                            <label class="checkbox-wrapper" title="Show Block Details">
-                                <input type="checkbox" id="debug-show-blocks" class="checkbox-input" />
-                                <span class="checkbox-custom"></span>
-                                <span class="checkbox-label">Blocks</span>
-                            </label>
-                            <label class="checkbox-wrapper" title="Show each block's forward (F, green) and reverse (R, cyan) terminal arrows for all blocks, even with no editor open. A direction the block disallows is dimmed.">
-                                <input type="checkbox" id="debug-show-block-dir" class="checkbox-input" />
-                                <span class="checkbox-custom"></span>
-                                <span class="checkbox-label">Block dir</span>
-                            </label>
-                            <label class="checkbox-wrapper" title="Draw an amber arrow on each tile of a one-way block (travel direction not 'both'), pointing the way travel is allowed — reverse-only blocks point backward (read as '<'). Bidirectional blocks are skipped. Visual debug only.">
-                                <input type="checkbox" id="debug-show-oneway-dir" class="checkbox-input" />
-                                <span class="checkbox-custom"></span>
-                                <span class="checkbox-label">One-way dir</span>
-                            </label>
-                            <label class="checkbox-wrapper" title="Show each block's output voltage on its + and − rails">
-                                <input type="checkbox" id="debug-show-block-voltage" class="checkbox-input" />
-                                <span class="checkbox-custom"></span>
-                                <span class="checkbox-label">Block voltage</span>
-                            </label>
-                            <label class="checkbox-wrapper" title="Show each block's length in cm">
-                                <input type="checkbox" id="debug-show-block-length" class="checkbox-input" />
-                                <span class="checkbox-custom"></span>
-                                <span class="checkbox-label">Block length</span>
-                            </label>
-                            <label class="checkbox-wrapper" title="Show each block's minimum curve radius in cm">
-                                <input type="checkbox" id="debug-show-block-radius" class="checkbox-input" />
-                                <span class="checkbox-custom"></span>
-                                <span class="checkbox-label">Block radius</span>
-                            </label>
-                            <label class="checkbox-wrapper" title="Show each block's speed limit in km/h">
-                                <input type="checkbox" id="debug-show-block-speed-limit" class="checkbox-input" />
-                                <span class="checkbox-custom"></span>
-                                <span class="checkbox-label">Block speed limit</span>
-                            </label>
-                        </div>
-                    </div>
-
-                    <div class="debug-group">
-                        <h5 class="debug-group-title">Infrastructure</h5>
-                        <div class="debug-controls">
-                            <label class="checkbox-wrapper" title="Show Switch States">
-                                <input type="checkbox" id="debug-show-switches" class="checkbox-input" />
-                                <span class="checkbox-custom"></span>
-                                <span class="checkbox-label">Switch States</span>
-                            </label>
-                            <label class="checkbox-wrapper" title="Show Signal Details">
-                                <input type="checkbox" id="debug-show-signals" class="checkbox-input" />
-                                <span class="checkbox-custom"></span>
-                                <span class="checkbox-label">Signals</span>
-                            </label>
-                            <label class="checkbox-wrapper" title="Draw a dotted line between paired tunnel mouths">
-                                <input type="checkbox" id="debug-show-tunnel-links" class="checkbox-input" />
-                                <span class="checkbox-custom"></span>
-                                <span class="checkbox-label">Tunnel links</span>
-                            </label>
-                        </div>
-                    </div>
-
-                    <div class="debug-group">
-                        <h5 class="debug-group-title">Trains</h5>
-                        <div class="debug-controls">
-                            <label class="checkbox-wrapper" title="When a train is stuck waiting for a block, draw an orange dotted arrow from it to the block it is waiting for">
-                                <input type="checkbox" id="debug-show-stuck" class="checkbox-input" />
-                                <span class="checkbox-custom"></span>
-                                <span class="checkbox-label">Show stuck</span>
-                            </label>
-                            <label class="checkbox-wrapper debug-control-span-2" title="Show Train Position Details">
-                                <input type="checkbox" id="debug-show-train-position" class="checkbox-input" checked />
-                                <span class="checkbox-custom"></span>
-                                <span class="checkbox-label">Show Train Position Details</span>
-                            </label>
-                        </div>
-                    </div>
-                </section>
-
                 <section class="settings-section">
                     <h4 class="settings-section-title">Display</h4>
                     <div class="settings-controls">

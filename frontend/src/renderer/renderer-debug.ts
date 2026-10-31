@@ -16,6 +16,7 @@
 
 import { getCanvasPalette, withAlpha } from '../lib/canvas-palette';
 import { studBar } from '../lib/track-stud';
+import { canvasLayers } from '../lib/canvas-layers';
 
 /** The slice of the Renderer the debug handler reads through its back-reference. */
 export interface DebugHandlerRenderer {
@@ -277,14 +278,10 @@ export class RendererDebugHandler {
   }
 
   drawDebugOverlays(tracks: DebugTrack[]): void {
-    const showBitsElement = document.getElementById('debug-show-bits') as HTMLInputElement | null;
-    const showCoordsElement = document.getElementById('debug-show-coords') as HTMLInputElement | null;
-    const showSwitchesElement = document.getElementById('debug-show-switches') as HTMLInputElement | null;
-    const showEdgesElement = document.getElementById('debug-show-edges') as HTMLInputElement | null;
-    const showBits = showBitsElement ? showBitsElement.checked : false;
-    const showCoords = showCoordsElement ? showCoordsElement.checked : false;
-    const showSwitches = showSwitchesElement ? showSwitchesElement.checked : false;
-    const showEdges = showEdgesElement ? showEdgesElement.checked : false;
+    const showBits = canvasLayers.isOn('bits');
+    const showCoords = canvasLayers.isOn('coords');
+    const showSwitches = canvasLayers.isOn('switches');
+    const showEdges = canvasLayers.isOn('edges');
 
     for (const track of tracks) {
       if (showBits && track.track_bits !== undefined) {

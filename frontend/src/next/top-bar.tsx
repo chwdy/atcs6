@@ -11,6 +11,7 @@
  */
 import { useState } from 'preact/hooks';
 
+import { canvasLayers, LAYERS, type LayerDef } from '../lib/canvas-layers';
 import { gridPreference } from '../lib/grid-preference';
 import {
   environmentLabel,
@@ -19,7 +20,6 @@ import {
   sessionLabel,
 } from '../lib/session-controls';
 import { themeManager, type ThemeChannel } from '../lib/theme';
-import { readCanvasLayers } from './canvas-layers';
 import { logsOpen } from './logs/state';
 import { MenuButton, type MenuSection } from './menu';
 import { NEXT_STEP_BUTTON, nextStep, type NextStep } from './next-step';
@@ -220,6 +220,9 @@ function themeSection(heading: string, channel: ThemeChannel): MenuSection {
   };
 }
 
+/** The View menu's layer groups, in the order LAYERS lists them. */
+const LAYER_GROUPS: LayerDef['group'][] = [...new Set(LAYERS.map((layer) => layer.group))];
+
 function viewSections(): MenuSection[] {
   return [
     themeSection('Editor theme', themeManager.chrome),
@@ -234,13 +237,13 @@ function viewSections(): MenuSection[] {
         },
       ],
     },
-    ...readCanvasLayers().map((group) => ({
-      heading: `Layers · ${group.title}`,
-      items: group.layers.map((layer) => ({
+    ...LAYER_GROUPS.map((group) => ({
+      heading: `Layers · ${group}`,
+      items: LAYERS.filter((layer) => layer.group === group).map((layer) => ({
         label: layer.label,
         kind: 'toggle' as const,
-        checked: layer.checked,
-        onSelect: layer.toggle,
+        checked: canvasLayers.isOn(layer.id),
+        onSelect: () => canvasLayers.toggle(layer.id),
       })),
     })),
   ];

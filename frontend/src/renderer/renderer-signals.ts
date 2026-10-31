@@ -15,6 +15,7 @@
 
 import { trackBitsToEdges } from '../lib/constants';
 import { getCanvasPalette, withAlpha } from '../lib/canvas-palette';
+import { canvasLayers } from '../lib/canvas-layers';
 
 export interface EdgePoint {
   x: number;
@@ -184,10 +185,7 @@ export class RendererSignalHandler {
     this.ctx.lineTo(stickEndX + orthoX * orthoLen, stickEndY + orthoY * orthoLen);
     this.ctx.stroke();
 
-    const showSignalDetailsElement = document.getElementById('debug-show-signals') as HTMLInputElement | null;
-    const showSignalDetails = showSignalDetailsElement
-      ? showSignalDetailsElement.checked
-      : false;
+    const showSignalDetails = canvasLayers.isOn('signals');
     if (signal.name && showSignalDetails) {
       this.ctx.fillStyle = p.text;
       this.ctx.font = `bold ${6 * this.scale}px sans-serif`;

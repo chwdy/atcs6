@@ -1,10 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { canvasLayers, LAYERS, type LayerId } from '../lib/canvas-layers';
 import { RendererDebugHandler, type DebugHandlerRenderer } from './renderer-debug';
 
 // renderer-debug.js had no test before the migration; this is fresh coverage.
 // We feed the handler a recording 2D-context stub and a minimal renderer
-// back-reference, and stub `document` for the toggle-gated overlay dispatch.
+// back-reference, and turn on the canvas layers each overlay test needs.
 
 function makeCtx() {
   return {
@@ -40,15 +41,13 @@ function makeRenderer(ctx: ReturnType<typeof makeCtx>): DebugHandlerRenderer {
 
 const labels = (ctx: ReturnType<typeof makeCtx>) => ctx.fillText.mock.calls.map((c) => c[0]);
 
-// Install a fake `document` whose checkboxes report the given checked states.
-function installCheckboxes(checked: Record<string, boolean>) {
-  (globalThis as { document?: unknown }).document = {
-    getElementById: (id: string) => (id in checked ? { checked: checked[id] } : null),
-  };
+// Turn on exactly the given canvas layers (lib/canvas-layers.ts).
+function showLayers(...ids: LayerId[]) {
+  for (const layer of LAYERS) canvasLayers.set(layer.id, ids.includes(layer.id));
 }
 
 afterEach(() => {
-  delete (globalThis as { document?: unknown }).document;
+  for (const layer of LAYERS) canvasLayers.set(layer.id, layer.defaultOn);
 });
 
 describe('RendererDebugHandler.getTrackExits', () => {
@@ -74,7 +73,7 @@ describe('RendererDebugHandler.getTrackExits', () => {
 
 describe('RendererDebugHandler.drawDebugOverlays', () => {
   it('draws nothing when all debug toggles are off', () => {
-    installCheckboxes({});
+    showLayers();
     const ctx = makeCtx();
     new RendererDebugHandler(makeRenderer(ctx)).drawDebugOverlays([
       { x: 1, y: 2, track_bits: 5, is_switch: true, switch_state: 0 },
@@ -83,7 +82,7 @@ describe('RendererDebugHandler.drawDebugOverlays', () => {
   });
 
   it('draws coordinate labels for every track only when show-coords is on', () => {
-    installCheckboxes({ 'debug-show-coords': true });
+    showLayers('coords');
     const ctx = makeCtx();
     new RendererDebugHandler(makeRenderer(ctx)).drawDebugOverlays([
       { x: 1, y: 2 },
@@ -93,7 +92,7 @@ describe('RendererDebugHandler.drawDebugOverlays', () => {
   });
 
   it('draws the switch-state badge only for switch tiles when show-switches is on', () => {
-    installCheckboxes({ 'debug-show-switches': true });
+    showLayers('switches');
     const ctx = makeCtx();
     new RendererDebugHandler(makeRenderer(ctx)).drawDebugOverlays([
       { x: 0, y: 0, is_switch: true, switch_state: 0 },

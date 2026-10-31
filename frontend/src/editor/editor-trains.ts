@@ -8,6 +8,7 @@
 // of `waitForTrainStopped`, `updateControlPanelValuesFromData`, and
 // `updateCabButtons`; keep those names.
 
+import { canvasLayers } from '../lib/canvas-layers';
 import { stateManager } from '../lib/state-manager';
 import {
   atoGoUnavailableReason,
@@ -1577,11 +1578,10 @@ export class TrainEditorHandler {
       trainDetailsOpen = (e.currentTarget as HTMLDetailsElement).open;
     });
 
-    // Check debug checkbox immediately and update visibility
-    const debugCheckbox = document.getElementById('debug-show-train-position') as HTMLInputElement | null;
+    // Show the debug sections now if the View menu's "Train position details" is on.
     const debugSection = document.getElementById('train-control-debug-section');
     const debugGeometry = document.getElementById('train-debug-geometry');
-    if (debugCheckbox && debugCheckbox.checked) {
+    if (canvasLayers.isOn('train-position')) {
       if (debugSection) debugSection.classList.remove('hidden');
       if (debugGeometry) debugGeometry.classList.remove('hidden');
       // Trigger an immediate update to populate content

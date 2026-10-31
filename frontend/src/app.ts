@@ -30,6 +30,7 @@ import { updateTileDetails } from './panels/tile-debug-inspector';
 import { showConfirmModal, showFormModal } from './lib/helpers';
 import { setLabelSpacing } from './lib/constants';
 import { api } from './lib/api';
+import { canvasLayers, layerDef } from './lib/canvas-layers';
 import { NetworkPoller, type NetworkPollResult } from './lib/network-poll';
 import { NetworkStream } from './lib/network-stream';
 import { stateManager } from './lib/state-manager';
@@ -377,7 +378,7 @@ class App {
     await this.loadLayoutsList();
   }
 
-  /** Open the Settings dialog (Display + Debug Info controls). Closing is
+  /** Open the Settings dialog (Display and Advanced). Closing is
    *  handled by the generic modal machinery in setupLayoutControls. */
   openSettings(): void {
     this.openModal(document.getElementById('settings-modal'));
@@ -964,10 +965,9 @@ class App {
     if (!trainId) {
       return;
     }
-    // Check if debug is enabled, otherwise we don't need to fetch
-    const debugCheckbox = document.getElementById('debug-show-train-position') as HTMLInputElement | null;
+    // Nothing shows the look-ahead unless the position details or the monitor are.
     const monitorVisible = this.trainMonitor.isVisible();
-    if (debugCheckbox && !debugCheckbox.checked && !monitorVisible) {
+    if (!canvasLayers.isOn('train-position') && !monitorVisible) {
       return;
     }
 
@@ -1093,72 +1093,30 @@ class App {
       updateTileDetails(gridX, gridY, this.currentNetwork);
     });
 
-    // Add change listeners to debug checkboxes to trigger re-render
-    const checkboxIds = ['debug-show-bits', 'debug-show-coords', 'debug-show-switches', 'debug-show-edges', 'debug-show-blocks', 'debug-show-block-voltage', 'debug-show-block-length', 'debug-show-block-radius', 'debug-show-block-speed-limit', 'debug-show-signals', 'debug-show-block-boundaries', 'debug-show-tunnel-links'];
-    checkboxIds.forEach(id => {
-      const checkbox = document.getElementById(id);
-      if (checkbox) {
-        checkbox.addEventListener('change', () => {
-          // Re-render network with debug overlays
-          this.renderer.requestRedraw({ world: true, reason: 'debug-toggle' });
-        });
+    // A canvas layer turned on or off in the View menu repaints the canvas
+    // pass it draws on (lib/canvas-layers.ts). A world-only repaint would leave
+    // a live-pass layer (direction arrows, stuck trains) stale while paused.
+    canvasLayers.subscribe((id, on) => {
+      const { redraw } = layerDef(id);
+      if (redraw !== 'none') {
+        this.renderer.requestRedraw({ world: redraw !== 'live', live: redraw !== 'world', reason: 'layer-toggle' });
       }
+      if (id === 'train-position') this.showTrainPositionDetails(on);
     });
+  }
 
-    // "Show stuck" draws on the live (train) layer, so it must request a
-    // live redraw — a world-only redraw would not repaint trains, leaving
-    // the toggle with no visible effect while the sim is paused.
-    const stuckCheckbox = document.getElementById('debug-show-stuck');
-    if (stuckCheckbox) {
-      stuckCheckbox.addEventListener('change', () => {
-        this.renderer.requestRedraw({ world: true, live: true, reason: 'debug-toggle' });
-      });
+  /** Show or hide the selected train's position details after the View menu
+   *  turned them on or off, fetching its look-ahead when they come on. */
+  showTrainPositionDetails(on: boolean): void {
+    const train = this.selectedTrainId
+      ? this.currentNetwork?.trains?.find((t: any) => t.id === this.selectedTrainId)
+      : null;
+    if (!train) {
+      this.hideTrainDebugPanel();
+      return;
     }
-
-    // Per-tile direction arrows draw on the live layer, so toggling them needs
-    // a live redraw — a world-only redraw would refresh the flag but not
-    // repaint the arrows.
-    const tileDirCheckbox = document.getElementById('debug-show-tile-directions');
-    if (tileDirCheckbox) {
-      tileDirCheckbox.addEventListener('change', () => {
-        this.renderer.requestRedraw({ world: false, live: true, reason: 'debug-toggle' });
-      });
-    }
-
-    // Block F/R direction arrows are also a live-layer overlay.
-    const blockDirCheckbox = document.getElementById('debug-show-block-dir');
-    if (blockDirCheckbox) {
-      blockDirCheckbox.addEventListener('change', () => {
-        this.renderer.requestRedraw({ world: false, live: true, reason: 'debug-toggle' });
-      });
-    }
-
-    // One-way constraint arrows are also a live-layer overlay.
-    const oneWayDirCheckbox = document.getElementById('debug-show-oneway-dir');
-    if (oneWayDirCheckbox) {
-      oneWayDirCheckbox.addEventListener('change', () => {
-        this.renderer.requestRedraw({ world: false, live: true, reason: 'debug-toggle' });
-      });
-    }
-
-    // Train position debug checkbox
-    const trainPosCheckbox = document.getElementById('debug-show-train-position') as HTMLInputElement | null;
-    if (trainPosCheckbox) {
-      trainPosCheckbox.addEventListener('change', () => {
-        if (this.selectedTrainId && this.currentNetwork) {
-          const train = this.currentNetwork.trains?.find((t: any) => t.id === this.selectedTrainId);
-          if (train) {
-            this.updateTrainDebugPanel(train);
-            // Also trigger lookahead fetch immediately if checkbox is enabled
-            if (trainPosCheckbox.checked) {
-              this.fetchTrainLookahead(this.selectedTrainId, train);
-            }
-          }
-        } else {
-          this.hideTrainDebugPanel();
-        }
-      });
-    }
+    this.updateTrainDebugPanel(train);
+    if (on) this.fetchTrainLookahead(this.selectedTrainId!, train);
   }
 
   /**

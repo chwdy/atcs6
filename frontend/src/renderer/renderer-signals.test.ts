@@ -4,8 +4,8 @@ import { RendererSignalHandler, type SignalHandlerRenderer } from './renderer-si
 
 // renderer-signals.js had no test before the migration; this is fresh coverage
 // for the canvas-drawing handler. We feed it a recording 2D-context stub, a
-// minimal renderer back-reference, and stub the globals it reaches for
-// (`document`, and `trackBitsToEdges` from the still-classic constants.js).
+// minimal renderer back-reference, and stub the global it reaches for
+// (`trackBitsToEdges` from the still-classic constants.js).
 
 function makeCtx() {
   return {
@@ -50,17 +50,11 @@ function makeRenderer(ctx: ReturnType<typeof makeCtx>): SignalHandlerRenderer {
 const labels = (ctx: ReturnType<typeof makeCtx>) => ctx.fillText.mock.calls.map((c) => c[0]);
 
 afterEach(() => {
-  delete (globalThis as { document?: unknown }).document;
   delete (globalThis as { trackBitsToEdges?: unknown }).trackBitsToEdges;
   vi.restoreAllMocks();
 });
 
 describe('RendererSignalHandler.drawSingleSignal', () => {
-  // drawSingleSignal reads document.getElementById('debug-show-signals').
-  const installDoc = () => {
-    (globalThis as { document?: unknown }).document = { getElementById: () => null };
-  };
-
   it('bails out (and logs) when detection_direction is missing', () => {
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const ctx = makeCtx();
@@ -74,7 +68,6 @@ describe('RendererSignalHandler.drawSingleSignal', () => {
   });
 
   it('draws a stick + lamp for a valid signal', () => {
-    installDoc();
     const ctx = makeCtx();
     new RendererSignalHandler(makeRenderer(ctx)).drawSingleSignal(
       {
@@ -95,7 +88,6 @@ describe('RendererSignalHandler.drawSingleSignal', () => {
   });
 
   it('flags a block signal with no monitored block via a "!" triangle', () => {
-    installDoc();
     const ctx = makeCtx();
     new RendererSignalHandler(makeRenderer(ctx)).drawSingleSignal(
       { signal_id: 'S1', approach_direction: 'E', detection_direction: 'W', signal_type: 'block' },

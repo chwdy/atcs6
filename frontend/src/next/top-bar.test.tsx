@@ -4,6 +4,7 @@ import { act } from 'preact/test-utils';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { logsOpen } from './logs/state';
+import { canvasLayers } from '../lib/canvas-layers';
 import { operationEnvironment, screen, sessionState } from './state';
 import { TopBar, type TopBarActions } from './top-bar';
 
@@ -93,5 +94,17 @@ describe('TopBar', () => {
     act(() => {
       logsOpen.value = false;
     });
+  });
+
+  it('turns map layers on from View and keeps the menu open for the next one', () => {
+    canvasLayers.set('coords', false);
+    act(() => buttonNamed(root, 'View').click());
+    const row = [...root.querySelectorAll('.ntb-menu [role="menuitemcheckbox"]')].find(
+      (b) => b.textContent?.trim() === 'Coordinates'
+    ) as HTMLButtonElement;
+    act(() => row.click());
+    expect(canvasLayers.isOn('coords')).toBe(true);
+    expect(root.querySelector('.ntb-menu')).not.toBeNull();
+    canvasLayers.set('coords', false);
   });
 });

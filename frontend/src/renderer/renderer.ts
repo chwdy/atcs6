@@ -27,6 +27,7 @@ import { segmentsFromBlocks, type NetworkPayload } from './payload-types';
 import type { OverlayPhase, RendererOverlay } from './renderer-overlay';
 import { getCanvasPalette, withAlpha } from '../lib/canvas-palette';
 import { gridPreference } from '../lib/grid-preference';
+import { canvasLayers, type LayerId } from '../lib/canvas-layers';
 
 // Compass heading of one grid step. Matches block.py `_compass_from_delta`
 // (Y positive is north): a +Y step reads N, +X reads E.
@@ -542,37 +543,21 @@ class Renderer {
   }
 
   _refreshDebugFlags(): void {
-    const showBlocks = document.getElementById('debug-show-blocks') as HTMLInputElement | null;
-    const showSignals = document.getElementById('debug-show-signals') as HTMLInputElement | null;
-    const showTunnelLinks = document.getElementById('debug-show-tunnel-links') as HTMLInputElement | null;
-    const showSwitches = document.getElementById('debug-show-switches') as HTMLInputElement | null;
-    const showStuck = document.getElementById('debug-show-stuck') as HTMLInputElement | null;
-    const showTileDirections = document.getElementById('debug-show-tile-directions') as HTMLInputElement | null;
-    const showBlockDirections = document.getElementById('debug-show-block-dir') as HTMLInputElement | null;
-    const showOneWayDirections = document.getElementById('debug-show-oneway-dir') as HTMLInputElement | null;
-    const showBlockVoltage = document.getElementById('debug-show-block-voltage') as HTMLInputElement | null;
-    const showBlockLength = document.getElementById('debug-show-block-length') as HTMLInputElement | null;
-    const showBlockRadius = document.getElementById('debug-show-block-radius') as HTMLInputElement | null;
-    const showBlockSpeedLimit = document.getElementById('debug-show-block-speed-limit') as HTMLInputElement | null;
+    // The View menu's canvas layers (lib/canvas-layers.ts).
+    const on = (id: LayerId) => canvasLayers.isOn(id);
     this.debugFlags = {
-      showBlocks: showBlocks ? !!showBlocks.checked : false,
-      showSignals: showSignals ? !!showSignals.checked : false,
-      showTunnelLinks: showTunnelLinks ? !!showTunnelLinks.checked : false,
-      // Switch M/D badges; default OFF (opt-in via the "Switch States" toggle).
-      showSwitches: showSwitches ? !!showSwitches.checked : false,
-      showStuck: showStuck ? !!showStuck.checked : false,
-      // Default ON when the checkbox is absent so painted marks are visible
-      // immediately; the checkbox (default checked) lets the operator hide them.
-      showTileDirections: showTileDirections ? !!showTileDirections.checked : true,
-      // Block F/R arrows are additive and busy, so default OFF (opt-in).
-      showBlockDirections: showBlockDirections ? !!showBlockDirections.checked : false,
-      // One-way arrows only mark restricted blocks, also default OFF (opt-in).
-      showOneWayDirections: showOneWayDirections ? !!showOneWayDirections.checked : false,
-      // Per-block + / - rail voltages; busy, so default OFF (opt-in).
-      showBlockVoltage: showBlockVoltage ? !!showBlockVoltage.checked : false,
-      showBlockLength: showBlockLength ? !!showBlockLength.checked : false,
-      showBlockRadius: showBlockRadius ? !!showBlockRadius.checked : false,
-      showBlockSpeedLimit: showBlockSpeedLimit ? !!showBlockSpeedLimit.checked : false,
+      showBlocks: on('blocks'),
+      showSignals: on('signals'),
+      showTunnelLinks: on('tunnel-links'),
+      showSwitches: on('switches'),
+      showStuck: on('stuck'),
+      showTileDirections: on('tile-directions'),
+      showBlockDirections: on('block-dir'),
+      showOneWayDirections: on('oneway-dir'),
+      showBlockVoltage: on('block-voltage'),
+      showBlockLength: on('block-length'),
+      showBlockRadius: on('block-radius'),
+      showBlockSpeedLimit: on('block-speed-limit'),
     };
   }
 

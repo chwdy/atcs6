@@ -5,15 +5,15 @@
  * thin `updateTrainDebugPanel` / `hideTrainDebugPanel` delegators so existing
  * callers (incl. editor-trains via window.app) are unchanged.
  */
+import { canvasLayers } from '../lib/canvas-layers';
 import { stateManager } from '../lib/state-manager';
 import { trainDisplayStatus } from '../lib/train-status';
 
 export function updateTrainDebugPanel(train: any): void {
-  const checkbox = document.getElementById('debug-show-train-position') as HTMLInputElement | null;
   const debugGeometry = document.getElementById('train-debug-geometry');
 
-  // If debug is disabled, hide both debug sub-blocks
-  if (checkbox && !checkbox.checked) {
+  // With the View menu's "Train position details" off, hide both debug sub-blocks.
+  if (!canvasLayers.isOn('train-position')) {
     const controlDebug = document.getElementById('train-control-debug-section');
     if (controlDebug) controlDebug.classList.add('hidden');
     if (debugGeometry) debugGeometry.classList.add('hidden');
