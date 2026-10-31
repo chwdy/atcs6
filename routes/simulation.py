@@ -374,6 +374,8 @@ def register(app, state: AppState) -> None:
         import sys
         import threading as _threading
 
+        import shutdown
+
         state.simulation_running = False
         # A restart stops the session, so it enters the safe state like a stop
         # does: every block voltage goes to 0 and every open calibration run ends
@@ -410,6 +412,7 @@ def register(app, state: AppState) -> None:
                         os.set_inheritable(int(server_fd), False)
                     except (OSError, ValueError):
                         pass  # not an open fd: nothing would be inherited
+            shutdown.release_run_marker_before_exec()
             os.execv(sys.executable, [sys.executable] + sys.argv)
 
         _threading.Timer(0.2, _do_restart).start()

@@ -11,6 +11,11 @@ fd in WERKZEUG_SERVER_FD:
   check find the port held by our own pid, and the new image exits -- the page
   then shows "Lost connection" forever.
 
+The exec also skips atexit, so the run marker (shutdown.py) is not released the
+way a clean exit releases it. The new image keeps the pid, so a marker left
+behind names a live pid -- its own -- and boot would report a second server
+serving this checkout. The route drops the marker itself before the exec.
+
 The exec itself is stubbed here; a child process stands in for the new image,
 since inheritable fds cross a fork+exec the same way they cross `execv`.
 """
@@ -24,6 +29,7 @@ from datetime import datetime
 
 import pytest
 
+import shutdown
 from app_factory import create_app
 from app_state import AppState
 from network import RailwayNetwork
@@ -60,6 +66,15 @@ def _port_of_listener_in_new_image(fd: int) -> int | None:
         check=True,
     ).stdout.strip()
     return None if out == "none" else int(out)
+
+
+@pytest.fixture(autouse=True)
+def isolated_runtime_dir(tmp_path, monkeypatch):
+    """Never touch the developer's real .runtime/ from a test run."""
+    monkeypatch.setattr(shutdown, "RUNTIME_DIR", tmp_path)
+    monkeypatch.setattr(shutdown, "RUN_MARKER_PATH", tmp_path / "server_run.json")
+    monkeypatch.setattr(shutdown, "LAST_SHUTDOWN_PATH", tmp_path / "last_shutdown.json")
+    monkeypatch.setattr(shutdown, "_start_heartbeat", lambda port: None)
 
 
 @pytest.fixture
@@ -123,6 +138,21 @@ def test_restart_passes_the_listening_socket_on_only_to_a_reloader_child(
     else:
         assert _port_of_listener_in_new_image(fd) is None
         assert "WERKZEUG_SERVER_FD" not in os.environ
+
+
+def test_new_image_boots_without_reporting_a_second_server(client, monkeypatch, capsys):
+    """The new image keeps our pid, so a marker the old image left behind would
+    name a live pid and boot would call it another server."""
+    monkeypatch.setattr(threading, "Timer", _RunNow)
+    monkeypatch.setattr(os, "execv", lambda path, argv: None)
+    shutdown.claim_run_marker(port=5001)
+
+    assert client.post("/api/server/restart").status_code == 200
+    assert not shutdown.RUN_MARKER_PATH.exists()
+
+    capsys.readouterr()
+    assert shutdown.claim_run_marker(port=5001) is None  # the new image's boot
+    assert "also serving this checkout" not in capsys.readouterr().out
 
 
 def test_restart_without_a_werkzeug_socket_still_execs(client, monkeypatch):
