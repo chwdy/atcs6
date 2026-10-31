@@ -133,6 +133,39 @@ interface CalibrationGroupState {
   generation: number;
 }
 
+/** What the calibration group shows, as the panel's host reads it. */
+export interface CalibrationGroupSummary {
+  profileId: string;
+  /** The train the locomotive row names, or null. */
+  trainId: string | null;
+  view: CalibrationRunView;
+  /** The last readiness check: `unmet` is null until the first reply. */
+  ready: boolean;
+  unmet: string[] | null;
+  /** A lighting run was saved, or a speed pass committed, for the named
+   *  train since the panel was opened on it. */
+  lightingSaved: boolean;
+  speedCommitted: boolean;
+}
+
+/**
+ * An element outside the secondary sidebar that the panel draws into: the
+ * ?ui=next Locomotives screen (frontend/src/next/locomotives/). Without a
+ * host the panel draws in the secondary sidebar, as it always has.
+ */
+export interface SpeedProfilePanelHost {
+  el: HTMLElement;
+  /** The profile list was asked for; the host shows its own list instead. */
+  showList(): void;
+  /** The panel now shows this profile. `restoring` is set when a secondary
+   *  sidebar tab asked for it while restoring itself. */
+  profileShown(profileId: string, restoring: boolean): void;
+  /** The profile on screen was deleted, which closed the panel. */
+  profileDeleted(profileId: string): void;
+  /** The calibration group's named train or run changed. */
+  calibrationChanged(summary: CalibrationGroupSummary | null): void;
+}
+
 /** How often the calibration group re-reads the readiness check and the open run. */
 const CALIBRATION_REFRESH_MS = 1000;
 
@@ -622,6 +655,7 @@ export class SpeedProfileEditorHandler {
   private _vpPlot: CurvePlot | null = null;
   private _psPlot: CurvePlot | null = null;
   private _saveTimer: ReturnType<typeof setTimeout> | null = null;
+  private _host: SpeedProfilePanelHost | null = null;
 
   constructor(editor: EditorHost) {
     this.editor = editor;
@@ -631,9 +665,18 @@ export class SpeedProfileEditorHandler {
     return this.editor.api;
   }
 
+  /** Draw the panel into `host` from now on instead of the secondary sidebar. */
+  setHost(host: SpeedProfilePanelHost | null): void {
+    this._host = host;
+  }
+
   // === Manager list ===
 
   async showProfilesPanel(): Promise<void> {
+    if (this._host) {
+      this._host.showList();
+      return;
+    }
     this._teardownCalibration();
     this._teardownPlots();
     this.editor._currentEditorType = 'speed-profiles-list';
@@ -737,7 +780,12 @@ export class SpeedProfileEditorHandler {
     try {
       await this.api.deleteSpeedProfile(id);
       showToast('Speed profile deleted', 'success', 2000);
-      await this.showProfilesPanel();
+      if (this._host) {
+        this.close();
+        this._host.profileDeleted(id);
+      } else {
+        await this.showProfilesPanel();
+      }
     } catch (err: any) {
       showToast(err.message || 'Failed to delete profile', 'error', 5000);
     }
@@ -745,11 +793,25 @@ export class SpeedProfileEditorHandler {
 
   // === Per-profile editor ===
 
-  async showProfileEditor(profileId: string): Promise<void> {
+  /**
+   * Show one profile. `options.trainId`, when given, is the train the
+   * calibration group's locomotive row names once the panel is open (kept
+   * only while the row lists it); otherwise the row keeps the train it named.
+   */
+  async showProfileEditor(profileId: string, options: { trainId?: string | null } = {}): Promise<void> {
+    const restoring = !!this.editor._activeTabGroupForRestore;
     this._teardownCalibration();
     this._teardownPlots();
-    this.editor._currentEditorType = 'speed-profile';
-    this.editor._currentEditorId = profileId;
+    if ('trainId' in options && options.trainId !== this._calTrainId) {
+      this._calTrainId = options.trainId ?? null;
+      this._lightingSavedFor = null;
+      this._speedCommittedFor = null;
+    }
+    // A hosted panel is not one of the secondary sidebar's editors.
+    if (!this._host) {
+      this.editor._currentEditorType = 'speed-profile';
+      this.editor._currentEditorId = profileId;
+    }
 
     // The panel shows the resolved profile, so a locomotive's own profile
     // shows what it runs on (design_new.md "SpeedProfile", Editing a profile
@@ -768,9 +830,14 @@ export class SpeedProfileEditorHandler {
 
     this._applyView(data);
 
-    this.editor.showSecondarySidebar(profileId, this._editorHtml(this._profile!));
-    // Wider canvas room — same affordance the route editor uses.
-    document.getElementById('secondary-sidebar')?.classList.add('route-editor-wide');
+    if (this._host) {
+      this._host.el.innerHTML = this._editorHtml(this._profile!);
+      this._host.profileShown(profileId, restoring);
+    } else {
+      this.editor.showSecondarySidebar(profileId, this._editorHtml(this._profile!));
+      // Wider canvas room — same affordance the route editor uses.
+      document.getElementById('secondary-sidebar')?.classList.add('route-editor-wide');
+    }
     setTimeout(() => this._initEditor(), 0);
   }
 
@@ -1024,6 +1091,31 @@ ${this._calibrationGroupHtml(p)}
    *  still listed; closing the panel forgets it. */
   private _calTrainId: string | null = null;
   private _cal: CalibrationGroupState | null = null;
+  /** The named train, once its lighting run was saved or its speed pass
+   *  committed; the host marks those steps done. */
+  private _lightingSavedFor: string | null = null;
+  private _speedCommittedFor: string | null = null;
+
+  /** Tell the host what the group shows now. */
+  private _notifyCalibration(): void {
+    const host = this._host;
+    if (!host) return;
+    const cal = this._cal;
+    const trainId = this._calTrainId;
+    host.calibrationChanged(
+      cal
+        ? {
+            profileId: cal.profileId,
+            trainId,
+            view: cal.view,
+            ready: cal.ready,
+            unmet: cal.unmet,
+            lightingSaved: !!trainId && this._lightingSavedFor === trainId,
+            speedCommitted: !!trainId && this._speedCommittedFor === trainId,
+          }
+        : null
+    );
+  }
 
   private _calibrationGroupHtml(p: SpeedProfileData): string {
     return `
@@ -1127,6 +1219,8 @@ ${this._calibrationGroupHtml(p)}
     if (!cal || trainId === this._calTrainId) return;
     void this._endShownRun(cal);
     this._calTrainId = trainId;
+    this._lightingSavedFor = null;
+    this._speedCommittedFor = null;
     cal.generation += 1;
     cal.view = cal.view === 'speed-setup' ? 'speed-setup' : 'none';
     cal.lighting = null;
@@ -1201,6 +1295,7 @@ ${this._calibrationGroupHtml(p)}
     cal.compare?.destroy();
     cal.compare = null;
     this._cal = null;
+    this._notifyCalibration();
   }
 
   private async _calTick(): Promise<void> {
@@ -1224,6 +1319,7 @@ ${this._calibrationGroupHtml(p)}
     this._renderReadiness();
     this._renderLightingRow();
     this._renderSpeedRow();
+    this._notifyCalibration();
   }
 
   /** Fill the picker, or refresh its rows' states in place. Options are only
@@ -1291,6 +1387,7 @@ ${this._calibrationGroupHtml(p)}
     const trainId = this._calTrainId;
     if (!cal || !trainId || !readinessApplies(cal.view)) {
       this._renderReadiness();
+      this._notifyCalibration();
       return;
     }
     const generation = cal.generation;
@@ -1319,6 +1416,7 @@ ${this._calibrationGroupHtml(p)}
     }
     this._renderReadiness();
     this._updateCalibrationControls();
+    this._notifyCalibration();
   }
 
   private _forgetNamedTrain(cal: CalibrationGroupState): void {
@@ -1584,6 +1682,7 @@ ${this._calibrationGroupHtml(p)}
     // The run ended with the Save, so there is nothing left to end.
     cal.view = 'none';
     cal.lighting = null;
+    this._lightingSavedFor = trainId;
     const written = this._namedTrain()?.speed_profile_id || this._profile!.profile_id;
     showToast(
       `Lighting voltage saved at ${Number(result.lighting_voltage).toFixed(2)} V on ${written}`,
@@ -1946,6 +2045,7 @@ ${this._calibrationGroupHtml(p)}
     // The commit ended the pass, so there is nothing left to end.
     cal.view = 'none';
     cal.speedRun = null;
+    this._speedCommittedFor = trainId;
     this._clearStretchHighlight();
     showToast(
       target === 'model' ? 'Promoted to the model profile' : 'Saved to this locomotive',
@@ -2364,13 +2464,23 @@ ${this._calibrationGroupHtml(p)}
     this._psPlot = null;
   }
 
+  /** The secondary sidebar calls this when it closes or swaps the panel out.
+   *  A hosted panel is not in the sidebar, so only its host closes it. */
+  _cleanup(): void {
+    if (this._host) return;
+    this.close();
+  }
+
   /** Closing the panel ends the run the calibration group shows, and
    *  forgets the named train. */
-  _cleanup(): void {
+  close(): void {
     this._teardownCalibration();
     this._calTrainId = null;
+    this._lightingSavedFor = null;
+    this._speedCommittedFor = null;
     this._teardownPlots();
     this._profile = null;
     this._lastSaved = null;
+    if (this._host) this._host.el.innerHTML = '';
   }
 }

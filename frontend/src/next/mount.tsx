@@ -11,6 +11,7 @@
 import { effect } from '@preact/signals';
 import { render } from 'preact';
 
+import { mountLocomotivesScreen, type LocomotivesHost } from './locomotives';
 import { screen, type Screen } from './state';
 import { TopBar, type TopBarActions, type ToolWindow } from './top-bar';
 
@@ -21,8 +22,7 @@ export function isNextUI(search: string = window.location.search): boolean {
 
 /** The App methods the new layout calls. Each is what one of today's header
  *  buttons runs, so both headers behave the same. */
-export interface NextHost {
-  editor: { showSpeedProfilesPanel(): void | Promise<void> };
+export interface NextHost extends LocomotivesHost {
   newLayout(): Promise<void>;
   openLoadLayoutDialog(): Promise<void>;
   openSaveLayoutDialog(): Promise<void>;
@@ -40,8 +40,9 @@ export interface NextHost {
 
 /**
  * Until each screen is built (plan §11), a tab maps onto today's layout:
- * Editor and Operate are today's two editor modes, Hardware Setup opens its
- * dialog, and Locomotives is Operate with the Speed Profiles panel open.
+ * Editor and Operate are today's two editor modes, and Hardware Setup opens
+ * its dialog. Locomotives shows its own screen (./locomotives), in Operate
+ * mode.
  */
 function showScreen(host: NextHost, next: Screen): void {
   if (next === 'hardware') {
@@ -50,7 +51,6 @@ function showScreen(host: NextHost, next: Screen): void {
   }
   host.setEditorMode(next === 'editor' ? 'edit' : 'sim');
   screen.value = next;
-  if (next === 'locomotives') void host.editor.showSpeedProfilesPanel();
 }
 
 function toggleWindow(name: ToolWindow): void {
@@ -90,4 +90,5 @@ export function mountNextUI(host: NextHost): void {
   slot.className = 'next-top-bar-slot';
   oldHeader?.parentElement?.insertBefore(slot, oldHeader);
   render(<TopBar actions={topBarActions(host)} />, slot);
+  mountLocomotivesScreen(host, () => showScreen(host, 'locomotives'));
 }
