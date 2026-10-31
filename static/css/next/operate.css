@@ -1,0 +1,487 @@
+/* ============================================================================
+   ?ui=next Operate screen (docs/ui-layout-rewrite-plan.md §5;
+   frontend/src/next/operate/).
+
+   Every rule that touches today's layout is scoped to
+   html[data-ui="next"][data-screen="operate"], so the other screens, and the
+   page without the flag, are unchanged. The new regions exist only while the
+   Operate tab is picked.
+   ============================================================================ */
+
+/* Today's regions this screen replaces: the tool rail (its tools moved into
+   the cards row, the left list and the train panel's Route section), today's
+   inspector and any window split off from it (the right panel shows the
+   selection now), the canvas session bar (Hold all is in the cards row), and
+   the Train Monitor window (the train panel's Look-ahead section shows it). */
+html[data-ui="next"][data-screen="operate"] .workspace > .sidebar,
+html[data-ui="next"][data-screen="operate"] .secondary-sidebar,
+html[data-ui="next"][data-screen="operate"] .floating-window[data-window-kind="tab-group"],
+html[data-ui="next"][data-screen="operate"] .canvas-container .session-bar,
+html[data-ui="next"][data-screen="operate"] #train-monitor-bar {
+    display: none !important;
+}
+
+/* The mount slots draw nothing; their regions sit in today's rows. */
+.op-slot {
+    display: contents;
+}
+
+/* ---- Left list ---- */
+
+.op-left {
+    order: -1;
+    width: 240px;
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    background-color: var(--bg-panel);
+    border-right: 1px solid var(--border-color);
+    z-index: var(--z-shell);
+}
+
+.op-left.is-folded {
+    width: auto;
+    align-items: center;
+    padding: var(--space-8) var(--space-4);
+}
+
+.op-left-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: var(--space-8) var(--space-10);
+    background-color: var(--bg-hover);
+    border-bottom: 1px solid var(--border-color);
+}
+
+.op-left-title {
+    font-size: var(--font-size-label);
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--text-secondary);
+}
+
+.op-left-body {
+    flex: 1;
+    overflow-y: auto;
+}
+
+.op-list-section {
+    border-bottom: 1px solid var(--border-color);
+}
+
+.op-list-section > summary {
+    display: flex;
+    align-items: center;
+    gap: var(--space-6);
+    padding: var(--space-8) var(--space-10);
+    list-style: none;
+    cursor: pointer;
+    user-select: none;
+    font-size: var(--font-size-value);
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.op-list-section > summary::-webkit-details-marker {
+    display: none;
+}
+
+.op-list-section > summary::before {
+    content: '▸';
+    font-size: var(--font-size-label);
+    color: var(--text-tertiary);
+    transition: transform 120ms ease;
+}
+
+.op-list-section[open] > summary::before {
+    transform: rotate(90deg);
+}
+
+.op-list-title {
+    flex: 1;
+}
+
+.op-list-body {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    padding: 0 var(--space-6) var(--space-8);
+}
+
+.op-list-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-6);
+    width: 100%;
+    padding: var(--space-6) var(--space-8);
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: var(--control-radius-sm);
+    color: var(--text-primary);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+
+.op-list-row:hover {
+    background-color: var(--bg-hover);
+}
+
+.op-list-row.is-selected {
+    background-color: rgba(var(--accent-rgb), 0.14);
+    border-color: rgba(var(--accent-rgb), 0.45);
+}
+
+.op-list-row-text {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+.op-list-row-label,
+.op-list-row-meta {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.op-list-row-label {
+    font-size: var(--font-size-value);
+}
+
+.op-list-row-meta {
+    font-size: var(--font-size-label);
+    color: var(--text-tertiary);
+}
+
+.op-list-empty {
+    padding: var(--space-6) var(--space-8);
+    font-size: var(--font-size-body);
+    color: var(--text-secondary);
+}
+
+/* ---- Right panel ---- */
+
+.op-panel {
+    order: 2;
+    position: relative;
+    width: 360px;
+    min-width: 300px;
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    background-color: var(--bg-panel);
+    border-left: 1px solid var(--border-color);
+}
+
+/* Nothing selected: the map gets the room, docked or popped out. */
+.op-panel[data-empty="true"] {
+    display: none !important;
+}
+
+/* Popped out: FloatingWindow's own rules place it; this file loads after
+   floating-window.css, so the docked position above is undone here. */
+.op-panel.floating-window {
+    position: fixed;
+    height: min(640px, 72vh);
+    border: 1px solid var(--border-color);
+}
+
+.op-panel.floating-window .op-panel-header {
+    cursor: move;
+}
+
+.op-panel-body {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+.op-wrapped-slot {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+.op-wrapped-slot[hidden] {
+    display: none;
+}
+
+.op-panel-empty {
+    padding: var(--space-16) 0;
+    text-align: center;
+    font-size: var(--font-size-body);
+    color: var(--text-secondary);
+}
+
+/* ---- Train cards row ---- */
+
+.op-cards {
+    flex-shrink: 0;
+    display: flex;
+    align-items: stretch;
+    gap: var(--space-8);
+    min-height: 112px;
+    padding: var(--space-8) var(--space-10);
+    overflow-x: auto;
+    background-color: var(--bg-panel);
+    border-top: 1px solid var(--border-color);
+    z-index: var(--z-shell);
+}
+
+.op-cards-empty {
+    align-self: center;
+    font-size: var(--font-size-body);
+    color: var(--text-secondary);
+}
+
+/* + Place train and Hold all end the row and stay in view while it scrolls. */
+.op-cards-actions {
+    position: sticky;
+    right: 0;
+    margin-left: auto;
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: var(--space-6);
+    padding-left: var(--space-8);
+    background-color: var(--bg-panel);
+}
+
+.op-card {
+    flex: 0 0 228px;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+    padding: var(--space-8) var(--space-10);
+    background-color: var(--bg-dark);
+    border: 1px solid var(--border-color);
+    border-radius: var(--control-radius-sm);
+    cursor: pointer;
+}
+
+.op-card:hover {
+    border-color: var(--text-tertiary);
+}
+
+.op-card.is-selected {
+    border-color: var(--accent-color);
+    box-shadow: inset 0 0 0 1px var(--accent-color);
+}
+
+.op-card:focus-visible {
+    outline: 2px solid var(--accent-hover);
+    outline-offset: 1px;
+}
+
+.op-card-head {
+    display: flex;
+    align-items: center;
+    gap: var(--space-4);
+    min-width: 0;
+}
+
+.op-card-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-family: var(--font-mono);
+    font-size: var(--font-size-value);
+    font-weight: 600;
+}
+
+.op-card-speed {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-4);
+}
+
+.op-card-speed-value {
+    font-family: var(--font-mono);
+    font-size: 20px;
+    font-weight: 700;
+    color: var(--text-primary);
+}
+
+.op-card-speed-unit {
+    font-size: var(--font-size-label);
+    color: var(--text-tertiary);
+}
+
+/* The ATC limit reads in the cab display's colour (.tc-hmi-atc). */
+.op-card-speed-limit {
+    margin-left: auto;
+    font-family: var(--font-mono);
+    font-size: var(--font-size-body);
+    font-weight: 700;
+    color: var(--danger-color);
+}
+
+.op-card-hold {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: var(--font-size-label);
+    color: var(--warning-color);
+}
+
+.op-card-control {
+    display: flex;
+    margin-top: auto;
+}
+
+.op-card-btn {
+    flex: 1;
+    height: var(--control-height-xs);
+    font-size: var(--font-size-body);
+}
+
+.op-card-handle {
+    display: flex;
+    align-items: center;
+    gap: var(--space-4);
+    width: 100%;
+}
+
+.op-card-handle-slider {
+    flex: 1;
+    min-width: 0;
+}
+
+.op-card-handle-power {
+    font-size: var(--font-size-micro);
+    color: var(--text-tertiary);
+}
+
+.op-card-handle-pos {
+    min-width: 32px;
+    text-align: right;
+    font-family: var(--font-mono);
+    font-size: var(--font-size-value);
+}
+
+.op-card-control-note {
+    font-size: var(--font-size-label);
+    color: var(--text-tertiary);
+}
+
+/* ---- Train, block and switch panels ---- */
+
+.op-train-folds {
+    gap: var(--space-4);
+}
+
+.op-fold > summary {
+    display: flex;
+    align-items: center;
+    gap: var(--space-6);
+}
+
+.op-fold-summary {
+    margin-left: auto;
+    font-family: var(--font-mono);
+    font-weight: 400;
+    text-transform: none;
+    color: var(--text-tertiary);
+}
+
+.op-calibrate-btn {
+    width: 100%;
+    margin-top: var(--space-8);
+}
+
+.op-row {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: var(--space-6);
+    margin-top: var(--space-6);
+}
+
+.op-grow {
+    flex: 1;
+    min-width: 0;
+}
+
+.op-hint {
+    margin-top: var(--space-4);
+    font-size: var(--font-size-body);
+    color: var(--text-secondary);
+}
+
+.op-edit-props {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-6);
+}
+
+.op-fields {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: var(--space-4) var(--space-12);
+    margin: 0;
+    font-size: var(--font-size-value);
+}
+
+.op-fields dt {
+    align-self: center;
+    font-size: var(--font-size-label);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+}
+
+.op-fields dd {
+    margin: 0;
+    color: var(--text-primary);
+}
+
+.op-switch-position {
+    flex: 1;
+    font-size: var(--font-size-title);
+    font-weight: 600;
+}
+
+/* ---- Look-ahead: today's Train Monitor graph and Upcoming list, stacked
+   to fit the panel's width instead of side by side. ---- */
+
+.op-look-ahead-parts {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-8);
+}
+
+.op-look-ahead .view-distance-controls {
+    align-self: flex-start;
+}
+
+.op-look-ahead .tm-canvas-wrap {
+    flex: none;
+    width: 100%;
+    border-radius: var(--control-radius-sm);
+}
+
+.op-look-ahead .tm-canvas {
+    height: 200px;
+}
+
+.op-look-ahead .tm-upcoming {
+    width: auto !important;
+    min-width: 0;
+    max-width: none;
+    max-height: 240px;
+    flex: none !important;
+    border-left: none;
+    border-top: 1px solid var(--border-color);
+    resize: none;
+}

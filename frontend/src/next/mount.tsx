@@ -43,7 +43,7 @@ export interface NextHost {
  * Editor and Operate are today's two editor modes, Hardware Setup opens its
  * dialog, and Locomotives is Operate with the Speed Profiles panel open.
  */
-function showScreen(host: NextHost, next: Screen): void {
+export function showScreen(host: NextHost, next: Screen): void {
   if (next === 'hardware') {
     host.openHardwareSetup();
     return;

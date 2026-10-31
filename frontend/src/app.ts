@@ -35,6 +35,7 @@ import { environmentLabel, sessionControls, sessionHint, sessionLabel } from './
 import { stateManager } from './lib/state-manager';
 import { showToast } from './lib/toast';
 import { isNextUI, mountNextUI } from './next/mount';
+import { mountOperateScreen } from './next/operate/mount-operate';
 import { followEditorMode, updateFromNetwork } from './next/state';
 
 class App {
@@ -105,6 +106,7 @@ class App {
     this.setupControls();
     // ?ui=next: mount the rebuilt regions over today's (docs/ui-layout-rewrite-plan.md).
     if (isNextUI()) mountNextUI(this);
+    if (isNextUI()) mountOperateScreen(this);
 
     this.setupDebugPanel();
     setupSettingsPanel(() => this.refreshNetwork());
