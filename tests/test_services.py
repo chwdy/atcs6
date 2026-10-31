@@ -371,6 +371,35 @@ class TestSpeedProfileService:
         assert updated.derived_from == "MODEL"
         assert updated.lighting_voltage is None
 
+    def test_update_refuses_a_curve_whose_speed_falls_as_power_rises(self, state):
+        """design_new.md "SpeedProfile", A hand-edited curve must stay
+        invertible: physics reads the curve both ways, so the stored curve is
+        left unchanged."""
+        speed_profile_service.create_profile(
+            state, data={"profile_id": "P1", "name": "Profile 1"}
+        )
+        before = speed_profile_service.require_profile(state, "P1").power_speed_curve
+
+        with pytest.raises(ValidationError):
+            speed_profile_service.update_profile(
+                state,
+                "P1",
+                data={"power_speed_curve": [[0, 0], [40, 50], [70, 30], [100, 80]]},
+            )
+
+        assert speed_profile_service.require_profile(state, "P1").power_speed_curve == before
+
+    def test_update_accepts_a_curve_that_rises_with_power(self, state):
+        speed_profile_service.create_profile(
+            state, data={"profile_id": "P1", "name": "Profile 1"}
+        )
+        updated = speed_profile_service.update_profile(
+            state,
+            "P1",
+            data={"power_speed_curve": [[100, 80], [0, 0], [40, 50], [70, 50]]},
+        )
+        assert updated.power_speed_curve == [(0, 0), (40, 50), (70, 50), (100, 80)]
+
     def test_update_keeps_the_fields_the_body_leaves_out(self, state):
         """A save sends only the fields the operator changed; every other
         field keeps its stored value (design_new.md "SpeedProfile", Editing a

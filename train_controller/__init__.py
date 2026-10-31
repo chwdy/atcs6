@@ -1584,15 +1584,6 @@ class TrainController:
             return
         self._apply_head_frame(self._authority_head_end())
 
-    def _reset_head_frame_to_default(self) -> None:
-        """Reset the span framing to its ``end_a`` head default, re-expressing the
-        two end locators when the head moves off ``end_b`` (design_new.md
-        "Reversed-frame re-expression"). Called by `complete_power_off()` during
-        OFF cleanup: with power off there is no live authority, so the head is
-        the ``end_a`` default. A no-op when the frame is already ``end_a`` or the
-        span cannot be re-expressed."""
-        self._apply_head_frame("end_a")
-
     def _authority_head_end(self) -> str:
         """The physical span end ("end_a"/"end_b") that faces into the live
         authority (design_new.md "Reservation-side head derivation"): the end whose
@@ -2454,9 +2445,10 @@ class TrainController:
         It is the only ``OFF``-writing site besides the startup default, so the
         Operational state machine stays the single writer of ``powered``. It
         sets ``powered = False`` (so ``train_status`` derives to ``OFF``),
-        resets the span framing to its ``end_a`` head default, writes the
-        neutral notch, clears ``eb.active``, and sets ``control_mode =
-        "manual"`` (which clears ``commands.engaged``).
+        writes the neutral notch, clears ``eb.active``, and sets ``control_mode
+        = "manual"`` (which clears ``commands.engaged``). It leaves the span
+        framing alone: losing power, like losing a reservation, never flips the
+        head (design_new.md "Reservation-side head derivation").
 
         Idempotent and valid from any state. Its callers are the Action
         ``pending_power_off`` consumer (step ``886a`` of the Power-off
@@ -2468,7 +2460,6 @@ class TrainController:
         train ``OFF`` keeps its route removal for its own Action step.
         """
         self.powered = False
-        self._reset_head_frame_to_default()
         self.ops.reset_handle_to_neutral()
         # design_new.md, "EB workflow state machine" — clear the EB latch through the EB-owned helper so
         # the EB Workflow stays the single writer of `eb.active`.

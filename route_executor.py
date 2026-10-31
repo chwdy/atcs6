@@ -4781,7 +4781,11 @@ class RouteExecutor:
              (one only a deactivate was holding — an earlier consumer would
              already have committed it), replacing the stored assignment the
              way `remove_train_route_run(...)` does when no run exists;
-          3. discards the held structural re-assignment without applying it.
+          3. discards the held structural re-assignment without applying it;
+          4. deletes the `ONE_OFF` route that re-assignment named when it now
+             has no assigned train and no live run — the earlier abort or
+             power-off consumer kept it only because the re-assignment named
+             it.
 
         It is this latch's consume-side emitter on this branch.
         """
@@ -4798,7 +4802,9 @@ class RouteExecutor:
                     old_route.unassign_train(train_id)
             self._commit_pending_route_assignment(train_id)
             self._delete_if_emptied_one_off(old_route_id)
+        dropped_reassign_route_id = self._pending_reassign.get(train_id)
         self.discard_pending_reassign(train_id)
+        self._delete_if_emptied_one_off(dropped_reassign_route_id)
         self.finalize_pending_route_deletions()
         self._emit_event(
             "settle_deactivate_without_run",
