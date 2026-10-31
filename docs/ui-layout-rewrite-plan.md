@@ -348,38 +348,26 @@ without the flag nothing changes until phase 8 switches the default.
 After phase 1, phases 2, 3, 4, 5 and 6 touch different screens and can run
 in parallel, each in its own session and branch.
 
-**Progress.** Phases 0 and 1 are done on `claude/ui-next`. Until the later
-phases land, the new top bar reaches today's layout for what is not rebuilt
-yet:
+**Progress.** Phases 0–6 are done on `claude/ui-next`: the top bar, and the
+Operate, Editor, Hardware Setup and Locomotives screens and the Logs panel,
+all behind `?ui=next`. Each was built in its own session, then merged. These
+parts still show today's code inside the new layout, and are ported in later
+passes:
 
-| Top bar control | Does for now | Until |
-|-----------------|--------------|-------|
-| Hardware Setup steps 2 and 4 | Show the dialog's own sections (bridge, chip list, layout tally, idle threshold, wiring overview), drawn by `ui/hardware-panel.ts` | Those sections are ported to components |
-| Locomotives tab | Its own screen (phase 5), in Operate mode. The Speed Profile panel on it is today's panel code (curve editor, calibration rows) drawn into the screen, with the five steps and the refused commands added around it; today's Profiles tool and a train's Edit profile button open this screen | The panel is rebuilt as components |
-| Logs | Phase 6 done: opens and closes the Logs panel, with Event log, Detectors and Diagnostics tabs. The Virtual inputs tab is not built yet | Phase 4 has moved the Virtual Bench into Hardware Setup |
-| Occupancy Bench and Virtual Bench (Hardware Setup step 4) | Today's bench panels, built inside the step instead of a window | The benches are ported to components |
-| View menu → Layers | Flips the Debug Info checkboxes in the Settings dialog, which the renderer reads | Layers get their own state |
-| Hold all | In the Operate train cards row; stays on the canvas on the other screens | Phase 8 |
-
-Phase 2 (Operate) is done on `claude/ui-next-operate-ba82da`. The train
-cards row, the train panel, the block panel, the switch panel and the left
-list are Preact. These parts of the Operate screen still reach today's code:
-
-| Operate part | Does for now | Until |
-|--------------|--------------|-------|
-| A route, path, route run or station picked in the left list; Add Train; an unidentified train; the path tools' panels | Today's panel for it, shown as it is inside the right panel (`next/operate/panel-host.ts`, through `Editor.nextPanelHost`) | Each panel is ported |
-| Look-ahead section | Today's Train Monitor graph and Upcoming list, moved into the section while it is open | The monitor is ported |
-| Calibrate button | Switches to the Locomotives tab; the train stays App's selected train | Phase 5 |
-| Switch panel's Lock section | Shows who holds the switch (`Switch.locks`, `train_protection_claims`); design_new.md has no operator lock command | A spec decision |
-
-**Phase 3 (Editor screen)** is done on `claude/ui-next-editor-7edced`. What it
-still borrows from today's layout:
-
-| Editor screen part | Does for now | Until |
-|--------------------|--------------|-------|
-| Right panel body | Shows today's entity panels (segment, block, switch, signal, platform, station, tunnel, tile, and the three lists): today's panel body, title and back link move into the right panel while the Editor screen shows | Each panel is ported to Preact |
-| Tile panel's Advanced section | Today's track-bit editor, moved into a closed section after the tile panel draws | The tile panel is ported |
-| Track → Extend | Not offered: Track has Draw and Remove, because Draw already joins track drawn from an existing end | Extend needs its own behavior first |
+| Part | Does for now | Until |
+|------|--------------|-------|
+| **Operate:** a route, path, route run or station picked in the left list; Add Train; an unidentified train; the path tools' panels | Today's panel for it, shown inside the right panel (`next/operate/panel-host.ts`, through `Editor.nextPanelHost`) | Each panel is ported |
+| **Operate:** Look-ahead section | Today's Train Monitor graph and Upcoming list, moved into the section while it is open | The monitor is ported |
+| **Operate:** switch panel's Lock section | Shows who holds the switch (`Switch.locks`, `train_protection_claims`); `design_new.md` has no operator lock command | A spec decision |
+| **Editor:** right panel body | Today's entity panels (segment, block, switch, signal, platform, station, tunnel, tile, and the three lists), moved into the right panel while the Editor screen shows | Each panel is ported |
+| **Editor:** tile panel's Advanced section | Today's track-bit editor, moved into a closed section | The tile panel is ported |
+| **Editor:** Track → Extend | Not offered: Track has Draw and Remove, because Draw already joins track drawn from an existing end | Extend needs its own behavior first |
+| **Hardware Setup:** steps 2 and 4 | The dialog's own sections (bridge, chip list, layout tally, idle threshold, wiring overview), drawn by `ui/hardware-panel.ts` | Those sections are ported |
+| **Hardware Setup:** Occupancy Bench and Virtual Bench in step 4 | Today's bench panels, built inside the step instead of a window | The benches are ported |
+| **Locomotives:** Speed Profile panel | Today's panel code (curve editor, calibration rows) drawn into the screen, with the five steps and the refused commands added around it | The panel is rebuilt as components |
+| **Logs:** Virtual inputs tab | Not built; the Virtual Bench is in Hardware Setup step 4 | Built from the Virtual Bench's fake-detector part |
+| **Top bar:** View menu → Layers | Flips the Debug Info checkboxes in the Settings dialog, which the renderer reads | Layers get their own state |
+| **Hold all** | In the Operate train cards row; stays on the canvas on the other screens | Phase 8 |
 
 ---
 
