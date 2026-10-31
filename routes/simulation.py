@@ -367,6 +367,19 @@ def register(app, state: AppState) -> None:
 
         def _do_restart() -> None:
             print("[Restart] Exec'ing fresh process image...")
+            # Werkzeug marks its listening socket inheritable and puts its fd in
+            # WERKZEUG_SERVER_FD, so the socket survives the exec. Under the
+            # reloader (WERKZEUG_RUN_MAIN=true) the new image serves on that fd.
+            # Without it the new image binds the port itself, so the old socket
+            # must close at exec: otherwise server.py's port check finds the port
+            # held by our own pid and the new image exits.
+            if os.environ.get("WERKZEUG_RUN_MAIN") != "true":
+                server_fd = os.environ.pop("WERKZEUG_SERVER_FD", None)
+                if server_fd is not None:
+                    try:
+                        os.set_inheritable(int(server_fd), False)
+                    except (OSError, ValueError):
+                        pass  # not an open fd: nothing would be inherited
             os.execv(sys.executable, [sys.executable] + sys.argv)
 
         _threading.Timer(0.2, _do_restart).start()
