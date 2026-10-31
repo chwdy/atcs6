@@ -15,6 +15,18 @@ export interface FirstRunHost {
   openLoadLayoutDialog(): Promise<void>;
   refreshNetwork(): Promise<void>;
   selectTrain(trainId: string): void;
+  // Typed exactly as LocomotivesHost types it: NextHost extends both.
+  renderer?: { fitToContent(tracks: any[], margin?: number, insets?: { left: number; bottom: number }): void; requestRedraw(opts?: any): void };
+  currentNetwork?: any;
+  _canvasChromeInsets?(): { left: number; bottom: number };
+}
+
+/** Frame the view on the layout's track. App does this only for the first
+ *  layout it sees, so a loop built later would otherwise stay off screen. */
+function frameTrack(host: FirstRunHost): void {
+  const tracks = host.currentNetwork?.tracks;
+  if (!host.renderer || !tracks?.length) return;
+  host.renderer.fitToContent(tracks, undefined, host._canvasChromeInsets?.() ?? { left: 0, bottom: 0 });
 }
 
 /**
@@ -56,6 +68,7 @@ export function firstRunActions(host: FirstRunHost, showScreen: (screen: Screen)
         const { trainId } = await buildStarterLoop(api, await takenTrainIds());
         await host.refreshNetwork();
         showScreen('operate');
+        frameTrack(host);
         host.selectTrain(trainId);
         showToast(`Your loop is ready. Press Start route on ${trainId}, then Play.`, 'success', 8000);
       } catch (e: any) {
