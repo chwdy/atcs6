@@ -24,6 +24,10 @@ export const selection = signal<OperateSelection>(null);
 /** Whether the left list is open; folding it gives the map room. */
 export const listOpen = signal(true);
 
+/** Whether the train cards row is folded to one line per card; folding it
+ *  gives the map room. */
+export const cardsFolded = signal(false);
+
 /** The App methods and editor handlers the Operate screen uses. App provides
  *  all of them; they are the same ones today's panels call. */
 export interface OperateHost extends NextHost {

@@ -205,7 +205,7 @@ html[data-screen="operate"] #train-monitor-bar {
     align-items: stretch;
     gap: var(--space-8);
     min-height: 112px;
-    padding: var(--space-8) var(--space-10);
+    padding: var(--space-8) 0 var(--space-8) var(--space-10);
     overflow-x: auto;
     background-color: var(--bg-panel);
     border-top: 1px solid var(--border-color);
@@ -217,22 +217,44 @@ html[data-screen="operate"] #train-monitor-bar {
     align-self: center;
 }
 
-/* + Place train and Hold all end the row and stay in view while it scrolls. */
+/* Folded: one line per card, so the row takes about half the height. */
+.op-cards.is-folded {
+    min-height: 0;
+    padding-top: var(--space-6);
+    padding-bottom: var(--space-6);
+}
+
+/* + Place train, Hold all and the fold button end the row and stay in view
+   while it scrolls. The row's right padding is here rather than on .op-cards,
+   so no scrolled card shows between this group and the edge. */
 .op-cards-actions {
     position: sticky;
     right: 0;
     margin-left: auto;
     flex-shrink: 0;
     display: flex;
-    flex-direction: column;
-    justify-content: center;
-    gap: var(--space-6);
-    padding-left: var(--space-8);
+    align-items: center;
+    gap: var(--space-8);
+    padding: 0 var(--space-10) 0 var(--space-8);
     background-color: var(--bg-panel);
 }
 
+.op-cards-buttons {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-6);
+}
+
+.op-cards.is-folded .op-cards-buttons {
+    flex-direction: row;
+}
+
+/* min-width: 0 holds the card at its width. Without it a flex item is at
+   least as wide as its longest line, so a long hold reason widened the card
+   instead of ending in an ellipsis. */
 .op-card {
     flex: 0 0 228px;
+    min-width: 0;
     display: flex;
     flex-direction: column;
     gap: var(--space-4);
@@ -353,6 +375,42 @@ html[data-screen="operate"] #train-monitor-bar {
 .op-card-control-note {
     font-size: var(--font-size-label);
     color: var(--text-tertiary);
+}
+
+/* A folded card is one line: name and chips, speed and ATC limit, then the
+   control. The hold reason is the card's hover text (train-cards.tsx). The
+   card is as wide as its line, so the chips never squeeze the name; only a
+   name longer than 180px ends in an ellipsis. */
+.op-cards.is-folded .op-card {
+    flex: 0 0 auto;
+    flex-direction: row;
+    align-items: center;
+    gap: var(--space-8);
+    padding: var(--space-4) var(--space-8);
+}
+
+.op-cards.is-folded .op-card-name {
+    flex: 0 1 auto;
+    max-width: 180px;
+}
+
+.op-cards.is-folded .op-card-speed {
+    flex-shrink: 0;
+}
+
+.op-cards.is-folded .op-card-speed-value {
+    font-size: var(--font-size-value);
+}
+
+/* The button is as wide as its label; the handle keeps a usable width. */
+.op-cards.is-folded .op-card-control {
+    flex: none;
+    min-width: 72px;
+    margin-top: 0;
+}
+
+.op-cards.is-folded .op-card-handle {
+    width: 128px;
 }
 
 /* ---- Train, block and switch panels ---- */

@@ -6,21 +6,22 @@
  * `train_status` and `ato_status`, and the one-line hold reason while it
  * stands. Each card carries the train's main control (see `cardControl`).
  * Clicking a card selects the train, the same as picking it on the map, and
- * the selected train's card is marked. The row ends with + Place train and
- * Hold all.
+ * the selected train's card is marked. The row ends with + Place train,
+ * Hold all, and a button that folds the row to one line per card; a folded
+ * card shows its hold reason as hover text.
  */
 import { useState } from 'preact/hooks';
 
 import type { JSX } from 'preact';
 
 import { liveVersion, trainViews, type TrainView } from './live';
-import { selection, type OperateHost } from './operate-state';
+import { cardsFolded, selection, type OperateHost } from './operate-state';
 import { HANDLE_ORDER, handleClass, trainCommands } from './train-commands';
 import {
   atoStatus,
   atoStatusChip,
   cardControl,
-  holdLine,
+  cardHoldLine,
   speedText,
   trainCardTone,
   trainStatus,
@@ -31,33 +32,47 @@ export function TrainCardsRow({ host }: { host: OperateHost }) {
   liveVersion.value;
   const trains = trainViews();
   const sel = selection.value;
+  const folded = cardsFolded.value;
   return (
-    <div class="op-cards" role="region" aria-label="Trains">
+    <div class={folded ? 'op-cards is-folded' : 'op-cards'} role="region" aria-label="Trains">
       {trains.length === 0 && <div class="empty-state op-cards-empty">No trains yet. Place one on the map.</div>}
       {trains.map((view) => (
         <TrainCard
           key={view.id}
           view={view}
           selected={sel?.kind === 'train' && sel.id === view.id}
+          folded={folded}
           onSelect={() => host.selectTrain(view.id)}
         />
       ))}
       <div class="op-cards-actions">
+        <div class="op-cards-buttons">
+          <button
+            type="button"
+            class="btn"
+            title="Place a new train on the map"
+            onClick={() => host.editor.showAddTrainDialog()}
+          >
+            <i class="ti ti-plus" aria-hidden="true" /> Place train
+          </button>
+          <button
+            type="button"
+            class="btn"
+            title="ATO stop on every ATO train; each one resumes with Go"
+            onClick={() => void host.holdAll()}
+          >
+            <i class="ti ti-player-stop" aria-hidden="true" /> Hold all
+          </button>
+        </div>
         <button
           type="button"
-          class="btn"
-          title="Place a new train on the map"
-          onClick={() => host.editor.showAddTrainDialog()}
+          class="secondary-nav-btn"
+          title={folded ? 'Show the full train cards' : 'Fold the train cards to one line'}
+          aria-label={folded ? 'Show the full train cards' : 'Fold the train cards to one line'}
+          aria-pressed={folded}
+          onClick={() => (cardsFolded.value = !folded)}
         >
-          <i class="ti ti-plus" aria-hidden="true" /> Place train
-        </button>
-        <button
-          type="button"
-          class="btn"
-          title="ATO stop on every ATO train; each one resumes with Go"
-          onClick={() => void host.holdAll()}
-        >
-          <i class="ti ti-player-stop" aria-hidden="true" /> Hold all
+          <i class={folded ? 'ti ti-layout-bottombar-expand' : 'ti ti-layout-bottombar-collapse'} aria-hidden="true" />
         </button>
       </div>
     </div>
@@ -67,16 +82,18 @@ export function TrainCardsRow({ host }: { host: OperateHost }) {
 export function TrainCard({
   view,
   selected,
+  folded = false,
   onSelect,
 }: {
   view: TrainView;
   selected: boolean;
+  folded?: boolean;
   onSelect: () => void;
 }) {
   const c = view.controller;
   const status = trainStatus(view);
   const ato = atoStatus(view);
-  const hold = holdLine(view);
+  const hold = cardHoldLine(view);
   const onKeyDown = (e: KeyboardEvent) => {
     if (e.target !== e.currentTarget) return;
     if (e.key === 'Enter' || e.key === ' ') {
@@ -92,6 +109,7 @@ export function TrainCard({
       tabIndex={0}
       aria-pressed={selected}
       aria-label={`Train ${view.id}`}
+      title={folded ? (hold ?? undefined) : undefined}
       onClick={onSelect}
       onKeyDown={onKeyDown}
     >
@@ -115,7 +133,7 @@ export function TrainCard({
           ATC {speedText(c?.atc_speed_limit)}
         </span>
       </div>
-      {hold && (
+      {hold && !folded && (
         <div class="op-card-hold" title={hold}>
           {hold}
         </div>

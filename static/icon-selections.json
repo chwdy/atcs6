@@ -35,6 +35,10 @@
     "kind": "tabler",
     "value": "arrows-horizontal"
   },
+  "fold-train-cards": {
+    "kind": "tabler",
+    "value": "layout-bottombar-collapse"
+  },
   "inspector": {
     "kind": "tabler",
     "value": "microscope"
@@ -162,5 +166,9 @@
   "train-panel": {
     "kind": "tabler",
     "value": "train"
+  },
+  "unfold-train-cards": {
+    "kind": "tabler",
+    "value": "layout-bottombar-expand"
   }
 }

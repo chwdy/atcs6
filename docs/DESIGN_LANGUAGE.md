@@ -101,7 +101,9 @@ by name for forms, detail pages, and canvas work too.
    row becomes invisible after the second instance — repetition trains
    the eye to skip. So either promote it to a single column header at
    the top, or remove it. Repeating it inline on every row is *worse*
-   than nothing — it costs space and gets ignored anyway.
+   than nothing — it costs space and gets ignored anyway. The same holds
+   across cards: a fact about the whole screen ("the session is halted")
+   belongs in one place, the top bar, not on every train card.
 
 9. **Derived values.** Show derived values, not just inputs. If the
    user has to do math from your data — duration from two timestamps,
@@ -1270,7 +1272,11 @@ value won't fit, the column is too narrow, not the value.
 The `min-width: 0` line is the rule most often missed when clamping.
 Flex children default to `min-width: auto`, which lets their content
 expand the cell and silently defeats `overflow: hidden`. Set it
-explicitly on every flex child whose content is supposed to truncate.
+explicitly on every flex child whose content is supposed to truncate, and
+on every flex item between it and the box whose width is fixed. The train
+card's hold line had it, but the card, itself a flex item in the cards
+row, did not, so a long hold reason widened the whole card to the length
+of the sentence.
 Reference: `.rr-card-route` (clamp, opaque id) in
 [features/routes-paths.css](../static/css/features/routes-paths.css), and
 `.status-header-name` (wrap, display name) in
@@ -1751,7 +1757,13 @@ matches data):
   small text — the number the driver watches next to the number that bounds
   it.
 - **One line of why** while the train stands: its hold reason, cut with an
-  ellipsis and shown whole in the tooltip.
+  ellipsis and shown whole in the tooltip. A question-1 reason (the session
+  is Halted, in Setup, or Paused) is left off the card: it is the same for
+  every train and the top bar already shows it. The train panel still shows
+  it in full.
+- **The card keeps its width.** A long hold reason ends in an ellipsis; it
+  never widens the card (see [§5 Overflow](#overflow-identifiers-vs-names):
+  `min-width: 0` on the card as well as on the line).
 - **One main control,** chosen from the train's state: Go or Stop for ATO,
   Start route, Power on, Release, or a small handle for manual driving. The
   card carries only the next thing to do; every control lives in the
@@ -1760,11 +1772,23 @@ matches data):
   map, and a pick on the map marks the card. A click on the card's control
   acts and does not select. To the keyboard the card is a button: Enter or
   Space selects it.
+- **The row folds to one line per card.** A button at the end of the row,
+  after + Place train and Hold all, folds it to about half the height: each
+  card becomes one line of name, chips, speed and ATC limit, and the
+  control, and its hold reason moves to the card's hover text. A folded card
+  is as wide as its line, so the chips never squeeze the name; only a name
+  longer than 180px ends in an ellipsis. The buttons sit side by side when
+  folded and stacked when not.
+- **The end buttons stay in view while the row scrolls.** They are a sticky
+  group, and the row's right padding is on that group rather than on the
+  scrolling row, so no card shows between the group and the edge.
 
 Reference: `TrainCardsRow` in
 [next/operate/train-cards.tsx](../frontend/src/next/operate/train-cards.tsx);
-`cardControl` and `trainCardTone` in
+`cardControl`, `cardHoldLine` and `trainCardTone` in
 [next/operate/train-display.ts](../frontend/src/next/operate/train-display.ts);
+`cardsFolded` in
+[next/operate/operate-state.ts](../frontend/src/next/operate/operate-state.ts);
 `.op-card*` in [next/operate.css](../static/css/next/operate.css).
 
 ---

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { TrainView } from './live';
-import { atoStatus, cardControl, holdLine, trainCardTone, trainStatus } from './train-display';
+import { atoStatus, cardControl, cardHoldLine, holdLine, trainCardTone, trainStatus } from './train-display';
 
 function view(controller: any, extra: Partial<TrainView> = {}): TrainView {
   return {
@@ -67,6 +67,20 @@ describe('status words', () => {
       'No route is assigned.'
     );
     expect(holdLine(view({ is_stopped: false }, { operatorStatus: { hold_reason: hold } }))).toBeNull();
+  });
+
+  it('leaves the session state off the card, which the top bar shows, but not off the panel', () => {
+    const halted = view(
+      { is_stopped: true },
+      { operatorStatus: { hold_reason: { code: 'halted', question: 1, detail: 'hardware_failure' } } }
+    );
+    expect(cardHoldLine(halted)).toBeNull();
+    expect(holdLine(halted)).toMatch(/hardware failure/);
+    const noRoute = view(
+      { is_stopped: true },
+      { operatorStatus: { hold_reason: { code: 'no_route', question: 3, detail: null } } }
+    );
+    expect(cardHoldLine(noRoute)).toBe('No route is assigned.');
   });
 });
 

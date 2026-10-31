@@ -115,6 +115,15 @@ export function holdLine(view: TrainView): string | null {
   return holdReasonText(view.operatorStatus?.hold_reason);
 }
 
+/** The card's hold line. A question-1 reason is the session state: it is the
+ *  same for every train and the top bar already shows it, so the card leaves
+ *  it out. The train panel still shows it in full (`holdLine`). */
+export function cardHoldLine(view: TrainView): string | null {
+  const hold = view.operatorStatus?.hold_reason as { question?: number } | null | undefined;
+  if (hold?.question === 1) return null;
+  return holdLine(view);
+}
+
 /**
  * The card's main control. It follows `train_status`: Go or Stop for an ATO
  * train and the handle for a manual one (plan §5); a powered-off train

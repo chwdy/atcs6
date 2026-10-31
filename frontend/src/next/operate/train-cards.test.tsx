@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { stateManager } from '../../lib/state-manager';
 import { liveVersion } from './live';
-import { selection, type OperateHost } from './operate-state';
+import { cardsFolded, selection, type OperateHost } from './operate-state';
 import { TrainCardsRow } from './train-cards';
 
 function fakeHost(): OperateHost {
@@ -62,6 +62,7 @@ describe('TrainCardsRow', () => {
     document.body.appendChild(root);
     host = fakeHost();
     selection.value = null;
+    cardsFolded.value = false;
     act(() => render(<TrainCardsRow host={host} />, root));
   });
 
@@ -129,6 +130,38 @@ describe('TrainCardsRow', () => {
     });
     expect(card('T_MAN').textContent).toContain('EB');
     buttonNamed(card('T_MAN'), 'Release');
+  });
+
+  it('leaves the session state off every card', async () => {
+    await act(async () => {
+      stateManager.updateFromNetwork({
+        ...NETWORK,
+        operator_status_by_train_id: {
+          ...NETWORK.operator_status_by_train_id,
+          T_ATO: {
+            ato_status: 'READY',
+            hold_reason: { code: 'halted', question: 1, detail: 'hardware_failure' },
+            pending_actions: [],
+          },
+        },
+      });
+      await Promise.resolve();
+      liveVersion.value++;
+    });
+    expect(card('T_ATO').querySelector('.op-card-hold')).toBeNull();
+  });
+
+  it('folds to one line per card, with the hold reason as hover text, and back', () => {
+    const fold = root.querySelector('button[aria-label="Fold the train cards to one line"]') as HTMLButtonElement;
+    act(() => fold.click());
+    expect(root.querySelector('.op-cards')!.classList.contains('is-folded')).toBe(true);
+    expect(card('T_ATO').querySelector('.op-card-hold')).toBeNull();
+    expect(card('T_ATO').title).toBe('No route is assigned.');
+    buttonNamed(card('T_ATO'), '▶ Go');
+    const unfold = root.querySelector('button[aria-label="Show the full train cards"]') as HTMLButtonElement;
+    act(() => unfold.click());
+    expect(root.querySelector('.op-cards')!.classList.contains('is-folded')).toBe(false);
+    expect(card('T_ATO').querySelector('.op-card-hold')!.textContent).toBe('No route is assigned.');
   });
 
   it('ends the row with Place train and Hold all', () => {
