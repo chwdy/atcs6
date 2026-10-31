@@ -65,7 +65,7 @@ export function bindSpeedProfilePanel(panel: SpeedProfilePanel, reveal: () => vo
   panel.setHost({
     el,
     showList: reveal,
-    profileShown(profileId, restoring) {
+    profileShown(profileId) {
       shown = profileId;
       mountSteps();
       if (asked > 0) return;
@@ -76,7 +76,7 @@ export function bindSpeedProfilePanel(panel: SpeedProfilePanel, reveal: () => vo
       // the profile again with its train named.
       const picked = panelTarget(selection.peek(), roster.peek(), trains.peek()).profileId;
       if (picked !== profileId) selection.value = selectionForProfile(profileId, roster.peek(), trains.peek());
-      if (!restoring) reveal();
+      reveal();
     },
     profileDeleted() {
       shown = null;

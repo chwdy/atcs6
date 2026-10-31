@@ -73,19 +73,6 @@
     color: var(--text-secondary);
 }
 
-/* The floating tool rail (.sidebar, shell.css) is absolutely positioned at
-   left:12px / width:88px and grows from the vertical centre. On a short viewport
-   (or in sim mode, where extra tools make the rail taller) it reaches the bottom
-   and covers this corner, hiding the left of the control bar behind it. Push the
-   camera controls clear of the rail's right edge: 12 + 88 + 8px gap = 108px from
-   the canvas edge, minus the overlay's own 10px padding. The status bar is
-   right-anchored by `justify-content: space-between`, so it is unaffected. When
-   the rail is collapsed the selector stops matching and the controls reclaim the
-   corner. */
-.sidebar:not(.collapsed) ~ .content-area .canvas-view-controls {
-    margin-left: calc(12px + 88px + 8px - 10px);
-}
-
 .canvas-view-btn {
     background-color: var(--bg-dark);
     color: var(--text-primary);
@@ -131,61 +118,4 @@
 
 .canvas-view-toggle:hover {
     color: var(--text-primary);
-}
-
-/* ---- Session bar — the whole-layout controls (Emergency stop, Reset, Hold
-   all), floating at the top centre of the canvas so they stay in reach
-   whatever the header holds. The session state itself is the header's chip
-   (design_new.md "Session state"). ---- */
-.session-bar {
-    position: absolute;
-    top: 10px;
-    left: 50%;
-    transform: translateX(-50%);
-    z-index: 3;
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    background-color: rgba(30, 30, 36, 0.85);
-    border: 1px solid var(--border-color);
-    padding: 4px 6px;
-    border-radius: 4px;
-    backdrop-filter: blur(4px);
-    font-size: 0.8rem;
-    white-space: nowrap;
-}
-
-.session-bar-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    background-color: var(--bg-dark);
-    color: var(--text-primary);
-    border: 1px solid var(--border-color);
-    padding: 3px 10px;
-    border-radius: 3px;
-    font-size: 0.8rem;
-    cursor: pointer;
-    transition: background-color 120ms ease, border-color 120ms ease;
-}
-
-.session-bar-btn:hover {
-    background-color: var(--bg-hover);
-    border-color: var(--accent-color);
-}
-
-.session-bar-btn-danger {
-    color: #fff;
-    background-color: var(--danger-color);
-    border-color: var(--danger-color);
-    font-weight: 600;
-}
-
-.session-bar-btn-danger:hover {
-    background-color: var(--danger-color);
-    border-color: #fff;
-}
-
-.session-bar [hidden] {
-    display: none !important;
 }

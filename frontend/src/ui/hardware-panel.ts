@@ -1,5 +1,9 @@
 /**
- * Hardware Setup modal (#hardware-modal).
+ * The sections of Hardware Setup steps 2 and 4 (docs/ui-layout-rewrite-plan.md
+ * §7): the bridge, the chip list, the layout tally, the idle threshold and the
+ * wiring overview, and the code behind their buttons. The Hardware Setup
+ * screen (frontend/src/next/hardware/) shows them; they were the Hardware
+ * Setup dialog's body before the screen replaced it.
  *
  * This screen commissions the *chips* on the control board and nothing else:
  * where each chip is (which bus + address / latch line), what it is, how many
@@ -18,34 +22,19 @@
  *   3. What your layout is wired to — the tally of blocks and switches actually
  *      bound to those chips, and what breaks for the ones that are not. Read
  *      only: the binding itself is done in the per-entity editors.
- *   4. Run Environment (footer) — select Simulation, Virtual Hardware, or Real
- *      Hardware, review readiness, then activate it without restarting.
  *
- * setupHardwarePanel() wires the delegated handlers once; refreshHardwarePanel()
- * loads the catalog + persisted config and renders — call it each time the modal
- * opens. Under ?ui=next, attachHardwareScreen() shows the same sections in the
- * Hardware Setup screen instead (the end of this file).
+ * attachHardwareScreen() (the end of this file) hands the sections to the
+ * screen and loads the catalog + persisted config; refreshHardwarePanel()
+ * loads them again.
  */
 import { api } from '../lib/api';
 import { showToast } from '../lib/toast';
 import { showConfirmModal } from '../lib/helpers';
 import {
-  activateUnavailableReason,
-  ENVIRONMENT_LABELS,
-  sessionHint,
-  sessionLabel,
   setupToolsAllowed,
   SETUP_TOOL_HINT,
   type SessionStateView,
 } from '../lib/session-controls';
-import {
-  VIRTUAL_FAULT_PAIRS,
-  clearFaultBody,
-  describeFaultRecord,
-  faultPairLabel,
-  injectFaultBody,
-  type VirtualFaultRecord,
-} from '../lib/virtual-hardware-faults';
 
 const BUS_ORDER = ['i2c', 'spi', 'gpio'] as const;
 const BUS_LABEL: Record<string, string> = { i2c: 'I²C', spi: 'SPI', gpio: 'GPIO' };
@@ -101,39 +90,6 @@ interface EnvironmentInfo {
   /** Saved setup changes the running session is not using yet. */
   awaits_activation?: boolean;
 }
-interface DevBindings {
-  block_occupancy: Record<string, any>;
-  block_occupancy_current: Record<string, any>;
-}
-interface DevReadback {
-  virtual_hardware_active?: boolean;
-  develop_active?: boolean;
-  blocks?: Record<string, {
-    occupancy_bit: boolean | null;
-    /** The raw bit resolved through the chain's polarity — what the pipeline
-     *  reads. On an active-low chain it is the opposite of `occupancy_bit`. */
-    detector_present: boolean | null;
-    current_ma: number | null; volts: number | null; occupied: boolean | null;
-  }>;
-  switches?: Record<string, any>;
-  /** Operator faults currently injected (the source of truth for the panel).
-   *  `faults` below is the low-level transport view the device also reports. */
-  injected_faults?: VirtualFaultRecord[];
-  faults?: Record<string, boolean>;
-}
-export interface DevRow {
-  blockId: string;
-  hasDigital: boolean;
-  hasCurrent: boolean;
-  /** The digital detector's reading with the chain's polarity applied — what
-   *  "a train is on this block" means. Never the raw register bit. */
-  detectorPresent: boolean | null;
-  occupancyBit: boolean | null;
-  currentMa: number | null;
-  volts: number | null;
-  occupied: boolean | null;
-}
-
 // Layout coverage — which blocks / switches in the loaded layout are wired at
 // all. Distinct from chip readiness above: a board can be perfectly proven and
 // still have half the layout bound to nothing. See coverageRows().
@@ -197,28 +153,19 @@ let savedSinceEdit = false;
 let editedSinceSave = false;
 let adding = false;
 
-// Virtual Hardware: running-session info, bindings, latest read-back, and poll.
+// The running session's info, and the selected environment.
 let sessionInfo: SessionInfo | null = null;
-let devBindings: DevBindings = { block_occupancy: {}, block_occupancy_current: {} };
-let devReadback: DevReadback | null = null;
 let environmentInfo: EnvironmentInfo = {
   selected: 'simulation', active: 'simulation', is_active: true,
 };
 let activationReadiness: any = { ready: true, issues: [] };
-let virtualRig: any = null;
-let virtualRigBlocksDraft = '';
-// Drafts for the fault-injection controls: the target id every inject button
-// names, and an optional operation (read/write) for a transaction fault.
-let faultTargetDraft = '';
-let faultOperationDraft = '';
-let devPollTimer: any = null;
 
-// Layout coverage, refreshed with the config each time the modal opens.
+// Layout coverage, refreshed with the config each time the setup loads.
 let coverage: Coverage | null = null;
 
 
 // Commissioning — a held device for the live input view and the output sweep.
-// Only one activity runs at a time; it is stopped on modal close / refresh.
+// Only one activity runs at a time; it is stopped on leaving the screen / refresh.
 let commissionActive = false;
 let activity: { chipId: string; kind: 'sweep' | 'live'; port: number; values: number[] } | null = null;
 let activityTimer: any = null;
@@ -248,29 +195,6 @@ function el<T extends HTMLElement = HTMLElement>(id: string): T | null {
   return document.getElementById(id) as T | null;
 }
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-// --- develop-mode fake-input rows (pure; unit-tested) ----------------------
-// The Fake-inputs section lists every block with an occupancy detector and/or a
-// current-sense binding, joined to the latest read-back from the fake device.
-export function devRows(bindings: DevBindings, readback: DevReadback | null): DevRow[] {
-  const digital = bindings.block_occupancy || {};
-  const current = bindings.block_occupancy_current || {};
-  const ids = Array.from(new Set([...Object.keys(digital), ...Object.keys(current)])).sort();
-  const blocks = readback?.blocks || {};
-  return ids.map((blockId) => {
-    const rb = blocks[blockId] || {};
-    return {
-      blockId,
-      hasDigital: blockId in digital,
-      hasCurrent: blockId in current,
-      detectorPresent: rb.detector_present ?? null,
-      occupancyBit: rb.occupancy_bit ?? null,
-      currentMa: rb.current_ma ?? null,
-      volts: rb.volts ?? null,
-      occupied: rb.occupied ?? null,
-    };
-  });
-}
 
 // --- layout coverage rows (pure; unit-tested) ------------------------------
 // One row per kind of binding a layout entity needs, each carrying what goes
@@ -846,27 +770,8 @@ function wiringDiagramHtml(): string {
   </details>`;
 }
 
-// --- setup (once) ----------------------------------------------------------
-export function setupHardwarePanel(): void {
-  const modal = el('hardware-modal');
-  const bodyEl = el('hw-body');
-  const gateEl = el('hw-gate');
-  if (!modal || !bodyEl || !gateEl) {
-    console.warn('[App] Hardware panel elements not found');
-    return;
-  }
-
-  listenOn(modal);
-
-  // Stop any live/sweep activity (and release the device) when the modal closes
-  // via any path — close button, backdrop, or Escape all drop the `active` class.
-  new MutationObserver(() => {
-    if (!modal.classList.contains('active')) void stopCommissioning();
-  }).observe(modal, { attributes: true, attributeFilter: ['class'] });
-}
-
-/** Handle the panel's clicks, changes and typing inside `root` (the dialog, or
- *  the ?ui=next Hardware Setup screen). Returns a function that stops. */
+/** Handle the panel's clicks, changes and typing inside `root` (the Hardware
+ *  Setup screen). Returns a function that stops. */
 function listenOn(root: HTMLElement): () => void {
   const click = (e: Event) => void onClick(e);
   // `toggle` does not bubble, so this only reaches `root` via the capture
@@ -891,7 +796,7 @@ function listenOn(root: HTMLElement): () => void {
 
 function onEdit(): void { savedSinceEdit = false; editedSinceSave = true; }
 
-// --- refresh (each open) ---------------------------------------------------
+// --- refresh (each time the screen attaches) --------------------------------
 export async function refreshHardwarePanel(): Promise<void> {
   await stopCommissioning();
   savedSinceEdit = false;
@@ -902,9 +807,7 @@ export async function refreshHardwarePanel(): Promise<void> {
   forgetAllProof();
   controllerReachable = false;
   sessionInfo = null;
-  devReadback = null;
   coverage = null;
-  devBindings = { block_occupancy: {}, block_occupancy_current: {} };
   try {
     const [cat, cfg, cov, env, ready] = await Promise.all([
       api.getHardwareCatalog(),
@@ -922,19 +825,12 @@ export async function refreshHardwarePanel(): Promise<void> {
     sessionInfo = cfg?.session || null;
     environmentInfo = env as EnvironmentInfo;
     activationReadiness = ready || { ready: false, issues: [] };
-    // Capture the raw binding maps before normalizeConfig strips them — the
-    // Fake-inputs section pokes blocks by their occupancy / current bindings.
-    devBindings = {
-      block_occupancy: raw.block_occupancy || {},
-      block_occupancy_current: raw.block_occupancy_current || {},
-    };
   } catch (e) {
     console.error('[App] Failed to load hardware setup:', e);
     showToast('Failed to load hardware setup.', 'error');
     state = clone(DEFAULT_STATE);
   }
   render();
-  startDevPoll();
 }
 
 function normalizeConfig(cfg: any): HwState {
@@ -992,15 +888,9 @@ function readiness(): Check[] {
 const isReady = (): boolean => state.chips.length > 0 && readiness().every((c) => c.ok);
 
 // --- render ----------------------------------------------------------------
+/** Redraw the sections the Hardware Setup screen is showing. */
 function render(): void {
-  // Under ?ui=next the Hardware Setup screen shows these sections instead.
-  if (screenDraw) { screenDraw(); return; }
-  const body = el('hw-body');
-  const gate = el('hw-gate');
-  if (!body || !gate || !catalog) return;
-  body.innerHTML = wiringDiagramHtml() + controllerStageHtml() + chipsStageHtml()
-    + coverageStageHtml() + devSectionHtml();
-  gate.innerHTML = gateHtml();
+  screenDraw?.();
 }
 
 // --- layout coverage section ------------------------------------------------
@@ -1056,78 +946,6 @@ function coverageNames(ids: string[]): string {
   return rest > 0 ? `${shown} and ${rest} more` : shown;
 }
 
-// --- Virtual Hardware controls ---------------------------------------------
-// Rendered only when Virtual Hardware is actually active: a row per bound block with an Occupied toggle, a
-// current-mA field, and the live read-back the 1 s poll refreshes.
-function devSectionHtml(): string {
-  if (!sessionInfo?.virtual_hardware_active) return '';
-  const head = `<div class="hw-stage-head"><span class="hw-stage-num"><i class="ti ti-flask" aria-hidden="true"></i></span>
-      <span class="hw-stage-title">Virtual Hardware controls</span></div>
-    <p class="hw-stage-desc">Drive the configured detector channels, place a virtual train, or inject a device fault. These controls exercise the same HAL and safety paths as Real Hardware.</p>`;
-  const rows = devRows(devBindings, devReadback);
-  // Each button injects one valid (target, fault) pair against the id in the
-  // target field; the injected list below is the live source of truth.
-  const injectButtons = VIRTUAL_FAULT_PAIRS.map((pair, i) =>
-    `<button type="button" class="btn hw-btn-sm btn-secondary" data-hw="dev-fault-inject" data-fp="${i}">${esc(faultPairLabel(pair))}</button>`
-  ).join(' ');
-  const injected = devReadback?.injected_faults ?? [];
-  const injectedList = injected.length
-    ? injected.map((r, i) =>
-        `<span>${esc(describeFaultRecord(r))} <button type="button" class="btn hw-btn-sm btn-accent" data-hw="dev-fault-clear-one" data-fi="${i}">Clear</button></span>`
-      ).join(' ')
-    : '<span class="hw-dev-na">none injected</span>';
-  const faults = `<div class="hw-dev-rows">
-    <div class="hw-dev-row"><span class="hw-dev-block">Fault target</span><span class="hw-dev-read">
-      <input type="text" class="setting-input-compact" data-hw="dev-fault-target" value="${esc(faultTargetDraft)}" placeholder="target id (e.g. IN1, SW_3)" />
-      <input type="text" class="setting-input-compact" data-hw="dev-fault-op" value="${esc(faultOperationDraft)}" placeholder="op: read/write (optional)" /></span></div>
-    <div class="hw-dev-row"><span class="hw-dev-block">Inject fault</span><span class="hw-dev-read">${injectButtons}
-      <button type="button" class="btn hw-btn-sm btn-secondary" data-hw="dev-fault-clear">Clear all</button></span></div>
-    <div class="hw-dev-row"><span class="hw-dev-block">Injected</span><span class="hw-dev-read">${injectedList}</span></div>
-  </div>`;
-  const rigStatus = virtualRig?.active
-    ? `${virtualRig.block_id}${virtualRig.stalled ? ' · stalled' : ' · moving by steps'}`
-    : 'no virtual train';
-  const rig = `<div class="hw-dev-rows"><div class="hw-dev-row"><span class="hw-dev-block">Virtual train</span><span class="hw-dev-read">
-    <input type="text" class="setting-input-compact" data-hw="dev-rig-blocks" value="${esc(virtualRigBlocksDraft)}" placeholder="B1, B2, B3" />
-    <button type="button" class="btn hw-btn-sm btn-secondary" data-hw="dev-rig-start">Place</button>
-    <button type="button" class="btn hw-btn-sm btn-secondary" data-hw="dev-rig-advance">Enter next</button>
-    <button type="button" class="btn hw-btn-sm ${virtualRig?.stalled ? 'btn-accent' : 'btn-secondary'}" data-hw="dev-rig-stall">${virtualRig?.stalled ? 'Resume' : 'Stall'}</button>
-    <button type="button" class="btn hw-btn-sm btn-secondary" data-hw="dev-rig-remove">Remove</button>
-    <strong>${esc(rigStatus)}</strong></span></div></div>`;
-  if (!rows.length) {
-    return `<section class="hw-dev-section">${head}
-      <p class="hw-dev-empty">No block has an occupancy detector or current-sense binding yet. Bind one in a block's editor to poke it here.</p>${rig}${faults}</section>`;
-  }
-  const rowHtml = rows.map((r) => {
-    // Labelled and toggled by the RESOLVED reading, not the raw register bit:
-    // an active-low chain reads 0 when a train is present, so a button keyed to
-    // the raw bit says "Clear" over an occupied block and puts a train on the
-    // ones that already have one.
-    const occ = r.hasDigital
-      ? `<button type="button" class="btn hw-btn-sm ${r.detectorPresent ? 'btn-accent' : 'btn-secondary'}" data-hw="dev-occ" data-id="${esc(r.blockId)}">${r.detectorPresent ? 'Occupied' : 'Clear'}</button>`
-      : `<span class="hw-dev-na">—</span>`;
-    const cur = r.hasCurrent
-      ? `<span class="hw-dev-cur"><input type="number" class="setting-input-compact hw-dev-cur-in" data-hw="dev-current-in" data-id="${esc(r.blockId)}" value="${r.currentMa ?? 0}" step="1" /><span class="hw-dev-unit">mA</span>
-          <button type="button" class="btn hw-btn-sm btn-secondary" data-hw="dev-current" data-id="${esc(r.blockId)}">Set</button></span>`
-      : `<span class="hw-dev-na">—</span>`;
-    const bit = r.detectorPresent == null ? '—' : (r.detectorPresent ? 'present' : 'clear');
-    const ma = r.currentMa == null ? '—' : `${r.currentMa} mA`;
-    const volts = r.volts == null ? '—' : `${r.volts} V`;
-    const verdict = r.occupied == null ? '—' : (r.occupied ? 'occupied' : 'clear');
-    return `<div class="hw-dev-row">
-      <span class="hw-dev-block">${esc(r.blockId)}</span>
-      <span class="hw-dev-ctl">${occ}</span>
-      <span class="hw-dev-ctl">${cur}</span>
-      <span class="hw-dev-read">det ${bit} · ${ma} · ${volts} · <strong class="${r.occupied ? 'occ' : ''}">${verdict}</strong></span>
-    </div>`;
-  }).join('');
-  return `<section class="hw-dev-section">${head}
-    <div class="hw-dev-rows">
-      <div class="hw-dev-row hw-dev-head"><span>Block</span><span>Occupancy</span><span>Current</span><span>Reads back</span></div>
-      ${rowHtml}
-    </div>${rig}${faults}</section>`;
-}
-
 function controllerStageHtml(): string {
   const ctrl = catalog!.controllers.find((c) => c.kind === state.controller.kind) || catalog!.controllers[0];
   const portRow = ctrl?.needs_device_port
@@ -1177,8 +995,8 @@ function controllerStageHtml(): string {
   </section>`;
 }
 
-/** What the chip list offers. The dialog shows both; the ?ui=next screen
- *  edits the list in step 2 (`edit`: add, remove, port count, detector
+/** What the chip list offers. The Hardware Setup screen edits the list in
+ *  step 2 (`edit`: add, remove, port count, detector
  *  polarity) and runs each chip's test in step 4 (`test`). */
 export interface ChipListOptions { edit: boolean; test: boolean; }
 const FULL_CHIP_LIST: ChipListOptions = { edit: true, test: true };
@@ -1472,51 +1290,6 @@ function nextChipId(kind: string): string {
   return `${kind}-${n}`;
 }
 
-// --- footer gate -----------------------------------------------------------
-function gateHtml(): string {
-  const labels = ENVIRONMENT_LABELS;
-  const choices = Object.entries(labels).map(([value, label]) =>
-    `<button type="button" class="btn hw-btn-sm ${environmentInfo.selected === value ? 'btn-accent' : 'btn-secondary'}" data-hw="environment" data-id="${value}">${label}</button>`
-  ).join(' ');
-  const activeLabel = labels[environmentInfo.active] || environmentInfo.active;
-  const selectedLabel = labels[environmentInfo.selected];
-  const session = environmentInfo.session_state;
-  const selectedActive = environmentInfo.is_active
-    && environmentInfo.active === environmentInfo.selected;
-  const status = session
-    ? `${activeLabel}: ${sessionLabel(session)}. ${sessionHint(session)}`
-    : selectedActive
-      ? `${activeLabel} is active.`
-      : `${selectedLabel} is selected but not active.`;
-  // Setup exists only for a hardware environment, and Activate is the only way
-  // out of it (design_new.md "Hardware setup", Setup).
-  const canEnterSetup = environmentInfo.selected !== 'simulation'
-    && session?.value !== 'setup'
-    && session?.halt_reason !== 'runtime_failure';
-  const activateBlocked = activateUnavailableReason(session);
-  const setupButton = canEnterSetup
-    ? '<button type="button" class="btn btn-secondary" data-hw="setup" title="Stop operation and hand the outputs to the Setup tools">Enter Setup</button>'
-    : '';
-  const issues = (activationReadiness?.issues || []).map((issue: any) =>
-    `<span class="hw-check warn"><i class="ti ti-alert-triangle" aria-hidden="true"></i> ${esc(issue.message || issue.code)}</span>`
-  ).join('');
-  // Advisory readiness notes — setup the rig runs without, reported so the
-  // operator knows what they are giving up. Deliberately the neutral chip, not
-  // the amber one the blockers above use: these do not stop activation, and
-  // colouring them the same way would train the eye to ignore a real blocker.
-  const notes = (activationReadiness?.warnings || []).map((note: any) =>
-    `<span class="hw-check" title="This does not block activation."><i class="ti ti-info-circle" aria-hidden="true"></i> ${esc(note.message || note.code)}</span>`
-  ).join('');
-  return `<div class="hw-checklist"><strong>Run Environment</strong> ${choices}
-      <span class="hw-check ${selectedActive ? 'ok' : 'warn'}">${esc(status)}</span>${issues}${notes}</div>
-    <div class="hw-gate-actions">
-      ${idleThresholdHtml()}
-      <button type="button" class="btn btn-secondary" data-hw="save">Save Hardware Setup</button>
-      ${setupButton}
-      <button type="button" class="btn btn-primary" data-hw="activate"${activateBlocked ? ` disabled title="${esc(activateBlocked)}"` : ''}>Activate ${esc(selectedLabel)}</button>
-    </div>`;
-}
-
 function idleThresholdHtml(): string {
   return `<label class="hw-deadband" title="A block commanded above this voltage is read by its current-sense channel; at or below it, by its '165 detector.">
       <span class="hw-deadband-text"><span class="hw-deadband-label">Idle threshold</span>
@@ -1546,20 +1319,7 @@ async function onClick(e: Event): Promise<void> {
     case 'add-open': adding = true; render(); syncAddForm(); return;
     case 'add-cancel': adding = false; render(); return;
     case 'add-commit': return commitAdd();
-    case 'environment': return void selectEnvironment(id);
-    case 'activate': return void activateEnvironment();
-    case 'setup': return void enterSetup();
-    case 'dev-occ': return void toggleDevOccupancy(id);
-    case 'dev-current': return void setDevCurrent(id);
-    case 'dev-fault-inject': return void injectDevFault(Number(target.dataset.fp));
-    case 'dev-fault-clear-one': return void clearOneDevFault(Number(target.dataset.fi));
-    case 'dev-fault-clear': return void clearDevFaults();
-    case 'dev-rig-start': return void commandVirtualRig('start');
-    case 'dev-rig-advance': return void commandVirtualRig('advance');
-    case 'dev-rig-stall': return void commandVirtualRig('stall');
-    case 'dev-rig-remove': return void commandVirtualRig('remove');
     case 'save': return void save();
-    case 'jump': return jumpTo(target.dataset.key || '');
   }
 }
 
@@ -1571,9 +1331,6 @@ function onChange(e: Event): void {
   else if (t.dataset.hw === 'latch') { setChip(id, (c) => { c.spi_select = (t as HTMLSelectElement).value; }); }
   else if (t.dataset.hw === 'addr') { setAddress(id, (t as HTMLInputElement).value); }
   else if (t.dataset.hw === 'ports') { setPorts(id, (t as HTMLInputElement).value); }
-  else if (t.dataset.hw === 'dev-rig-blocks') { virtualRigBlocksDraft = (t as HTMLInputElement).value; }
-  else if (t.dataset.hw === 'dev-fault-target') { faultTargetDraft = (t as HTMLInputElement).value; }
-  else if (t.dataset.hw === 'dev-fault-op') { faultOperationDraft = (t as HTMLInputElement).value; }
   else if (t.dataset.hw === 'polarity') {
     setChip(id, (c) => { c.active_low = (t as HTMLInputElement).value === 'low'; });
   }
@@ -1728,7 +1485,6 @@ async function activateEnvironment(): Promise<void> {
     sessionInfo = cfg?.session || null;
     savedSinceEdit = true;
     render();
-    startDevPoll();
     showToast(`${environmentInfo.selected.split('_').join(' ')} is active.`, 'success', 2500);
   } catch (e: any) {
     environmentInfo = await api.getOperationEnvironment().catch(() => environmentInfo) as EnvironmentInfo;
@@ -1743,117 +1499,6 @@ async function activateEnvironment(): Promise<void> {
       blocked ? 8000 : 5000,
     );
   }
-}
-
-// --- develop-mode fake-input poking ----------------------------------------
-// Writes every source the block is bound to, not just the digital bit: which
-// source the runtime believes depends on how hard the block is being driven, so
-// a bit set on its own leaves a driven block still reading its current channel.
-async function toggleDevOccupancy(id: string): Promise<void> {
-  const cur = devReadback?.blocks?.[id]?.detector_present ?? false;
-  try {
-    await api.setHwDebugPresence(id, !cur);
-    await pollDev();
-  } catch (e: any) {
-    showToast(e?.message || 'Failed to set occupancy.', 'error', 3000);
-  }
-}
-
-async function setDevCurrent(id: string): Promise<void> {
-  const input = Array.from(document.querySelectorAll<HTMLInputElement>('[data-hw="dev-current-in"]'))
-    .find((i) => i.dataset.id === id);
-  const ma = Number(input?.value) || 0;
-  try {
-    await api.setHwDebugCurrent(id, ma);
-    await pollDev();
-  } catch (e: any) {
-    showToast(e?.message || 'Failed to set current.', 'error', 3000);
-  }
-}
-
-async function injectDevFault(pairIndex: number): Promise<void> {
-  const pair = VIRTUAL_FAULT_PAIRS[pairIndex];
-  if (!pair) return;
-  const body = injectFaultBody(pair, faultTargetDraft, faultOperationDraft);
-  if (!body) {
-    showToast('Enter a target id before injecting a fault.', 'warning', 3000);
-    return;
-  }
-  try {
-    await api.setVirtualHardwareFault(body);
-    await pollDev();
-  } catch (e: any) {
-    showToast(e?.message || 'Failed to inject Virtual Hardware fault.', 'error', 3000);
-  }
-}
-
-async function clearOneDevFault(faultIndex: number): Promise<void> {
-  const record = devReadback?.injected_faults?.[faultIndex];
-  if (!record) return;
-  try {
-    await api.setVirtualHardwareFault(clearFaultBody(record));
-    await pollDev();
-  } catch (e: any) {
-    showToast(e?.message || 'Failed to clear Virtual Hardware fault.', 'error', 3000);
-  }
-}
-
-async function clearDevFaults(): Promise<void> {
-  try {
-    await api.clearVirtualHardwareFaults();
-    await pollDev();
-  } catch (e: any) {
-    showToast(e?.message || 'Failed to clear Virtual Hardware faults.', 'error', 3000);
-  }
-}
-
-async function commandVirtualRig(action: string): Promise<void> {
-  try {
-    const payload: any = {};
-    if (action === 'start') {
-      payload.blocks = virtualRigBlocksDraft.split(',').map((id) => id.trim()).filter(Boolean);
-    } else if (action === 'stall') {
-      payload.stalled = !virtualRig?.stalled;
-    }
-    const response = await api.commandVirtualRigScenario(action, payload);
-    virtualRig = response?.scenario ?? null;
-    render();
-  } catch (e: any) {
-    showToast(e?.message || 'Virtual Rig command failed.', 'error', 3000);
-  }
-}
-
-function startDevPoll(): void {
-  // The ?ui=next screen carries the Virtual Bench instead of these controls.
-  if (screenDraw) return;
-  if (devPollTimer || !sessionInfo?.virtual_hardware_active) return;
-  void pollDev();
-  devPollTimer = setInterval(() => void pollDev(), 1000);
-}
-
-async function pollDev(): Promise<void> {
-  if (!sessionInfo?.virtual_hardware_active) return;
-  try {
-    const [res, rig] = await Promise.all([
-      api.getHwDebugState(),
-      api.getVirtualRigScenario(),
-    ]);
-    if (res?.virtual_hardware_active || res?.develop_active) {
-      devReadback = res;
-      virtualRig = rig?.scenario ?? null;
-      // Don't clobber a current-mA field the user is editing.
-      const active = document.activeElement as HTMLElement | null;
-      // Don't clobber a text field the user is mid-edit in (current mA, or a
-      // fault target / operation).
-      const editing = active?.getAttribute?.('data-hw');
-      if (editing !== 'dev-current-in' && editing !== 'dev-fault-target' && editing !== 'dev-fault-op') render();
-    }
-  } catch { /* transient */ }
-}
-
-function jumpTo(key: string): void {
-  const sel = key === 'bridge' ? '.hw-stage' : '.hw-bus';
-  el('hw-body')?.querySelector(sel)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 // --- detect / rescan -------------------------------------------------------
@@ -1936,7 +1581,6 @@ async function ensureCommission(id: string): Promise<boolean> {
 async function stopCommissioning(): Promise<void> {
   sweepAbort = true;
   if (activityTimer) { clearInterval(activityTimer); activityTimer = null; }
-  if (devPollTimer) { clearInterval(devPollTimer); devPollTimer = null; }
   activity = null;
   if (commissionActive) {
     commissionActive = false;
@@ -2091,17 +1735,16 @@ async function save(): Promise<void> {
   }
 }
 
-// --- the ?ui=next Hardware Setup screen ------------------------------------
+// --- the Hardware Setup screen ---------------------------------------------
 // The screen (frontend/src/next/hardware/, docs/ui-layout-rewrite-plan.md §7)
-// shows the sections above inside its seven steps instead of in the dialog,
-// and runs the same code for every button in them. While it is attached,
-// render() calls the screen's draw function instead of filling #hw-body and
-// #hw-gate, and the dialog's Virtual Hardware controls stay off: the screen
-// shows the Virtual Bench in their place.
+// shows the sections above inside its seven steps and runs the same code for
+// every button in them. While it is attached, render() calls the screen's
+// draw function. The Virtual Hardware controls are the Virtual Bench in
+// step 4.
 
 let screenDraw: (() => void) | null = null;
 
-/** The dialog's sections the screen shows. */
+/** The sections the screen shows. */
 export type HardwareSection = 'wiring' | 'controller' | 'chips' | 'coverage' | 'idle-threshold';
 
 /** One section's HTML, or '' before the catalog has loaded. */
@@ -2117,19 +1760,11 @@ export function hardwareSectionHtml(name: HardwareSection, chipList: ChipListOpt
 }
 
 /**
- * Show the panel in the screen's `root` instead of the dialog, and load the
- * setup again, as opening the dialog does. `draw` is called after every change
- * and redraws the sections the screen is showing. The returned function gives
- * the panel back to the dialog and stops any chip test, as closing the dialog
- * does.
+ * Show the panel in the screen's `root` and load the setup again. `draw` is
+ * called after every change and redraws the sections the screen is showing.
+ * The returned function detaches the panel and stops any chip test.
  */
 export function attachHardwareScreen(root: HTMLElement, draw: () => void): () => void {
-  // The dialog keeps no copy of the sections, so an element id (the add-chip
-  // form's) or a `data-hw` button lookup finds the screen's.
-  const body = el('hw-body');
-  const gate = el('hw-gate');
-  if (body) body.innerHTML = '';
-  if (gate) gate.innerHTML = '';
   screenDraw = draw;
   const stopListening = listenOn(root);
   void refreshHardwarePanel();
@@ -2194,7 +1829,7 @@ export const enterHardwareSetup = enterSetup;
 export const saveHardwareSetup = save;
 
 /** Save the setup, then activate the selected environment (step 7), as the
- *  dialog's Activate does. */
+ *  setup's Activate always has. */
 export const activateFromHardwareSetup = activateEnvironment;
 
 /** Stop the running chip test and give the commissioning session back

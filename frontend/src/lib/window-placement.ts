@@ -84,15 +84,11 @@ export function layoutScreenRect(): FloatRect | null {
 }
 
 /** The region a floating panel may occupy: the viewport, inset past every piece
- *  of chrome that owns its own space — the app header above, the floating tool
- *  rail on the left, and the docked inspector on the right. All measured live,
- *  so a collapsed rail, a hidden header, or an undocked inspector gives the
- *  space straight back.
- *
- *  The docked inspector is the one that matters most: it holds a real layout
- *  slot on the right, so a panel that ran to the viewport edge would sit on top
- *  of it. Only the *docked* one counts — once it floats it is a window like any
- *  other, and windows are allowed to overlap each other. */
+ *  of chrome that owns its own space — the top bar above, and the docked right
+ *  panel (the Editor screen's or the Operate screen's). Measured live, so a
+ *  popped-out or hidden panel gives the space straight back. Only a *docked*
+ *  panel counts — once it floats it is a window like any other, and windows
+ *  are allowed to overlap each other. */
 export function placementBounds(): FloatRect {
   if (typeof window === 'undefined' || typeof document === 'undefined') {
     // No-DOM context: a nominal box, so callers stay total rather than throwing.
@@ -105,14 +101,6 @@ export function placementBounds(): FloatRect {
     bottom: window.innerHeight - PLACEMENT_MARGIN,
   };
 
-  const rail = document.querySelector('.sidebar:not(.collapsed)') as HTMLElement | null;
-  if (rail) {
-    const railRect = rail.getBoundingClientRect();
-    if (railRect.width > 0) {
-      bounds.left = Math.max(bounds.left, railRect.right + PLACEMENT_GAP);
-    }
-  }
-
   const header = document.querySelector('.app-header') as HTMLElement | null;
   if (header) {
     const headerRect = header.getBoundingClientRect();
@@ -121,13 +109,13 @@ export function placementBounds(): FloatRect {
     }
   }
 
-  const dockedInspector = document.querySelector(
-    '.secondary-sidebar.visible:not(.floating-window):not(.user-hidden)'
-  ) as HTMLElement | null;
-  if (dockedInspector) {
-    const inspectorRect = dockedInspector.getBoundingClientRect();
-    if (inspectorRect.width > 0) {
-      bounds.right = Math.min(bounds.right, inspectorRect.left - PLACEMENT_GAP);
+  const docked = document.querySelectorAll<HTMLElement>(
+    '.ned-panel:not(.floating-window), .op-panel:not(.floating-window)'
+  );
+  for (const panel of docked) {
+    const panelRect = panel.getBoundingClientRect();
+    if (panelRect.width > 0) {
+      bounds.right = Math.min(bounds.right, panelRect.left - PLACEMENT_GAP);
     }
   }
 

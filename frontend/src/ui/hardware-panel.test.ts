@@ -4,7 +4,6 @@ import {
   activationBlockMessage,
   addressGroups,
   coverageRows,
-  devRows,
   parseAddr,
   parseDeadband,
   staleBindings,
@@ -12,87 +11,6 @@ import {
   SWEEP_VISIBLE_PULSE_S,
 } from './hardware-panel';
 import type { Coverage } from './hardware-panel';
-
-// devRows() is the pure row model behind the develop-mode "Fake inputs" section:
-// it joins the config's occupancy / current binding maps to the latest device
-// read-back. No DOM is needed (this suite has none).
-
-describe('devRows', () => {
-  it('is empty when nothing is bound', () => {
-    expect(devRows({ block_occupancy: {}, block_occupancy_current: {} }, null)).toEqual([]);
-  });
-
-  it('lists the union of digital and current bindings, sorted', () => {
-    const rows = devRows(
-      {
-        block_occupancy: { B2: { chip_id: 'in1', port: 1 }, B1: { chip_id: 'in1', port: 0 } },
-        block_occupancy_current: { B3: { chip_id: 'cur1', port: 0 } },
-      },
-      null
-    );
-    expect(rows.map((r) => r.blockId)).toEqual(['B1', 'B2', 'B3']);
-    expect(rows[0]).toMatchObject({ blockId: 'B1', hasDigital: true, hasCurrent: false });
-    expect(rows[2]).toMatchObject({ blockId: 'B3', hasDigital: false, hasCurrent: true });
-  });
-
-  it('flags a block that has both a digital and a current binding', () => {
-    const rows = devRows(
-      {
-        block_occupancy: { B1: { chip_id: 'in1', port: 0 } },
-        block_occupancy_current: { B1: { chip_id: 'cur1', port: 0 } },
-      },
-      null
-    );
-    expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ hasDigital: true, hasCurrent: true });
-  });
-
-  it('merges the device read-back into each row', () => {
-    const rows = devRows(
-      { block_occupancy: { B1: { chip_id: 'in1', port: 0 } }, block_occupancy_current: {} },
-      { blocks: { B1: {
-        occupancy_bit: true, detector_present: true,
-        current_ma: 22.5, volts: 8.0, occupied: true,
-      } } } as any
-    );
-    expect(rows[0]).toMatchObject({
-      occupancyBit: true,
-      detectorPresent: true,
-      currentMa: 22.5,
-      volts: 8.0,
-      occupied: true,
-    });
-  });
-
-  it('carries the resolved detector reading separately from the raw bit', () => {
-    // An active-low chain reads 0 when a train is drawing current, so the two
-    // are opposites. The row's controls are labelled from `detectorPresent`;
-    // keying them to the raw bit inverts them on every rig wired that way.
-    const rows = devRows(
-      { block_occupancy: { B1: { chip_id: 'in1', port: 0 } }, block_occupancy_current: {} },
-      { blocks: { B1: { occupancy_bit: false, detector_present: true, occupied: true } } } as any
-    );
-    expect(rows[0]).toMatchObject({ occupancyBit: false, detectorPresent: true });
-  });
-
-  it('leaves read-back fields null when a block is absent from the read-back', () => {
-    const rows = devRows(
-      { block_occupancy: { B9: { chip_id: 'in1', port: 3 } }, block_occupancy_current: {} },
-      { blocks: {} }
-    );
-    expect(rows[0]).toMatchObject({
-      occupancyBit: null,
-      detectorPresent: null,
-      currentMa: null,
-      volts: null,
-      occupied: null,
-    });
-  });
-
-  it('tolerates undefined binding maps', () => {
-    expect(devRows({} as any, null)).toEqual([]);
-  });
-});
 
 // addressGroups() is the option model behind every I²C address dropdown. The
 // rule it encodes: once the bus has been scanned, what answered IS the list —

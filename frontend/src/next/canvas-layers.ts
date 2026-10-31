@@ -1,5 +1,5 @@
 /**
- * The canvas layers the ?ui=next View menu lists.
+ * The canvas layers the top bar's View menu lists.
  *
  * Today each layer is a checkbox in the Settings dialog's Debug Info section,
  * and the renderer reads those checkboxes when it draws. Until the layers move

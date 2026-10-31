@@ -3,11 +3,7 @@ import { render } from 'preact';
 import { act } from 'preact/test-utils';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-// The old Event Log, Raw Occupancy and Diagnostics windows build themselves
-// when their modules load unless the page runs ?ui=next, which is the only
-// page the Logs panel exists on.
 const api = vi.hoisted(() => {
-  window.history.replaceState(null, '', '/?ui=next');
   return {
     getEventLog: vi.fn(async (_query?: string): Promise<any> => ({ events: [] })),
     getRawOccupancy: vi.fn(async (): Promise<any> => ({ blocks: {} })),

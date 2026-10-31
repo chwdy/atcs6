@@ -6,8 +6,9 @@
  * `#secondary-sidebar-content` and then find their inputs by id. Rather than
  * copy that HTML, the right panel moves three of today's nodes into itself
  * while the Editor screen shows, and moves them back when it stops showing:
- * the body, the title the tab group writes into, and the "← Switches" back
- * link. Every panel then renders into the new panel unchanged. Panels are
+ * the body, the title, and the "← Switches" back link (all three written by
+ * the panel host, editor/editor-ui.ts). Off the Editor screen they wait in a
+ * hidden holder in static/index.html. Every panel then renders into the new panel unchanged. Panels are
  * ported off this one at a time (docs/ui-layout-rewrite-plan.md §10).
  */
 
@@ -47,9 +48,10 @@ export function adoptLegacyPanel(
 }
 
 /**
- * Call `onChange(open)` whenever today's panel opens or closes. The tab group
- * marks an open panel with the `visible` class on `#secondary-sidebar`; every
- * way of opening or closing one goes through that class. Returns a function
+ * Call `onChange(open)` whenever today's panel opens or closes. The panel
+ * host (editor/editor-ui.ts) marks an open panel with the `visible` class on
+ * `#secondary-sidebar`; every way of opening or closing one goes through that
+ * class. Returns a function
  * that stops watching.
  */
 export function watchLegacyPanelOpen(onChange: (open: boolean) => void, doc: Document = document): () => void {

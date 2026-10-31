@@ -1,10 +1,9 @@
 /**
  * The Logs panel's Diagnostics tab: a read-only, live view of one train and
  * its TrainController, as `GET /api/inspector/entity/train/<id>` reports them
- * in groups. It replaces today's Diagnostics window (panels/diagnostics.ts)
- * under ?ui=next.
+ * in groups. It replaced the old Diagnostics window.
  *
- * Kept from today's window: a row whose value changed since the last read
+ * Kept from the old window: a row whose value changed since the last read
  * flashes; object and array values fold open one level at a time, or all at
  * once; groups fold; rows sort A→Z, Z→A or in the server's order; clicking a
  * name copies it. Changed: the details about where a property comes from

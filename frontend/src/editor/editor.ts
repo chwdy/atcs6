@@ -61,9 +61,9 @@ import type { ToolContribution, ToolMode } from './tool-registry';
 export interface EditorPlugin {
   register(editor: Editor): void;
   /**
-   * Tool-palette contributions this plugin adds. Merged with the core editor's
-   * tools and rendered into the toolbar (see Editor.renderToolbar). Optional: a
-   * behavior-only plugin may register handlers without contributing any tools.
+   * Tool contributions this plugin adds. Merged with the core editor's tools
+   * (see Editor.refreshTools). Optional: a behavior-only plugin may register
+   * handlers without contributing any tools.
    */
   tools?(editor: Editor): ToolContribution[];
 }
@@ -82,11 +82,10 @@ export interface HostApp {
 }
 
 /**
- * ?ui=next: a rebuilt screen that shows the selection and the inspector's
- * panels in its own right panel instead of today's secondary sidebar (the
- * Operate screen, frontend/src/next/operate/panel-host.ts). Each method
- * returns true when the screen took the request, and false to leave it to
- * today's inspector.
+ * A screen that shows the selection and today's panels in its own right
+ * panel (the Operate screen, frontend/src/next/operate/panel-host.ts). Each
+ * method returns true when the screen took the request, and false to leave
+ * it to the panel host in editor-ui.ts (which the Editor screen shows).
  */
 export interface NextPanelHost {
   /** A tile was picked on the map. */
@@ -180,11 +179,11 @@ export class Editor {
   // Wired here; call sites migrate onto it phase by phase.
   highlighter: LayoutHighlighter;
   _plugins: EditorPlugin[] = [];
-  // Tool id → contribution, rebuilt on every renderToolbar(). The delegated
-  // toolbar click handler looks up the clicked tool here to dispatch by kind.
+  // Tool id → contribution, rebuilt on every refreshTools(). Picking a tool
+  // (ToolbarHandler.selectTool) looks it up here to dispatch by kind.
   _toolsById: Map<string, ToolContribution> = new Map();
-  // Which mode the palette renders for. The host (app.ts) sets this on the
-  // editor/operation toggle; tools whose availableIn excludes it are hidden.
+  // Editor mode or Operate mode. The host (app.ts) sets this when the screen
+  // changes; a tool whose availableIn excludes it stops being the active tool.
   editorMode: ToolMode = 'edit';
   // Injected by the host (app.ts) — the editor calls these instead of reaching
   // the `window.app` / `stateManager` globals, so it is portable to any host.
@@ -195,28 +194,19 @@ export class Editor {
   root: ParentNode = document;
   _currentEditorType: string | null;
   _currentEditorId: string | null;
-  // One-shot: set while an explicit open is rendering (the tile right-click
-  // menu — EditorUIHandler.openAsOwnTab), read and cleared by the tab group
-  // that ends up hosting the panel so it opens as its own kept tab.
-  _openNextPanelAsOwnTab = false;
-  // ?ui=next: set while a rebuilt screen owns the right panel (see NextPanelHost).
+  // Set while a screen owns the right panel (see NextPanelHost).
   nextPanelHost: NextPanelHost | null = null;
   // Assigned lazily by event handlers.
   hasPanned = false;
   signalValidationTimeout: any = null;
   _lastValidatedPosition: any = null;
   _pendingTunnelEndpoint: any = null;
-  // Set by the ?ui=next layout (frontend/src/next/), null under today's layout.
-  // onToolChange hears every change of the active tool, so the new tool bar
-  // can show it. tileClickPanel decides what a plain Select click on a tile
+  // Set by the layout (frontend/src/next/). onToolChange hears every change
+  // of the active tool, so the Editor tool bar can show it. tileClickPanel decides what a plain Select click on a tile
   // opens on the screen showing; it returns false to fall back to today's
   // behavior (see updateSecondaryEditorForTile).
   onToolChange: ((toolId: string) => void) | null = null;
   tileClickPanel: ((tile: any) => boolean) | null = null;
-  // Resolves on the first setCachedNetwork; deferred init awaits it so it can
-  // validate against the loaded scene. See whenNetworkReady.
-  _networkReady: Promise<void>;
-  _resolveNetworkReady: (() => void) | null = null;
 
   constructor(renderer: any, api: FullDataClient) {
     this.renderer = renderer;
@@ -231,13 +221,6 @@ export class Editor {
     this.lastMouseY = 0;
     this.selectedElement = null;
     this.cachedNetwork = null;
-    // Resolves the first time a network load populates cachedNetwork.
-    // Deferred init (restoring persisted inspector tabs) awaits this so it
-    // checks each tab's entity against the loaded scene instead of firing a
-    // request for something this scene may not have.
-    this._networkReady = new Promise<void>((resolve) => {
-      this._resolveNetworkReady = resolve;
-    });
     this.cachedSegments = []; // Segment geometry cache
     this.selectedSegmentId = null; // Currently selected segment
     this.cachedBlocks = []; // Lazy block cache (power / occupancy axis)
@@ -342,11 +325,8 @@ export class Editor {
   registerPlugin(plugin: EditorPlugin): void {
     this._plugins.push(plugin);
     plugin.register(this);
-    // A plugin may contribute tools; re-render so they appear. The constructor
-    // renders the core tools first, then app.ts registers the sim plugin, which
-    // lands here and re-renders with the sim tools merged in. renderToolbar
-    // no-ops until its mount exists, so this is safe pre-construction too.
-    this.renderToolbar();
+    // A plugin may contribute tools; rebuild the lookup so they can be picked.
+    this.refreshTools();
   }
 
   /** Scoped element-by-id lookup within `root` (matches document.getElementById). */
@@ -361,12 +341,6 @@ export class Editor {
 
   setupSecondarySidebar(): any {
     return this.uiHandler.setupSecondarySidebar();
-  }
-
-  // === Collapsible Sidebar Sections ===
-
-  setupCollapsibleSidebarSections(): any {
-    return this.uiHandler.setupCollapsibleSidebarSections();
   }
 
   showSecondarySidebar(title: string, content: string): any {
@@ -421,10 +395,6 @@ export class Editor {
 
   navigateToParentList(): any {
     return this.uiHandler.navigateToParentList();
-  }
-
-  closeActiveSecondaryTab(): any {
-    return this.uiHandler.closeActiveSecondaryTab();
   }
 
   async restoreSecondaryPanel(snapshot: any): Promise<boolean> {
@@ -900,24 +870,10 @@ export class Editor {
     ];
   }
 
-  // The tool-rail controller (rendering, click dispatch, group popovers) lives
-  // on ToolbarHandler (editor-toolbar.ts). These shims keep the external call
-  // sites (app.ts, setupEventListeners) working.
+  // Picking a tool lives on ToolbarHandler (editor-toolbar.ts).
 
-  renderToolbar(): void {
-    this.toolbarHandler.renderToolbar();
-  }
-
-  async _onToolbarClick(e: Event): Promise<void> {
-    return this.toolbarHandler._onToolbarClick(e);
-  }
-
-  _openGroupPopover(group: HTMLElement): void {
-    this.toolbarHandler._openGroupPopover(group);
-  }
-
-  _closeToolPopovers(): void {
-    this.toolbarHandler._closeToolPopovers();
+  refreshTools(): void {
+    this.toolbarHandler.refreshTools();
   }
 
   // Even-odd ray cast: returns true when (px, py) is inside the polygon.
@@ -1004,72 +960,7 @@ export class Editor {
   }
 
   setupEventListeners(): void {
-    // Render the tool palette from the registry, then dispatch clicks via event
-    // delegation on the mount so a re-render (plugin registration, mode change)
-    // never drops the listener. See renderToolbar and _onToolbarClick.
-    this.renderToolbar();
-    const toolMount = this.$id('tool-groups');
-    toolMount?.addEventListener('click', (e) => {
-      void this._onToolbarClick(e);
-    });
-    // Hover-intent: open a group's popover immediately on hover, keeping click
-    // working for touch. The popover is a DOM child of its .tool-group, so
-    // moving from the button onto the popover stays "inside" the group and
-    // won't close it. Closing still waits a short beat (HOVER_CLOSE_MS) so
-    // moving from the trigger button onto the popover doesn't close it in transit.
-    if (toolMount) {
-      let closeTimer: ReturnType<typeof setTimeout> | null = null;
-      const HOVER_CLOSE_MS = 220;
-      toolMount.addEventListener('mouseover', (e) => {
-        const group = (e.target as HTMLElement).closest<HTMLElement>('.tool-group');
-        if (!group) return;
-        if (closeTimer) {
-          clearTimeout(closeTimer);
-          closeTimer = null;
-        }
-        if (group.classList.contains('open')) return;
-        this._closeToolPopovers();
-        this._openGroupPopover(group);
-      });
-      toolMount.addEventListener('mouseout', (e) => {
-        const group = (e.target as HTMLElement).closest<HTMLElement>('.tool-group');
-        if (!group) return;
-        const related = e.relatedTarget as Node | null;
-        if (related && group.contains(related)) return;
-        if (closeTimer) clearTimeout(closeTimer);
-        closeTimer = setTimeout(() => {
-          closeTimer = null;
-          this._closeToolPopovers();
-        }, HOVER_CLOSE_MS);
-      });
-    }
-    // Close the open group popover on an outside click or Escape.
-    document.addEventListener('click', (e) => {
-      if (toolMount && !toolMount.contains(e.target as Node)) this._closeToolPopovers();
-    });
-    document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape') this._closeToolPopovers();
-    });
-    // Number keys 1-9 activate the rail tile whose badge shows that number (or
-    // open its group). A number is fixed per tile across modes, so a key whose
-    // tile the mode hides does nothing. Ignored while typing in a field or with
-    // a modifier.
-    document.addEventListener('keydown', (e) => {
-      if (e.key < '1' || e.key > '9' || e.metaKey || e.ctrlKey || e.altKey) return;
-      const el = document.activeElement as HTMLElement | null;
-      const tag = (el?.tagName || '').toLowerCase();
-      if (tag === 'input' || tag === 'textarea' || tag === 'select' || el?.isContentEditable) return;
-      const tile = this.$id('tool-groups')?.querySelector<HTMLElement>(
-        `.tool-launch[data-rail-num="${e.key}"]`
-      );
-      if (tile) {
-        e.preventDefault();
-        tile.click();
-      }
-    });
-
-    // Collapsible sidebar sections, if any are present.
-    this.setupCollapsibleSidebarSections();
+    this.refreshTools();
 
     const canvas = this.renderer.canvas;
 
@@ -1500,7 +1391,7 @@ export class Editor {
           return;
         }
         e.preventDefault();
-        await this.closeActiveSecondaryTab();
+        await this.hideSecondarySidebar();
       }
     });
 
@@ -1683,24 +1574,7 @@ export class Editor {
     // A tool change is a fresh gesture — drop any inspect peek highlight so it
     // can't linger over a new selection/build.
     this.clearInspectHighlight();
-    this._syncToolbarActive();
     this.onToolChange?.(toolName);
-  }
-
-  /**
-   * Reflect the active tool in the palette: highlight the matching tool button
-   * (rail or popover) and the group button that contains it.
-   */
-  _syncToolbarActive(): void {
-    const root = this.$id('tool-groups');
-    if (!root) return;
-    root.querySelectorAll<HTMLElement>('[data-tool]').forEach((b) =>
-      b.classList.toggle('active', b.dataset.tool === this.selectedTool),
-    );
-    root.querySelectorAll<HTMLElement>('.tool-group').forEach((g) => {
-      const owns = !!g.querySelector(`[data-tool="${this.selectedTool}"]`);
-      g.querySelector('.tool-group-btn')?.classList.toggle('active', owns);
-    });
   }
 
   // Route the committed selection through the highlighter, then sync the panel.
@@ -2198,11 +2072,6 @@ export class Editor {
    * tile (train / switch / signal / block / platform), each opening that
    * entity's editor, plus a Throw action for switches and an "Inspect tile"
    * fallback. Entity resolution mirrors the properties panel.
-   *
-   * Every open here goes through uiHandler.openAsOwnTab: naming a record in
-   * this menu is explicit, so it gets its own kept tab in the active window
-   * rather than reusing that window's shared preview slot (which a left-click
-   * inspect, the casual gesture, keeps recycling).
    */
   showTileContextMenu(gridPos: any, track: any, clientX: number, clientY: number): void {
     const entityItems: ContextMenuItem[] = [];
@@ -2216,7 +2085,7 @@ export class Editor {
         label: train.id,
         detail: 'Train',
         icon: 'ti ti-train',
-        onSelect: () => this.uiHandler.openAsOwnTab(() => this.showTrainControlPanel(train.id)),
+        onSelect: () => this.showTrainControlPanel(train.id),
       });
     }
     if (track.is_switch && track.switch_id) {
@@ -2225,7 +2094,7 @@ export class Editor {
         ...entityIdentity(sw?.name, track.switch_id),
         detail: 'Switch',
         icon: 'ti ti-arrows-split-2',
-        onSelect: () => this.uiHandler.openAsOwnTab(() => this.switchHandler.showEditor(track.switch_id)),
+        onSelect: () => this.switchHandler.showEditor(track.switch_id),
       });
     }
     // GET /api/track carries `signal_ids` only — the enriched `signals` array
@@ -2241,8 +2110,7 @@ export class Editor {
         ...entityIdentity(signal.name, signal.signal_id),
         detail: 'Signal',
         icon: 'ti ti-traffic-lights',
-        onSelect: () =>
-          this.uiHandler.openAsOwnTab(() => this.signalHandler.showSignalEditor(signal.signal_id)),
+        onSelect: () => this.signalHandler.showSignalEditor(signal.signal_id),
       });
     }
     // A tile belongs to a segment (geometry) and to the block that owns it
@@ -2258,7 +2126,7 @@ export class Editor {
         ...entityIdentity(segment?.name, track.segment_id),
         detail: 'Segment',
         icon: 'ti ti-square-dashed',
-        onSelect: () => this.uiHandler.openAsOwnTab(() => this.segmentHandler.showEditor(track.segment_id)),
+        onSelect: () => this.segmentHandler.showEditor(track.segment_id),
       });
     }
     if (track.block_section_id) {
@@ -2266,8 +2134,7 @@ export class Editor {
         ...entityIdentity(block?.name, track.block_section_id),
         detail: 'Block',
         icon: 'ti ti-bolt',
-        onSelect: () =>
-          this.uiHandler.openAsOwnTab(() => this.blockGroupingHandler.showDetail(track.block_section_id)),
+        onSelect: () => this.blockGroupingHandler.showDetail(track.block_section_id),
       });
     }
     if (track.station_id) {
@@ -2278,7 +2145,7 @@ export class Editor {
         ...entityIdentity(platform?.name, track.station_id),
         detail: 'Platform',
         icon: 'ti ti-building',
-        onSelect: () => this.uiHandler.openAsOwnTab(() => this.platformHandler.showEditor(track.station_id)),
+        onSelect: () => this.platformHandler.showEditor(track.station_id),
       });
     }
 
@@ -2298,8 +2165,8 @@ export class Editor {
     actionItems.push({
       label: 'Inspect tile',
       icon: 'ti ti-info-circle',
-      // Explicitly asked for, so it shows even when the inspector is pinned.
-      onSelect: () => this.uiHandler.openAsOwnTab(() => this.selectElement(gridPos, { force: true })),
+      // Asked for by name, so the Tile Editor opens whatever is showing.
+      onSelect: () => this.selectElement(gridPos, { force: true }),
     });
 
     showContextMenu(clientX, clientY, [
@@ -2352,15 +2219,14 @@ export class Editor {
   }
 
   /**
-   * Select a tile and show it in the secondary inspector.
+   * Select a tile and show it in the panel.
    *
    * Incidental selection — clicking around the canvas, resyncing after an edit —
-   * defers to whatever the inspector is already showing: a pinned panel keeps
-   * its content, and another entity's editor stays in place (see
-   * updateSecondaryEditorForTile). `force` is for the opposite case: the user
-   * asked for this tile by name through the right-click "Inspect tile" action,
-   * so the Tile Editor opens whatever else is on screen — landing in its own
-   * new window when the panel it would replace is pinned.
+   * defers to whatever the panel is already showing: another entity's editor
+   * stays in place (see updateSecondaryEditorForTile). `force` is for the
+   * opposite case: the user asked for this tile by name through the
+   * right-click "Inspect tile" action, so the Tile Editor opens whatever else
+   * is on screen.
    */
   async selectElement(gridPos: any, options: { force?: boolean } = {}): Promise<void> {
     // Selecting a tile entity drops any tunnel highlight from a prior click.
@@ -2394,8 +2260,8 @@ export class Editor {
 
     if (!options.force && this.nextPanelHost?.selectTile(tile)) return;
     if (options.force) {
-      this.uiHandler.showRequestedPanel(() => this.showTileEditor(tile));
-    } else if (!this.uiHandler.isSecondaryPanelPinned()) {
+      this.showTileEditor(tile);
+    } else {
       this.updateSecondaryEditorForTile(tile);
     }
   }
@@ -2828,33 +2694,20 @@ export class Editor {
   setCachedNetwork(network: any): void {
     this.cachedNetwork = network;
 
-    // First load satisfies anything awaiting the network (see whenNetworkReady).
-    if (this._resolveNetworkReady) {
-      this._resolveNetworkReady();
-      this._resolveNetworkReady = null;
-    }
-
     if (this.hoverPosition && ['signal', 'platform'].includes(this.selectedTool)) {
       this.updateHoverPreview(this.hoverPosition);
     }
   }
 
-  /** Resolves once the first network load has populated cachedNetwork, so
-   *  deferred init can validate entities against the loaded scene. */
-  whenNetworkReady(): Promise<void> {
-    return this._networkReady;
-  }
-
-  /** Close the secondary-inspector tab for a now-missing entity (matched by
-   *  type + id). Used when a panel-open request finds its entity gone, so a
-   *  stale restored tab clears itself instead of surfacing an error. */
+  /** Close the panel for a now-missing entity (matched by type + id), so a
+   *  panel-open request that finds its entity gone clears the panel instead
+   *  of surfacing an error. */
   closeStaleEditorTab(editorType: string, id: string): Promise<void> {
     this.nextPanelHost?.closePanel(editorType, id);
     return this.uiHandler.closeStaleSecondaryTab(editorType, id);
   }
 
-  /** Close the tab with this editor type + id in whichever window holds it.
-   *  A window left with no tabs hides (home) or closes (spawned). `id` is
+  /** Close the panel with this editor type + id if it is showing. `id` is
    *  null for panels with no entity, such as the Create Path setup panel. */
   closeEditorTab(editorType: string, id: string | null): Promise<void> {
     this.nextPanelHost?.closePanel(editorType, id);

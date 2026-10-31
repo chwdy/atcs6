@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // editor-ui pulls in toast + helpers for their side-effecting DOM helpers; we
@@ -76,67 +77,81 @@ describe('_commitTrackBits — removing the last segment', () => {
   });
 });
 
-// Regression: closing the home inspector while it is FLOATING must actually
-// hide the window. Its visibility in docked mode is the `.visible` class, but a
-// floating window is shown by the `.floating-window` class (position: fixed;
-// display: flex) which `.visible` does not gate — so hide must go through
-// FloatingWindow.setHidden (the `.floating-window--hidden` lever), and reopen
-// must clear it. The window-management refactor tested TabGroup.closeTab and
-// FloatingWindow.setHidden in isolation but never this empty→hide wiring for
-// the one dockable window, so a floating inspector's close/× left the frame on
-// screen.
-describe('home inspector hide/show routes through FloatingWindow.setHidden', () => {
-  // Minimal stand-ins for the two collaborators setupSecondarySidebar would
-  // build — enough surface for hide/showSecondarySidebar to run without a full
-  // DOM. The real classes are covered by window-manager / tab-group tests.
-  function makeUiHandler() {
-    const homeWindow = {
-      setHidden: vi.fn(),
-      isHidden: vi.fn(() => false),
-      isFloating: vi.fn(() => true),
-      getGeometry: vi.fn(() => ({ left: null, top: null, width: null, height: null })),
+// The one panel: today's panels draw into the three nodes index.html keeps
+// for them (title, back link, body), and `visible` on #secondary-sidebar says
+// a panel is open — the Editor screen's right panel watches that class.
+describe('the panel', () => {
+  function makePanel() {
+    const root = document.createElement('div');
+    root.innerHTML =
+      '<div id="secondary-sidebar" hidden>' +
+      '<button id="secondary-nav-parent" hidden></button>' +
+      '<h3 id="secondary-sidebar-title"></h3>' +
+      '<div id="secondary-sidebar-content"></div></div>';
+    const editor: any = {
+      $id: (id: string) => root.querySelector(`#${id}`),
+      renderer: { clearBlockDirectionOverlay: vi.fn() },
+      _currentEditorType: 'switch',
+      _currentEditorId: 'SW_1',
+      switchHandler: { _cleanup: vi.fn() },
+      getPanelLineage: (panel: any) =>
+        panel.editorType === 'switch'
+          ? [{ label: 'Switches', editorType: 'switches-list' }, { label: panel.editorId }]
+          : [{ label: 'Switches' }],
+      restoreSecondaryPanel: vi.fn().mockResolvedValue(true),
     };
-    const homeTabGroup = {
-      cleanupPanelSubscriptions: vi.fn(),
-      clear: vi.fn(),
-      show: vi.fn(),
-      serialize: vi.fn(() => ({ pinned: false, activeTabId: null, tabs: [] })),
-      // Unpinned, so it is the floor of the active chain — see
-      // EditorUIHandler.resolveTargetGroup.
-      isPinned: vi.fn(() => false),
-    };
-    const editor = {
-      $id: vi.fn(() => null), // no DOM: the class-list block is skipped
-      renderer: null,
-      _currentEditorType: 'tile',
-      _currentEditorId: '0,0',
-      _activeTabGroupForRestore: null,
-    };
-    const handler = new EditorUIHandler(editor as any);
-    handler.homeWindow = homeWindow as any;
-    handler.homeTabGroup = homeTabGroup as any;
-    return { handler, homeWindow, homeTabGroup, editor };
+    const handler = new EditorUIHandler(editor);
+    handler.setupSecondarySidebar();
+    const el = (id: string) => root.querySelector(`#${id}`) as HTMLElement;
+    return { handler, editor, el };
   }
 
-  it('hideSecondarySidebar hides the floating window (setHidden(true))', async () => {
-    const { handler, homeWindow } = makeUiHandler();
+  it('shows a panel: title, body, the open mark, and the back link to its list', () => {
+    const { handler, el } = makePanel();
+    handler.showSecondarySidebar('Switch SW_1', '<p id="body">x</p>');
+    expect(el('secondary-sidebar-title').textContent).toBe('Switch SW_1');
+    expect(el('secondary-sidebar-content').querySelector('#body')).not.toBeNull();
+    expect(el('secondary-sidebar').classList.contains('visible')).toBe(true);
+    expect(el('secondary-nav-parent').hidden).toBe(false);
+    expect(el('secondary-nav-parent').textContent).toBe('← Switches');
+  });
+
+  it('the back link opens the parent list', async () => {
+    const { handler, editor, el } = makePanel();
+    handler.showSecondarySidebar('Switch SW_1', '<p></p>');
+    el('secondary-nav-parent').click();
+    await Promise.resolve();
+    expect(editor.switchHandler._cleanup).toHaveBeenCalled();
+    expect(editor.restoreSecondaryPanel).toHaveBeenCalledWith(
+      expect.objectContaining({ editorType: 'switches-list' }),
+    );
+  });
+
+  it('hiding clears the open mark, the back link and the editor type', async () => {
+    const { handler, editor, el } = makePanel();
+    handler.showSecondarySidebar('Switch SW_1', '<p></p>');
     await handler.hideSecondarySidebar();
-    expect(homeWindow.setHidden).toHaveBeenCalledWith(true);
+    expect(el('secondary-sidebar').classList.contains('visible')).toBe(false);
+    expect(el('secondary-nav-parent').hidden).toBe(true);
+    expect(editor._currentEditorType).toBeNull();
+    expect(editor.switchHandler._cleanup).toHaveBeenCalled();
   });
 
-  it('showSecondarySidebar reveals a previously-hidden home window', () => {
-    const { handler, homeWindow, homeTabGroup } = makeUiHandler();
-    homeWindow.isHidden.mockReturnValue(true); // it was closed
-    handler.showSecondarySidebar('Tile Editor', '<div></div>');
-    expect(homeWindow.setHidden).toHaveBeenCalledWith(false);
-    expect(homeTabGroup.show).toHaveBeenCalledWith('Tile Editor', '<div></div>');
+  it('closes for a missing entity only when that entity is the one showing', async () => {
+    const { handler, el } = makePanel();
+    handler.showSecondarySidebar('Switch SW_1', '<p></p>');
+    await handler.closeStaleSecondaryTab('switch', 'SW_2');
+    expect(el('secondary-sidebar').classList.contains('visible')).toBe(true);
+    await handler.closeStaleSecondaryTab('switch', 'SW_1');
+    expect(el('secondary-sidebar').classList.contains('visible')).toBe(false);
   });
 
-  it('showSecondarySidebar does not re-focus an already-visible window', () => {
-    const { handler, homeWindow, homeTabGroup } = makeUiHandler();
-    homeWindow.isHidden.mockReturnValue(false); // already open
-    handler.showSecondarySidebar('Tile Editor', '<div></div>');
-    expect(homeWindow.setHidden).not.toHaveBeenCalled();
-    expect(homeTabGroup.show).toHaveBeenCalled();
+  it('a rename updates the title only for the entity showing', () => {
+    const { handler, el } = makePanel();
+    handler.showSecondarySidebar('Switch SW_1', '<p></p>');
+    handler.updatePanelTitle('switch', 'SW_2', 'Other');
+    expect(el('secondary-sidebar-title').textContent).toBe('Switch SW_1');
+    handler.updatePanelTitle('switch', 'SW_1', 'Yard throat');
+    expect(el('secondary-sidebar-title').textContent).toBe('Yard throat');
   });
 });

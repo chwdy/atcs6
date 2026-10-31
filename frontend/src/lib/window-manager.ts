@@ -2,14 +2,13 @@
 // header + drag, 8-direction resize, double-click-header-to-fit, DPI
 // re-clamp, z-order via WindowManager. Owns no content semantics — a caller
 // supplies a WindowContent to mount, and gets floating/dock-free chrome for
-// free. This is the primitive that replaces two independent, ~90%-duplicated
-// hand-rolled implementations (the secondary sidebar's floating mode and the
-// diagnostics panel's drag/resize).
+// free. Its users: the Editor and Operate right panels' pop-out, the Train
+// Monitor and the floating Virtual Bench.
 //
 // WindowManager is the registry: it tracks open windows for z-order/focus
 // (clicking any window brings it to the top of a narrow z-index band that
-// always stays under --z-modal, closing the "floating inspector outranks
-// modals" gap) and lets callers enumerate what's open.
+// always stays under --z-modal, so a floating panel never outranks a modal)
+// and lets callers enumerate what's open.
 
 import { computeFloatResize, computeFitSize, clampToViewport, type FloatRect } from './window-geometry';
 import { watchDprChange, isCoarsePointer, coarsePointerScale } from './dpi';
@@ -62,15 +61,12 @@ export interface WindowGeometry {
   height: number | null;
 }
 
-/** What kind of window this is — informs persistence (Phase 6) and which
- *  windows may dock (only 'home'). Not a closed set: a spawned tab-group
- *  window gets a generated id but is still kind 'tab-group'. */
-export type WindowKind = 'home' | 'tab-group' | 'diagnostics' | string;
+/** What kind of window this is (its CSS `data-window-kind`). Not a closed
+ *  set: each window names its own. */
+export type WindowKind = string;
 
-/** What FloatingWindow needs from its content. Implemented by TabGroup for
- *  tab-hosting windows, and by a thin adapter for a single-content window
- *  like diagnostics. FloatingWindow never inspects tabs, entities, or
- *  anything content-shaped — only calls these two hooks. */
+/** What FloatingWindow needs from its content. FloatingWindow never inspects
+ *  entities or anything content-shaped — it only calls these two hooks. */
 export interface WindowContent {
   /** Called once, right after the window's DOM exists. Mount content into
    *  contentEl (a plain flex column filling the space under the header —
@@ -88,19 +84,15 @@ export interface FloatingWindowOptions {
   manager: WindowManager;
   title: string;
   /** Omit when adopting a window whose content isn't a single mountable
-   *  block — the home sidebar's TabGroup writes directly into its own
-   *  title/content elements by id instead (see adopt below). */
+   *  block — a right panel draws into its own elements (see adopt below). */
   content?: WindowContent;
-  /** Whether this window may be docked into the page's left-flow layout
-   *  slot. False for every non-adopted window (diagnostics, a spawned
-   *  split-off window); the home secondary sidebar is the only
-   *  dockable: true window — there is exactly one docked slot in the
-   *  layout, so nothing else can use it. */
+  /** Whether this window may be docked into its place in the page layout.
+   *  True for the right panels' pop-out (Editor and Operate), whose docked
+   *  place is the right of the canvas; false for every other window. */
   dockable?: boolean;
-  /** Adopt existing DOM instead of creating fresh markup — used only by the
-   *  home secondary sidebar, whose header already has its own richer button
-   *  set (parent-link, pin, tearoff, close) wired by its owner, not by
-   *  FloatingWindow. When provided, FloatingWindow creates no title or close
+  /** Adopt existing DOM instead of creating fresh markup — used by windows
+   *  whose header already has its own buttons wired by its owner (the right
+   *  panels, the Train Monitor), not by FloatingWindow. When provided, FloatingWindow creates no title or close
    *  button of its own — it only wires drag/resize/fit/DPR-reclamp onto the
    *  supplied elements and appends its 8 resize handles into `root`. */
   adopt?: { root: HTMLElement; header: HTMLElement };
@@ -189,9 +181,8 @@ export class FloatingWindow {
 
     this.buildDom(opts.title, opts.adopt);
     if (opts.adopt) {
-      // Adopted DOM doesn't ship with the .floating-window chrome class —
-      // the home sidebar's static markup doesn't have it, and a spawned
-      // window's freshly built root doesn't either. Set it to match this
+      // Adopted DOM doesn't ship with the .floating-window chrome class.
+      // Set it to match this
       // window's actual floating state now (always true when non-dockable);
       // toggleDock's own class toggle keeps a dockable window in sync with
       // it from here on. Create-mode already ships the class in buildDom.
@@ -293,9 +284,7 @@ export class FloatingWindow {
     }
 
     // Resize handles are always created fresh and appended to the root,
-    // whether that root was just created or adopted — the home sidebar's
-    // handles were already dynamically created (not static markup) before
-    // this migration, so this isn't new for it either.
+    // whether that root was just created or adopted.
     for (const dir of RESIZE_DIRECTIONS) {
       const handle = document.createElement('div');
       handle.className = 'floating-window-resizer';
@@ -497,8 +486,8 @@ export class FloatingWindow {
     return this.hidden;
   }
 
-  /** No-op when adopting a header with its own title element (the home
-   *  sidebar manages its own #secondary-sidebar-title directly). */
+  /** No-op when adopting a header with its own title element (its owner
+   *  manages the title directly). */
   setTitle(title: string): void {
     if (this.titleEl) this.titleEl.textContent = title;
   }
@@ -535,8 +524,7 @@ export class FloatingWindow {
     } else {
       // Drop the floating position/height so the docked layout's own CSS
       // governs; width is left intact (carried over from the floating
-      // window's last size) — mirrors the sidebar's original dock-toggle
-      // contract exactly.
+      // window's last size).
       this.rootEl.style.left = '';
       this.rootEl.style.top = '';
       this.rootEl.style.height = '';
@@ -564,8 +552,8 @@ export class FloatingWindow {
 
   // ---- Content mount point ----
 
-  /** Null for an adopted window with no single mountable content block (the
-   *  home sidebar — its TabGroup writes directly into its own elements). */
+  /** Null for an adopted window with no single mountable content block (a
+   *  right panel, which draws into its own elements). */
   getContentElement(): HTMLElement | null {
     return this.contentEl;
   }
@@ -577,9 +565,9 @@ export class FloatingWindow {
   // ---- Lifecycle ----
 
   /** Remove this window entirely (DOM + registration). Not the same as
-   *  hiding — a window that should merely toggle visibility (diagnostics,
-   *  the home sidebar) never calls this; it's for windows that should stop
-   *  existing (a spawned split-off window losing its last tab, Phase 5+). */
+   *  hiding — a window that should merely toggle visibility (the Train
+   *  Monitor) never calls this; it's for windows that should stop existing
+   *  (a right panel unmounting). */
   destroy(): void {
     this.unwatchDpr();
     this.unwatchViewport();
@@ -649,7 +637,7 @@ export class WindowManager {
   }
 }
 
-/** The app-wide singleton every window (diagnostics, the home sidebar, any
- *  spawned tab-group window) registers with, so z-order/focus is consistent
+/** The app-wide singleton every window registers with, so z-order/focus is
+ *  consistent
  *  across all of them — mirrors the gridPreference singleton pattern. */
 export const windowManager = new WindowManager();

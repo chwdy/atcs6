@@ -20,7 +20,6 @@ function fakeActions(): TopBarActions {
     resetLayout: vi.fn(async () => {}),
     clearConflict: vi.fn(async () => {}),
     emergencyStop: vi.fn(async () => {}),
-    toggleWindow: vi.fn(),
     toggleLogs: vi.fn(),
     openSettings: vi.fn(),
     restartServer: vi.fn(async () => {}),

@@ -32,9 +32,8 @@ export interface OperateHost extends NextHost {
     editorMode: string;
     _currentEditorType: string | null;
     _currentEditorId: string | null;
-    _activeTabGroupForRestore: unknown;
     renderer: any;
-    uiHandler: { homeTabGroup?: { cleanupPanelSubscriptions(): void } };
+    uiHandler: { cleanupPanelSubscriptions(): void };
     showAddTrainDialog(): void;
     showPathEditor(pathId: string): void | Promise<void>;
     enterMode(mode: any): Promise<void>;

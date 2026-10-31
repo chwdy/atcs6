@@ -126,65 +126,97 @@ by name for forms, detail pages, and canvas work too.
 
 ## Surfaces
 
-Where UI lives. One mode toggle, and a fixed set of regions — every
-feature has exactly one natural home.
+Where UI lives. Four screens picked from the top bar, and a fixed set of
+regions — every feature has exactly one natural home. The plan behind them
+is [ui-layout-rewrite-plan.md](ui-layout-rewrite-plan.md).
 
-The top bar's `Editor | Operate` toggle is the app's primary split:
-**Editor** is for building the layout (drawing track, configuring
-blocks, switches, stations), **Operate** is for running it (driving
-trains, monitoring, routes). A surface that edits structure belongs to
-Editor mode; a surface that observes or commands live trains belongs to
-Operate mode. The button reads Operate in every operating environment
-(design_new.md "Session mode and operating environment"), so the word
-"Simulation" in the UI only ever names the operating environment.
+The top bar's screen tabs are the app's primary split. Each screen is one
+of the operator's jobs:
+
+- **Editor** — building the layout: track, switches, signals, tunnels,
+  platforms, segments and blocks.
+- **Hardware Setup** — the steps of setting up the hardware and going
+  live (design_new.md "Setting up the hardware and going live").
+- **Operate** — running trains: placing them, driving them, routes and
+  paths.
+- **Locomotives** — the Train Roster, and each locomotive's Speed Profile
+  panel with its calibration group.
+
+Picking a screen only changes what you see; the session state changes
+only through its own buttons. The Editor screen is the Editor session
+mode, and Operate and Locomotives are the operation mode. The tab reads
+Operate in every operating environment (design_new.md "Session mode and
+operating environment"), so the word "Simulation" in the UI only ever
+names the operating environment.
 
 | Region | What lives there |
 |--------|------------------|
-| **Top bar** | App-level commands: play/pause, the mode toggle, New / Save / Load, panel toggles, settings. The one region where the 32px `--control-height-sm` controls belong (§1 Layout). |
-| **Canvas** | The layout itself — two stacked `<canvas>` layers ([canvas.css](../static/css/layout/canvas.css); §16 "Two-canvas implementation"). |
-| **Left sidebar** | Build tools (the §3 tool-tile grid) and the Properties pane for the current selection ([tools.css](../static/css/components/tools.css)). |
-| **Secondary sidebar** | The working set: every open editor and list panel as a tab (§3 working-set tab strip; [shell.css](../static/css/layout/shell.css)). Detail editing and list browsing happen here. A tab can split into its own floating window — a second, independent working set — via the tab's pop-out action, its context menu, or dragging it out (§12 "Splitting a tab into its own window"). |
-| **Bottom dock** | Continuous monitoring across many entities at once ([train-monitor.css](../static/css/features/train-monitor.css)). |
-| **Floating panels** | Spot-check diagnostics that overlay anything; draggable, resizable ([diagnostics.css](../static/css/features/diagnostics.css)). Chrome (drag, resize, double-click-to-fit, z-order) is shared with the secondary sidebar's floating mode and every split-off window via `FloatingWindow` ([window-manager.ts](../frontend/src/lib/window-manager.ts); [floating-window.css](../static/css/layout/floating-window.css)) — any number of these can be open at once. |
-| **Overlay layer** | Modals, toasts, floating pickers (§13). |
+| **Top bar** | App-level commands on every screen: the Layout menu, the screen tabs, the status control with its one next-step button, Emergency stop, and the Logs, View and Settings menus ("Composing the top bar" below). The one region where the 32px `--control-height-sm` controls belong (§1 Layout). |
+| **Canvas** | The layout itself — two stacked `<canvas>` layers ([canvas.css](../static/css/layout/canvas.css); §16 "Two-canvas implementation"). Shown on Editor and Operate, and on Locomotives while a calibration run is open. |
+| **Editor tool bar** | One flat bar of the things you place, across the top of the Editor screen, with an options row under it for the picked tool's variants (§3 "Tool bar button"; [next/editor.css](../static/css/next/editor.css)). |
+| **Right panel** | The selection, one record at a time, right of the canvas. On Editor it edits the selected entity; on Operate it shows a train, block or switch. One panel shows at a time — there are no tabs. Its pop-out button moves it into a floating window and back (§12 "Popping the right panel out"). |
+| **Operate's left list and cards row** | The lists of trains, routes, paths, route runs, stations, blocks and switches in a column left of the canvas, which folds away; a card per train along the bottom of the screen, ending with + Place train and Hold all ([next/operate.css](../static/css/next/operate.css)). |
+| **Hardware Setup steps** | The seven steps in a column, the picked step beside it, over the whole screen area ([next/hardware.css](../static/css/next/hardware.css)). |
+| **Logs panel** | One bottom panel on any screen, with tabs: Event log, Detectors, Diagnostics. It pushes the screen up instead of covering it and remembers its height ([next/logs.css](../static/css/next/logs.css)). |
+| **Overlay layer** | Modals, toasts, floating pickers, menus (§13). |
 
-Placement rule for a new feature: edits one record at a time → a
-secondary-sidebar tab; watches many records continuously → the bottom
-dock; diagnostic spot-checks over arbitrary state → the floating-panel
-pattern; builds or selects structure on the map → the left sidebar;
-transient feedback → a toast; a blocking decision → a modal. If none of
-those fits, raise it as a doc question before inventing a new region.
+Two floating windows are left over from the old layout because some of
+their parts have no other home yet (the plan's §13.10): the Train Monitor
+window, which today's train panel opens on the Editor screen, and the
+floating Virtual Bench. Do not add to them.
+
+Placement rule for a new feature: places or shapes the layout → the
+Editor tool bar, and its record's panel in the Editor right panel;
+edits or commands one record → the right panel of its screen; watches
+many trains at once → Operate's cards row or left list; part of setting
+up the hardware → its Hardware Setup step; about a locomotive or its
+speed profile → the Locomotives screen; a log, a raw reading, or
+diagnostics over arbitrary state → a Logs panel tab; transient feedback
+→ a toast; a blocking decision → a modal. Do not add a floating window:
+the right panel's pop-out is the only one. If none of those fits, raise
+it as a doc question before inventing a new region.
 
 ### Composing the top bar
 
-The top bar reads in three zones, laid out with
-`grid-template-columns: 1fr auto 1fr`:
+One 48px row in two zones (`display: flex; justify-content:
+space-between`):
 
-- **Left** — the brand wordmark, the session state, and transport. The
-  session state chip names the operating environment in muted text, then
-  the session state (`Real Hardware · Halted — not activated`); right
-  after it sits **Activate**, shown only while activating is the way to
-  Live (Setup, or Halted for `not_activated` or `hardware_failure`). Then
-  Play, restart, and the speed-preset segment.
-- **Center** — the `Editor | Operate` mode split (the app's primary
-  split) followed by the file commands (New / Save / Load).
-- **Right** — view toggles (panel show/hide, Inspector) and app settings
-  (theme, settings).
+- **Left** — the wordmark, the **Layout** menu (New, Open…, Save…), then
+  the four screen tabs as a segmented control (§3).
+- **Right** — the status control, **Emergency stop**, then **Logs**,
+  **View** and **Settings**.
 
-The `1fr auto 1fr` track set keeps the centre zone optically centred no
-matter how wide the side zones grow: the two `1fr` tracks split the spare
-space equally, which pins the `auto` centre track to the true middle.
-Within a zone, sub-clusters are separated by a 1px hairline centred in the
-gap (a `> * + *::before` pseudo-element); the zones themselves are
-separated by the grid spacing, not a drawn rule.
+The status control is the top bar's answer to "can my train move?". The
+session state chip names the operating environment in muted text, then
+the session state (`Real Hardware · Halted — not activated`). Right after
+it sits one next-step button that changes with the state: **Activate**
+(Setup, or Halted for `not_activated` or `hardware_failure`), **Play**
+(Paused), **Pause** (Live), **Reset** (Halted for
+`layout_emergency_cut_out`) or **Clear conflict** (Halted for
+`runtime_failure`). Activate, Play and Reset are the filled accent CTA;
+Pause and Clear conflict are ghost buttons. In Simulation a speed menu
+(`1x`) follows. Clicking the chip opens Hardware Setup at step 1.
 
-The top bar is also the one region that uses the 32px
-`--control-height-sm` controls (§1 Layout, Surfaces) rather than the 28px
-panel height, and its action buttons follow the icon + label rule in §3
-Icons.
+**Emergency stop** sits in the same place on every screen: outlined in
+the danger color at rest, filled on hover.
 
-Reference: `.app-header` / `.header-zone` in
-[layout/shell.css](../static/css/layout/shell.css).
+**Logs** is a toggle button (`aria-pressed`) for the Logs panel. **View**
+holds the two theme axes (§1 Themes), Show grid, and the canvas layers;
+**Settings** (icon-only) holds Settings… and Restart server. Each menu is
+a header-anchored menu (§13).
+
+Within a zone, clusters are separated by a 1px hairline centred in the
+gap (a `> * + *::before` pseudo-element). The top bar is the one region
+that uses the 32px `--control-height-sm` controls (§1 Layout, Surfaces)
+rather than the 28px panel height, and its action buttons follow the
+icon + label rule in §3 Icons.
+
+Reference: `TopBar` in
+[next/top-bar.tsx](../frontend/src/next/top-bar.tsx); `.app-header` /
+`.header-zone` / `.session-chip` / `.mode-switch` in
+[layout/shell.css](../static/css/layout/shell.css); the status control,
+Emergency stop and menus in
+[layout/next-top-bar.css](../static/css/layout/next-top-bar.css).
 
 ---
 
@@ -354,7 +386,7 @@ hairline border width.
 
 | Token | Value | Typical use |
 |-------|-------|-------------|
-| `--space-2` | `2px` | Gaps inside a control cluster (tab gap, tool-tile inner gap) |
+| `--space-2` | `2px` | Gaps inside a control cluster (tab gap, tool bar gap) |
 | `--space-4` | `4px` | Chip-row gaps, tight padding |
 | `--space-6` | `6px` | Card inner gaps, form row gaps |
 | `--space-8` | `8px` | The standard padding unit — header and body padding |
@@ -377,8 +409,8 @@ hand-pick a number between layers.
 | `--z-canvas-world` | `1` | World canvas — track, blocks, signals (§16) |
 | `--z-canvas-live` | `2` | Live canvas — trains, labels, selection (§16) |
 | `--z-canvas-overlay` | `3` | DOM overlays pinned to the canvas |
-| `--z-shell` | `10` | Sidebars, the bottom dock, sticky panel toolbars |
-| `--z-window` | `900` | Floating chrome windows — the secondary sidebar's floating mode, diagnostics, and every window split off from a tab. `WindowManager` stacks open windows within this band by focus order (topmost = most recently focused); the band sits below every picker/modal, so those always win. |
+| `--z-shell` | `10` | Docked panels, the Logs panel, sticky panel toolbars |
+| `--z-window` | `900` | Floating chrome windows — a right panel popped out, and the Train Monitor and Virtual Bench windows. `WindowManager` stacks open windows within this band by focus order (topmost = most recently focused); the band sits below every picker/modal, so those always win. |
 | `--z-picker` | `1000` | Floating pickers, modal backdrops |
 | `--z-modal` | `1100` | Modal dialogs |
 | `--z-restart` | `1200` | Full-app restart overlay |
@@ -395,7 +427,7 @@ The size ramp is five working sizes plus the hero display size:
 
 | Token | Value | Role |
 |-------|-------|------|
-| `--font-size-micro` | `9px` | State-badge text (§7), tool-tile labels |
+| `--font-size-micro` | `9px` | State-badge text (§7) |
 | `--font-size-label` | `10px` | Field labels (§5), chips, disclosure summaries |
 | `--font-size-body` | `11px` | Prose, tabs, checkbox labels, units |
 | `--font-size-value` | `12px` | Field values, inputs, panel titles |
@@ -488,9 +520,9 @@ named vocabulary.
   you need, that's a roster question — propose adding it to
   `icon-selections.json` rather than pasting raw SVG into a component file.
 - **Action gets a label; utility goes icon-only.** In the top bar and
-  other control rows, a primary action button takes icon + label (New,
-  Save, Load, Inspector, Play); a pure utility takes an icon-only square
-  (theme, settings, panel toggles, restart). Don't mix the two arbitrarily
+  other control rows, a primary action button takes icon + label (Layout,
+  Play, Emergency stop, Logs, View); a pure utility takes an icon-only
+  square (Settings, a panel's pop-out and close). Don't mix the two arbitrarily
   on one row — icon-only for some actions and text-only for others, with no
   rule, is the "the icons feel random" smell.
 - **Verify the glyph class actually resolves.** Before shipping a `ti-*`
@@ -554,45 +586,43 @@ row around it), use the regular ghost above. When it lives inside a
 When the button sits inside a bordered card or list item, use this flat
 ghost too — see §11 "Action buttons inside a card go flat."
 
-### Tool button (icon grid tile)
+### Tool bar button
 
-A specialised flat ghost for the dense, single-glyph icon-grid of tools
-inside a tool group's flyout popover. The left tool rail itself is the
-labelled `.tool-launch` capsule; a group capsule on the rail opens a flyout
-whose tools are these `.tool-btn` tiles rather than labelled control rows.
+The Editor screen's tool bar is one flat row of the things you place
+(Select, Track, Switch, Signal, Tunnel, Platform, Segment, Block). Each
+button is a flat ghost with an icon and a label, and its number key small
+and muted in front of them.
 
 ```css
-/* tile */
-width: 38px;
-height: 38px;
-padding: 2px;
-background-color: var(--bg-dark);
+/* button */
+height: var(--control-height-xs);
+padding: 0 var(--space-10);
 border: none;
-border-radius: var(--control-radius-sm);
+background: transparent;
 color: var(--text-secondary);
-display: flex;
-flex-direction: column;
-align-items: center;
-justify-content: center;
-gap: 1px;
 
 /* hover */
 background-color: var(--bg-hover);
-color: var(--accent-hover);
+color: var(--text-primary);
 
-/* active */
-background-color: rgba(130, 87, 229, 0.18);
+/* active: the segmented control's accent tint */
+background-color: rgba(var(--accent-rgb), 0.18);
 color: var(--accent-hover);
 ```
 
-- The tile is taller than the standard 28px control because it stacks an icon glyph (~16px) above a tiny label (~8px) — that vertical stack is the whole point of the pattern.
-- No border on the tile itself. The `--bg-dark` fill against the panel's `--bg-panel` is what gives each tile its shape; grouping comes from the category dividers above the grid, not from per-tile boxes.
-- Icons are Tabler glyphs (`<i class="ti ti-… tool-icon"></i>`), looked up through the icon roster like every other button — see Icons above. Labels are 1-2 words at ~8px.
-- A group capsule opens its flyout on hover or on click, and a click never closes it: hover has usually opened it already, so a toggle would shut the menu the moment the user clicks to use it. The flyout closes when the pointer leaves the group, on an outside click, on Escape, or once a tool is picked.
-- Each rail capsule's number badge (and its number-key shortcut) is fixed across modes: it is the capsule's place among every tool in every mode. When Operate mode hides a capsule, the numbers skip it rather than shifting the ones below — Train is 8 in both modes.
+- The number key is the button's place in the bar, and it never moves:
+  keys 1–8 pick the same tool every time.
+- No hover menus. A tool's variants (Track: Draw / Remove; Select: Click /
+  Box / Lasso / Brush / Trace / Entity; Platform and Segment: New / Extend
+  / Remove) sit in the options row under the bar, a segmented control
+  that shows only the picked tool's variants. A tool with one fixed action
+  shows a one-line hint there instead.
+- Icons are Tabler glyphs, looked up through the icon roster like every
+  other button — see Icons above.
 
-Reference: `.tool-btn` in
-[components/tools.css](../static/css/components/tools.css).
+Reference: `.ned-tool` and `.ned-options` in
+[next/editor.css](../static/css/next/editor.css); `BAR_TOOLS` in
+[next/editor/tools.ts](../frontend/src/next/editor/tools.ts).
 
 ### Hero CTA (driver-facing primary)
 
@@ -676,76 +706,8 @@ control."
 - **Hover** — `background-color: var(--bg-hover)`, `color: var(--text-primary)`.
 - **Active** — `color: var(--accent-hover)`, plus a 2px `border-bottom: var(--accent-color)` with `margin-bottom: -1px` so the active underline overlaps the strip's bottom rule (the active tab "owns" that segment of the divider). Inactive tabs carry a 2px transparent `border-bottom` so the active underline doesn't shift heights between tabs.
 
-**Working-set variant (the editor navigator).** The secondary sidebar holds an
-open-ended, data-driven set of panels in one horizontal scrolling row at every
-window width. It never becomes a vertical list: navigation gets one compact row
-and the panel body keeps the remaining height. Each tab carries an entity-type
-icon and a unique identity label. Detail labels resolve in this order: display
-name, stable id, generic type fallback. Generic plural labels such as `Blocks`
-or `Segments` belong only to collection tabs; detail tabs must never form an
-indistinguishable run of repeated type names. The full lineage and stable id may
-live in the tooltip when the visible display name is shorter. The active tab is
-scrolled into view horizontally after the strip changes.
-
-Two kinds of tab live in the strip:
-
-- **Preview tab** — opening an entity by left-clicking it on the canvas (a tile,
-  block, switch, signal, platform, train, tunnel, station, or speed profile)
-  opens a *preview* that reuses one shared slot: the next inspect replaces it, so
-  casual looking never piles up tabs. A preview shows a pin affordance
-  (`ti-pin`); see **Pinning** below for what pinning does.
-- **Kept tab** — list panels, route / path editors, and setups open as their own
-  kept tab from the start. So does every pick from a tile's **right-click
-  menu**: naming a record there is deliberate, not casual looking, so it opens
-  beside the preview in the active group instead of consuming that slot. Asking
-  by name for the record already sitting in the preview slot keeps that tab
-  where it is rather than opening a second copy.
-
-**Group states: active, inactive, pinned.** Every open group is in exactly one
-of three states, and together they decide where a newly opened panel lands.
-
-- **Active** — exactly one group at a time. New tabs and window actions land
-  here. The active group is the most recently interacted one that isn't pinned:
-  any pointerdown inside a window focuses it, so this covers both selecting a
-  tab and clicking an action button embedded in a panel (an `Edit` row inside a
-  list calls a generic `showXEditor()` with no idea which window it lives in,
-  and has to land back where the user was looking).
-- **Inactive** — every other unpinned group. Still a candidate: the resolution
-  walks the most-recently-interacted chain, so closing or pinning the active
-  group promotes the one behind it.
-- **Pinned** — out of the chain entirely. A pinned group keeps showing the one
-  record it was pinned on: no new tab ever opens there, and canvas clicks never
-  retarget it. It still responds to explicit window actions — drag, resize,
-  move a tab into it, close.
-
-When the walk finds no unpinned group — every open group is pinned — the chain
-is *exhausted*. That is treated exactly like having no window open at all: the
-panel gets a brand-new group of its own. The rule itself is
-`resolveActiveGroup` in `editor/tab-group.ts`, kept pure so it tests without a
-DOM; `EditorUIHandler.activeChain` supplies the ordered candidates from
-WindowManager's z-order.
-
-**Pinning detaches.** Pinning a tab — its pin button, or a double-click —
-*detaches* it from its group into a dedicated group holding only that tab, and
-pins that group. One gesture, one meaning: "keep this one record where I put it,
-and stop opening things on top of it." A tab already alone in its group pins in
-place rather than respawning an identical window at a cascade offset. The
-header's own pin button pins a whole group as-is, for freezing a multi-tab
-working set without breaking it up. A pinned window carries a 2px accent rule
-along the top of its header (`.window--pinned`) so it is obvious why the next
-inspect opened elsewhere.
-
-Every tab carries a close `×`. Detail tabs are titled by the record they hold:
-its display name when present, otherwise its stable id (`BLK_588D28`,
-`#1000001`) — never by the editor's generic name. List tabs (all trains, all
-routes) keep their plural list name in bold, so collections read apart from
-instances. Labels clamp with ellipsis (§5 Overflow); the tooltip carries the
-full lineage and stable id (`Blocks › North Yard — BLK_588D28`).
-
-Reference: `.secondary-tab` (+ `--preview`, `--list`,
-`.secondary-tab-pin`) in [layout/shell.css](../static/css/layout/shell.css);
-`TabGroup.renderTabs` / `TabGroup.updateTabTitle` / `TabGroup.pinTab` in
-[tab-group.ts](../frontend/src/editor/tab-group.ts).
+Reference: the Logs panel's tabs, `.nlp-tabs` › `.nlp-tab-btn` in
+[next/logs.css](../static/css/next/logs.css).
 
 ### Accent-tint CTA (the panel-safe "primary")
 
@@ -1850,31 +1812,26 @@ Same principle covers any "execute with options" pattern: per-task
 direction picker next to the move button, per-row enable toggle next to
 the row action, etc.
 
-### Editor navigation and the unsaved-edits indicator
+### Panel navigation and the unsaved-edits indicator
 
-Navigation up and out of an editor lives in the sidebar's shared header
-chrome — one implementation for every panel — never inside any one
-panel's body:
+Navigation up and out of a panel lives in the right panel's header — one
+implementation for every panel — never inside any one panel's body:
 
 ```
-[← Routes]  Route Editor                    [pin] [×]
-[🚆 T_NWY_1] [⌁ Main Line] [↝ RT_4F2A] →  ← horizontal working set
+[← Routes]  Route Editor                    [≡] [⧉] [×]
 ```
 
 - **Parent link** — when the open panel is the detail view of a record
   whose list panel exists, the header's left slot is a ghost button
   labeled with the destination (`← Routes`), never the ambiguous word
-  "Back." It opens the list, re-activating the list's tab when one is
-  already open. List panels, and detail views with no list home
-  (signals, platforms), show no parent link. Keyboard:
-  Alt+Left.
-- **Pin** — takes this group out of the active chain, so no new tab
-  opens here and canvas clicks don't retarget it. Tabler `ti-pin`,
-  icon-only; the window gains an accent rule along its header's top
-  edge while pinned. See §3 "Group states" for the full model.
-- **Tabs** — the horizontal working-set strip (§3) sits directly under the
-  header. No breadcrumb row: the parent link covers "go up," the tab label
-  names the record, and the tab tooltip carries the lineage and stable id.
+  "Back." It opens the list. List panels, and detail views with no list
+  home (signals, platforms), show no parent link. Keyboard: Alt+Left.
+- **Lists** (`ti-list`, Editor screen) — a menu of the lists that used to
+  be tool-rail buttons: Switches, Stations, Blocks.
+- **Pop out** (`ti-external-link`) — moves the panel into a floating
+  window and back (`ti-layout-sidebar-right` while it floats); see
+  "Popping the right panel out" below.
+- **Close** — clears the selection. Keyboard: Ctrl/Cmd+W.
 
 A long editor panel (Route Editor, Path Editor) also shouldn't bury
 Save in the bottom section. Sections describe what they edit; Save
@@ -1897,46 +1854,25 @@ of inside any one section. Reference: `.re-toolbar` in
 
 ---
 
-### Splitting a tab into its own window
+### Popping the right panel out
 
-Any tab in the working-set navigator can split into its own floating
-window — a second, independent working set with the exact same header
-chrome, tab strip, and navigator as the one it came from. It is not a
-lesser single-entity view: a split-off window keeps its own preview/pinned
-tabs, can receive more tabs later, and can itself be split or have tabs
-moved out of it. The one thing it cannot do is dock — there is exactly one
-docked slot in the page layout, owned by the secondary sidebar, so every
-split-off window is floating-only.
+The right panel of the Editor and Operate screens has one pop-out button
+in its header. It moves the panel into a floating window — drag, resize,
+double-click-to-fit, the `--z-window` band — and the same button docks it
+back to the right of the canvas. The window adopts the panel's own
+element, so popping out moves nothing and redraws nothing: every panel
+inside keeps working. Whether it floats, and where, is remembered per
+screen. It is the only floating window a screen keeps
+(ui-layout-rewrite-plan.md §12, decision 2): there are no tabs, no
+pinned groups and no split-off windows.
 
-Splitting and pinning are the same mechanism pointed at different
-intents. **Split** ("Open in new window", or dragging a tab out) detaches
-the tab into a new *unpinned* group — a second working set that keeps
-receiving tabs. **Pin** detaches it into a *pinned* group that receives
-nothing further. A window spawned because the active chain was exhausted
-is unpinned too, so it immediately becomes the active group and the next
-open reuses it rather than spawning yet another window.
-
-Three ways to trigger a split, all routing through the same underlying
-move (`TabGroup.extractTab` / `acceptMovedTab` — [tab-group.ts](../frontend/src/editor/tab-group.ts)):
-
-- **Pop-out button** — the `ti-external-link` icon on the tab row (next to
-  pin and close). Always opens the tab into a brand-new window.
-- **Right-click menu** — "Open in new window," plus a "Move to `<window>`"
-  item for every other window currently open, so a tab can be relocated
-  into an existing window instead of always spawning a new one.
-- **Drag out** — grab a tab and drag it past a small threshold
-  ([tab-drag.ts](../frontend/src/editor/tab-drag.ts)): drop it on another
-  window's tab strip (highlighted while hovering) to move it there, drop it
-  on empty space to spawn a new window at the drop point, or press Escape
-  to cancel. A plain click below the threshold still just activates the
-  tab.
-
-A split-off window is chrome-identical to the secondary sidebar's floating
-mode — same `FloatingWindow` primitive, same drag/resize/double-click-to-fit,
-same z-order band — so §2's four-part-panel structure and §8's resizer
-conventions apply to it unchanged. Its geometry and tabs persist and
-restore across a reload the same way the secondary sidebar's do (one entry
-per window in a shared registry).
+Reference: `RightPanel` in
+[next/operate/right-panel.tsx](../frontend/src/next/operate/right-panel.tsx)
+and `EditorPanel` in
+[next/editor/right-panel.tsx](../frontend/src/next/editor/right-panel.tsx),
+both on `FloatingWindow`
+([window-manager.ts](../frontend/src/lib/window-manager.ts);
+[floating-window.css](../static/css/layout/floating-window.css)).
 
 ---
 
@@ -2047,21 +1983,22 @@ one caller. Reference: `showContextMenu` in
 
 ### Header-anchored menu
 
-A popover that drops from a top-bar button instead of the cursor — the Display
-menu behind the header's Display button is the one instance. Same panel-language
-shell as the floating picker, but anchored under its trigger: pinned to the
-button's bottom edge and right-aligned to it, re-placed on window resize. It
-toggles on its button and closes on outside click or Escape.
+A popover that drops from a top-bar button instead of the cursor — the
+Layout, View, Settings and speed menus. It reuses the context menu's
+shell (`.tile-context-menu`) but hangs under its trigger, lined up with
+the button's left or right edge, and closes on outside click or Escape.
 
-Its body is the two-axis theme control (§1 Themes): one row per theme axis
-(`Editor theme`, `Layout theme`), each row a set of theme tiles. A tile is a 2×3
-grid of that theme's six primary colors — sampled live from the stylesheet so a
-swatch always matches the theme — with a check on the active one and the theme
-name beneath. Clicking a tile switches that one axis; a newly registered theme
-appears here with no extra wiring. Reference: `wireDisplayMenu` in
-[lib/theme.ts](../frontend/src/lib/theme.ts); `.display-menu` (+ `-row`,
-`-row-label`, `-tiles`, `-tile`, `-swatch`, `-cell`, `-check`) in
-[components/display-menu.css](../static/css/components/display-menu.css).
+A menu has three kinds of row: an **action** closes the menu and runs; a
+**choice** shows a check on the current option, closes and runs (a theme,
+a speed); a **toggle** shows a check while it is on and keeps the menu
+open, so several can be flipped in one go (Show grid, the canvas layers).
+Rows group into sections with an optional heading (`Editor theme`,
+`Layers · Blocks`). A menu reads its rows each time it opens, so it always
+shows the current state.
+
+Reference: `MenuButton` in [next/menu.tsx](../frontend/src/next/menu.tsx);
+`.ntb-menu` in
+[layout/next-top-bar.css](../static/css/layout/next-top-bar.css).
 
 ---
 
@@ -2089,12 +2026,10 @@ When in doubt, copy the structure of one of these:
 - **Shared compositional primitives** → [components/status-blocks.css](../static/css/components/status-blocks.css) — the §6 banner, §7 chip, §11 status header, and §6 accent helpers. Editor panels consume these classes directly (`.status-header`, `.chip`, `.banner`, `.accent-*`) instead of redefining the shapes per feature.
 - **Detail-page editor** → [editor-route-runs.ts](../frontend/src/editor/editor-route-runs.ts) + [features/routes-paths.css](../static/css/features/routes-paths.css) — the worked reference for composing a `status-header` + stats block + list of rows inside an editor sidebar. Route-run-specific bits (`.rr-card`, `.rr-summary`, `.rr-task-*`) layer on top of the shared primitives.
 - **Long edit-and-act panel** → [editor-routes.ts](../frontend/src/editor/editor-routes.ts) + the `.re-toolbar` / `.atr-*` rules in `features/routes-paths.css` — the worked reference for a panel that mixes editing (tasks, mode, policy) with live monitoring (assigned trains, history). Demonstrates: sticky top toolbar with Save + dirty indicator + Refresh; assigned-trains list as a row-shaped second consumer of the `.rr-task-*` skeleton; history default-visible with per-entity cap; Force checkbox adjacent to the Assign button it modifies.
-- **Floating window chrome** → [layout/floating-window.css](../static/css/layout/floating-window.css) + [window-manager.ts](../frontend/src/lib/window-manager.ts) — the shared header (title + close, or an adopted richer header for a tab-hosting window) + content area + 8-direction resize handles, draggable, resizable, double-click-to-fit. Header has no border; relies on `--bg-hover` against `--bg-panel`. Every floating window (diagnostics, the secondary sidebar's floating mode, a split-off tab window) composes this instead of redefining it.
-- **Floating debug panel's own content** → [diagnostics.css](../static/css/features/diagnostics.css) — toolbar + scrolling body + footer mounted inside the shared chrome above. Toolbar keeps `border-bottom` because it shares `--bg-panel` with the body (per the §2 toolbar rule: same surface → hairline separator needed).
-- **Bottom dock** → [train-monitor.css](../static/css/features/train-monitor.css) — header + multi-column body + status footer, full-width, fixed height. Header has no border; the segmented view-distance control inside the header is a bordered container of flat ghosts (no internal dividers).
-- **Sidebar form** → [train-control.css](../static/css/features/train-control.css) — sectioned vertical stack inside a secondary sidebar. Status rows use the 3px left-border accent only, no surrounding 1px box.
-- **Working-set navigator** → [layout/shell.css](../static/css/layout/shell.css) `.secondary-sidebar-tabs` › `.secondary-tab` — one horizontal scrolling strip at every width; entity icon + unique name/id label, with a preview tab reusing one slot until pinned (§3 Working-set variant).
-- **Pinned group** → [layout/shell.css](../static/css/layout/shell.css) `.window--pinned .secondary-sidebar-header` — 2px accent rule inset along the header's top edge, marking a group that is out of the active chain (§3 Group states).
+- **Floating window chrome** → [layout/floating-window.css](../static/css/layout/floating-window.css) + [window-manager.ts](../frontend/src/lib/window-manager.ts) — the shared header (title + close, or an adopted header with its own buttons) + content area + 8-direction resize handles, draggable, resizable, double-click-to-fit. Header has no border; relies on `--bg-hover` against `--bg-panel`. The right panels' pop-out composes this instead of redefining it.
+- **Logs panel tab content** → [diagnostics.css](../static/css/features/diagnostics.css) — toolbar + scrolling body, shown in the Logs panel's Diagnostics tab. Toolbar keeps `border-bottom` because it shares `--bg-panel` with the body (per the §2 toolbar rule: same surface → hairline separator needed).
+- **Look-ahead graph** → [train-monitor.css](../static/css/features/train-monitor.css) — the graph, view-distance control and Upcoming list the Operate train panel's Look-ahead section shows. The segmented view-distance control is a bordered container of flat ghosts (no internal dividers).
+- **Right panel form** → [train-control.css](../static/css/features/train-control.css) — sectioned vertical stack inside a right panel. Status rows use the 3px left-border accent only, no surrounding 1px box.
 
 **Not a reference — outside this doc.** The standalone debug page
 ([static/debug.html](../static/debug.html), styled by

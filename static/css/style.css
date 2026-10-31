@@ -5,12 +5,10 @@
 @import url('./layout/next-top-bar.css');
 @import url('./next/locomotives.css');
 @import url('./layout/floating-window.css');
-@import url('./components/tools.css');
 @import url('./components/context-menu.css');
 @import url('./layout/canvas.css');
 @import url('./components/common.css');
 @import url('./components/modals.css');
-@import url('./components/display-menu.css');
 @import url('./components/design-system.css');
 @import url('./components/status-blocks.css');
 @import url('./components/connection-banner.css');

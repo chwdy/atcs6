@@ -1,5 +1,5 @@
 /* ============================================================================
-   ?ui=next Logs panel (docs/ui-layout-rewrite-plan.md §8;
+   Logs panel (docs/ui-layout-rewrite-plan.md §8;
    frontend/src/next/logs/logs-panel.tsx).
 
    One panel along the bottom of the window with a tab strip. It is the last
@@ -7,10 +7,7 @@
    canvas and the screen above it) instead of covering it. The tabs reuse the
    old windows' row styles (features/event-log.css, occupancy-monitor.css,
    diagnostics.css); this file holds the panel itself and the few places where
-   a full-width strip needs different sizing from a floating window.
-
-   Nothing here applies without ?ui=next: the panel is only mounted under the
-   flag.
+   a full-width strip needs different sizing from the old floating windows.
    ============================================================================ */
 
 /* The slot only places the panel in the page's column; it draws nothing. */

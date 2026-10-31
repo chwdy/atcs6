@@ -1,23 +1,12 @@
 /* ============================================================================
-   ?ui=next Operate screen (docs/ui-layout-rewrite-plan.md §5;
-   frontend/src/next/operate/).
+   Operate screen (docs/ui-layout-rewrite-plan.md §5; frontend/src/next/operate/).
 
-   Every rule that touches today's layout is scoped to
-   html[data-ui="next"][data-screen="operate"], so the other screens, and the
-   page without the flag, are unchanged. The new regions exist only while the
-   Operate tab is picked.
+   The new regions exist only while the Operate tab is picked.
    ============================================================================ */
 
-/* Today's regions this screen replaces: the tool rail (its tools moved into
-   the cards row, the left list and the train panel's Route section), today's
-   inspector and any window split off from it (the right panel shows the
-   selection now), the canvas session bar (Hold all is in the cards row), and
-   the Train Monitor window (the train panel's Look-ahead section shows it). */
-html[data-ui="next"][data-screen="operate"] .workspace > .sidebar,
-html[data-ui="next"][data-screen="operate"] .secondary-sidebar,
-html[data-ui="next"][data-screen="operate"] .floating-window[data-window-kind="tab-group"],
-html[data-ui="next"][data-screen="operate"] .canvas-container .session-bar,
-html[data-ui="next"][data-screen="operate"] #train-monitor-bar {
+/* The Train Monitor window stays hidden here: the train panel's Look-ahead
+   section shows its graph. */
+html[data-screen="operate"] #train-monitor-bar {
     display: none !important;
 }
 

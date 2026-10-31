@@ -332,6 +332,12 @@ is showing. Regions not rebuilt yet keep working as
 today, so the app stays fully usable under the flag at every phase, and
 without the flag nothing changes until phase 8 switches the default.
 
+Since phase 8 the new layout is the page: `mountNextUI` and
+`mountOperateScreen` always run, nothing reads `?ui=next` any more (an old
+bookmark with it opens the same page), and `<html data-ui>` is gone. Only
+`<html data-screen>` remains, and each screen's stylesheet uses it to show
+its own regions.
+
 | Phase | What | Size | Needs |
 |-------|------|------|-------|
 | 0 | Add Preact, signals and happy-dom; the `?ui=next` flag; signals for the session state, fed by the existing network poll; the shared poll-while-visible helper | Small | — |
@@ -348,11 +354,16 @@ without the flag nothing changes until phase 8 switches the default.
 After phase 1, phases 2, 3, 4, 5 and 6 touch different screens and can run
 in parallel, each in its own session and branch.
 
-**Progress.** Phases 0–6 are done on `claude/ui-next`: the top bar, and the
-Operate, Editor, Hardware Setup and Locomotives screens and the Logs panel,
-all behind `?ui=next`. Each was built in its own session, then merged. These
-parts still show today's code inside the new layout, and are ported in later
-passes:
+**Progress.** Phases 0–6 and 8 are done on `claude/ui-next`: the top bar,
+the Operate, Editor, Hardware Setup and Locomotives screens and the Logs
+panel, and (phase 8) the new layout as the default. Each was built in its
+own session, then merged. Phase 8 deleted today's header, tool rail, the
+inspector's tab groups, navigator, pinning, split windows and tab drag
+(`editor/tab-group.ts`, `editor/tab-drag.ts`), the canvas session bar, the
+Display popover, the Hardware Setup dialog, and the Event Log, Raw
+Occupancy, Diagnostics and Occupancy Bench windows; §13 is the checklist it
+worked from. These parts still show today's code inside the new layout,
+and are ported in later passes:
 
 | Part | Does for now | Until |
 |------|--------------|-------|
@@ -367,7 +378,10 @@ passes:
 | **Locomotives:** Speed Profile panel | Today's panel code (curve editor, calibration rows) drawn into the screen, with the five steps and the refused commands added around it | The panel is rebuilt as components |
 | **Logs:** Virtual inputs tab | Not built; the Virtual Bench is in Hardware Setup step 4 | Built from the Virtual Bench's fake-detector part |
 | **Top bar:** View menu → Layers | Flips the Debug Info checkboxes in the Settings dialog, which the renderer reads | Layers get their own state |
-| **Hold all** | In the Operate train cards row; stays on the canvas on the other screens | Phase 8 |
+| **Hold all** | Only in the Operate train cards row; the canvas session bar is gone | — |
+| **Editor:** today's panels' title, back link and body | Three nodes kept in a hidden holder in `index.html` (`#secondary-sidebar`), which the Editor right panel moves into itself (`next/editor/legacy-panel.ts`); `editor/editor-ui.ts` is now a one-panel host with no tabs | Each panel is ported |
+| **Train Monitor window** | Kept: Look-ahead shows its graph, and the rest (raw speed, next-stop distance, the speed-limit line, the raw look-ahead JSON) is reachable only in this window, which today's train panel opens on the Editor screen (§13.10) | Those parts get a home in the Operate train panel |
+| **Virtual Bench window** | Kept for Place on canvas, which the step-4 copy leaves out (§13.10); nothing opens it | Place on canvas gets a home |
 
 ---
 
@@ -382,3 +396,132 @@ passes:
    profiles and calibration. Inventory management is to be decided and will
    live there.
 5. **Server push later** (phase 9), after the new layout is the default.
+
+---
+
+## 13. Parity checklist (phase 8)
+
+Written before phase 8 deleted anything. Every control and panel of the old
+layout, and where it is in the new one. A row marked **No home** has no place
+in the new layout yet: its code is kept, and it is listed in §13.10.
+
+### 13.1 Header buttons (22)
+
+| Old header button | New layout |
+|---|---|
+| Activate (`#btn-session-activate`) | Top bar status control: the next-step button reads Activate in Setup and Halted `not_activated` / `hardware_failure`. Also Hardware Setup step 7. |
+| Play / Pause (`#btn-play-pause`) | Top bar status control: the next-step button reads Play when Paused and Pause when Live (Simulation). |
+| Restart server (`#btn-restart-server`) | Top bar Settings menu (gear) → Restart server. The fatal banner keeps its own Restart Server. |
+| Speed 0.5x, 1x, 2x, 3x (4 buttons) | Top bar: the speed menu next to the next-step button, shown when the session can play (Simulation). |
+| Editor, Operate (2 buttons) | Top bar screen tabs: Editor, Operate (plus Hardware Setup and Locomotives). |
+| New, Save, Load (3 buttons) | Top bar Layout menu: New, Open…, Save…. They open the same Save and Load dialogs. |
+| Hide tools panel (`#btn-toggle-tools`) | Gone (§3). The Editor tool bar shows only on the Editor screen; Operate's left list folds itself. |
+| Hide secondary panel (`#btn-toggle-secondary`) | Gone (§3). Each screen's right panel has its own Close; Operate's hides when nothing is selected. |
+| Diagnostics | Logs panel → Diagnostics tab. |
+| Raw occupancy | Logs panel → Detectors tab. |
+| Occupancy Bench | Hardware Setup step 4. |
+| Virtual Bench | Hardware Setup step 4 (Virtual Hardware only). "Place on canvas" is not there: **No home** (§13.10). |
+| Event Log | Logs panel → Event log tab. |
+| Display (themes) | Top bar View menu: Editor theme, Layout theme, Show grid. |
+| Hardware | Top bar Hardware Setup tab; clicking the status chip opens it at step 1. |
+| Settings | Top bar Settings menu → Settings…, the same dialog. |
+
+The session chip (environment and session state) is the status control's
+label.
+
+### 13.2 Tool rail: 9 buttons and their tools
+
+| Old rail button (key) | Its tools | New layout |
+|---|---|---|
+| Inspect (1) | Inspect | Editor: Select → Click (key 1). Operate: a plain click on the map opens the train, switch or block there. |
+| Selection (2) | Trace, Box, Lasso, Brush, Entity | Editor: Select → Box, Lasso, Brush, Trace, Entity. |
+| Network (3) | Track, Signal, Tunnel, Switches list | Editor: Track (Draw, Remove), Signal, Tunnel, and Switch (a new tool to pick one). Switches list: the Editor right panel's list button, and Operate's left list. |
+| Platform (4) | New, Extend, Remove, Stations list | Editor: Platform → New, Extend, Remove. Stations list: the Editor right panel's list button, and Operate's left list. |
+| Segment (5) | New, Extend, Remove | Editor: Segment → New, Extend, Remove. |
+| Power (6) | Blocks list, Assign | Editor: Block → Assign, and the list button's Blocks. Operate's left list has Blocks. |
+| Path (7) | New, Extend, Cancel, Paths list | Operate: the train panel's Route section (create, extend, cancel a path); Paths in the left list. |
+| Train (8) | New (Add Train), Trains list, Profiles | Operate: + Place train at the end of the cards row; Trains in the left list. Profiles: the Locomotives screen. |
+| Route (9) | New, Routes list, Runs | Operate's left list: Routes (with New) and Route runs. |
+
+### 13.3 Docked inspector and its navigator
+
+| Old | New layout |
+|---|---|
+| Panel body (every entity panel) | The Editor right panel; on Operate, the Operate right panel. |
+| Title and the `← Switches`-style parent link | The Editor right panel's header. Alt+Left still opens the parent list. |
+| Close (×), Ctrl/Cmd+W | The right panel's Close; Ctrl/Cmd+W closes it. |
+| Float the inspector | The right panel's pop-out button (Editor and Operate). |
+| Navigator tab strip: preview tabs, kept tabs, tab icons | Gone (§12 decision 2): one panel shows the current selection. |
+| Pin a tab, pin a group, double-click to pin | Gone (§12 decision 2). |
+| Split a tab into its own window (button, drag out, right-click "Open in new window") | Gone (§12 decision 2). |
+| Move a tab to another window (drag, right-click "Move to") | Gone (§12 decision 2). |
+
+### 13.4 Floating windows
+
+| Old window | New layout |
+|---|---|
+| The inspector, floated | The right panel's pop-out window. |
+| Windows split off the inspector | Gone (§12 decision 2). |
+| Train Monitor | Operate train panel → Look-ahead: the graph, the view distance buttons and the Upcoming list. The rest of the window is **No home** (§13.10). |
+| Diagnostics | Logs panel → Diagnostics tab. |
+| Raw Occupancy | Logs panel → Detectors tab. |
+| Event Log | Logs panel → Event log tab. |
+| Occupancy Bench | Hardware Setup step 4. |
+| Virtual Bench | Hardware Setup step 4, without Place on canvas (**No home**, §13.10). |
+
+### 13.5 Canvas session bar
+
+| Old | New layout |
+|---|---|
+| Emergency stop | Top bar, on every screen. |
+| Reset | Top bar status control: the next-step button reads Reset when Halted `layout_emergency_cut_out`. |
+| Hold all | Operate: the end of the train cards row. It no longer sits on the canvas of the other screens. |
+
+The zoom buttons, Fit, Follow train and the status line under the canvas are
+unchanged.
+
+### 13.6 Bottom Train Monitor
+
+| Old | New layout |
+|---|---|
+| Graph, view distance (1m, 5m, 10m, All), Upcoming list | Operate train panel → Look-ahead. |
+| Current speed, ATC limit, ATO target, clearance, dwell remaining and until | Operate train panel → the cab display. |
+| Raw speed (cm/s), next-stop distance, the speed-limit reason line, the raw look-ahead JSON button `{ }` | **No home** (§13.10). |
+| Close (×), the resize handle between the graph and Upcoming | Gone: the section folds; it fits the panel's width. |
+
+### 13.7 Dialogs
+
+| Old dialog | New layout |
+|---|---|
+| Save Layout | Layout menu → Save…, the same dialog. |
+| Load Layout (list, Load, Delete, the autosave) | Layout menu → Open…, the same dialog. |
+| Settings (Debug Info, Display, Advanced) | Settings menu → Settings…, the same dialog. View → Layers flips its Debug Info boxes. |
+| Hardware Setup (environment, bridge, chips, layout tally, idle threshold, wiring overview, Virtual Hardware controls, readiness footer, Activate) | The Hardware Setup screen: step 1 the environment, step 2 the bridge, chips, idle threshold and wiring overview, step 4 the chip tests and benches (the Virtual Bench in place of the dialog's Virtual Hardware controls), step 6 the readiness report, step 7 Activate. |
+
+### 13.8 Right-click tile menu
+
+Unchanged on the canvas of the Editor and Operate screens: one entry per
+thing on the tile (train, switch, signal, segment, block, platform), Throw
+for a switch, and Inspect tile. A pick opens in the right panel of the
+screen showing. It used to open as its own kept tab; with one panel it
+replaces what the panel showed.
+
+### 13.9 Number keys
+
+| Old | New layout |
+|---|---|
+| 1–9 picked rail buttons 1–9 in Editor mode, and Inspect, Path, Train, Route in Operate mode | Editor screen: 1–8 pick the tool bar's Select, Track, Switch, Signal, Tunnel, Platform, Segment, Block. Operate has no number keys: its path, train and route controls are buttons (§13.2). |
+
+R and T (track ends), Shift (keep clear), Escape, Delete, Space and Alt+Left
+work as before.
+
+### 13.10 No home yet (kept, not deleted)
+
+- **Virtual Bench → Place on canvas.** The step-4 copy leaves it out
+  because Hardware Setup covers the canvas. The floating Virtual Bench that
+  has it is kept (`panels/virtual-bench.ts`), though nothing opens it.
+- **Train Monitor:** raw speed in cm/s, next-stop distance, the speed-limit
+  reason line, and the raw look-ahead JSON button. The monitor's code and
+  markup are kept, because Look-ahead shows its graph.
+- **Number keys on Operate.** The controls are reachable by mouse; there is
+  no shortcut for them.

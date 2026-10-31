@@ -149,17 +149,16 @@ export interface CalibrationGroupSummary {
 }
 
 /**
- * An element outside the secondary sidebar that the panel draws into: the
- * ?ui=next Locomotives screen (frontend/src/next/locomotives/). Without a
- * host the panel draws in the secondary sidebar, as it always has.
+ * An element of its own that the panel draws into: the Locomotives screen
+ * (frontend/src/next/locomotives/). Without a host the panel draws through
+ * Editor.showSecondarySidebar, as every other panel does.
  */
 export interface SpeedProfilePanelHost {
   el: HTMLElement;
   /** The profile list was asked for; the host shows its own list instead. */
   showList(): void;
-  /** The panel now shows this profile. `restoring` is set when a secondary
-   *  sidebar tab asked for it while restoring itself. */
-  profileShown(profileId: string, restoring: boolean): void;
+  /** The panel now shows this profile. */
+  profileShown(profileId: string): void;
   /** The profile on screen was deleted, which closed the panel. */
   profileDeleted(profileId: string): void;
   /** The calibration group's named train or run changed. */
@@ -799,7 +798,6 @@ export class SpeedProfileEditorHandler {
    * only while the row lists it); otherwise the row keeps the train it named.
    */
   async showProfileEditor(profileId: string, options: { trainId?: string | null } = {}): Promise<void> {
-    const restoring = !!this.editor._activeTabGroupForRestore;
     this._teardownCalibration();
     this._teardownPlots();
     if ('trainId' in options && options.trainId !== this._calTrainId) {
@@ -832,7 +830,7 @@ export class SpeedProfileEditorHandler {
 
     if (this._host) {
       this._host.el.innerHTML = this._editorHtml(this._profile!);
-      this._host.profileShown(profileId, restoring);
+      this._host.profileShown(profileId);
     } else {
       this.editor.showSecondarySidebar(profileId, this._editorHtml(this._profile!));
       // Wider canvas room — same affordance the route editor uses.

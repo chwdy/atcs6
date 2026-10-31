@@ -1,17 +1,16 @@
 /* ============================================================================
-   ?ui=next Locomotives screen (docs/ui-layout-rewrite-plan.md §6;
+   Locomotives screen (docs/ui-layout-rewrite-plan.md §6;
    frontend/src/next/locomotives/).
 
-   The screen sits in today's .workspace, next to the canvas. Every rule that
-   touches today's layout is scoped to the Locomotives screen, so the other
-   screens, and the page without the flag, are unchanged.
+   The screen sits in .workspace, next to the canvas. Every rule that touches
+   the shared regions is scoped to the Locomotives screen.
    ============================================================================ */
 
 .next-locomotives-slot {
     display: none;
 }
 
-html[data-ui="next"][data-screen="locomotives"] .next-locomotives-slot {
+html[data-screen="locomotives"] .next-locomotives-slot {
     display: flex;
     flex: 1 1 auto;
     min-width: 0;
@@ -19,23 +18,19 @@ html[data-ui="next"][data-screen="locomotives"] .next-locomotives-slot {
     order: 0;
 }
 
-/* Today's regions this screen replaces while it shows: the tool rail, the
-   secondary sidebar, the Train Monitor, and the canvas's session bar. */
-html[data-ui="next"][data-screen="locomotives"] .workspace > .sidebar,
-html[data-ui="next"][data-screen="locomotives"] #secondary-sidebar,
-html[data-ui="next"][data-screen="locomotives"] #train-monitor-bar,
-html[data-ui="next"][data-screen="locomotives"] .canvas-container .session-bar {
+/* The Train Monitor window stays hidden while this screen shows. */
+html[data-screen="locomotives"] #train-monitor-bar {
     display: none !important;
 }
 
 /* The canvas shows on the right only while a calibration run is open or
    being set up (frontend/src/next/locomotives/screen.tsx sets
    data-loco-canvas). */
-html[data-ui="next"][data-screen="locomotives"] .workspace > .canvas-container {
+html[data-screen="locomotives"] .workspace > .canvas-container {
     display: none;
 }
 
-html[data-ui="next"][data-screen="locomotives"][data-loco-canvas="shown"] .workspace > .canvas-container {
+html[data-screen="locomotives"][data-loco-canvas="shown"] .workspace > .canvas-container {
     display: block;
     order: 2;
     flex: 0 0 40%;

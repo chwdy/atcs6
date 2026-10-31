@@ -11,9 +11,8 @@ function fakeHost(): OperateHost {
     editorMode: 'sim',
     _currentEditorType: null,
     _currentEditorId: null,
-    _activeTabGroupForRestore: null,
     renderer: { clearBlockDirectionOverlay: vi.fn() },
-    uiHandler: { homeTabGroup: { cleanupPanelSubscriptions: vi.fn() } },
+    uiHandler: { cleanupPanelSubscriptions: vi.fn() },
   };
   return { editor, selectTrain: vi.fn(), deselectTrain: vi.fn() } as unknown as OperateHost;
 }
@@ -85,11 +84,6 @@ describe('operatePanelHost', () => {
     delete (window as any).app;
   });
 
-  it('lets today\'s inspector restore its own saved tabs', () => {
-    host.editor._activeTabGroupForRestore = {};
-    expect(operatePanelHost(host).showPanel('Tile Editor', '<p></p>')).toBe(false);
-  });
-
   it('closes the shown panel when its handler asks for that type and id', () => {
     const panels = operatePanelHost(host);
     host.editor._currentEditorType = 'path-setup';
@@ -99,7 +93,7 @@ describe('operatePanelHost', () => {
     panels.closePanel('path-setup', null);
     expect(selection.value).toBeNull();
     expect(wrappedPanelElement().innerHTML).toBe('');
-    expect(host.editor.uiHandler.homeTabGroup!.cleanupPanelSubscriptions).toHaveBeenCalled();
+    expect(host.editor.uiHandler.cleanupPanelSubscriptions).toHaveBeenCalled();
   });
 
   it('lets App drop the selected train when the selection moves off it', () => {

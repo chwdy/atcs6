@@ -1,37 +1,14 @@
 /* ============================================================================
-   ?ui=next top bar (docs/ui-layout-rewrite-plan.md §3;
-   frontend/src/next/top-bar.tsx).
-
-   The new top bar carries the `app-header` class, so it takes today's header
-   styles (height, surface, 32px controls, zone hairlines, session chip, mode
-   switch). This file holds only what differs, and every rule that touches
-   today's layout is scoped to html[data-ui="next"], so without the flag the
-   page is unchanged.
+   The top bar's own parts (docs/ui-layout-rewrite-plan.md §3;
+   frontend/src/next/top-bar.tsx): the status control, Emergency stop and the
+   drop-down menus. The bar itself carries the `app-header` class, so its
+   height, surface, 32px controls, zone hairlines, session chip and screen
+   tabs are in shell.css.
    ============================================================================ */
-
-/* Today's regions that the new layout has replaced. */
-html[data-ui="next"] .app-header:not(.next-top-bar) {
-    display: none;
-}
-
-/* Emergency stop and Reset are in the top bar now. Hold all stays on the
-   canvas until the Operate screen's train cards take it (plan §5). */
-html[data-ui="next"] .session-bar #btn-emergency-stop,
-html[data-ui="next"] .session-bar #btn-reset-layout {
-    display: none !important;
-}
 
 /* The slot only places the top bar in the page's column; it draws nothing. */
 .next-top-bar-slot {
     display: contents;
-}
-
-/* Two zones in one row rather than today's three-column grid: the right zone
-   (status control, Emergency stop, menus) is wider than the left, so a
-   centred middle column would overlap it at 1440px. */
-.next-top-bar {
-    display: flex;
-    justify-content: space-between;
 }
 
 .ntb-status {
@@ -66,8 +43,7 @@ html[data-ui="next"] .session-bar #btn-reset-layout {
     color: #fff;
 }
 
-/* Emergency stop reads as the stop button at rest and fills on hover, the
-   same danger treatment as the canvas session bar's button it replaces. */
+/* Emergency stop reads as the stop button at rest and fills on hover. */
 .next-top-bar .ntb-estop {
     color: var(--danger-color);
     border-color: rgba(var(--danger-rgb), 0.5);

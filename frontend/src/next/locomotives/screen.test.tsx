@@ -27,7 +27,7 @@ function fakePanel() {
     host!.el.innerHTML =
       '<div class="sp-editor"><div class="control-section" id="sp-cal-group">' +
       '<div class="control-section-header">Calibration</div><div id="sp-cal-rows"></div></div></div>';
-    host!.profileShown(profileId, false);
+    host!.profileShown(profileId);
   };
   return {
     shows,

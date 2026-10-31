@@ -1,13 +1,13 @@
 /**
  * The Logs panel's Event log tab: the operator's viewer over the one runtime
- * event stream (design_new.md "Event log"). It replaces today's Event Log
- * window (panels/event-log.ts) under ?ui=next and keeps its behavior: one
+ * event stream (design_new.md "Event log"). It replaced the old Event Log
+ * window and kept its behavior: one
  * column per field, filters answered by the server (`GET /api/event-log`),
  * and reads that ask only for events newer than the highest id already shown.
  *
  * What to ask the server and how to merge the answer are the pure functions
  * exported by panels/event-log.ts; this file only draws them. The row and
- * toolbar styles are that panel's `.evl-*` classes (features/event-log.css).
+ * toolbar styles are the `.evl-*` classes in features/event-log.css.
  */
 import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
 
