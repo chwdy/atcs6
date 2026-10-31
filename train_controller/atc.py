@@ -56,7 +56,7 @@ inputs because v1 treats them as global policy.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Callable, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
 from constants import (
     CAUTION_SPEED_LIMIT_KMH,
@@ -64,7 +64,9 @@ from constants import (
     STOPPED_SPEED_THRESHOLD_KMH,
     TRACK_END_SAFETY_MARGIN_CM,
 )
-from enums import AtcLimitReasonCode, BlockState, SignalState
+from enums import AtcLimitReasonCode, SignalState
+from lookahead_builder import block_exit_edges_in_plan
+from train_controller.speed_curves import caution_caps
 
 if TYPE_CHECKING:
     from train_controller import TrainController
@@ -185,17 +187,27 @@ def speed_limit_pure(
     return limiting_speed, limiting_reason
 
 
-def is_caution_ahead_pure(blocks_ahead: List[Any]) -> bool:
-    """True when the first non-None block ahead is in CAUTION state.
+def is_caution_ahead_pure(
+    blocks_ahead: List[Any], exit_edges: Dict[str, str]
+) -> bool:
+    """True when the first non-None block ahead is in CAUTION and caps this
+    train: its own traversal leaves the block through `caution.exit_edge`
+    (design_new.md "ATC speed limit").
 
-    Pure: depends only on the explicit list. Each entry is a ``Block``
-    object (with ``.state`` attribute) or ``None``. ``None`` entries
-    are skipped; the first concrete block determines the result.
+    Pure: depends only on the explicit arguments. Each entry is a ``Block``
+    object (with ``.state``, ``.block_id`` and ``.caution_exit_edge``) or
+    ``None``; ``exit_edges`` maps a block id to the ``exit_edge`` of its entry
+    in the train's live ``Path.resource_sequence``. ``None`` entries are
+    skipped; the first concrete block determines the result.
     """
     for block in blocks_ahead:
         if block is None:
             continue
-        return block.state == BlockState.CAUTION
+        return caution_caps(
+            block.state,
+            getattr(block, "caution_exit_edge", None),
+            exit_edges.get(block.block_id),
+        )
     return False
 
 
@@ -422,7 +434,8 @@ class ATCComputer:
     # ------------------------------------------------------------------
 
     def is_caution_ahead(self) -> bool:
-        """True when the next forward block is in CAUTION state.
+        """True when the next forward block is in CAUTION and caps this
+        train (see :func:`is_caution_ahead_pure`).
 
         Thin wrapper around :func:`is_caution_ahead_pure`.
         """
@@ -432,7 +445,11 @@ class ATCComputer:
         blocks_ahead = [
             c.network.blocks.get(bid) for bid in c._get_blocks_ahead()
         ]
-        return is_caution_ahead_pure(blocks_ahead)
+        plan = c.path_projection.received_path_plan
+        exit_edges = block_exit_edges_in_plan(
+            getattr(plan, "resource_sequence", None) if plan else None
+        )
+        return is_caution_ahead_pure(blocks_ahead, exit_edges)
 
     def effective_safety_margin(self) -> float:
         """5cm when destination is a station, otherwise the controller's

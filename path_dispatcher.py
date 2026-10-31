@@ -3038,10 +3038,13 @@ class PathDispatcher:
         if block is None:
             return False
         # A block no opposing move can reach is safe to stop just inside it,
-        # whether it is one-way or in CAUTION behind a leader (design_new.md
-        # item 11; canonical home Block.excludes_opposing_traversal). Hold the
-        # authority back only for a genuine two-way block entered off a switch.
-        if block.excludes_opposing_traversal():
+        # whether it is one-way or in CAUTION behind a leader this train follows
+        # (design_new.md item 11; canonical home Block.excludes_opposing_traversal).
+        # Hold the authority back only for a genuine two-way block entered off a
+        # switch.
+        if block.excludes_opposing_traversal(
+            self._segment_block_exit_edge(segment, terminal_block_id)
+        ):
             return False
         # Locate the terminal block's first non-switch tile in path order.
         first_idx: Optional[int] = None
@@ -3064,6 +3067,45 @@ class PathDispatcher:
             return bool(prev.is_switch)
         return False
 
+    def _segment_block_exit_edge(
+        self, segment: "PathSegment", block_id: str
+    ) -> Optional[str]:
+        """The edge through which `segment` leaves `block_id`: the heading from
+        the block's last tile to the next tile of the segment, or, when the
+        block ends the segment, that last tile's geometric exit for the edge
+        the segment entered it by. `None` when the segment does not cross the
+        block. Same frame as the exit edge a tail records when it clears a
+        block, which `Block.caution.exit_edge` holds.
+        """
+        tiles = segment.tiles
+        last_idx: Optional[int] = None
+        for idx, tile in enumerate(tiles):
+            track = self.network.get_track(*tile)
+            if track is not None and track.block_id == block_id:
+                last_idx = idx
+            elif last_idx is not None:
+                break
+        if last_idx is None:
+            return None
+        if last_idx + 1 < len(tiles):
+            here, there = tiles[last_idx], tiles[last_idx + 1]
+            return direction_from_delta(there[0] - here[0], there[1] - here[1])
+        if last_idx == 0:
+            return None
+        prev, here = tiles[last_idx - 1], tiles[last_idx]
+        heading_in = direction_from_delta(here[0] - prev[0], here[1] - prev[1])
+        if heading_in is None:
+            return None
+        # On a corner tile the heading in is not the exit, so read the tile's
+        # one exit for the edge the segment came in by.
+        track = self.network.get_track(*here)
+        exits = (
+            track.get_exits(OPPOSITE_DIRECTIONS[heading_in], use_switch_state=True)
+            if track is not None
+            else []
+        )
+        return exits[0] if len(exits) == 1 else heading_in
+
     def _block_is_holding_point(self, block_id: str) -> bool:
         """True when ``block_id`` is an operator-marked holding point.
 
@@ -3084,17 +3126,21 @@ class PathDispatcher:
         path's ``resource_sequence`` rather than a ``PathSegment``.
 
         A block no opposing move can reach is safe to stop just inside, whether
-        it is one-way or in CAUTION behind a leader
-        (``Block.excludes_opposing_traversal``). Otherwise the terminal fouls the
-        junction when the path enters it directly off a switch — i.e. the
-        resource entry immediately before it in the sequence is a switch. This is
-        the ``resource_sequence`` companion to
+        it is one-way or in CAUTION behind a leader this path follows
+        (``Block.excludes_opposing_traversal``, given the terminal entry's own
+        ``exit_edge``). Otherwise the terminal fouls the junction when the path
+        enters it directly off a switch — i.e. the resource entry immediately
+        before it in the sequence is a switch. This is the
+        ``resource_sequence`` companion to
         ``_terminal_fouls_two_way_switch_block``.
         """
         block = self.network.blocks.get(terminal_block_id)
         if block is None:
             return False
-        if block.excludes_opposing_traversal():
+        terminal_exit_edge = (
+            path.resource_sequence[terminal_seq_index].exit_edge or None
+        )
+        if block.excludes_opposing_traversal(terminal_exit_edge):
             return False
         prev_index = terminal_seq_index - 1
         return (

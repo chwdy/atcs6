@@ -2,13 +2,13 @@
 turnaround: `block_manager.py._reevaluate_caution_blocks()` reads only occupancy
 and connectivity, never the occupant's `travel_direction`.
 
-Per design_new.md, a stale margin is retired only when the reversed train's new
-path reserves the block the other way (the Opposing-traversal caution clear in
-`reserve_blocks_for_path`) or the ordinary tail-vacate cascade clears it as the
-train leaves the protected chain — not on the cab flip itself. So at the end of
-the turnaround BLOCK_BRANCH_1's northbound CAUTION is preserved (the return route
-never reserves it back), while BLOCK_BRANCH_2's southbound CAUTION is preserved
-for the ordinary reason (an OCCUPIED forward block).
+Per design_new.md, a reservation never changes a block's caution: a margin clears
+only through the ordinary tail-vacate cascade, on clean entry, or by the
+completion-time exception — not on the cab flip itself, and not when a path
+reserves the block the other way (that train is simply not capped). So at the end
+of the turnaround BLOCK_BRANCH_1's northbound CAUTION is preserved, while
+BLOCK_BRANCH_2's southbound CAUTION is preserved for the ordinary reason (an
+OCCUPIED forward block).
 
 Parametrized over three playback speeds (dt = 0.1 / 0.2 / 0.3).
 """

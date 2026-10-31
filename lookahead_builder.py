@@ -29,6 +29,18 @@ if TYPE_CHECKING:
     from train_controller import TrainController
 
 
+def block_exit_edges_in_plan(resource_sequence: Any) -> Dict[str, str]:
+    """Each block's `exit_edge` from its entry in a path's `resource_sequence`
+    — the train's own traversal of that block (design_new.md "ATC speed
+    limit"). A path holds a block at most once, so the first entry is the
+    only one."""
+    edges: Dict[str, str] = {}
+    for resource in resource_sequence or []:
+        if resource.resource_type == "block" and resource.exit_edge:
+            edges.setdefault(resource.resource_id, resource.exit_edge)
+    return edges
+
+
 class LookaheadBuilder:
     """Computes `LookaheadPoint` lists for a `TrainController`.
 
@@ -280,6 +292,8 @@ class LookaheadBuilder:
             else cumulative_distance_cm
         )
 
+        plan_block_exit_edges = block_exit_edges_in_plan(resource_sequence)
+
         seen_blocks: set[str] = set()
         seen_signals: set[str] = set()
         seen_switches: set[Tuple[int, int]] = set()
@@ -347,6 +361,7 @@ class LookaheadBuilder:
 
                     block_state = None
                     block_speed_limit: Optional[float] = None
+                    caution_exit_edge: Optional[str] = None
                     block = self._c.network.blocks.get(tile_block_id)
                     if block:
                         if block.state:
@@ -356,6 +371,7 @@ class LookaheadBuilder:
                             and block.speed_limit_kmh < float("inf")
                         ):
                             block_speed_limit = block.speed_limit_kmh
+                        caution_exit_edge = block.caution_exit_edge
 
                     blocks.append(
                         {
@@ -367,6 +383,11 @@ class LookaheadBuilder:
                             "length_cm": block_length,
                             "tile_count": tile_count,
                             "speed_limit_kmh": block_speed_limit,
+                            # Both edges the caution cap compares (design_new.md
+                            # "ATC speed limit"): the departing train's, and
+                            # this train's own exit from its live path.
+                            "caution_exit_edge": caution_exit_edge,
+                            "exit_edge": plan_block_exit_edges.get(tile_block_id),
                         }
                     )
 

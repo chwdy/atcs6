@@ -804,22 +804,10 @@ class BlockManager:
         for block_id in block_ids:
             block = self._block_registry[block_id]
             traversal = directions[block_id]
+            # A reservation never changes a block's caution (design_new.md
+            # "BlockManager"): a train leaving the block out of its other end is
+            # simply not capped, which the readers decide from its own traversal.
             block.reserve_for_path(path_id, train_id, traversal.exit_edge)
-            # Opposing-traversal caution clear (design_new.md "Opposing-traversal
-            # caution clear"): a block is a switch-free two-ended run, so this
-            # reserved exit_edge either equals block.caution.exit_edge (the
-            # reserving train traverses the way the departing train went — keep
-            # the margin, which the CAUTION_SPEED_LIMIT_KMH cap exists for) or is
-            # the block's other end (it traverses away from the protected chain,
-            # whose margin now sits behind it and restricts nothing ahead — retire
-            # it, so the computed state becomes RESERVED). No _reevaluate_caution
-            # cascade is needed: clearing one block's caution changes no block's
-            # occupied_by, which is the only thing the reevaluator's keep test reads.
-            if (
-                block.caution is not None
-                and traversal.exit_edge != block.caution.exit_edge
-            ):
-                block.caution = None
             self._index_add_reserved(block_id, train_id)
             self._record_history(
                 block_id,
@@ -1113,12 +1101,9 @@ class BlockManager:
                 cleared.append(block.block_id)
                 continue
             # An OCCUPIED forward block keeps this CAUTION: a train is still
-            # standing in the protected chain. Retiring a margin the protecting
-            # train has reversed away from is NOT this walk's job — that is the
-            # Opposing-traversal caution clear in reserve_blocks_for_path
-            # (design_new.md: the reevaluator reads no train, controller, or
-            # travel_direction state; occupancy of the one forward block is the
-            # whole test).
+            # standing in the protected chain. The reevaluator reads no train,
+            # controller, or travel_direction state; occupancy of the one
+            # forward block is the whole test (design_new.md "Block", `caution`).
 
         for block_id in cleared:
             self._record_history(
