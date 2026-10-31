@@ -588,6 +588,8 @@ color: var(--accent-hover);
 - The tile is taller than the standard 28px control because it stacks an icon glyph (~16px) above a tiny label (~8px) — that vertical stack is the whole point of the pattern.
 - No border on the tile itself. The `--bg-dark` fill against the panel's `--bg-panel` is what gives each tile its shape; grouping comes from the category dividers above the grid, not from per-tile boxes.
 - Icons are Tabler glyphs (`<i class="ti ti-… tool-icon"></i>`), looked up through the icon roster like every other button — see Icons above. Labels are 1-2 words at ~8px.
+- A group capsule opens its flyout on hover or on click, and a click never closes it: hover has usually opened it already, so a toggle would shut the menu the moment the user clicks to use it. The flyout closes when the pointer leaves the group, on an outside click, on Escape, or once a tool is picked.
+- Each rail capsule's number badge (and its number-key shortcut) is fixed across modes: it is the capsule's place among every tool in every mode. When Operate mode hides a capsule, the numbers skip it rather than shifting the ones below — Train is 8 in both modes.
 
 Reference: `.tool-btn` in
 [components/tools.css](../static/css/components/tools.css).
