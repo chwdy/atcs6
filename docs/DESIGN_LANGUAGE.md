@@ -1563,7 +1563,7 @@ the row's own click target.
 
 A card whose body collapses behind a native `<details>` / `<summary>`
 toggle. Used for "I might want to look at this, but not by default"
-(debug zone, advanced settings). The card itself follows the Standard
+(the train panel's Details, advanced settings). The card itself follows the Standard
 card styling. Summary row is 10px UPPERCASE weight-600 `--text-secondary`
 with a rotating `▸` caret that points down when open. (`--text-secondary`
 rather than the `--text-tertiary` used for field labels: a disclosure
