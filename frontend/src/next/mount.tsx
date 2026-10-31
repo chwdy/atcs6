@@ -11,6 +11,8 @@
 import { effect } from '@preact/signals';
 import { render } from 'preact';
 
+import type { Editor } from '../editor/editor';
+import { mountEditorScreen } from './editor/screen';
 import { screen, type Screen } from './state';
 import { TopBar, type TopBarActions, type ToolWindow } from './top-bar';
 
@@ -22,7 +24,7 @@ export function isNextUI(search: string = window.location.search): boolean {
 /** The App methods the new layout calls. Each is what one of today's header
  *  buttons runs, so both headers behave the same. */
 export interface NextHost {
-  editor: { showSpeedProfilesPanel(): void | Promise<void> };
+  editor: Editor;
   newLayout(): Promise<void>;
   openLoadLayoutDialog(): Promise<void>;
   openSaveLayoutDialog(): Promise<void>;
@@ -90,4 +92,5 @@ export function mountNextUI(host: NextHost): void {
   slot.className = 'next-top-bar-slot';
   oldHeader?.parentElement?.insertBefore(slot, oldHeader);
   render(<TopBar actions={topBarActions(host)} />, slot);
+  mountEditorScreen(host.editor);
 }

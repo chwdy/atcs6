@@ -1,0 +1,252 @@
+/* ============================================================================
+   ?ui=next Editor screen (docs/ui-layout-rewrite-plan.md §4;
+   frontend/src/next/editor/).
+
+   The tool bar and options row sit across the top of the screen area, the
+   right panel right of the canvas. Every rule that touches today's layout is
+   scoped to html[data-ui="next"][data-screen="editor"], so the other screens
+   and the page without the flag are unchanged.
+   ============================================================================ */
+
+/* Today's regions this screen replaces: the tool rail, the docked inspector,
+   and any window split off it that today's layout saved. */
+html[data-ui="next"][data-screen="editor"] .sidebar,
+html[data-ui="next"][data-screen="editor"] #secondary-sidebar,
+html[data-ui="next"][data-screen="editor"] .floating-window[data-window-kind="tab-group"] {
+    display: none !important;
+}
+
+/* The new regions show only on this screen. The panel needs !important to
+   beat .floating-window's display while it is popped out. */
+html[data-ui="next"]:not([data-screen="editor"]) .ned-bar-slot,
+html[data-ui="next"]:not([data-screen="editor"]) .ned-panel {
+    display: none !important;
+}
+
+/* The slot only places the panel in the workspace row; it draws nothing. */
+.ned-panel-slot {
+    display: contents;
+}
+
+/* ---- Tool bar ---- */
+.ned-bar {
+    background-color: var(--bg-panel);
+    border-bottom: 1px solid var(--border-color);
+}
+
+.ned-tools {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+    padding: var(--space-6) var(--space-12);
+}
+
+.ned-tool {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-6);
+    height: var(--control-height-xs);
+    padding: 0 var(--space-10);
+    border: none;
+    border-radius: var(--control-radius-sm);
+    background: transparent;
+    color: var(--text-secondary);
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+}
+
+.ned-tool .ti {
+    font-size: 16px;
+}
+
+.ned-tool:hover {
+    background-color: var(--bg-hover);
+    color: var(--text-primary);
+}
+
+/* Active: the accent tint, as the segmented control (DESIGN_LANGUAGE.md §3). */
+.ned-tool.active {
+    background-color: rgba(var(--accent-rgb), 0.18);
+    color: var(--accent-hover);
+}
+
+/* The number key, small and muted before the icon. */
+.ned-tool-key {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-tertiary);
+}
+
+.ned-tool.active .ned-tool-key {
+    color: var(--accent-hover);
+}
+
+/* ---- Options row: the picked tool's variants and one line on what it does ---- */
+.ned-options {
+    display: flex;
+    align-items: center;
+    gap: var(--space-8);
+    min-height: var(--control-height-xs);
+    padding: var(--space-4) var(--space-12);
+    border-top: 1px solid var(--border-color);
+    background-color: var(--bg-dark);
+}
+
+.ned-options-label {
+    font-size: var(--font-size-label);
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+}
+
+/* Sized to its buttons, not to the row (.switch-group takes 25–50% of a
+   panel row by default). */
+.ned-variants {
+    flex: none;
+    min-width: 0;
+    max-width: none;
+}
+
+.ned-variants .switch-btn {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-4);
+    padding: 3px var(--space-10);
+}
+
+/* Ghost buttons (DESIGN_LANGUAGE.md §3). `.btn` has no style of its own
+   outside the regions that give it one (the top bar, panel bodies), so the
+   options row and the panel header give it one here. */
+.ned-options-btn,
+.ned-panel-header .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-4);
+    height: var(--control-height-xs);
+    min-height: 0;
+    padding: 0 var(--space-10);
+    background-color: var(--bg-dark);
+    color: var(--text-primary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--control-radius-sm);
+    font-family: var(--font-main);
+    font-size: 11px;
+    font-weight: 500;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.ned-options-btn {
+    height: 24px;
+}
+
+.ned-options-btn:hover,
+.ned-panel-header .btn:hover {
+    color: var(--accent-hover);
+    border-color: var(--accent-color);
+}
+
+.ned-panel-header .btn .ti {
+    font-size: 15px;
+}
+
+.ned-hint {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 11px;
+    color: var(--text-secondary);
+}
+
+/* ---- Right panel ---- */
+.ned-panel {
+    order: 2;
+    flex: none;
+    display: flex;
+    flex-direction: column;
+    width: 340px;
+    min-width: 0;
+    background-color: var(--bg-panel);
+    border-left: 1px solid var(--border-color);
+}
+
+.ned-panel-header {
+    display: flex;
+    align-items: center;
+    gap: var(--space-6);
+    flex-shrink: 0;
+    padding: var(--space-8) var(--space-10);
+    border-bottom: 1px solid var(--border-color);
+}
+
+/* Popped out, the header is the drag handle. */
+.ned-panel.floating-window .ned-panel-header {
+    cursor: move;
+}
+
+.ned-panel-title {
+    display: flex;
+    align-items: center;
+    gap: var(--space-6);
+    flex: 1;
+    min-width: 0;
+}
+
+.ned-panel-title[hidden],
+.ned-panel-legacy[hidden] {
+    display: none;
+}
+
+/* Today's title <h3> lands in .ned-panel-title (legacy-panel.ts); it was
+   styled by `.secondary-sidebar-header h3`, so it needs the same here. */
+.ned-panel-title h3,
+.ned-panel-title-empty {
+    flex: 1;
+    min-width: 0;
+    margin: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 0.85rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    color: var(--text-primary);
+}
+
+.ned-panel-title-empty {
+    color: var(--text-secondary);
+}
+
+.ned-panel-header .btn-icon-only {
+    width: var(--control-height-xs);
+    padding: 0;
+}
+
+.ned-panel-body,
+.ned-panel-legacy {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+}
+
+.ned-panel-empty {
+    padding: var(--space-16) var(--space-12);
+}
+
+/* The tile panel's Advanced section (the track bits). */
+.next-advanced {
+    margin-top: var(--space-12);
+}
+
+.next-advanced-note {
+    margin: 0;
+    font-size: 11px;
+    color: var(--text-secondary);
+}

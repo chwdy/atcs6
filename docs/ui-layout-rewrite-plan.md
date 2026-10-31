@@ -372,6 +372,15 @@ list are Preact. These parts of the Operate screen still reach today's code:
 | Calibrate button | Switches to the Locomotives tab; the train stays App's selected train | Phase 5 |
 | Switch panel's Lock section | Shows who holds the switch (`Switch.locks`, `train_protection_claims`); design_new.md has no operator lock command | A spec decision |
 
+**Phase 3 (Editor screen)** is done on `claude/ui-next-editor-7edced`. What it
+still borrows from today's layout:
+
+| Editor screen part | Does for now | Until |
+|--------------------|--------------|-------|
+| Right panel body | Shows today's entity panels (segment, block, switch, signal, platform, station, tunnel, tile, and the three lists): today's panel body, title and back link move into the right panel while the Editor screen shows | Each panel is ported to Preact |
+| Tile panel's Advanced section | Today's track-bit editor, moved into a closed section after the tile panel draws | The tile panel is ported |
+| Track → Extend | Not offered: Track has Draw and Remove, because Draw already joins track drawn from an existing end | Extend needs its own behavior first |
+
 ---
 
 ## 12. Decisions (taken 2026-10-30)

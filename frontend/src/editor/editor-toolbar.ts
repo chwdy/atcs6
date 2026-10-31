@@ -71,7 +71,15 @@ export class ToolbarHandler {
    * tools also enter their editor mode).
    */
   async _dispatchTool(btn: HTMLElement): Promise<void> {
-    const newTool = btn.dataset.tool || '';
+    await this.selectTool(btn.dataset.tool || '');
+  }
+
+  /**
+   * Pick a tool by its contribution id, exactly as clicking its rail button
+   * does. The ?ui=next Editor screen's tool bar calls this, since it has no
+   * rail buttons.
+   */
+  async selectTool(newTool: string): Promise<void> {
     const contribution = this.editor._toolsById.get(newTool);
     const oldTool = this.editor.selectedTool;
 

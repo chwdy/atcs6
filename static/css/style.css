@@ -26,4 +26,5 @@
 @import url('./features/speed-profiles.css');
 @import url('./features/hardware.css');
 @import url('./next/operate.css');
+@import url('./next/editor.css');
 @import url('./base/motion.css');
