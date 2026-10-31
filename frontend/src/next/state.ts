@@ -11,6 +11,7 @@
 import { signal } from '@preact/signals';
 
 import type { SessionStateView } from '../lib/session-controls';
+import { updateFromNetwork as updateLocomotivesFromNetwork } from './locomotives/state';
 
 /** The four screens picked in the top bar (plan §2). */
 export type Screen = 'editor' | 'hardware' | 'operate' | 'locomotives';
@@ -52,4 +53,5 @@ export function updateFromNetwork(network: any): void {
   const env: string | null = network?.operation_environment ?? null;
   if (operationEnvironment.peek() !== env) operationEnvironment.value = env;
   if (typeof network?.simulation_speed === 'number') simulationSpeed.value = network.simulation_speed;
+  updateLocomotivesFromNetwork(network);
 }

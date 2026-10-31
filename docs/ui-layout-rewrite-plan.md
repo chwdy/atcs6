@@ -355,7 +355,7 @@ yet:
 | Top bar control | Does for now | Until |
 |-----------------|--------------|-------|
 | Hardware Setup steps 2 and 4 | Show the dialog's own sections (bridge, chip list, layout tally, idle threshold, wiring overview), drawn by `ui/hardware-panel.ts` | Those sections are ported to components |
-| Locomotives tab | Operate mode with the Speed Profiles panel open | Phase 5 |
+| Locomotives tab | Its own screen (phase 5), in Operate mode. The Speed Profile panel on it is today's panel code (curve editor, calibration rows) drawn into the screen, with the five steps and the refused commands added around it; today's Profiles tool and a train's Edit profile button open this screen | The panel is rebuilt as components |
 | Logs menu | Opens today's Event Log, Raw Occupancy and Diagnostics windows | Phase 6 |
 | Occupancy Bench and Virtual Bench (Hardware Setup step 4) | Today's bench panels, built inside the step instead of a window | The benches are ported to components |
 | View menu → Layers | Flips the Debug Info checkboxes in the Settings dialog, which the renderer reads | Layers get their own state |

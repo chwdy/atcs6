@@ -15,6 +15,7 @@ import type { Editor } from '../editor/editor';
 import { mountEditorScreen } from './editor/screen';
 import { mountHardwareSetup } from './hardware/screen';
 import { showHardwareSetup } from './hardware/state';
+import { mountLocomotivesScreen, type LocomotivesHost } from './locomotives';
 import { screen, type Screen } from './state';
 import { TopBar, type TopBarActions, type ToolWindow } from './top-bar';
 
@@ -25,7 +26,7 @@ export function isNextUI(search: string = window.location.search): boolean {
 
 /** The App methods the new layout calls. Each is what one of today's header
  *  buttons runs, so both headers behave the same. */
-export interface NextHost {
+export interface NextHost extends LocomotivesHost {
   editor: Editor;
   newLayout(): Promise<void>;
   openLoadLayoutDialog(): Promise<void>;
@@ -43,10 +44,10 @@ export interface NextHost {
 }
 
 /**
- * Until each screen is built (plan §11), a tab maps onto today's layout:
- * Editor and Operate are today's two editor modes, and Locomotives is Operate
- * with the Speed Profiles panel open. Hardware Setup is its own screen
- * (next/hardware/).
+ * Pick a screen. Editor and Operate are today's two editor modes, each with its own
+ * regions (./editor, ./operate). Hardware Setup is its own screen
+ * (./hardware). Locomotives is its own screen (./locomotives), in Operate
+ * mode.
  */
 export function showScreen(host: NextHost, next: Screen): void {
   if (next === 'hardware') {
@@ -55,7 +56,6 @@ export function showScreen(host: NextHost, next: Screen): void {
   }
   host.setEditorMode(next === 'editor' ? 'edit' : 'sim');
   screen.value = next;
-  if (next === 'locomotives') void host.editor.showSpeedProfilesPanel();
 }
 
 function toggleWindow(name: ToolWindow): void {
@@ -101,4 +101,5 @@ export function mountNextUI(host: NextHost): void {
     activate: () => host.activateEnvironment(),
     showScreen: (next) => showScreen(host, next),
   });
+  mountLocomotivesScreen(host, () => showScreen(host, 'locomotives'));
 }
