@@ -1,11 +1,10 @@
 /* Floating window chrome — the shared shell for every draggable/resizable
-   panel: the diagnostics panel, the secondary sidebar's floating mode, and
-   any window spawned by splitting a tab out of it. Built by
+   panel: the Editor and Operate right panels popped out, the Train Monitor
+   and the floating Virtual Bench. Built by
    frontend/src/lib/window-manager.ts (FloatingWindow). Header follows
    DESIGN_LANGUAGE.md §2 "The four panel parts"; resizers follow §8.
    Content-specific panels compose this class rather than redeclaring the
-   same border/shadow/resizer geometry — see diagnostics.css for an example
-   consumer. */
+   same border/shadow/resizer geometry. */
 
 .floating-window {
     position: fixed;

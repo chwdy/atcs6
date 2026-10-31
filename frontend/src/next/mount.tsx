@@ -1,12 +1,10 @@
 /**
- * Entry point of the ?ui=next layout (docs/ui-layout-rewrite-plan.md).
+ * Entry point of the page layout (docs/ui-layout-rewrite-plan.md): the top
+ * bar, the four screens and the Logs panel.
  *
- * The new layout is built next to today's, in the same page. Opened with
- * `?ui=next`, it marks <html data-ui="next"> and <html data-screen="…">,
- * which hide each of today's regions that a new one has replaced
- * (static/css/layout/next-top-bar.css and each screen's stylesheet), and
- * mounts the new regions. Regions not rebuilt yet keep working as today,
- * so the app stays fully usable under the flag at every phase.
+ * It marks <html data-screen="editor|hardware|operate|locomotives"> with the
+ * picked screen, so each screen's stylesheet can show its own regions and
+ * hide the others' while it is the one showing.
  */
 import { effect } from '@preact/signals';
 import { render } from 'preact';
@@ -20,22 +18,15 @@ import { mountLocomotivesScreen, type LocomotivesHost } from './locomotives';
 import { mountLogsPanel } from './logs/logs-panel';
 import { toggleLogs } from './logs/state';
 import { screen, type Screen } from './state';
-import { TopBar, type TopBarActions, type ToolWindow } from './top-bar';
+import { TopBar, type TopBarActions } from './top-bar';
 
-/** Whether this page runs the new layout. */
-export function isNextUI(search: string = window.location.search): boolean {
-  return new URLSearchParams(search).get('ui') === 'next';
-}
-
-/** The App methods the new layout calls. Each is what one of today's header
- *  buttons runs, so both headers behave the same. */
+/** The App methods the layout calls: the session and layout actions. */
 export interface NextHost extends LocomotivesHost, FirstRunHost {
   editor: Editor;
   newLayout(): Promise<void>;
   openLoadLayoutDialog(): Promise<void>;
   openSaveLayoutDialog(): Promise<void>;
   setEditorMode(mode: 'edit' | 'sim'): void;
-  openHardwareSetup(): void;
   activateEnvironment(): Promise<void>;
   togglePlayPause(): Promise<void>;
   setSimulationSpeed(speed: number): Promise<void>;
@@ -61,11 +52,6 @@ export function showScreen(host: NextHost, next: Screen): void {
   screen.value = next;
 }
 
-function toggleWindow(name: ToolWindow): void {
-  const panel = (window as any)[name] as { toggle(): void | Promise<void> } | undefined;
-  void panel?.toggle();
-}
-
 export function topBarActions(host: NextHost): TopBarActions {
   return {
     newLayout: () => host.newLayout(),
@@ -80,25 +66,23 @@ export function topBarActions(host: NextHost): TopBarActions {
     resetLayout: () => host.resetLayout(),
     clearConflict: () => host.clearFatalConflict(),
     emergencyStop: () => host.emergencyStop(),
-    toggleWindow,
     toggleLogs,
     openSettings: () => host.openSettings(),
     restartServer: () => host.restartServer(),
   };
 }
 
-/** Mark the page as running the new layout and mount the regions built so far. */
+/** Mount the top bar, the screens and the Logs panel. */
 export function mountNextUI(host: NextHost): void {
-  document.documentElement.dataset.ui = 'next';
-  // <html data-screen> names the picked screen, so each screen's CSS can hide
-  // today's regions only while that screen is the one showing.
+  // <html data-screen> names the picked screen, so each screen's CSS shows
+  // its regions only while that screen is the one showing.
   effect(() => {
     document.documentElement.dataset.screen = screen.value;
   });
-  const oldHeader = document.querySelector('.app-header');
+  const container = document.querySelector('.app-container');
   const slot = document.createElement('div');
   slot.className = 'next-top-bar-slot';
-  oldHeader?.parentElement?.insertBefore(slot, oldHeader);
+  container?.prepend(slot);
   render(<TopBar actions={topBarActions(host)} />, slot);
   mountEditorScreen(host.editor);
   mountHardwareSetup({

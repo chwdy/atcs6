@@ -1,13 +1,13 @@
 /**
- * The ?ui=next top bar (docs/ui-layout-rewrite-plan.md §3).
+ * The top bar (docs/ui-layout-rewrite-plan.md §3).
  *
  * Left: the app name, the Layout menu and the four screen tabs. Right: the
  * status control (environment, session state, and the one next-step button),
  * Emergency stop, and the Logs, View and Settings menus.
  *
- * It reuses today's header styles by carrying the `app-header` class, and it
- * runs no logic of its own: every control calls a `TopBarActions` method,
- * which App implements with the same code today's header buttons run.
+ * Its styles are the `app-header` rules in static/css/layout/shell.css and
+ * static/css/layout/next-top-bar.css. It runs no logic of its own: every
+ * control calls a `TopBarActions` method, which App implements.
  */
 import { useState } from 'preact/hooks';
 
@@ -25,15 +25,6 @@ import { MenuButton, type MenuSection } from './menu';
 import { NEXT_STEP_BUTTON, nextStep, type NextStep } from './next-step';
 import { operationEnvironment, screen, sessionState, simulationSpeed, type Screen } from './state';
 
-/** The floating tool windows the Logs and Settings menus open until their
- *  phases move them (Logs panel, plan §8; Hardware Setup, plan §7). */
-export type ToolWindow =
-  | 'eventLog'
-  | 'occupancyMonitor'
-  | 'diagnosticsPanel'
-  | 'occupancyBench'
-  | 'virtualBench';
-
 export interface TopBarActions {
   newLayout(): void | Promise<void>;
   openLayout(): void | Promise<void>;
@@ -46,7 +37,6 @@ export interface TopBarActions {
   resetLayout(): Promise<void>;
   clearConflict(): Promise<void>;
   emergencyStop(): Promise<void>;
-  toggleWindow(name: ToolWindow): void;
   /** Open or close the Logs panel (plan §8). */
   toggleLogs(): void;
   openSettings(): void;

@@ -11,11 +11,8 @@ vi.mock('../lib/context-menu', async (importOriginal) => ({
 describe('tile context menu — trains', () => {
   beforeEach(() => { vi.clearAllMocks(); });
 
-  /** Editor stub with the one train sitting on tile (3, 4). `openAsOwnTab`
-   *  stands in for the real one: it just runs the render, and records that the
-   *  menu routed through it (see EditorUIHandler.openAsOwnTab). */
+  /** Editor stub with the one train sitting on tile (3, 4). */
   function makeEditor(overrides: Record<string, any> = {}) {
-    const openAsOwnTab = vi.fn(async (render: () => any) => render());
     return {
       cachedNetwork: { trains: [{ id: 'TRAIN_1' }], blocks: {} },
       stateManager: {
@@ -23,7 +20,6 @@ describe('tile context menu — trains', () => {
       },
       showTrainControlPanel: vi.fn(),
       selectElement: vi.fn(),
-      uiHandler: { openAsOwnTab },
       editorMode: 'sim',
       ...overrides,
     } as any;
@@ -53,17 +49,10 @@ describe('tile context menu — trains', () => {
     expect(selectTrain).not.toHaveBeenCalled();
   });
 
-  it('opens every menu pick as its own tab, not into the shared preview slot', () => {
+  it('Inspect tile opens the Tile Editor whatever the panel shows', () => {
     const editor = makeEditor();
-    const sections = openMenu(editor);
-
-    const trainItem = sections[0].items.find((item: any) => item.detail === 'Train');
-    trainItem!.onSelect();
-    expect(editor.uiHandler.openAsOwnTab).toHaveBeenCalledTimes(1);
-
-    const inspectItem = sections[1].items.find((item: any) => item.label === 'Inspect tile');
+    const inspectItem = openMenu(editor)[1].items.find((item: any) => item.label === 'Inspect tile');
     inspectItem!.onSelect();
-    expect(editor.uiHandler.openAsOwnTab).toHaveBeenCalledTimes(2);
     expect(editor.selectElement).toHaveBeenCalledWith({ x: 3, y: 4 }, { force: true });
   });
 

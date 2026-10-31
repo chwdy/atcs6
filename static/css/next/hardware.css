@@ -1,5 +1,5 @@
 /* ============================================================================
-   ?ui=next Hardware Setup screen (docs/ui-layout-rewrite-plan.md §7;
+   Hardware Setup screen (docs/ui-layout-rewrite-plan.md §7;
    frontend/src/next/hardware/screen.tsx).
 
    A full screen over the page body: the seven steps in a column on the left,
@@ -9,8 +9,8 @@
 
 /* While Hardware Setup is the screen, today's canvas area is hidden but keeps
    its size, so the layout canvas does not have to resize when you come back.
-   `visibility` also hides the train monitor, which lives inside it. */
-html[data-ui="next"][data-screen="hardware"] .app-body > .content-area {
+   `visibility` also hides the Train Monitor window, which lives inside it. */
+html[data-screen="hardware"] .app-body > .content-area {
     visibility: hidden;
 }
 

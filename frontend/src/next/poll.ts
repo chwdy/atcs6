@@ -1,5 +1,5 @@
 /**
- * Polling for the ?ui=next panels that need data the network snapshot does
+ * Polling for the panels that need data the network snapshot does
  * not carry (event log, diagnostics, benches, route runs).
  *
  * A panel starts polling when it appears and stops when it goes away, so a

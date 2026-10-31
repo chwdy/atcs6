@@ -1,5 +1,5 @@
 /**
- * The server state the ?ui=next layout reads, as Preact signals.
+ * The server state the layout reads, as Preact signals.
  *
  * A signal is a value that re-draws only the components that read it when it
  * changes. `App.refreshNetwork` hands each network snapshot to

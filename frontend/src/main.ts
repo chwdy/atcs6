@@ -4,9 +4,8 @@
 //
 // These imports assemble the bundle. app.ts (last) transitively imports most of
 // them for their exports; they are listed explicitly here as the module
-// manifest and to guarantee inclusion. panels/diagnostics is imported purely for
-// its side effect — it self-bootstraps the diagnostics panel onto window — and app
-// registers the DOMContentLoaded handler that constructs `new App()`.
+// manifest and to guarantee inclusion. app registers the DOMContentLoaded
+// handler that constructs `new App()`.
 import './lib/constants';
 import './lib/theme';
 import './lib/api';
@@ -16,11 +15,8 @@ import './lib/pathfinders';
 import './lib/camera';
 import './renderer';
 import './panels/train-monitor';
-import './panels/diagnostics';
-import './panels/occupancy-monitor';
 import './panels/occupancy-bench';
 import './panels/virtual-bench';
-import './panels/event-log';
 // The Editor facade (item #7, Wave 3) imports the 11 handler classes directly.
 import './editor/editor';
 // The application bootstrap (item #7, Wave 4 — the last classic script). Imported

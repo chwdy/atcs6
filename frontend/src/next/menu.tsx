@@ -1,5 +1,5 @@
 /**
- * A button that opens a drop-down menu, for the ?ui=next top bar.
+ * A button that opens a drop-down menu, for the top bar.
  *
  * It looks like the tile context menu (`.tile-context-menu*` in
  * components/context-menu.css) but hangs under its button, and it has three

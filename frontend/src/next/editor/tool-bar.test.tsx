@@ -79,19 +79,16 @@ describe('Editor tool bar', () => {
 });
 
 describe('Editor screen number keys', () => {
-  const press = (key: string, init: KeyboardEventInit = {}) => {
-    const e = new KeyboardEvent('keydown', { key, cancelable: true, ...init });
-    const stop = vi.spyOn(e, 'stopPropagation');
-    return { e, stop };
-  };
+  const press = (key: string, init: KeyboardEventInit = {}) => ({
+    e: new KeyboardEvent('keydown', { key, cancelable: true, ...init }),
+  });
 
-  it('picks the bar tool and keeps the key from today’s hidden rail', () => {
+  it('picks the bar tool', () => {
     activeToolId.value = 'inspect';
     const actions = { pick: vi.fn(), showBlockList: vi.fn() };
-    const { e, stop } = press('7');
+    const { e } = press('7');
     onEditorScreenKey(e, actions);
     expect(actions.pick).toHaveBeenCalledWith('segment');
-    expect(stop).toHaveBeenCalled();
     expect(e.defaultPrevented).toBe(true);
   });
 

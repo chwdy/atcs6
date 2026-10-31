@@ -3,9 +3,8 @@
  * `GET /api/inspector/entity/train/<id>`, value formatting, sorting, and the
  * keys that name each row and each folded part of a value.
  *
- * Copied from today's panels/diagnostics.ts, where the same functions sit
- * inside the window's closure and cannot be imported or tested. That file is
- * deleted with the other old windows in plan phase 8.
+ * Copied from the old Diagnostics window, where the same functions sat
+ * inside the window's closure and could not be imported or tested.
  */
 
 /** One property the inspector reports. Read defensively: the panel only reads

@@ -3,14 +3,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { SpeedProfileEditorHandler, type SpeedProfilePanelHost } from './editor-speed-profiles';
 
-// Where the Speed Profile panel draws: the secondary sidebar without a host
-// (today's layout), or the host's element (the ?ui=next Locomotives screen).
+// Where the Speed Profile panel draws: the panel host without a host
+// element, or the host's element (the Locomotives screen).
 
 function fakeEditor() {
   return {
     _currentEditorType: null as string | null,
     _currentEditorId: null as string | null,
-    _activeTabGroupForRestore: null as unknown,
     showSecondarySidebar: vi.fn(),
     api: {
       getSpeedProfile: vi.fn(async (id: string) => ({
@@ -66,17 +65,7 @@ describe('SpeedProfileEditorHandler host', () => {
     expect(editor.showSecondarySidebar).not.toHaveBeenCalled();
     expect(editor._currentEditorType).toBeNull();
     expect(host.el.querySelector('#sp-cal-group')).not.toBeNull();
-    expect(host.profileShown).toHaveBeenCalledWith('p1', false);
-  });
-
-  it('tells the host when a sidebar tab restore asked for the profile', async () => {
-    const editor = fakeEditor();
-    const handler = new SpeedProfileEditorHandler(editor);
-    const host = fakeHost();
-    handler.setHost(host);
-    editor._activeTabGroupForRestore = {};
-    await handler.showProfileEditor('p1');
-    expect(host.profileShown).toHaveBeenCalledWith('p1', true);
+    expect(host.profileShown).toHaveBeenCalledWith('p1');
   });
 
   it('sends a request for the profile list to the host', async () => {

@@ -1,6 +1,6 @@
-// app.ts — top-level application bootstrap (header controls, simulation
-// polling, network refresh, layout save/load, settings, train selection,
-// the toast system, and sidebar resize).
+// app.ts — top-level application bootstrap: the session and layout actions
+// the top bar calls, simulation polling, network refresh, layout save/load,
+// settings, and train selection.
 //
 // Migrated from static/js/app.js (longterm_todo.md item #7, Wave 4 — the last
 // classic script). Behavior is unchanged. main.ts imports this module last;
@@ -24,17 +24,16 @@ import {
   noteRequestSuccess,
 } from './ui/connection-monitor';
 import { setupSettingsPanel } from './ui/settings-panel';
-import { activationBlockMessage, setupHardwarePanel, refreshHardwarePanel } from './ui/hardware-panel';
+import { activationBlockMessage, refreshHardwarePanel } from './ui/hardware-panel';
 import { updateTrainDebugPanel as renderTrainDebugPanel, hideTrainDebugPanel as renderHideTrainDebugPanel } from './panels/train-debug-panel';
 import { updateTileDetails } from './panels/tile-debug-inspector';
 import { showConfirmModal, showFormModal } from './lib/helpers';
 import { setLabelSpacing } from './lib/constants';
 import { api } from './lib/api';
 import { NetworkPoller } from './lib/network-poll';
-import { environmentLabel, sessionControls, sessionHint, sessionLabel } from './lib/session-controls';
 import { stateManager } from './lib/state-manager';
 import { showToast } from './lib/toast';
-import { isNextUI, mountNextUI } from './next/mount';
+import { mountNextUI } from './next/mount';
 import { mountOperateScreen } from './next/operate/mount-operate';
 import { followEditorMode, updateFromNetwork } from './next/state';
 
@@ -62,8 +61,6 @@ class App {
   lastLookaheadPayload: any;
   trainMonitorUnsub: (() => void) | null;
   followTrainEnabled: boolean;
-  /** Re-checks whether the tool rail fits; installed by watchToolRailFit(). */
-  fitToolRail: (() => void) | null = null;
   /** Polls the network, getting the layout only when it changed. */
   networkPoller = new NetworkPoller((layoutVersion) => api.getNetwork(layoutVersion));
   /** Station groups for the renderer's labels. They are layout, so they are
@@ -104,16 +101,14 @@ class App {
     this.followTrainEnabled = false;
 
     this.setupControls();
-    // ?ui=next: mount the rebuilt regions over today's (docs/ui-layout-rewrite-plan.md).
-    if (isNextUI()) mountNextUI(this);
-    if (isNextUI()) mountOperateScreen(this);
+    // The top bar, the four screens and the Logs panel
+    // (docs/ui-layout-rewrite-plan.md).
+    mountNextUI(this);
+    mountOperateScreen(this);
 
     this.setupDebugPanel();
     setupSettingsPanel(() => this.refreshNetwork());
-    setupHardwarePanel();
     this.setupViewControls();
-    this.setupPanelToggles();
-    this.watchToolRailFit();
     // Learns this process's boot id (so a reconnect can tell "same server" from
     // "restarted server") and reports a previous run that died without safing
     // its outputs. Fire-and-forget: nothing else waits on it.
@@ -131,24 +126,18 @@ class App {
 
 
   setupControls(): void {
-    // Each control runs one of the session action methods below
-    // (togglePlayPause, emergencyStop, …), which say what it does.
-    document.getElementById('btn-play-pause')!.addEventListener('click', () => void this.togglePlayPause());
-    document.getElementById('btn-emergency-stop')?.addEventListener('click', () => void this.emergencyStop());
-    document.getElementById('btn-reset-layout')?.addEventListener('click', () => void this.resetLayout());
-    document.getElementById('btn-hold-all')?.addEventListener('click', () => void this.holdAll());
+    // The top bar's controls call the session action methods below
+    // (togglePlayPause, emergencyStop, …). The fatal banner keeps its own
+    // three buttons.
     const clearFatalBtn = document.getElementById('btn-clear-fatal') as HTMLButtonElement | null;
     clearFatalBtn?.addEventListener('click', () => void this.clearFatalConflict(clearFatalBtn));
 
     // Activate starts the selected environment over with the saved Hardware
-    // Setup (design_new.md "Activation starts the railway over"). The header
-    // offers it from Setup and from a not-activated halt; the fatal banner
+    // Setup (design_new.md "Activation starts the railway over"). The banner
     // offers it after a hardware failure, once the device is repaired
     // ("Power", Recovery is reactivation).
-    for (const id of ['btn-session-activate', 'btn-activate-fatal']) {
-      const btn = document.getElementById(id) as HTMLButtonElement | null;
-      btn?.addEventListener('click', () => void this.activateEnvironment(btn));
-    }
+    const activateFatalBtn = document.getElementById('btn-activate-fatal') as HTMLButtonElement | null;
+    activateFatalBtn?.addEventListener('click', () => void this.activateEnvironment(activateFatalBtn));
 
     const restartFatalBtn = document.getElementById('btn-restart-fatal') as HTMLButtonElement | null;
     if (restartFatalBtn) {
@@ -174,41 +163,22 @@ class App {
         }
 
         this.stopSimulationPolling();
-        this.updatePlaybackUI(false);
         startRestartReconnectFlow();
       });
     }
 
-    document.getElementById('btn-restart-server')!.addEventListener('click', () => void this.restartServer());
-
-    document.querySelectorAll<HTMLElement>('.speed-btn').forEach(btn => {
-      btn.addEventListener('click', (e) => {
-        const speed = parseFloat((e.currentTarget as HTMLElement).dataset.speed ?? '');
-        if (Number.isFinite(speed)) void this.setSimulationSpeed(speed);
-      });
-    });
-
-    document.getElementById('mode-edit')!.addEventListener('click', () => {
-      this.setEditorMode('edit');
-    });
-
-    document.getElementById('mode-sim')!.addEventListener('click', () => {
-      this.setEditorMode('sim');
-    });
-
     // Apply the initial (Editor) tool-availability state.
     this.setEditorMode('edit');
 
-    // Layout controls
+    // The Save and Load dialogs.
     this.setupLayoutControls();
   }
 
   // ── Session and layout actions ────────────────────────────────────────
-  // Each header control calls one of these, so the ?ui=next top bar
-  // (frontend/src/next/top-bar.tsx) runs exactly the same code as today's.
+  // The top bar (frontend/src/next/top-bar.tsx) calls these.
 
   /** Play from Paused, Pause from Live; Play/Pause exists only in Simulation
-   *  (design_new.md "Session state"). The server decides; the header follows
+   *  (design_new.md "Session state"). The server decides; the top bar follows
    *  the session state the next snapshot carries rather than guessing. */
   async togglePlayPause(): Promise<void> {
     const action = this.isSimulationRunning ? 'stop' : 'start';
@@ -230,7 +200,6 @@ class App {
       showToast(`Failed to set speed: ${err.message}`, 'error', 2000);
       return;
     }
-    this.syncSpeedPresetUI(speed);
     showToast(`Speed set to ${speed}x`, 'info', 1000);
   }
 
@@ -322,7 +291,6 @@ class App {
     }
 
     this.stopSimulationPolling();
-    this.updatePlaybackUI(false);
     startRestartReconnectFlow();
   }
 
@@ -344,38 +312,29 @@ class App {
   }
 
   /**
-   * Switch the header Editor/Operate toggle and gate the tool palette.
+   * Switch between Editor mode and Operate mode (the Editor screen, and the
+   * Operate and Locomotives screens).
    *
-   * The header names the operation session mode "Operate" in every operating
+   * The top bar names the operation session mode "Operate" in every operating
    * environment (design_new.md "Session mode and operating environment"), so
    * the word "Simulation" means only the environment.
    *
-   * In Operate mode the layout must not change, so every tool that builds
-   * or deletes track, blocks, paths, platforms, trains or routes is disabled.
-   * Only the plain Select tool (to pick/inspect entities, including trains)
-   * and the read-only viewer panels (data-tool ending in `-panel`) stay live.
-   * The rule keys off the tool name so new `-panel` viewers stay enabled and
-   * any new build tool is disabled by default.
+   * In Operate mode the layout must not change, so a tool that builds or
+   * deletes layout (its `availableIn` lacks 'sim') stops being the active
+   * tool.
    */
   setEditorMode(mode: 'edit' | 'sim'): void {
-    const isSim = mode === 'sim';
     this.editorMode = mode;
-
-    document.getElementById('mode-edit')!.classList.toggle('active', !isSim);
-    document.getElementById('mode-sim')!.classList.toggle('active', isSim);
     followEditorMode(mode);
 
     if (!this.editor) return;
 
-    // The editor renders its palette filtered to the mode — structural layout
-    // tools are hidden in operation mode (only inspect, viewers, and the
-    // dispatch/operate tools remain). If the tool we were holding is not
-    // available in the new mode, fall back to Inspect and leave any active build
-    // mode so the editor is not stuck mid-build.
+    // If the tool we were holding is not available in the new mode, fall back
+    // to Inspect and leave any active build mode so the editor is not stuck
+    // mid-build.
     const current = this.editor._toolsById.get(this.editor.selectedTool);
     const stillAvailable = current ? current.availableIn.includes(mode) : true;
     this.editor.editorMode = mode;
-    this.editor.renderToolbar();
 
     // If an entity inspector is open, re-freeze (or release) its structural
     // fields for the new mode — the panel itself only locks on render.
@@ -391,73 +350,14 @@ class App {
     }
   }
 
-  /** Show the session state and offer the controls it allows (design_new.md
-   *  "Session state"). `isSimulationRunning` means the session is Live. */
-  syncSessionUI(network: any): void {
+  /** Keep the session state and operating environment from the network
+   *  snapshot (design_new.md "Session state"); the top bar reads them through
+   *  next/state.ts. `isSimulationRunning` means the session is Live. */
+  recordSessionState(network: any): void {
     const state = network?.session_state ?? null;
     this.sessionState = state;
     this.isSimulationRunning = state?.value === 'live';
-
     this.operationEnvironment = network?.operation_environment ?? null;
-    const chip = document.getElementById('session-state-chip');
-    if (chip) {
-      const env = environmentLabel(this.operationEnvironment);
-      const label = sessionLabel(state);
-      const envEl = document.getElementById('session-chip-env');
-      const stateEl = document.getElementById('session-chip-state');
-      if (envEl && envEl.textContent !== env) envEl.textContent = env;
-      if (stateEl && stateEl.textContent !== label) stateEl.textContent = label;
-      const hint = sessionHint(state);
-      chip.title = [env ? `${env}: ${label}.` : `${label}.`, hint].filter(Boolean).join(' ');
-      chip.dataset.state = state?.value ?? '';
-      chip.dataset.halt = state?.halt_reason ?? '';
-    }
-
-    const controls = sessionControls(state, network?.operation_environment);
-    const activateBtn = document.getElementById('btn-session-activate');
-    if (activateBtn) activateBtn.hidden = !controls.activateVisible;
-    const playBtn = document.getElementById('btn-play-pause') as HTMLButtonElement | null;
-    if (playBtn) {
-      playBtn.hidden = !controls.playbackVisible;
-      playBtn.disabled = !controls.playPauseEnabled;
-    }
-    const presets = document.querySelector<HTMLElement>('.speed-presets');
-    if (presets) presets.hidden = !controls.playbackVisible;
-    const resetBtn = document.getElementById('btn-reset-layout');
-    if (resetBtn) resetBtn.hidden = !controls.resetVisible;
-    this.updatePlaybackUI(controls.playPause === 'pause');
-  }
-
-  updatePlaybackUI(isPlaying: boolean): void {
-    const btn = document.getElementById('btn-play-pause');
-    if (!btn) return;
-
-    // Icon-only to keep the header compact; the label is the tooltip and the
-    // accessible name.
-    const label = isPlaying ? 'Pause' : 'Play';
-    if (btn.getAttribute('aria-label') !== label) {
-      btn.innerHTML = `<i class="ti ti-player-${isPlaying ? 'pause' : 'play'}"></i>`;
-      btn.setAttribute('aria-label', label);
-      btn.setAttribute('title', label);
-    }
-    btn.classList.toggle('btn-primary', !isPlaying);
-    btn.classList.toggle('btn-secondary', isPlaying);
-  }
-
-  syncSpeedPresetUI(serverSpeed: number): void {
-    const buttons = document.querySelectorAll<HTMLElement>('.speed-btn');
-    if (!buttons.length) return;
-    let match: HTMLElement | null = null;
-    for (const btn of buttons) {
-      if (Math.abs(parseFloat(btn.dataset.speed ?? '') - serverSpeed) < 1e-6) {
-        match = btn;
-        break;
-      }
-    }
-    if (!match) return;
-    if (match.classList.contains('active')) return;
-    buttons.forEach(b => b.classList.remove('active'));
-    match.classList.add('active');
   }
 
   /** Open the Save Layout dialog, with the existing layouts listed for
@@ -482,20 +382,7 @@ class App {
     this.openModal(document.getElementById('settings-modal'));
   }
 
-  /** Open the Hardware Setup dialog, reloading the persisted config so it
-   *  always reflects what is on disk. */
-  openHardwareSetup(): void {
-    this.openModal(document.getElementById('hardware-modal'));
-    void refreshHardwarePanel();
-  }
-
   setupLayoutControls(): void {
-    document.getElementById('btn-new-layout')?.addEventListener('click', () => void this.newLayout());
-    document.getElementById('btn-save-layout')?.addEventListener('click', () => void this.openSaveLayoutDialog());
-    document.getElementById('btn-load-layout')?.addEventListener('click', () => void this.openLoadLayoutDialog());
-    document.getElementById('btn-settings')?.addEventListener('click', () => this.openSettings());
-    document.getElementById('btn-hardware')?.addEventListener('click', () => this.openHardwareSetup());
-
     // Save layout confirm
     const confirmSaveBtn = document.getElementById('btn-confirm-save');
     if (confirmSaveBtn) {
@@ -539,108 +426,6 @@ class App {
         });
       }
     });
-  }
-
-  // Header toggles for the two docked panels. The tools sidebar is always
-  // present, so its toggle just collapses/restores it. The secondary sidebar
-  // is content-driven (editor-ui adds/removes `.visible`), so its toggle is
-  // a separate `.user-hidden` override that hides the panel without clearing
-  // the open editor — and is disabled when no panel is open.
-  setupPanelToggles(): void {
-    const toolsBtn = document.getElementById('btn-toggle-tools');
-    const sidebar = document.querySelector('.sidebar') as HTMLElement | null;
-    if (toolsBtn && sidebar) {
-      toolsBtn.addEventListener('click', () => {
-        sidebar.classList.toggle('collapsed');
-        this.updateToolsToggle(toolsBtn, sidebar);
-        // Re-showing the rail cannot resize .workspace, so nothing else would
-        // re-check whether it still needs its compact form.
-        this.fitToolRail?.();
-      });
-      this.updateToolsToggle(toolsBtn, sidebar);
-    }
-
-    const secBtn = document.getElementById('btn-toggle-secondary') as HTMLButtonElement | null;
-    const secSidebar = document.getElementById('secondary-sidebar');
-    if (secBtn && secSidebar) {
-      secBtn.addEventListener('click', () => {
-        secSidebar.classList.toggle('user-hidden');
-        this.updateSecondaryToggle(secBtn, secSidebar);
-      });
-      // editor-ui opens/closes the panel (toggling .visible / .user-hidden)
-      // from elsewhere; mirror those changes onto the button.
-      const obs = new MutationObserver(() => this.updateSecondaryToggle(secBtn, secSidebar));
-      obs.observe(secSidebar, { attributes: true, attributeFilter: ['class'] });
-      this.updateSecondaryToggle(secBtn, secSidebar);
-    }
-  }
-
-  /**
-   * Keep every tool reachable in the floating rail.
-   *
-   * The capsule is centred over `.workspace`, so its height budget shrinks
-   * whenever the train monitor bar opens or is dragged taller — on a short
-   * window the square tiles no longer fit and the last tools scroll out of
-   * sight. When that happens, switch the rail to its icon-only compact form
-   * (`.sidebar--compact`), which fits roughly a third more tiles in the same
-   * height; when the space comes back, switch out again.
-   *
-   * Measuring means asking the full-size rail whether it overflows, so the
-   * class comes off before the read. Reading `scrollHeight` flushes layout, so
-   * the un-compacted geometry is what gets measured. The observer watches
-   * `.workspace` (the height that actually changes) rather than the rail, so
-   * the class toggle cannot feed back into the callback; the MutationObserver
-   * covers the other trigger, the toolbar re-rendering with a different tool
-   * count when the editor/simulation mode changes.
-   */
-  watchToolRailFit(): void {
-    const rail = document.querySelector('.sidebar') as HTMLElement | null;
-    const workspace = document.querySelector('.workspace') as HTMLElement | null;
-    const section = rail?.querySelector('.sidebar-tools-section') as HTMLElement | null;
-    const groups = document.getElementById('tool-groups');
-    if (!rail || !workspace || !section || !groups) return;
-
-    const fit = (): void => {
-      // A collapsed rail measures 0×0 and would always look like it fits, so
-      // leave the class alone until it is on screen again (the toggle re-runs
-      // this).
-      if (rail.offsetParent === null) return;
-      rail.classList.remove('sidebar--compact');
-      if (section.scrollHeight > section.clientHeight) {
-        rail.classList.add('sidebar--compact');
-      }
-    };
-    this.fitToolRail = fit;
-
-    new ResizeObserver(fit).observe(workspace);
-    new MutationObserver(fit).observe(groups, { childList: true });
-    fit();
-  }
-
-  updateToolsToggle(btn: HTMLElement, sidebar: HTMLElement): void {
-    const collapsed = sidebar.classList.contains('collapsed');
-    const icon = btn.querySelector('i');
-    if (icon) icon.className = `ti ti-layout-sidebar-left-${collapsed ? 'expand' : 'collapse'}`;
-    const label = collapsed ? 'Show tools panel' : 'Hide tools panel';
-    btn.setAttribute('title', label);
-    btn.setAttribute('aria-label', label);
-    btn.setAttribute('aria-pressed', String(collapsed));
-  }
-
-  updateSecondaryToggle(btn: HTMLButtonElement, sidebar: HTMLElement): void {
-    const open = sidebar.classList.contains('visible');
-    const hidden = sidebar.classList.contains('user-hidden');
-    btn.disabled = !open;
-    const icon = btn.querySelector('i');
-    if (icon) icon.className = `ti ti-layout-sidebar-right-${hidden ? 'expand' : 'collapse'}`;
-    const label = !open
-      ? 'No secondary panel open'
-      : hidden
-        ? 'Show secondary panel'
-        : 'Hide secondary panel';
-    btn.setAttribute('title', label);
-    btn.setAttribute('aria-label', label);
-    btn.setAttribute('aria-pressed', String(hidden));
   }
 
   openModal(modal: Element | null): void {
@@ -979,14 +764,9 @@ class App {
         );
       }
 
-      // Sync the session state and the header's session controls.
-      this.syncSessionUI(network);
+      // Keep the session state; the top bar reads it through next/state.ts.
+      this.recordSessionState(network);
       updateFromNetwork(network);
-
-      // Sync speed-preset active state with server state
-      if (typeof network.simulation_speed === 'number') {
-        this.syncSpeedPresetUI(network.simulation_speed);
-      }
 
       // Surface a fatal-conflict halt (failed_runtime) if one is active.
       updateFatalBanner(network, this.renderer);
@@ -1053,12 +833,9 @@ class App {
   /**
    * Pixels of each canvas edge currently hidden behind floating chrome, for
    * fitToContent to frame the layout into the visible region instead of behind
-   * it. Only the primary tool rail (.sidebar) overlaps the canvas today; it
-   * floats at the left, so we measure how far its right edge reaches past the
-   * canvas's left edge and add a small gap. Returns 0 when the rail is
-   * collapsed/absent. The canvas backing store is sized in CSS pixels
-   * (Renderer.resize uses parent.clientWidth), so getBoundingClientRect values
-   * are already in the same units fitToContent works in.
+   * it. The canvas backing store is sized in CSS pixels (Renderer.resize uses
+   * parent.clientWidth), so getBoundingClientRect values are already in the
+   * same units fitToContent works in.
    */
   _canvasChromeInsets(): { left: number; bottom: number } {
     const canvas = this.renderer.canvas;
@@ -1066,16 +843,8 @@ class App {
     const canvasRect = canvas.getBoundingClientRect();
     const GAP = 12; // breathing room between the chrome and the framed layout
 
-    let left = 0;
-    const rail = document.querySelector('.sidebar:not(.collapsed)') as HTMLElement | null;
-    const railRect = rail?.getBoundingClientRect();
-    if (railRect && railRect.width > 0) {
-      left = Math.max(0, railRect.right - canvasRect.left + GAP);
-    }
-
-    // The train monitor is a floating window now, so it no longer takes flow
-    // height out of the canvas — it hovers over the bottom of it. Fit View has
-    // to inset past it explicitly or it frames the layout under the panel.
+    // The Train Monitor window hovers over the bottom of the canvas when it is
+    // open, so Fit View insets past it or it frames the layout under it.
     let bottom = 0;
     const monitor = document.getElementById('train-monitor-bar');
     if (monitor && !monitor.classList.contains('hidden')) {
@@ -1085,7 +854,7 @@ class App {
       }
     }
 
-    return { left, bottom };
+    return { left: 0, bottom };
   }
 
   setupViewControls(): void {

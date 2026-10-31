@@ -1007,9 +1007,8 @@ export class PathEditorHandler {
     this.editor.highlighter.clear('reachable');
     this.editor.highlighter.clear('path');
     if (this.editor._currentEditorType === 'extend-path-setup') {
-      // Leaving extend mode closes its setup tab; the next open tab takes
-      // over, and the sidebar hides when none is left.
-      await this.editor.closeActiveSecondaryTab();
+      // Leaving extend mode closes its setup panel.
+      await this.editor.closeEditorTab('extend-path-setup', this.editor._currentEditorId);
     }
     if (this.cachedNetwork) {
       this.renderer.requestRedraw();

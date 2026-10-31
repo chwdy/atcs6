@@ -11,7 +11,6 @@ import {
   browserWindowPersistenceEnv,
   loadWindowState,
   saveWindowState,
-  ensureRegistered,
   type WindowPersistenceEnv,
 } from '../lib/window-persistence';
 
@@ -395,7 +394,6 @@ class TrainMonitor {
                 this.resizeCanvas();
             },
         });
-        ensureRegistered(this.persistenceEnv, TRAIN_MONITOR_WINDOW_ID, 'train-monitor');
     }
 
     /** The monitor's home position: anchored to the left of the canvas region —

@@ -1,6 +1,6 @@
 /**
  * The Locomotives screen (docs/ui-layout-rewrite-plan.md §6), shown when the
- * Locomotives tab is picked under ?ui=next.
+ * Locomotives tab is picked.
  *
  * Left: the locomotives the operator owns (the Train Roster), placed trains
  * not in it, and the model profiles. Middle: the picked locomotive and its

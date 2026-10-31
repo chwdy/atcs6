@@ -6,10 +6,10 @@
 //             data-canvas-theme attribute and the colors in layout-themes.css.
 //
 // Each axis is a ThemeChannel: its own registry of themes, its own attribute,
-// its own localStorage key, switched independently of the other. The Display
-// popover (built in app.ts) drives both; this module owns the state, the
-// persistence, and the side effects (a canvas switch invalidates the renderer's
-// color cache and forces a redraw).
+// its own localStorage key, switched independently of the other. The top
+// bar's View menu (frontend/src/next/top-bar.tsx) drives both; this module
+// owns the state, the persistence, and the side effects (a canvas switch
+// invalidates the renderer's color cache and forces a redraw).
 //
 // A tiny pre-paint stub in index.html sets BOTH attributes before the
 // stylesheets apply, so there is no flash of the wrong theme. It shares the two
@@ -217,7 +217,6 @@ export class ThemeManager {
   init(): void {
     this.chrome.reconcile();
     this.canvas.reconcile();
-    wireDisplayMenu(this);
     // A canvas switch changes colors the renderer reads from CSS: drop the
     // cached palette and force one redraw so the layout repaints immediately.
     this.canvas.subscribe(() => {
@@ -228,169 +227,6 @@ export class ThemeManager {
     // — just repaint the world layer so the grid appears / disappears at once.
     gridPreference.subscribe(() => redrawLayout());
   }
-}
-
-const DISPLAY_BUTTON_ID = 'btn-display';
-
-// The six primary-color tokens previewed per theme, per channel. Read live from
-// CSS (not hardcoded), so a swatch always matches the theme: background, accent,
-// text, error, warning, info.
-const CHROME_PREVIEW_TOKENS = ['--bg-panel', '--accent-color', '--text-primary', '--danger-color', '--warning-color', '--info-color'];
-const CANVAS_PREVIEW_TOKENS = ['--canvas-bg', '--canvas-accent', '--canvas-text', '--canvas-danger', '--canvas-warning', '--canvas-info'];
-
-/** Build and wire the Display popover behind the header #btn-display button. One
- *  row per channel (Editor theme / Layout theme); each row lists that channel's
- *  registered themes. Each theme is a 2x3 grid of its six primary colors (see
- *  the *_PREVIEW_TOKENS above), with a check on the active one. A newly
- *  registered theme appears here with no extra wiring. Clicking a swatch
- *  switches that channel only. Below the theme rows, a "Show grid" checkbox
- *  toggles the layout's background grid (see grid-preference.ts). */
-function wireDisplayMenu(mgr: ThemeManager): void {
-  const btn = document.getElementById(DISPLAY_BUTTON_ID);
-  if (!btn) return;
-
-  const sections = [
-    { channel: mgr.chrome, label: 'Editor theme', attr: CHROME_ATTR, tokens: CHROME_PREVIEW_TOKENS },
-    { channel: mgr.canvas, label: 'Layout theme', attr: CANVAS_ATTR, tokens: CANVAS_PREVIEW_TOKENS },
-  ];
-  const options: { channel: ThemeChannel; name: string; el: HTMLButtonElement }[] = [];
-  const root = document.documentElement;
-
-  // Read a theme's token colors WITHOUT activating it: set the channel's
-  // attribute on <html>, read getComputedStyle, restore. Synchronous, so the
-  // browser never paints the intermediate state.
-  const readColors = (attr: string, name: string, tokens: string[]): string[] => {
-    const prev = root.getAttribute(attr);
-    root.setAttribute(attr, name);
-    const cs = getComputedStyle(root);
-    const colors = tokens.map((t) => cs.getPropertyValue(t).trim() || 'transparent');
-    if (prev === null) root.removeAttribute(attr);
-    else root.setAttribute(attr, prev);
-    return colors;
-  };
-
-  let menu: HTMLDivElement | null = null;
-
-  const syncActive = () => {
-    for (const o of options) o.el.setAttribute('aria-pressed', String(o.channel.current() === o.name));
-  };
-
-  // Built lazily on first open, so every stylesheet (including the @imported
-  // theme files) has loaded before we sample colors.
-  const build = () => {
-    const el = document.createElement('div');
-    el.className = 'display-menu';
-    el.hidden = true;
-    el.setAttribute('role', 'menu');
-
-    for (const { channel, label, attr, tokens } of sections) {
-      const row = document.createElement('div');
-      row.className = 'display-menu-row';
-      const heading = document.createElement('div');
-      heading.className = 'display-menu-row-label';
-      heading.textContent = label;
-      row.appendChild(heading);
-
-      const tiles = document.createElement('div');
-      tiles.className = 'display-menu-tiles';
-      for (const theme of channel.themes()) {
-        const tile = document.createElement('button');
-        tile.type = 'button';
-        tile.className = 'display-menu-tile';
-        tile.setAttribute('role', 'menuitemradio');
-        tile.title = theme.label;
-
-        const swatch = document.createElement('span');
-        swatch.className = 'display-menu-swatch';
-        for (const color of readColors(attr, theme.name, tokens)) {
-          const cell = document.createElement('span');
-          cell.className = 'display-menu-cell';
-          cell.style.background = color;
-          swatch.appendChild(cell);
-        }
-        const check = document.createElement('i');
-        check.className = 'ti ti-check display-menu-check';
-        check.setAttribute('aria-hidden', 'true');
-        swatch.appendChild(check);
-
-        const tileLabel = document.createElement('span');
-        tileLabel.className = 'display-menu-tile-label';
-        tileLabel.textContent = theme.label;
-
-        tile.appendChild(swatch);
-        tile.appendChild(tileLabel);
-        tile.addEventListener('click', () => channel.set(theme.name));
-        tiles.appendChild(tile);
-        options.push({ channel, name: theme.name, el: tile });
-      }
-      row.appendChild(tiles);
-      el.appendChild(row);
-    }
-
-    // Background-grid toggle. A single boolean, so a checkbox row (reusing the
-    // shared .checkbox-wrapper control) rather than a swatch grid. Checked =
-    // grid shown. Flipping it persists + repaints via the gridPreference
-    // subscription wired in ThemeManager.init().
-    const gridRow = document.createElement('div');
-    gridRow.className = 'display-menu-row display-menu-options';
-    const gridToggle = document.createElement('label');
-    gridToggle.className = 'checkbox-wrapper';
-    gridToggle.title = 'Show the background grid, axes, and origin marker on the layout canvas';
-    const gridInput = document.createElement('input');
-    gridInput.type = 'checkbox';
-    gridInput.className = 'checkbox-input';
-    gridInput.checked = gridPreference.visible();
-    gridInput.addEventListener('change', () => gridPreference.set(gridInput.checked));
-    const gridCustom = document.createElement('span');
-    gridCustom.className = 'checkbox-custom';
-    const gridLabel = document.createElement('span');
-    gridLabel.className = 'checkbox-label';
-    gridLabel.textContent = 'Show grid';
-    gridToggle.appendChild(gridInput);
-    gridToggle.appendChild(gridCustom);
-    gridToggle.appendChild(gridLabel);
-    gridRow.appendChild(gridToggle);
-    el.appendChild(gridRow);
-
-    document.body.appendChild(el);
-    menu = el;
-    mgr.chrome.subscribe(syncActive);
-    mgr.canvas.subscribe(syncActive);
-    syncActive();
-  };
-
-  const place = () => {
-    if (!menu) return;
-    const r = btn.getBoundingClientRect();
-    menu.style.top = `${r.bottom + 6}px`;
-    menu.style.left = 'auto';
-    menu.style.right = `${Math.max(8, window.innerWidth - r.right)}px`;
-  };
-  const open = () => {
-    if (!menu) build();
-    place();
-    menu!.hidden = false;
-    btn.setAttribute('aria-expanded', 'true');
-  };
-  const close = () => {
-    if (menu) menu.hidden = true;
-    btn.setAttribute('aria-expanded', 'false');
-  };
-
-  btn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    if (!menu || menu.hidden) open();
-    else close();
-  });
-  document.addEventListener('click', (e) => {
-    if (menu && !menu.hidden && !menu.contains(e.target as Node) && e.target !== btn) close();
-  });
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && menu && !menu.hidden) close();
-  });
-  window.addEventListener('resize', () => {
-    if (menu && !menu.hidden) place();
-  });
 }
 
 /** Force the layout renderer to repaint (after a canvas-theme change). Safe

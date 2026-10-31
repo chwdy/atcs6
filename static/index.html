@@ -31,83 +31,6 @@
 </head>
 <body>
     <div class="app-container">
-        <header class="app-header">
-            <div class="header-zone header-zone-left">
-                <div class="logo">
-                    <span class="logo-mark" aria-hidden="true"></span>
-                    <h1>RAIL</h1>
-                </div>
-                <div class="simulation-controls">
-                    <!-- The header's answer to "can trains move?": the operating
-                         environment and the session state, then the one button
-                         that gets to Live when that button is Activate. -->
-                    <span id="session-state-chip" class="session-chip" title=""><span class="session-chip-env" id="session-chip-env"></span><span class="session-chip-state" id="session-chip-state">—</span></span>
-                    <button id="btn-session-activate" class="btn btn-primary" type="button" title="Activate the selected environment" hidden>
-                        <i class="ti ti-power"></i> Activate
-                    </button>
-                    <button id="btn-play-pause" class="btn btn-primary" title="Play" aria-label="Play">
-                        <i class="ti ti-player-play"></i>
-                    </button>
-                    <button id="btn-restart-server" class="btn btn-icon-only" title="Restart Server" aria-label="Restart Server">
-                        <i class="ti ti-refresh"></i>
-                    </button>
-                    <div class="speed-presets" role="group" aria-label="Playback speed">
-                        <button class="speed-btn" data-speed="0.5">0.5x</button>
-                        <button class="speed-btn active" data-speed="1">1x</button>
-                        <button class="speed-btn" data-speed="2">2x</button>
-                        <button class="speed-btn" data-speed="3">3x</button>
-                    </div>
-                </div>
-            </div>
-
-            <div class="header-zone header-zone-center">
-                <div class="mode-switch" role="group" aria-label="Mode">
-                    <button id="mode-edit" class="mode-btn active">Editor</button>
-                    <button id="mode-sim" class="mode-btn">Operate</button>
-                </div>
-                <div class="layout-controls">
-                    <button id="btn-new-layout" class="btn" title="New Layout"><i class="ti ti-file-plus"></i> New</button>
-                    <button id="btn-save-layout" class="btn" title="Save Layout"><i class="ti ti-device-floppy"></i> Save</button>
-                    <button id="btn-load-layout" class="btn" title="Load Layout"><i class="ti ti-folder-open"></i> Load</button>
-                </div>
-            </div>
-
-            <div class="header-zone header-zone-right">
-                <div class="panel-toggles" role="group" aria-label="Panel visibility">
-                    <button id="btn-toggle-tools" class="btn btn-icon-only" title="Hide tools panel" aria-label="Hide tools panel" aria-pressed="false">
-                        <i class="ti ti-layout-sidebar-left-collapse"></i>
-                    </button>
-                    <button id="btn-toggle-secondary" class="btn btn-icon-only" title="No secondary panel open" aria-label="No secondary panel open" aria-pressed="false" disabled>
-                        <i class="ti ti-layout-sidebar-right-collapse"></i>
-                    </button>
-                </div>
-                <div class="inspector-controls">
-                    <button id="btn-diagnostics-toggle" class="btn" title="Toggle diagnostics"><i class="ti ti-microscope"></i> Diagnostics</button>
-                    <button id="btn-occupancy-toggle" class="btn btn-icon-only" title="Raw occupancy — what the detectors actually read" aria-label="Toggle raw occupancy monitor">
-                        <i class="ti ti-activity-heartbeat"></i>
-                    </button>
-                    <button id="btn-occupancy-bench-toggle" class="btn btn-icon-only" title="Occupancy Bench — drive every block and read both detectors (Setup only)" aria-label="Toggle the Occupancy Bench">
-                        <i class="ti ti-circuit-resistor"></i>
-                    </button>
-                    <button id="btn-virtual-bench-toggle" class="btn btn-icon-only" title="Virtual Bench — track output, bench tests, and fake detectors" aria-label="Toggle the Virtual Bench">
-                        <i class="ti ti-flask"></i>
-                    </button>
-                    <button id="btn-event-log-toggle" class="btn btn-icon-only" title="Event Log — everything the runtime reported, filterable by level, source, operation and entity" aria-label="Toggle the event log">
-                        <i class="ti ti-list-search"></i>
-                    </button>
-                    <button id="btn-display" class="btn btn-icon-only" title="Display — editor &amp; layout themes" aria-label="Display settings: editor and layout themes" aria-haspopup="true" aria-expanded="false">
-                        <i class="ti ti-palette"></i>
-                    </button>
-                    <button id="btn-hardware" class="btn btn-icon-only" title="Run environment and hardware setup" aria-label="Open run environment and hardware setup">
-                        <i class="ti ti-plug"></i>
-                    </button>
-                    <button id="btn-settings" class="btn btn-icon-only" title="Settings &amp; Debug Info" aria-label="Open settings">
-                        <i class="ti ti-settings"></i>
-                    </button>
-                </div>
-            </div>
-        </header>
-
         <div id="fatal-banner" class="fatal-banner" hidden role="alert" aria-live="assertive">
             <i class="ti ti-alert-octagon-filled fatal-banner-icon" aria-hidden="true"></i>
             <div class="fatal-banner-body">
@@ -123,41 +46,17 @@
         <div class="app-body">
             <div class="content-area">
                 <div class="workspace">
-                    <!-- Left rail = tools only. It floats over the canvas, so it
-                         lives INSIDE .workspace: that makes .workspace its
-                         containing block, and the capsule centres itself over the
-                         canvas region alone rather than over the whole app body —
-                         which would push it down across the train monitor bar (a
-                         sibling of .workspace, below it). The tile inspector
-                         (coordinates, track bits, and the entity cards: block /
-                         switch / signal / platform / station) lives in the Tile
-                         Editor secondary panel — see Editor.showTileEditor. -->
-                    <aside class="sidebar">
-                        <div class="sidebar-tools-section" id="tools-panel">
-                            <!-- Tool palette — rendered from the tool registry, not
-                                 hardcoded. The core editor contributes the layout tools
-                                 (inspect, selection, network, platform, block); plugins
-                                 contribute their own (SimEditorPlugin adds path / train /
-                                 route). See frontend/src/editor/tool-registry.ts and
-                                 Editor.renderToolbar(). -->
-                            <div id="tool-groups"></div>
-                        </div>
-                    </aside>
-
-                    <!-- Secondary sidebar for editors (block, signal details) - positioned to the right of main sidebar -->
-                    <aside class="secondary-sidebar" id="secondary-sidebar">
-                        <div class="secondary-sidebar-header">
-                            <button class="secondary-nav-btn secondary-nav-parent" id="secondary-nav-parent" hidden></button>
-                            <h3 id="secondary-sidebar-title">Editor</h3>
-                            <button class="secondary-nav-btn" id="secondary-nav-tearoff" title="Float the inspector" aria-label="Float the inspector"><i class="ti ti-external-link"></i></button>
-                            <button class="secondary-nav-btn" id="secondary-nav-pin" title="Pin inspector" aria-label="Pin inspector"><i class="ti ti-pin"></i></button>
-                            <button class="close-btn" id="close-secondary-sidebar" title="Close">×</button>
-                        </div>
-                        <div class="secondary-sidebar-tabs" id="secondary-sidebar-tabs"></div>
-                        <div class="secondary-sidebar-content" id="secondary-sidebar-content">
-                            <!-- Dynamic content will be injected here -->
-                        </div>
-                    </aside>
+                    <!-- Today's entity panels draw their title, back link and
+                         body into these three nodes. The Editor screen's right
+                         panel moves them into itself while it shows
+                         (frontend/src/next/editor/legacy-panel.ts); on the other
+                         screens they wait here, never shown. The `visible`
+                         class on this element says whether a panel is open. -->
+                    <div class="panel-holder" id="secondary-sidebar" hidden>
+                        <button class="secondary-nav-btn secondary-nav-parent" id="secondary-nav-parent" hidden></button>
+                        <h3 id="secondary-sidebar-title">Editor</h3>
+                        <div class="secondary-sidebar-content" id="secondary-sidebar-content"></div>
+                    </div>
 
                     <div class="canvas-container">
                         <!--
@@ -170,20 +69,6 @@
                         -->
                         <canvas id="rail-world-canvas"></canvas>
                         <canvas id="rail-canvas"></canvas>
-                        <!-- The session bar: the controls that act on the whole layout
-                             (design_new.md "Emergency cut-out"; "Hold all"). The session
-                             state itself is shown in the header. -->
-                        <div class="session-bar" role="group" aria-label="Session">
-                            <button type="button" id="btn-emergency-stop" class="session-bar-btn session-bar-btn-danger" title="Cut power to every block and stop every train">
-                                <i class="ti ti-hand-stop" aria-hidden="true"></i> Emergency stop
-                            </button>
-                            <button type="button" id="btn-reset-layout" class="session-bar-btn" title="Release every train after Emergency stop" hidden>
-                                <i class="ti ti-rotate" aria-hidden="true"></i> Reset
-                            </button>
-                            <button type="button" id="btn-hold-all" class="session-bar-btn" title="ATO stop on every ATO train; each one resumes with Go">
-                                <i class="ti ti-player-stop" aria-hidden="true"></i> Hold all
-                            </button>
-                        </div>
                         <div class="canvas-overlay">
                             <div class="canvas-view-controls">
                                 <button type="button" class="canvas-view-btn" id="btn-zoom-out" title="Zoom out">−</button>
@@ -509,21 +394,6 @@
             </div>
         </div>
     </div>
-
-    <div id="hardware-modal" class="modal">
-        <div class="modal-content hw-modal-content">
-            <div class="modal-header">
-                <h3>Run Environment &amp; Hardware Setup</h3>
-                <button class="close-btn" data-close-modal>&times;</button>
-            </div>
-            <div class="modal-body">
-                <p class="hw-intro">Choose how this run should interact with the railway. Hardware Setup below describes the rig shared by Virtual Hardware and Real Hardware.</p>
-                <div id="hw-body"></div>
-            </div>
-            <div class="modal-footer hw-gate" id="hw-gate"></div>
-        </div>
-    </div>
-
 
     <!-- Frontend build bundle (longterm_todo.md item #7, complete). Built by
          Vite from frontend/src/main.ts into static/dist/main.js — the single

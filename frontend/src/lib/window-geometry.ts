@@ -1,12 +1,9 @@
 // Pure geometry math for floating chrome windows — no DOM, no classes. Four
-// concerns live here: edge/corner drag-to-resize (computeFloatResize, moved
-// here from editor-ui.ts where it originated as the floating inspector's
-// resize math), double-click-to-fit (computeFitSize), keeping a window
-// reachable when the viewport changes (clampToViewport), and choosing where a
-// window opens (computeOpenPlacement). Keeping this framework-free is
-// deliberate: both editor-ui.ts's TabGroup windows and lib/window-manager.ts's
-// FloatingWindow share the exact same math, and unit tests exercise it without
-// touching a DOM at all (this project's vitest setup has no jsdom).
+// concerns live here: edge/corner drag-to-resize (computeFloatResize),
+// double-click-to-fit (computeFitSize), keeping a window reachable when the
+// viewport changes (clampToViewport), and choosing where a window opens
+// (computeOpenPlacement). Keeping this framework-free is deliberate: unit
+// tests exercise it without touching a DOM at all.
 
 /** A floating window's current edges, in viewport pixels. */
 export interface FloatRect {
@@ -129,8 +126,8 @@ function overlapArea(a: FloatRect, b: FloatRect): number {
  *  `avoid` is the region to keep clear in viewport coordinates — the drawn
  *  track layout's bounding box for a window, the edited tiles' footprint for an
  *  anchored dialog. `bounds` is the area placement may use, already inset for
- *  the chrome a panel must not cover (the floating tool rail on the left, the
- *  app header above). `preferred` is where the caller would put the panel if
+ *  the chrome a panel must not cover (the top bar above, a docked right
+ *  panel). `preferred` is where the caller would put the panel if
  *  nothing were in the way; the four candidates are displacements of it.
  *
  *  Candidates are tried in order — right of `avoid`, left of it, below, above —
@@ -138,9 +135,9 @@ function overlapArea(a: FloatRect, b: FloatRect): number {
  *  layout fills the viewport), the candidate overlapping `avoid` least wins
  *  instead, so a cramped viewport degrades to "least in the way" rather than
  *  falling back to a fixed corner. Right comes first because the left of the
- *  canvas is where the tool rail and the layout's own origin sit; a window on
- *  the right also matches where the docked inspector lives, so floating and
- *  docked read as the same panel in the same place.
+ *  canvas is where the layout's own origin sits; a window on the right also
+ *  matches where the docked right panel lives, so floating and docked read
+ *  as the same panel in the same place.
  *
  *  Sideways candidates keep `preferred.top` and vertical ones keep
  *  `preferred.left`, so a panel that wants to stay level with what it edits (an

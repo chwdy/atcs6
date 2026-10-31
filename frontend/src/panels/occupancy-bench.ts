@@ -33,32 +33,15 @@
  *
  * The bench is a Setup tool (design_new.md "Hardware setup", Occupancy bench):
  * it opens only in Setup, where it owns the outputs while the detectors keep
- * being read. So the layout beside it goes on showing what the app believes,
- * and comparing the two is the diagnosis. Closing it never activates anything.
+ * being read. So the layout goes on showing what the app believes, and
+ * comparing the two is the diagnosis. Closing it never activates anything.
  *
- * Window chrome (drag, resize, z-order, persistence) is owned by FloatingWindow
- * (lib/window-manager.ts); this file builds and updates only its own content.
+ * Hardware Setup step 4 builds it (mountOccupancyBench), inside the step.
  */
 
 import { api } from '../lib/api';
 import { setupToolsAllowed, SETUP_TOOL_HINT } from '../lib/session-controls';
-import { FloatingWindow, windowManager, type WindowGeometry } from '../lib/window-manager';
-import {
-    browserWindowPersistenceEnv,
-    loadWindowState,
-    saveWindowState,
-    ensureRegistered,
-} from '../lib/window-persistence';
 
-const WINDOW_ID = 'occupancy-bench';
-// Wide by default: the schematic is drawn at the layout's own aspect ratio, and
-// every block carries a button AND a readout beside it. A window sized for a
-// list of rows makes the labels collide on the one view they have to be legible
-// in, so the panel opens wide enough to read at rest and can be narrowed after.
-const DEFAULT_WIDTH = 860;
-const DEFAULT_HEIGHT = 620;
-const MIN_WIDTH = 420;
-const MAX_WIDTH = 1600;
 const REFRESH_HZ = 4;
 
 // ---------------------------------------------------------------------------
@@ -486,9 +469,8 @@ function escapeHtml(value: string): string {
 // ---------------------------------------------------------------------------
 
 class OccupancyBench {
-    // Assigned by _buildContentDom, which FloatingWindow calls synchronously from
-    // _buildFloatingWindow during init() — declared definite per the house idiom.
-    private _window!: FloatingWindow;
+    // Assigned by _buildContentDom, which mountInto calls first — declared
+    // definite per the house idiom.
     private _stageEl!: HTMLElement;
     private _statusEl!: HTMLElement;
     private _playBtnEl!: HTMLButtonElement;
@@ -499,13 +481,9 @@ class OccupancyBench {
     private _resetPeaksBtnEl!: HTMLButtonElement;
     private _footerEl!: HTMLElement;
 
-    private _persistenceEnv = browserWindowPersistenceEnv();
     private _pollHandle: ReturnType<typeof setInterval> | null = null;
     private _inflight = false;
 
-    private _visible = false;
-    /** Built by `mountInto`: no window around it. */
-    private _embedded = false;
     /** The open `mountInto` started, which `unmount` waits for. */
     private _entering: Promise<void> | null = null;
     private _schematic: BenchSchematic | null = null;
@@ -529,24 +507,10 @@ class OccupancyBench {
     private _busy = false;
     private _error: string | null = null;
 
-    init(): void {
-        const saved = loadWindowState(this._persistenceEnv, WINDOW_ID);
-        this._visible = saved ? !saved.hidden : false;
-
-        this._buildFloatingWindow(saved?.geometry);
-        ensureRegistered(this._persistenceEnv, WINDOW_ID, 'occupancy-bench');
-        this._wireToggleButton();
-        this._render();
-        if (this._visible) void this._enter();
-    }
-
-    /** Build the bench inside `host`, with no window around it, and open it.
-     *  The ?ui=next Hardware Setup screen hosts the bench this way, in step 4
-     *  (docs/ui-layout-rewrite-plan.md §7). */
+    /** Build the bench inside `host` and open it. Hardware Setup step 4
+     *  hosts the bench this way (docs/ui-layout-rewrite-plan.md §7). */
     mountInto(host: HTMLElement): Promise<void> {
-        this._embedded = true;
         this._buildContentDom(host);
-        this._visible = true;
         this._render();
         this._entering = this._enter();
         return this._entering;
@@ -556,7 +520,6 @@ class OccupancyBench {
      *  open still in flight finishes first, so it cannot take the controller
      *  after the close. */
     async unmount(): Promise<void> {
-        this._visible = false;
         await this._entering;
         this._stopPolling();
         await this._leave();
@@ -565,39 +528,6 @@ class OccupancyBench {
     /** Whether the bench holds the controller. */
     isOpen(): boolean {
         return this._open;
-    }
-
-    // ----- window chrome ---------------------------------------------------
-
-    private _buildFloatingWindow(saved?: WindowGeometry): void {
-        const geometry: Partial<WindowGeometry> = {};
-        if (saved && typeof saved.left === 'number' && typeof saved.top === 'number') {
-            geometry.left = saved.left;
-            geometry.top = saved.top;
-        } else {
-            geometry.left = Math.max(20, Math.round((window.innerWidth - DEFAULT_WIDTH) / 2));
-            geometry.top = 100;
-        }
-        geometry.width = saved?.width && saved.width > 0 ? saved.width : DEFAULT_WIDTH;
-        geometry.height = saved?.height && saved.height > 0 ? saved.height : DEFAULT_HEIGHT;
-
-        this._window = new FloatingWindow({
-            id: WINDOW_ID,
-            kind: 'occupancy-bench',
-            manager: windowManager,
-            title: 'Occupancy Bench',
-            minW: MIN_WIDTH,
-            maxW: MAX_WIDTH,
-            initialGeometry: geometry,
-            initialHidden: !this._visible,
-            content: { mount: (el) => this._buildContentDom(el) },
-            // A singleton toggled from the toolbar, so its × hides rather than
-            // destroys — the same contract as the raw occupancy monitor. Hiding
-            // gives the controller back: leaving a layout energized behind a
-            // window nobody can see is the one outcome worth ruling out.
-            onCloseRequested: () => void this.hide(),
-            onGeometryChange: () => this._persist(),
-        });
     }
 
     private _buildContentDom(contentEl: HTMLElement): void {
@@ -674,34 +604,6 @@ class OccupancyBench {
             const blockId = target?.getAttribute('data-block');
             if (blockId) void this._toggleFlip(blockId);
         });
-    }
-
-    private _wireToggleButton(): void {
-        const btn = document.getElementById('btn-occupancy-bench-toggle');
-        if (btn) btn.addEventListener('click', () => void this.toggle());
-    }
-
-    // ----- visibility ------------------------------------------------------
-
-    toggle(): void | Promise<void> {
-        return this._visible ? this.hide() : this.show();
-    }
-
-    show(): Promise<void> {
-        this._visible = true;
-        this._window.setHidden(false);
-        this._window.focus();
-        this._persist();
-        return this._enter();
-    }
-
-    async hide(): Promise<void> {
-        this._visible = false;
-        this._window.setHidden(true);
-        this._persist();
-        this._stopPolling();
-        await this._leave();
-        this._render();
     }
 
     // ----- bench lifecycle -------------------------------------------------
@@ -989,17 +891,12 @@ class OccupancyBench {
         if (!this._open) {
             this._statusEl.hidden = false;
             this._statusEl.className = 'bench-status bench-status-info';
-            this._statusEl.textContent = this._embedded
-                ? 'The bench is closed. Fold this section and open it again to take the rig.'
-                : 'The bench is closed. Reopen the panel to take the rig.';
+            this._statusEl.textContent = 'The bench is closed. Fold this section and open it again to take the rig.';
             return;
         }
         this._statusEl.hidden = false;
         this._statusEl.className = 'bench-status bench-status-info';
-        this._statusEl.textContent = this._embedded
-            ? 'The bench holds every bound block at one voltage. Folding this section ends the bench.'
-            : 'The bench holds every bound block at one voltage. The layout beside it ' +
-              'still shows what the app believes, so compare the two. Closing this window ends the bench.';
+        this._statusEl.textContent = 'The bench holds every bound block at one voltage. Folding this section ends the bench.';
     }
 
     private _renderStage(): void {
@@ -1170,15 +1067,6 @@ class OccupancyBench {
             .join('');
     }
 
-    // ----- persistence -----------------------------------------------------
-
-    private _persist(): void {
-        saveWindowState(this._persistenceEnv, WINDOW_ID, {
-            geometry: this._window.getGeometry(),
-            floating: true,
-            hidden: !this._visible,
-        });
-    }
 }
 
 /** `BLK_4F7A2F` -> `4F7A2F`. The prefix is on every row and earns no space in a
@@ -1235,26 +1123,9 @@ export function anchorClass(leftPercent: number): string {
     return 'bench-block-centre';
 }
 
-/** Build an Occupancy Bench inside `host` and open it; `close()` closes it.
- *  This copy has no window and saves no window state. */
+/** Build an Occupancy Bench inside `host` and open it; `close()` closes it. */
 export function mountOccupancyBench(host: HTMLElement): { close(): Promise<void>; isOpen(): boolean } {
     const bench = new OccupancyBench();
     void bench.mountInto(host);
     return { close: () => bench.unmount(), isOpen: () => bench.isOpen() };
-}
-
-function bootstrap(): void {
-    if (window.occupancyBench) return; // idempotent
-    window.occupancyBench = new OccupancyBench();
-    window.occupancyBench.init();
-}
-
-// Guarded on `document` so the pure derivation above can be imported by the unit
-// tests, which run in Node with no DOM (vite.config.ts sets no jsdom environment).
-if (typeof document !== 'undefined') {
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', bootstrap);
-    } else {
-        bootstrap();
-    }
 }

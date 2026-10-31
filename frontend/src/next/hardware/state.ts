@@ -1,6 +1,6 @@
 /**
  * Which step the Hardware Setup screen shows, and how other parts of the
- * ?ui=next layout open it (docs/ui-layout-rewrite-plan.md §7).
+ * layout open it (docs/ui-layout-rewrite-plan.md §7).
  */
 import { signal } from '@preact/signals';
 

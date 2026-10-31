@@ -1,7 +1,7 @@
 /**
  * The Logs panel's Detectors tab: a live read-back of what the occupancy
- * detectors see, one row per detected block. It replaces today's Raw
- * Occupancy window (panels/occupancy-monitor.ts) under ?ui=next.
+ * detectors see, one row per detected block. It replaced the old Raw
+ * Occupancy window; its helpers are in panels/occupancy-monitor.ts.
  *
  * It reads `GET /api/hardware/occupancy/raw`, which reports recorded state and
  * sends nothing on the bus, so reading it fast cannot disturb the detectors it

@@ -1,15 +1,13 @@
-// editor-toolbar.ts — Primary tool-rail controller.
+// editor-toolbar.ts — picks the editor's active tool.
 //
-// Lifted out of the Editor god-class (behavior unchanged). Renders the floating
-// tool rail from the editor's tool-contribution list, dispatches toolbar
-// clicks, and manages the group popovers. The tool-contribution builders
-// (coreTools / _collectToolContributions) and the toolbar-adjacent editor state
+// Lifted out of the Editor god-class. The tool-contribution builders
+// (coreTools / _collectToolContributions) and the tool-adjacent editor state
 // (selectedTool, _toolsById, modes, handlers) stay on the Editor; this handler
-// reaches them via `this.editor`.
+// reaches them via `this.editor`. The buttons that pick a tool are the Editor
+// screen's tool bar (frontend/src/next/editor/).
 //
 // Owned by the Editor (`new ToolbarHandler(this)`).
 import type { EditorHost } from './types';
-import { renderToolGroups } from './tool-registry';
 
 export class ToolbarHandler {
   editor: EditorHost;
@@ -17,67 +15,16 @@ export class ToolbarHandler {
     this.editor = editor;
   }
 
-  /**
-   * (Re)render the tool palette from the registry into `#tool-groups`, filtered
-   * to the current editor mode, and rebuild the id→contribution lookup. The rail
-   * shows Inspect plus one main button per group; a group button opens a flyout
-   * popover of that group's tools. Tools whose `availableIn` excludes the current
-   * mode are not rendered, and a group with no remaining tools shows no button.
-   * Safe to call repeatedly; no-ops if the mount is absent.
-   */
-  renderToolbar(): void {
-    const mount = this.editor.$id('tool-groups');
-    if (!mount) return;
+  /** Rebuild the id → contribution lookup from the core tools and every
+   *  registered plugin's tools. */
+  refreshTools(): void {
     const contributions = this.editor._collectToolContributions();
     this.editor._toolsById = new Map(contributions.map((c: any) => [c.id, c]));
-    renderToolGroups(contributions, mount, {
-      activeToolId: this.editor.selectedTool || 'inspect',
-      mode: this.editor.editorMode,
-    });
   }
 
   /**
-   * Delegated click handler for the tool palette. A group button opens its
-   * flyout popover; a tool button (in the rail or a popover) is dispatched and
-   * the popover is closed.
-   *
-   * A click never closes a group's popover. Hovering the button has usually
-   * opened it already, so a toggle would close the menu the moment the user
-   * clicks to use it. The popover closes when the pointer leaves the group, on
-   * an outside click, on Escape, or once a tool is picked.
-   */
-  async _onToolbarClick(e: Event): Promise<void> {
-    const t = e.target as HTMLElement;
-
-    const groupBtn = t.closest<HTMLElement>('.tool-group-btn');
-    if (groupBtn) {
-      const group = groupBtn.closest<HTMLElement>('.tool-group');
-      if (!group || group.classList.contains('open')) return;
-      this._closeToolPopovers();
-      this._openGroupPopover(group);
-      return;
-    }
-
-    const toolBtn = t.closest<HTMLElement>('[data-tool]');
-    if (toolBtn) {
-      await this._dispatchTool(toolBtn);
-      this._closeToolPopovers();
-    }
-  }
-
-  /**
-   * Dispatch a tool button by its contribution `kind`: action tools run and
-   * leave the active tool alone; tool/mode tools become the active tool (mode
-   * tools also enter their editor mode).
-   */
-  async _dispatchTool(btn: HTMLElement): Promise<void> {
-    await this.selectTool(btn.dataset.tool || '');
-  }
-
-  /**
-   * Pick a tool by its contribution id, exactly as clicking its rail button
-   * does. The ?ui=next Editor screen's tool bar calls this, since it has no
-   * rail buttons.
+   * Pick a tool by its contribution id. The Editor screen's tool bar
+   * (frontend/src/next/editor/tool-bar.tsx) calls this.
    */
   async selectTool(newTool: string): Promise<void> {
     const contribution = this.editor._toolsById.get(newTool);
@@ -130,36 +77,5 @@ export class ToolbarHandler {
     this.editor.hoverPosition = null;
     this.editor.hoverValid = false;
     this.editor.renderer.requestRedraw();
-  }
-
-  /** Open a group's flyout popover, positioned beside its button (clamped to the viewport). */
-  _openGroupPopover(group: HTMLElement): void {
-    const btn = group.querySelector<HTMLElement>('.tool-group-btn');
-    const pop = group.querySelector<HTMLElement>('.tool-popover');
-    if (!btn || !pop) return;
-    group.classList.add('open');
-    btn.setAttribute('aria-expanded', 'true');
-    // The popover is position:fixed (so the sidebar's overflow can't clip it);
-    // place it just right of the button, then nudge up if it would overflow.
-    const r = btn.getBoundingClientRect();
-    pop.style.left = `${Math.round(r.right + 6)}px`;
-    const margin = 8;
-    let top = r.top;
-    const h = pop.offsetHeight;
-    if (top + h + margin > window.innerHeight) {
-      top = Math.max(margin, window.innerHeight - h - margin);
-    }
-    pop.style.top = `${Math.round(top)}px`;
-  }
-
-  /** Close any open tool-group popover. */
-  _closeToolPopovers(): void {
-    const mount: HTMLElement | null = this.editor.$id('tool-groups');
-    mount
-      ?.querySelectorAll<HTMLElement>('.tool-group.open')
-      .forEach((g) => {
-        g.classList.remove('open');
-        g.querySelector('.tool-group-btn')?.setAttribute('aria-expanded', 'false');
-      });
   }
 }

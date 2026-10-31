@@ -1,12 +1,10 @@
 /**
- * The ?ui=next Editor screen (docs/ui-layout-rewrite-plan.md §4): the tool bar
- * and options row across the top of the canvas, and the right panel that
- * edits the selection.
+ * The Editor screen (docs/ui-layout-rewrite-plan.md §4): the tool bar and
+ * options row across the top of the canvas, and the right panel that edits
+ * the selection.
  *
  * The canvas and its tools are today's editor (editor/editor.ts). This screen
- * replaces how a tool is picked and where the selection's panel shows; the
- * rules in static/css/next/editor.css hide today's tool rail and inspector
- * while it shows.
+ * is how a tool is picked and where the selection's panel shows.
  */
 import { effect } from '@preact/signals';
 import { render } from 'preact';
@@ -52,14 +50,9 @@ function typingInField(): boolean {
   return tag === 'input' || tag === 'textarea' || tag === 'select' || !!el?.isContentEditable;
 }
 
-/**
- * Number keys 1–8 pick the bar's tools. The listener runs in the capture
- * phase on window, ahead of today's tool-rail shortcut on document, and stops
- * the key there so the hidden rail does not also act on it.
- */
+/** Number keys 1–8 pick the bar's tools. */
 export function onEditorScreenKey(e: KeyboardEvent, actions: ToolBarActions): void {
   if (e.key < '1' || e.key > '9' || e.metaKey || e.ctrlKey || e.altKey || typingInField()) return;
-  e.stopPropagation();
   const tool = barToolForKey(e.key);
   if (!tool) return;
   e.preventDefault();
@@ -78,17 +71,14 @@ export function mountEditorScreen(editor: Editor): void {
   const clickRule = (tile: any) => openForTileClick(editor, tile);
 
   // While the Editor screen shows: a plain click opens what was placed on
-  // the tile, every panel opens in the one right panel, and the number keys
-  // follow the bar.
+  // the tile, and the number keys follow the bar.
   effect(() => {
     if (screen.value !== 'editor') return;
     editor.tileClickPanel = clickRule;
-    editor.uiHandler.singlePanel = true;
-    window.addEventListener('keydown', onKey, true);
+    window.addEventListener('keydown', onKey);
     return () => {
       if (editor.tileClickPanel === clickRule) editor.tileClickPanel = null;
-      editor.uiHandler.singlePanel = false;
-      window.removeEventListener('keydown', onKey, true);
+      window.removeEventListener('keydown', onKey);
     };
   });
 

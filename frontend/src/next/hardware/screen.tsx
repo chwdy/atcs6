@@ -1,5 +1,5 @@
 /**
- * The ?ui=next Hardware Setup screen (docs/ui-layout-rewrite-plan.md §7).
+ * The Hardware Setup screen (docs/ui-layout-rewrite-plan.md §7).
  *
  * A full screen in place of today's Hardware Setup dialog. The left column
  * lists design_new.md "Operator workflows" → "Setting up the hardware and
@@ -844,12 +844,11 @@ function HardwareSetupSlot({ actions }: { actions: HardwareScreenActions }) {
   return screen.value === 'hardware' ? <HardwareSetupScreen actions={actions} /> : null;
 }
 
-/** Under ?ui=next the benches live in step 4. A floating copy that today's
- *  layout remembers as open is closed, so only one bench asks for the
- *  controller. */
+/** The benches live in step 4. The floating Virtual Bench, kept for its
+ *  Place on canvas (docs/ui-layout-rewrite-plan.md §13.10), is closed if it
+ *  was left open, so only one bench asks for the controller. */
 function closeFloatingBenches(): void {
   window.virtualBench?.hide();
-  void window.occupancyBench?.hide();
 }
 
 /** Mount the Hardware Setup screen over the page body; it draws itself only
@@ -861,6 +860,6 @@ export function mountHardwareSetup(actions: HardwareScreenActions): void {
   slot.className = 'next-hardware-slot';
   body.appendChild(slot);
   render(<HardwareSetupSlot actions={actions} />, slot);
-  // The benches start themselves when the page loads; wait until they have.
+  // The floating Virtual Bench starts itself when the page loads; wait until it has.
   setTimeout(closeFloatingBenches, 0);
 }

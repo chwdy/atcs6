@@ -53,9 +53,9 @@ export function wrappedPanelElement(): HTMLDivElement {
 }
 
 /** Stop the timers and subscriptions of the panel shown as it is, and empty
- *  it, the way today's inspector does when one of its tabs closes. */
+ *  it, the way the panel host (editor-ui.ts) does when its panel closes. */
 function closeWrappedPanel(host: OperateHost): void {
-  host.editor.uiHandler.homeTabGroup?.cleanupPanelSubscriptions();
+  host.editor.uiHandler.cleanupPanelSubscriptions();
   host.editor._currentEditorType = null;
   host.editor._currentEditorId = null;
   host.editor.renderer?.clearBlockDirectionOverlay?.();
@@ -99,8 +99,6 @@ export function operatePanelHost(host: OperateHost): NextPanelHost {
     showPanel(title, content) {
       const el = wrappedEl;
       if (!active() || !el?.isConnected) return false;
-      // Today's inspector restoring its own saved tabs (at boot) keeps them.
-      if (host.editor._activeTabGroupForRestore) return false;
       el.innerHTML = content;
       el.classList.remove('sim-locked');
       const id = host.editor._currentEditorId;

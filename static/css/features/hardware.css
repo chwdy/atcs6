@@ -1,31 +1,12 @@
-/* Hardware Setup modal (#hardware-modal).
+/* Hardware Setup sections (ui/hardware-panel.ts), shown in Hardware Setup
+ * steps 2 and 4 (static/css/next/hardware.css lays them out), and the
+ * hardware rows of the block and switch panels (ui/hardware-binding.ts).
  *
  * Commissions the chips on the control board — bus, coordinate, ports, health —
  * and nothing else (block/switch -> port binding lives in the entity editors).
- * The body is rendered by hardware-panel.ts into #hw-body; the footer gate into
- * #hw-gate. Composition follows docs/DESIGN_LANGUAGE.md (§11 cards, §7 chips,
+ * Composition follows docs/DESIGN_LANGUAGE.md (§11 cards, §7 chips,
  * §6 accents, §10 states).
  */
-
-#hardware-modal [hidden] {
-    display: none !important;
-}
-
-.hw-modal-content {
-    max-width: 820px;
-}
-
-#hardware-modal .modal-body {
-    padding: var(--space-8) calc(var(--space-16) + var(--space-4)) var(--space-16);
-    overflow-y: auto;
-}
-
-.hw-intro {
-    margin: var(--space-8) 0 0;
-    font-size: var(--font-size-body);
-    line-height: 1.5;
-    color: var(--text-secondary);
-}
 
 /* --- wiring overview diagram -----------------------------------------------
    Built from the configured chips (hardware-panel.ts buildWiringDiagramSvg):
@@ -745,145 +726,8 @@
     gap: var(--space-6);
 }
 
-/* --- footer gate (the single go-live control) ----------------------------- */
-.hw-gate {
-    display: flex;
-    align-items: center;
-    gap: var(--space-12);
-    flex-wrap: wrap;
-}
-
-.hw-checklist {
-    display: flex;
-    gap: var(--space-6);
-    flex-wrap: wrap;
-    flex: 1;
-    min-width: 240px;
-}
-
-.hw-check {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-4);
-    font-size: var(--font-size-label);
-    font-weight: 550;
-    padding: 3px var(--space-8) 3px var(--space-6);
-    border-radius: var(--radius-pill);
-    border: 1px solid var(--border-color);
-    background: var(--bg-panel);
-    color: var(--text-secondary);
-}
-
-.hw-check.ok {
-    color: var(--success-color);
-    border-color: rgba(var(--success-rgb), 0.4);
-    background: rgba(var(--success-rgb), 0.1);
-}
-
-.hw-check.warn {
-    color: var(--warning-color);
-    border-color: rgba(var(--warning-rgb), 0.45);
-    background: rgba(var(--warning-rgb), 0.12);
-    cursor: pointer;
-}
-
-.hw-gate-actions {
-    display: flex;
-    align-items: center;
-    gap: var(--space-10);
-}
-
-.hw-enable {
-    display: flex;
-    align-items: center;
-    gap: var(--space-8);
-    padding: var(--space-6) var(--space-10);
-    border-radius: var(--control-radius-sm);
-    border: 1px solid var(--border-color);
-    background: var(--bg-panel);
-    cursor: pointer;
-}
-
-.hw-enable.locked {
-    opacity: 0.65;
-    cursor: not-allowed;
-}
-
-.hw-enable-text {
-    display: flex;
-    flex-direction: column;
-    gap: 1px;
-}
-
-.hw-enable-label {
-    font-size: var(--font-size-value);
-    font-weight: 650;
-    color: var(--text-primary);
-}
-
-.hw-enable-sub {
-    font-size: var(--font-size-label);
-    color: var(--text-secondary);
-}
-
-.hw-toggle {
-    position: relative;
-    width: 38px;
-    height: 20px;
-    flex-shrink: 0;
-    border-radius: var(--radius-pill);
-    background: var(--bg-hover);
-    border: 1px solid var(--border-color);
-    transition: background 0.15s ease, border-color 0.15s ease;
-}
-
-.hw-toggle::after {
-    content: "";
-    position: absolute;
-    top: 1px;
-    left: 1px;
-    width: 16px;
-    height: 16px;
-    border-radius: var(--radius-pill);
-    background: var(--text-secondary);
-    transition: transform 0.15s ease, background 0.15s ease;
-}
-
-.hw-enable.on .hw-toggle {
-    background: rgba(var(--success-rgb), 0.4);
-    border-color: rgba(var(--success-rgb), 0.65);
-}
-
-.hw-enable.on .hw-toggle::after {
-    transform: translateX(18px);
-    background: var(--text-primary);
-}
-
-.hw-restart-note {
-    font-size: var(--font-size-body);
-    color: var(--warning-color);
-    white-space: nowrap;
-}
-
-/* ---------------------------------------------------------------------------
-   DEVELOP MODE — the fake-hardware toggle, its truth badge, and the Fake-inputs
-   section (hardware-panel.ts devSectionHtml). The toggle is tinted with the
-   accent colour to set it apart from the green Enable toggle; the badge appears
-   only when the RUNNING session is actually on the fake device.
-   --------------------------------------------------------------------------- */
-.hw-develop {
-    display: flex;
-    align-items: center;
-    gap: var(--space-8);
-    padding: var(--space-6) var(--space-10);
-    border-radius: var(--control-radius-sm);
-    border: 1px solid var(--border-color);
-    background: var(--bg-panel);
-    cursor: pointer;
-}
-
-/* Idle-threshold field — same chip as the develop/enable toggles beside it, but
-   it carries a number instead of a switch, so no cursor: pointer. */
+/* Idle-threshold field (Hardware Setup step 2) — a bordered chip that carries a
+   number, so no cursor: pointer. */
 .hw-deadband {
     display: flex;
     align-items: center;
@@ -925,139 +769,6 @@
 .hw-deadband-unit {
     font-size: var(--font-size-label);
     color: var(--text-secondary);
-}
-
-.hw-develop-text {
-    display: flex;
-    flex-direction: column;
-    gap: 1px;
-}
-
-.hw-develop-label {
-    font-size: var(--font-size-value);
-    font-weight: 650;
-    color: var(--text-primary);
-}
-
-.hw-develop-sub {
-    font-size: var(--font-size-label);
-    color: var(--text-secondary);
-}
-
-.hw-develop.on .hw-toggle {
-    background: rgba(var(--accent-rgb), 0.4);
-    border-color: rgba(var(--accent-rgb), 0.65);
-}
-
-.hw-develop.on .hw-toggle::after {
-    transform: translateX(18px);
-    background: var(--text-primary);
-}
-
-.hw-develop-badge {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-4);
-    font-size: var(--font-size-label);
-    font-weight: 700;
-    letter-spacing: 0.04em;
-    padding: 3px var(--space-8);
-    border-radius: var(--radius-pill);
-    color: var(--accent-color);
-    border: 1px solid rgba(var(--accent-rgb), 0.5);
-    background: rgba(var(--accent-rgb), 0.12);
-}
-
-.hw-develop-hint {
-    display: inline-flex;
-    align-items: center;
-    font-size: var(--font-size-label);
-    font-weight: 550;
-    color: var(--accent-color);
-}
-
-.hw-dev-section {
-    padding: var(--space-16) 0;
-    border-top: 1px solid var(--border-color);
-}
-
-.hw-dev-empty {
-    margin: 0 0 0 28px;
-    font-size: var(--font-size-body);
-    color: var(--text-tertiary);
-}
-
-.hw-dev-rows {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-4);
-    margin-left: 28px;
-}
-
-.hw-dev-row {
-    display: grid;
-    grid-template-columns: minmax(80px, 1fr) auto auto minmax(160px, 1.4fr);
-    align-items: center;
-    gap: var(--space-10);
-    padding: var(--space-4) var(--space-8);
-    border-radius: var(--control-radius-sm);
-}
-
-.hw-dev-row:not(.hw-dev-head):nth-child(odd) {
-    background: var(--bg-panel);
-}
-
-.hw-dev-head {
-    font-size: var(--font-size-label);
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    color: var(--text-tertiary);
-    font-weight: 600;
-}
-
-.hw-dev-block {
-    font-family: var(--font-mono);
-    font-weight: 600;
-    color: var(--text-primary);
-}
-
-.hw-dev-ctl {
-    display: flex;
-    align-items: center;
-}
-
-.hw-dev-cur {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-4);
-}
-
-.hw-dev-cur-in {
-    width: 68px;
-}
-
-.hw-dev-unit {
-    font-size: var(--font-size-label);
-    color: var(--text-tertiary);
-}
-
-.hw-dev-na {
-    color: var(--text-tertiary);
-}
-
-.hw-dev-read {
-    font-size: var(--font-size-label);
-    font-family: var(--font-mono);
-    color: var(--text-secondary);
-}
-
-.hw-dev-read strong {
-    color: var(--text-secondary);
-    font-weight: 650;
-}
-
-.hw-dev-read strong.occ {
-    color: var(--danger-color);
 }
 
 /* ---------------------------------------------------------------------------
@@ -1179,11 +890,6 @@
 
     .hw-chip-actions {
         justify-content: flex-start;
-    }
-
-    .hw-gate-actions {
-        width: 100%;
-        justify-content: space-between;
     }
 }
 
