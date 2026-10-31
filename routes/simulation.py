@@ -6,19 +6,19 @@ payload, network stats/clear, and model-scale configuration.
 import os
 import time
 
-from flask import jsonify, request
+from flask import Response, jsonify, request
 
 from app_state import AppState
 from services import ValidationError, train_service
 from network_poll import build_network_poll_reply
+from network_stream import STATE_CHANGING_METHODS, NetworkStreamHub, stream_messages
 from simulation import build_network_payload
 
 
 def register(app, state: AppState) -> None:
     """Register simulation-control routes."""
 
-    @app.route("/api/network", methods=["GET"])
-    def get_network():
+    def network_payload():
         # Built under the lock, between ticks: a layout load or network clear
         # replaces the network's dicts under the same lock, so a snapshot read
         # outside it could iterate a dict while it changes size.
@@ -30,14 +30,44 @@ def register(app, state: AppState) -> None:
             )
         payload["simulation_running"] = state.simulation_running
         payload["simulation_speed"] = state.simulation_speed
+        return payload
+
+    @app.route("/api/network", methods=["GET"])
+    def get_network():
         # The poller passes the layout_version it holds; when it still
         # matches, the reply leaves the layout out (design_new.md "Data Flow
         # To UI", Layout version).
         return jsonify(
             build_network_poll_reply(
-                payload, request.args.get("layout_version")
+                network_payload(), request.args.get("layout_version")
             )
         )
+
+    # design_new.md "Data Flow To UI", Network stream: one hub per app, so
+    # every open tab sends the same snapshot and it is built once.
+    stream_hub = NetworkStreamHub(
+        network_payload,
+        lambda reply: app.json.dumps(reply, separators=(",", ":"), sort_keys=False),
+    )
+    app.extensions["network_stream"] = stream_hub
+
+    @app.route("/api/network/stream", methods=["GET"])
+    def stream_network():
+        messages = stream_messages(stream_hub, request.args.get("layout_version"))
+        return Response(
+            messages,
+            mimetype="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    @app.after_request
+    def push_after_state_change(response):
+        # Any request that can change state sends the next stream message at
+        # once, so every tab sees a command or an edit without waiting for
+        # the interval.
+        if request.method in STATE_CHANGING_METHODS:
+            stream_hub.note_state_changed()
+        return response
 
     def _matches_query(event, needle: str) -> bool:
         """Free-text match over the two human-readable fields plus the origin

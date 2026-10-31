@@ -41,6 +41,10 @@ passes the current value, the reply leaves the layout out: it carries
 `layout_unchanged: false`. See design_new.md "Data Flow To UI", **Layout
 version**, and `frontend/src/lib/network-poll.ts`.
 
+The frontend reads this snapshot from `GET /api/network/stream` while that
+stream is open, and uses this endpoint for one-off reads and while the stream
+is down.
+
 **Response (full snapshot, abridged):**
 
 ```json
@@ -70,6 +74,20 @@ version**, and `frontend/src/lib/network-poll.ts`.
   }]
 }
 ```
+
+### GET /api/network/stream
+
+The same snapshot, pushed. A server-sent event stream (`text/event-stream`):
+each message is one `data:` line holding the JSON reply `GET /api/network`
+would give at that moment. The server sends a message every 200 ms, and right
+after any `POST`, `PUT`, `PATCH` or `DELETE` request finishes. It builds each
+snapshot once for all open streams.
+
+**Query parameter:** `layout_version` (optional). The first message leaves the
+layout out only when this names the current version; each later message leaves
+it out while the version equals the one the previous message carried. See
+design_new.md "Data Flow To UI", **Network stream**, `network_stream.py` and
+`frontend/src/lib/network-stream.ts`.
 
 ---
 

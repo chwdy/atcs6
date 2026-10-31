@@ -4556,7 +4556,26 @@ The `TrainRoster` is the catalog of locomotives the operator owns. It is persist
 | `switches` | per switch: `switch_id`, `x`, `y`, `main_length_cm`, `diverge_length_cm`, `main_radius_cm`, `diverge_radius_cm`, `switch_type`, `name`, `notes` |
 | `tracks` | per tile: every field, except `switch_state`, `switch_states`, and `signals` on a tile that holds a switch or a signal (`is_switch`, or a non-empty `signal_ids`) |
 
-- Why this shape: the frontend polls this endpoint several times a second while a session runs, and the layout is most of the snapshot. A hash means no edit path has to remember to bump a version. A field wrongly placed in the layout part costs a full reply on each poll where it changes, and never leaves the frontend showing stale data.
+- Why this shape: the frontend receives this snapshot several times a second while a session runs (per **Network stream**), and the layout is most of the snapshot. A hash means no edit path has to remember to bump a version. A field wrongly placed in the layout part costs a full reply or message each time it changes, and never leaves the frontend showing stale data.
+
+**Network stream** (canonical home; referenced elsewhere by name)
+
+- **`GET /api/network/stream` pushes the composite runtime snapshot to the frontend.** It is a server-sent event stream: one long-lived response on which the server writes a message each time it sends, and the browser reads each message as it arrives. Data flows only from the server to the browser. While the stream is open, the frontend reads the snapshot from it; `GET /api/network` serves one-off reads.
+- **Each message is one `GET /api/network` reply.** A message's data is the JSON reply `GET /api/network` would give at that moment, in the two-part shape defined under **Layout version**, with `layout_version` and `layout_unchanged`.
+- **The layout part goes out only when it changed.**
+  - The first message on a connection follows the `GET /api/network` rule: it leaves the layout part out only when the connection's `layout_version` query parameter equals the current `layout_version`. So a new connection gets the full snapshot first, unless the frontend already holds the current layout.
+  - Each later message leaves the layout part out when the current `layout_version` equals the one that connection's previous message carried.
+- **When the server sends.** The server sends a message on every open connection when any of these holds:
+  - `NETWORK_STREAM_INTERVAL_SECONDS` (0.2 s) has passed since that connection's last message;
+  - a request that can change state (`POST`, `PUT`, `PATCH`, or `DELETE`) finished after that connection's last message was built.
+- **One build serves every connection.** The server builds each message's snapshot once and sends it on every open connection, so a second browser tab adds no second build. It builds the snapshot holding `AppState.simulation_lock`, between ticks, and waits for the next send without holding it, so an open stream never holds up a tick or another request.
+- **The frontend lays every message over the same cached layout.** A stream message and a `GET /api/network` reply go through the one cache and merge described under **Layout version** (The frontend rebuilds the full snapshot from a live-only reply), including asking for the full snapshot when a live-only message names a version other than the one the frontend holds.
+- **When the stream drops, the frontend polls until a new one works.**
+  - The stream counts as dropped when it fails to open, when it closes, or when no message arrives on it for 5 s.
+  - While it is dropped, the frontend reads `GET /api/network` every 0.2 s, passing the `layout_version` it holds, and tries a new stream every 2 s, naming that same version.
+  - When a message arrives on a new stream, then the frontend stops polling.
+- **A hidden tab may close its stream.** While the browser tab is hidden, the frontend may close the stream; it opens a new one when the tab shows again.
+- Why this shape: the snapshot changes every tick and every open tab needs it. Building it once per send costs one build per 0.2 s however many tabs are open, where a poll costs one build per tab. Sending right after a state-changing request shows a command or an edit in every tab without waiting for the next interval. Polling while the stream is down keeps the frontend live when only the stream fails.
 
 **Elapsed values are server-owned**
 
@@ -5030,7 +5049,7 @@ This list names every canonical home at section-and-subsection level; a bold rul
   - **A binding is read per write**;
   - **Occupancy source follows drive state**;
   - **Detector polarity is resolved in the hardware layer**.
-- **Data Flow To UI** — API payload ownership split (`Train.to_dict()` / `TrainController.to_dict()`); **Pending actions** and **Hold reason** (the read-model `operator_status_by_train_id` group); the **"At station" is a derived read** rule; **Elapsed values are server-owned** (a client renders durations and never derives them); **Signals (display-only)** (incl. the `SignalRegistry` storage and lookup surface).
+- **Data Flow To UI** — API payload ownership split (`Train.to_dict()` / `TrainController.to_dict()`); **Layout version** and **Network stream** (how the composite runtime snapshot reaches the frontend: the layout part only when it changed, pushed on one stream, polled while the stream is down); **Pending actions** and **Hold reason** (the read-model `operator_status_by_train_id` group); the **"At station" is a derived read** rule; **Elapsed values are server-owned** (a client renders durations and never derives them); **Signals (display-only)** (incl. the `SignalRegistry` storage and lookup surface).
 - **Event log** — the persisted, operator-facing view of the `NotificationCenter` stream: the operational events, the viewer panel, and replay-as-visualization; and the **Detector reading log** (the per-pass file of what every block detector read).
 
 **Safety functions index**
@@ -5223,7 +5242,7 @@ This section lists features and concerns that v1 leaves out on purpose, so a rea
 
 | Concern | v1 stance | Why Out of Scope for v1 |
 | --- | --- | --- |
-| Multi-threaded runtime | No general multi-threaded runtime; all API/UI/admin requests and ordinary hardware transactions run between ticks, holding `AppState.simulation_lock`, which the runtime loop holds for every whole tick. The one exception is the Real Hardware safety-only `OutputWatchdog` daemon described under **Power**. | The "always recompute live" projections (`lookahead`, `received_path_plan`, derived properties) work only because model changes happen between ticks. The watchdog performs only the documented safe-state hardware writes and never reads or writes runtime model state (see **Power**, Loss-of-control watchdog). |
+| Multi-threaded runtime | No general multi-threaded runtime; all API/UI/admin requests and ordinary hardware transactions run between ticks, holding `AppState.simulation_lock`, which the runtime loop holds for every whole tick. The **Network stream** holds it only while it builds a message. The one exception is the Real Hardware safety-only `OutputWatchdog` daemon described under **Power**. | The "always recompute live" projections (`lookahead`, `received_path_plan`, derived properties) work only because model changes happen between ticks. The watchdog performs only the documented safe-state hardware writes and never reads or writes runtime model state (see **Power**, Loss-of-control watchdog). |
 | Persistent / cross-tick lookahead or projection caching | Recompute live on every read across ticks | Performance is fine for v1 train counts, and a cross-tick cache adds a place that can go stale. A within-tick memo is allowed as an implementation detail under the rules in **Lookahead is a pure derived value**. |
 | Persistence / save-load of runtime state | In-memory only | No use case in v1. |
 | Schema migration, backward-compat shims, dual-write transitional fields | None | v1 is the first design; "v1 means v1." |
@@ -5245,7 +5264,7 @@ This section lists features and concerns that v1 leaves out on purpose, so a rea
 | Pluggable physics or speed-profile backends | None | `SpeedProfile` is the single calibration model. |
 | Route-level runtime progress summary | None; `RouteRun` is the only runtime progress store | No route-level summary shape has a v1 consumer; UI and API read per-train `RouteRun` progress. |
 | Hand-authored config files or env vars for settings | None | Every v1 setting is changed only through the application's own API, never by hand-editing a file or setting an environment variable. **Runtime settings** hold entirely in memory. **Hardware setup** (**Power**) is written by its own API to an app-managed JSON file so the wiring survives the session rebuild that applies it. That file is persistence the app owns and writes only through the API, the same way it owns the layout save files, which carry a copy of that setup (see **Power**, Saved with the layout). The selected operating environment is stored separately from layout wiring (see **Session mode and operating environment**). |
-| Async/streaming notification protocols (websocket, SSE, push) | None | Frontend reads `NotificationCenter` via polling/projection. |
+| Pushing `NotificationCenter` events to the frontend (websocket, server-sent events) | None | The frontend reads `NotificationCenter` through its read endpoints, by polling. The composite runtime snapshot is the one read the server pushes (per **Network stream**). |
 | Cross-tick latch durability across process restart | None | Process state is volatile. |
 | Watchdogs / alert notifications for stuck trains, no-progress | None | Operators read why a stopped train is not moving from its `hold_reason` (see **Hold reason**). The hardware fail-safe watchdog that cuts power to the track and point motors on loss of control is a different mechanism, specified in **Power**, Hardware interface boundary. |
 | Bulk operations other than the three layout-wide actions — Emergency stop, Reset, and Hold all (other multi-train commands, batch route assignment) | None | Operators issue per-train commands one at a time. |
