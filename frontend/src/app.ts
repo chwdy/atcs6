@@ -16,7 +16,7 @@ import { SimRendererOverlay } from './renderer/sim-overlay';
 import { Editor } from './editor/editor';
 import { SimEditorPlugin } from './editor/sim-plugin';
 import { TrainMonitor } from './panels/train-monitor';
-import { runtimeNoun, updateFatalBanner } from './panels/fatal-banner';
+import { updateFatalBanner } from './panels/fatal-banner';
 import { startRestartReconnectFlow } from './ui/restart-flow';
 import {
   startConnectionMonitor,
@@ -315,9 +315,13 @@ class App {
   }
 
   /**
-   * Switch the header Editor/Simulation toggle and gate the tool palette.
+   * Switch the header Editor/Operate toggle and gate the tool palette.
    *
-   * In Simulation mode the layout must not change, so every tool that builds
+   * The header names the operation session mode "Operate" in every operating
+   * environment (design_new.md "Session mode and operating environment"), so
+   * the word "Simulation" means only the environment.
+   *
+   * In Operate mode the layout must not change, so every tool that builds
    * or deletes track, blocks, paths, platforms, trains or routes is disabled.
    * Only the plain Select tool (to pick/inspect entities, including trains)
    * and the read-only viewer panels (data-tool ending in `-panel`) stay live.
@@ -330,7 +334,6 @@ class App {
 
     document.getElementById('mode-edit')!.classList.toggle('active', !isSim);
     document.getElementById('mode-sim')!.classList.toggle('active', isSim);
-    this.syncRuntimeNounUI(this.currentNetwork);
 
     if (!this.editor) return;
 
@@ -356,19 +359,6 @@ class App {
         revert();
       }
     }
-  }
-
-  /** Stop calling a railway with real detectors on it a simulation.
-   *
-   *  design_new.md "Run modes": the header split is editor mode versus
-   *  operation mode, and what operation mode *is* depends on the hardware —
-   *  once block occupancy is read from real detectors the app is operating a
-   *  layout, not simulating one. The mode button and the play/pause tooltip
-   *  follow `occupancy_is_real`; nothing else about the split changes. */
-  syncRuntimeNounUI(network: any): void {
-    const noun = runtimeNoun(network);
-    const modeBtn = document.getElementById('mode-sim');
-    if (modeBtn && modeBtn.textContent !== noun) modeBtn.textContent = noun;
   }
 
   /** Show the session state and offer the controls it allows (design_new.md
@@ -982,7 +972,6 @@ class App {
 
       // Surface a fatal-conflict halt (failed_runtime) if one is active.
       updateFatalBanner(network, this.renderer);
-      this.syncRuntimeNounUI(network);
       noteRequestSuccess();
     } catch (e: any) {
       console.error('[App] Failed to refresh network:', e);

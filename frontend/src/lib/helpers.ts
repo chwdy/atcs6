@@ -950,7 +950,7 @@ export function formatDistanceCm(cm: number): string {
 // never frozen. Path / route / train panels are operational and simply never
 // call this, per the "full dispatcher freedom" rule.
 
-/** True when the app is in operation (Simulation) mode. */
+/** True when the app is in Operate mode (the operation session mode). */
 export function isSimMode(): boolean {
   return (window as any).app?.editorMode === 'sim';
 }
@@ -992,7 +992,7 @@ export function applyStructuralLock(root: HTMLElement | null): void {
     const hint = document.createElement('div');
     hint.className = 'sim-lock-hint';
     hint.innerHTML =
-      '<i class="ti ti-lock"></i> Layout locked while simulating — structural edits are paused.';
+      '<i class="ti ti-lock"></i> Layout locked while operating — structural edits are paused.';
     root.insertBefore(hint, root.firstChild);
   } else if (!lock && existing) {
     existing.remove();

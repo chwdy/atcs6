@@ -129,12 +129,14 @@ by name for forms, detail pages, and canvas work too.
 Where UI lives. One mode toggle, and a fixed set of regions — every
 feature has exactly one natural home.
 
-The top bar's `Editor | Simulation` toggle is the app's primary split:
+The top bar's `Editor | Operate` toggle is the app's primary split:
 **Editor** is for building the layout (drawing track, configuring
-blocks, switches, stations), **Simulation** is for running it (driving
+blocks, switches, stations), **Operate** is for running it (driving
 trains, monitoring, routes). A surface that edits structure belongs to
 Editor mode; a surface that observes or commands live trains belongs to
-Simulation.
+Operate mode. The button reads Operate in every operating environment
+(design_new.md "Session mode and operating environment"), so the word
+"Simulation" in the UI only ever names the operating environment.
 
 | Region | What lives there |
 |--------|------------------|
@@ -1080,11 +1082,11 @@ Disabled state across both: `opacity: 0.4`, `cursor: not-allowed`.
 Reference: `.tc-power-slider`, `.tc-handle-slider` in
 [features/train-control.css](../static/css/features/train-control.css).
 
-### Read-only in Simulation (the structural lock)
+### Read-only in Operate mode (the structural lock)
 
-The Inspect tool stays live in Simulation mode, so the entity inspectors
-(block, switch, platform, station, signal, tunnel) still open while a sim
-runs. But the physical layout is frozen once you are operating, so those
+The Inspect tool stays live in Operate mode, so the entity inspectors
+(block, switch, platform, station, signal, tunnel) still open while the
+railway runs. But the physical layout is frozen once you are operating, so those
 panels go **read-only for structural edits**: names, geometry (length /
 radius / speed), the create / extend / remove / delete buttons, and signal
 and tunnel config are all disabled. A one-line hint at the top of the panel
@@ -1106,7 +1108,7 @@ shared `applyStructuralLock` helper disables everything else. The two segment
 render helpers (`renderAvailabilitySegment`, `renderDirectionSegment`) carry
 the marker, so all four entity panels inherit it. Operational panels (path,
 route, train, speed profile) never call the lock at all — the dispatcher
-creates and runs those freely while simulating ("full dispatcher freedom").
+creates and runs those freely while operating ("full dispatcher freedom").
 
 Reference: `applyStructuralLock` in
 [lib/helpers.ts](../frontend/src/lib/helpers.ts); `.sim-lock-hint` /
