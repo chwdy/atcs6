@@ -4592,7 +4592,7 @@ The `TrainRoster` is the catalog of locomotives the operator owns. It is persist
 **Layout version** (canonical home; referenced elsewhere by name)
 
 - **The `GET /api/network` endpoint serves the composite runtime snapshot in two parts.** The layout part is every field that changes only when the layout is edited, as the table lists. The live part is every other field.
-- **`layout_version` names one layout.** It is a hash of the layout part, and the endpoint computes it on every read. No component stores it or bumps it. Two reads of the same layout carry the same `layout_version`, across a server restart too.
+- **`layout_version` names one layout.** It is a hash of the layout part, and the endpoint computes it on every read. No component stores it or bumps it. Two reads of the same layout carry the same `layout_version`. A layout loaded from a save keeps it across a server restart too. A scene the server builds in code at boot does not, because the build stamps its platforms and station groups with the time they were built, so the first poll after that restart gets one full reply.
 - **When a request's `layout_version` query parameter equals the current `layout_version`, then the reply leaves the layout part out.** That reply:
   - carries `layout_unchanged: true` and the current `layout_version`;
   - omits the sections in the table's first row, and the `blocks`, `switches`, and `tracks` keys;
@@ -4736,8 +4736,9 @@ The event log is the operator-facing record of what happened during a run: the s
 
 The detector reading log is a file of what the block detectors told the runtime, one line per pass. The event log records what the runtime decided; this log records the readings it decided from, so a run that went wrong can be read back as the exact readings the runtime acted on and when it read them. It records inputs, not events: no `NotificationCenter` event is written to it, and nothing in it is an event.
 
-- **Who writes it.** `SimulationController` owns one `DetectorReadingLog` (`SimulationController.detector_reading_log`) for the life of the process. It is off until the server enables it at boot with a folder, so a unit test or scenario run writes nothing. Nothing reads it at runtime.
+- **Who writes it.** `SimulationController` owns one `DetectorReadingLog` (`SimulationController.detector_reading_log`) for the life of the process. It is off until `python server.py` enables it at boot with a folder (`server.py`'s `main()`), so a unit test, a scenario run, or a WSGI server that imports `server.py` writes nothing. Nothing reads it at runtime.
 - **When a line is written.** Every pass that reads the detectors gets one line: each running tick and each stopped pass (see **Running and stopped**, Which pass runs). `SimulationController` calls `DetectorReadingLog.record_pass(...)` right after `BlockOccupancyDetector.step()` returns and before attribution runs (see **Power**, Block occupancy detection, One global read per tick). `record_pass(...)` writes the line. A pass whose read fails gets no line, because that failure is a hardware I/O failure (see **Power**, Hardware I/O failure). An iteration that runs no detector read gets no line.
+- **Setup passes are logged too.** While no environment is active, the stopped passes that still read the detectors in Setup (see **Hardware setup**, The detector pipeline keeps running throughout Setup) each get a line like any other, with `environment` empty. Their readings can come from blocks the Setup tools are driving.
 - **What every line carries.**
   - `pass` — counts the passes the log recorded in this process, from 1. A gap in `pass` means lines were lost to a failed write.
   - `pass_kind` — `"tick"` for a running pass, `"stopped"` for a stopped pass.
@@ -4755,16 +4756,16 @@ The detector reading log is a file of what the block detectors told the runtime,
 
   A Simulation reading is `present` alone.
 - **Only changed readings are written.** A line lists only the blocks whose reading differs from the reading the file last holds for that block, and leaves out `readings` when none differs.
-- **Some lines list every block.** A line lists every block the read returned, and adds `full` naming why, `environment` (the active environment), `on_threshold`, and `off_threshold`, when **any of these holds**:
+- **Some lines list every block.** A line lists every block the read returned, and adds `full` naming why, `environment` (the active environment, or `null` while none is active — in Setup), `on_threshold`, and `off_threshold`, when **any of these holds**:
   - it is the first line the process writes — `full = "start"`;
   - it is the first line of a new file — `"new_file"`;
-  - the detector or the operating environment changed since the last line — `"environment"` (an activation builds a new detector);
+  - the detector or the operating environment changed since the last line — `"environment"` (an activation builds a new detector, and entering or leaving Setup changes the environment);
   - a layout was loaded, or the set of blocks the read returned changed — `"layout"`;
   - the previous write failed — `"write_failure"`.
 
   So reading a file forward from any line that carries `full` gives every block's reading at every pass after it.
-- **Where it is kept.** The server writes the files into the per-machine `.runtime/detector_readings/` folder beside the code, where the shutdown record also lives. Each file is named for the local time it was opened. Each line reaches the operating system as it is written, so a crash loses no line already written. A file past `DETECTOR_READING_LOG_MAX_FILE_BYTES` is closed and the next line opens a new file. Opening a file deletes the oldest files until the folder holds no more than `DETECTOR_READING_LOG_MAX_TOTAL_BYTES`. Both values live in `constants.py`. The files are not part of a layout save.
-- **A failed write never stops the session.** `DetectorReadingLog` catches every failure of its own write, and the pass carries on. It reports the failure as one `kind = "warning"` event with `source = "DetectorReadingLog"`, `operation = "record_pass"`, and an `ErrorRecord` naming the failure, under one condition key, so a run of failing passes produces one event (per **Error events**, Suppression mechanism). It resolves that key on the next successful write.
+- **Where it is kept.** The server writes the files into the per-machine `.runtime/detector_readings/` folder beside the code; its parent `.runtime/` also holds `last_shutdown.json`, the record of the last shutdown. Each file is named for the local time it was opened. Each line reaches the operating system as it is written, so a crash loses no line already written. A file past `DETECTOR_READING_LOG_MAX_FILE_BYTES` is closed and the next line opens a new file. Opening a file deletes the oldest files until the folder holds no more than `DETECTOR_READING_LOG_MAX_TOTAL_BYTES`. Both values live in `constants.py`. The files are not part of a layout save.
+- **A failed write never stops the session.** `DetectorReadingLog` catches every failure of its own write, and the pass carries on. It reports the failure as one `kind = "warning"` event with `source = "DetectorReadingLog"`, `operation = "record_pass"`, and an `ErrorRecord` naming the failure, under one condition key, so a run of failing passes produces one event (per **Error events**, Suppression mechanism). It resolves that key on the next successful write. A folder that cannot be created when the log is enabled is a failed write too: the log stays on, each later pass tries again, and the first line that is written is the `"start"` line.
 
 ## End-To-End ATO Path Run
 

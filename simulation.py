@@ -1729,6 +1729,9 @@ class SimulationController(SwitchOutputOwner):
         # debounce counted it) before attribution runs, so a later failure in
         # this pass cannot lose the reading that led to it. The log catches its
         # own failures; it never raises into the tick.
+        # Setup leaves no environment active, so its passes log with none —
+        # entering Setup is an environment change that lists every block again
+        # (design_new.md "Detector reading log").
         self.detector_reading_log.record_pass(
             pass_kind=pass_kind,
             wall_time=self._pass_started_wall_time,
@@ -1736,7 +1739,7 @@ class SimulationController(SwitchOutputOwner):
             delta_seconds=delta_seconds,
             operating_delta_seconds=operating_delta_seconds,
             detector=detector,
-            environment=self.operation_mode.value,
+            environment=self.operation_mode.value if self.environment_active else None,
         )
         # One result per changed block, with its `kind` (design_new.md "Block
         # occupancy detection", The attribution result). The detector owns the
