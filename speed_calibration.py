@@ -54,9 +54,11 @@ from model_scale import cm_per_sec_to_kmh
 # non-decreasing rule.
 _MONOTONIC_EPSILON_KMH = 1e-6
 
-# Run phases. "leg" and "stopping" are the two halves of one crossing; the pass
-# alternates between them until every step is measured.
+# Run phases. "leg", "clearing" and "stopping" are the three parts of one leg:
+# the crossing, driving on until the train is off the measured block, and coming
+# to a stand. The pass cycles through them until every step is measured.
 PHASE_LEG = "leg"
+PHASE_CLEARING = "clearing"
 PHASE_STOPPING = "stopping"
 PHASE_MEASURED = "measured"
 PHASE_FAILED = "failed"
@@ -105,6 +107,15 @@ class CalibrationObservation:
     delays the leg instead of failing it; and once a leg has had its authority
     and then loses it, the loss means the leg route completed through ordinary
     stop completion — the train came to rest at the far outer block."""
+
+    measured_block_held: bool = False
+    """Whether the train is still on the measured block in either view of
+    occupancy (design_new.md "Power", Two views of occupancy): its calculated
+    span covers it, or its block list still holds it (`Block.occupied_by` names
+    the train). The list lets go of a block only once its detector has read it
+    clear, a moment after the span has moved off. After a crossing the pass
+    drives on until this is false, so the next leg's entry into the measured
+    block is a fresh one."""
 
 
 @dataclass(frozen=True)
@@ -210,6 +221,10 @@ class CalibrationRun:
     """When the current crossing's clock stopped — the moment the far outer
     block was confirmed occupied after B — or `None` until then. Written in
     Observe, read by Plan step `c9e1`, reset by each new leg."""
+    clearing_started_at: Optional[float] = None
+    """When the pass began driving the train off the measured block after a
+    crossing, or `None` outside that part of the leg. The clearing timeout
+    counts from it."""
     overrun_seen: bool = False
     """Set in Observe when a block past the stretch was confirmed and credited
     to the calibration train on this leg, whether the train was still crossing
@@ -251,7 +266,7 @@ class CalibrationRun:
 
     @property
     def is_measuring(self) -> bool:
-        return self.phase in (PHASE_LEG, PHASE_STOPPING)
+        return self.phase in (PHASE_LEG, PHASE_CLEARING, PHASE_STOPPING)
 
     @property
     def is_measured(self) -> bool:
@@ -334,6 +349,7 @@ class SpeedCalibration:
         self._operating_clock = None
         self._notification_center = None
         self._operation_mode = None
+        self._block_holder = None
 
     def wire_dependencies(
         self,
@@ -342,17 +358,20 @@ class SpeedCalibration:
         operating_clock=None,
         notification_center=None,
         operation_mode=None,
+        block_holder=None,
     ) -> None:
         """Inject the named dependencies calibration needs: the controller
         registry, the operating clock every interval is measured against
-        (design_new.md "Clocks"), the event-log sink, and a call returning the
-        active operating environment. Called once by SimulationController at
+        (design_new.md "Clocks"), the event-log sink, a call returning the
+        active operating environment, and a call naming the train a block's
+        `Block.occupied_by` holds. Called once by SimulationController at
         construction; calibration holds no SimulationController reference of
         its own."""
         self._controllers = controllers
         self._operating_clock = operating_clock
         self._notification_center = notification_center
         self._operation_mode = operation_mode
+        self._block_holder = block_holder
 
     # -- lifecycle --------------------------------------------------------
 
@@ -486,6 +505,11 @@ class SpeedCalibration:
         run = self.runs.get(train_id)
         if run is None or not run.is_measuring:
             return False
+        # Only a cap while the clock runs touches the speed being timed. A cap in
+        # the run-up — such as the tick a leg starts with its authority still
+        # ending at the measured block — is not part of any crossing.
+        if run.crossing_started_at is None or run.crossing_finished_at is not None:
+            return False
         run.current_crossing_tainted = True
         return True
 
@@ -504,6 +528,8 @@ class SpeedCalibration:
 
         if run.phase == PHASE_LEG:
             return self._advance_leg(run, obs)
+        if run.phase == PHASE_CLEARING:
+            return self._advance_clearing(run, obs)
         return self._advance_stopping(run, obs)
 
     def _advance_leg(
@@ -539,6 +565,7 @@ class SpeedCalibration:
             run.leg_started_at = None
             run.crossing_started_at = None
             run.crossing_finished_at = None
+            run.clearing_started_at = None
             run.overrun_seen = False
             # A fresh crossing begins clean: any taint from the last one is spent
             # (design_new.md, "A capped crossing is discarded").
@@ -590,8 +617,7 @@ class SpeedCalibration:
                         f"stretch too short to measure {run.current_power:.0f}% "
                         f"at block {run.measured_block_id}",
                     )
-                run.phase = PHASE_STOPPING
-                return CalibrationCommand(power_percent=0.0)
+                return self._leave_measured_block(run, obs)
             if elapsed <= 0.0 or run.block_length_cm <= 0.0:
                 return self.fail(run, "measured block crossing timed at zero")
             # A clean crossing measured: the cap-retry streak resets.
@@ -599,13 +625,12 @@ class SpeedCalibration:
             run.crossings.append(
                 cm_per_sec_to_kmh(run.block_length_cm / elapsed)
             )
-            run.phase = PHASE_STOPPING
             # The leg reached the far block, so it finishes through ordinary stop
             # completion (Plan settlement step `9d8b` completes the leg route). The pass
-            # commands a stop and issues no route op of its own — success carries
-            # no teardown (design_new.md "Speed calibration", A leg finishes
-            # through ordinary stop completion).
-            return CalibrationCommand(power_percent=0.0)
+            # commands a stop once the train is off B and issues no route op of
+            # its own — success carries no teardown (design_new.md "Speed
+            # calibration", A leg finishes through ordinary stop completion).
+            return self._leave_measured_block(run, obs)
 
         # The leg had its authority and then lost it without the far block ever
         # confirming: ordinary stop completion tore the leg route down because
@@ -615,10 +640,63 @@ class SpeedCalibration:
         if run.leg_authority_seen and not obs.path_present:
             return self._resolve_incomplete_leg(run, obs)
 
-        # The step timeout runs only once the leg's authority has appeared.
-        if run.leg_started_at is None or obs.now - run.leg_started_at < CALIBRATION_STEP_TIMEOUT_S:
+        # The step timeout runs only once the leg's authority has appeared. It
+        # gives the run-up its own window to reach B, and the crossing its own
+        # window from B's confirmation to reach the far block, so a long run-up
+        # never eats into the crossing.
+        started = (
+            run.crossing_started_at
+            if run.crossing_started_at is not None
+            else run.leg_started_at
+        )
+        if started is None or obs.now - started < CALIBRATION_STEP_TIMEOUT_S:
             return None
         return self._resolve_incomplete_leg(run, obs)
+
+    def _leave_measured_block(
+        self, run: CalibrationRun, obs: CalibrationObservation
+    ) -> Optional[CalibrationCommand]:
+        """End the crossing: stop now if the train is already off B, otherwise
+        keep the step's power on until it is (design_new.md "Speed calibration",
+        The pass turns the train around at each end).
+
+        The next leg is timed from a fresh confirmed entry into B. A train that
+        stopped with its tail still on B would start that leg already holding B,
+        so no entry would ever come and the leg back would go untimed."""
+        if obs.measured_block_held:
+            run.phase = PHASE_CLEARING
+            run.clearing_started_at = obs.now
+            return None
+        run.phase = PHASE_STOPPING
+        return CalibrationCommand(power_percent=0.0)
+
+    def _advance_clearing(
+        self, run: CalibrationRun, obs: CalibrationObservation
+    ) -> Optional[CalibrationCommand]:
+        far_block = run.heading_toward_block_id
+        if run.overrun_seen:
+            return self._fail_overrun(run)
+        if not obs.measured_block_held:
+            run.phase = PHASE_STOPPING
+            run.clearing_started_at = None
+            return CalibrationCommand(power_percent=0.0)
+        if not obs.path_present:
+            # The leg ran out its authority at the far block's far seam and
+            # completed with the train still on B.
+            return self.fail(
+                run,
+                f"train stopped in {far_block} before clearing "
+                f"{run.measured_block_id} — {far_block} is too short to hold the "
+                "train past the measured block",
+            )
+        started = run.clearing_started_at
+        if started is not None and obs.now - started >= CALIBRATION_STEP_TIMEOUT_S:
+            return self.fail(
+                run,
+                f"train never cleared {run.measured_block_id} after reaching "
+                f"{far_block}",
+            )
+        return None
 
     def _fail_overrun(self, run: CalibrationRun) -> CalibrationCommand:
         """Fail the pass for an overrun Observe recorded on this leg."""
@@ -860,8 +938,18 @@ class SpeedCalibration:
             is_stopped=bool(controller.is_stopped()),
             head_block=self._head_block(controller),
             path_present=controller.path_projection.received_path_plan is not None,
+            measured_block_held=self._on_measured_block(run, controller),
         )
         return self.advance(run, obs)
+
+    def _on_measured_block(self, run: CalibrationRun, controller) -> bool:
+        """Whether the train is still on the measured block in either view of
+        occupancy: its span covers it, or its block list holds it."""
+        span = controller.get_current_span()
+        if run.measured_block_id in (getattr(span, "occupied_blocks", ()) or ()):
+            return True
+        holder = self._block_holder
+        return holder is not None and holder(run.measured_block_id) == run.train_id
 
     @staticmethod
     def _head_block(controller) -> str:
@@ -945,7 +1033,7 @@ class SpeedCalibration:
         """
         run = self.runs.get(train_id)
         if run is not None and run.is_measuring:
-            driving = run.phase == PHASE_LEG and run.leg_armed
+            driving = run.phase in (PHASE_LEG, PHASE_CLEARING) and run.leg_armed
             if driving and not self._leg_authority_present(train_id):
                 driving = False
             value = run.current_power if driving else 0.0

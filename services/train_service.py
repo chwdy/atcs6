@@ -889,6 +889,17 @@ def calibration_readiness(
                     f"Stand the train in {outer[0]} or {outer[1]} — a leg starts "
                     "from a stand in an outer block"
                 )
+            elif measured_block_id in held or getattr(
+                state.network.blocks.get(measured_block_id), "occupied_by", None
+            ) == train_id:
+                # Either view of occupancy: the span covers it, or the train's
+                # block list still holds it while its detector has yet to read
+                # clear. A leg cannot reserve a block its own train holds.
+                unmet.append(
+                    f"Move the train off {measured_block_id}, wholly into "
+                    f"{outer[0]} or {outer[1]} — a crossing is timed from the "
+                    "moment the train enters the measured block"
+                )
 
     if not controller.is_stopped():
         unmet.append("Stop the train")

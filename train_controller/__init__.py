@@ -971,12 +971,6 @@ class TrainController:
         drives is lit. OFF (physics checks `powered`) and the emergency cut-out
         (`voltage_source_track_voltage = 0`) are the only 0 V outputs.
         """
-        # design_new.md, "A capped crossing is discarded": when the
-        # Propulsion cap step lowers the calibration drive through an external
-        # ATC restriction during a measured crossing, taint that crossing so it
-        # is discarded and re-measured rather than banked. EB and power-off end
-        # the whole pass separately, through run_still_valid at step `26f5`.
-        self._taint_calibration_crossing_on_cap()
         if not self.power_on:
             # Per design_new.md "Power/mode command contracts": clear manual_power_percent on
             # power-off so the set-and-forget contract holds.
@@ -1105,6 +1099,13 @@ class TrainController:
                 target = cap
                 if not driven_by_calibration:
                     self.manual.reset_power_percent_for_safety()
+                else:
+                    # design_new.md, "A capped crossing is discarded": the cap
+                    # lowered the calibration drive, so the crossing being timed
+                    # is tainted, discarded and re-measured rather than banked.
+                    # EB and power-off end the whole pass separately, through
+                    # run_still_valid at step `26f5`.
+                    self._taint_calibration_crossing_on_cap()
                 # The cap outranks the commanded percent, so the capped speed —
                 # not the discarded percent — is this tick's authoritative
                 # operating point, and voltage derives from it.

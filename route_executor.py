@@ -2280,7 +2280,20 @@ class RouteExecutor:
         if self.execution_state_for(train_id) is not None:
             return
 
-        from train_route import Route, BlockTarget
+        from train_route import Route
+
+        tasks = self._calibration_leg_tasks(train_id, run, far_block_id)
+        if tasks is None:
+            near_block_id = next(
+                (b for b in run.outer_block_ids if b != far_block_id), ""
+            )
+            self._speed_calibration.fail(
+                run,
+                f"no path runs from {near_block_id} through "
+                f"{run.measured_block_id} into {far_block_id} with the points "
+                "as they are set — the leg cannot cross the measured block",
+            )
+            return
 
         seq = getattr(self, "_calibration_leg_seq", 0) + 1
         self._calibration_leg_seq = seq
@@ -2294,16 +2307,80 @@ class RouteExecutor:
             # outer block is run-up / stopping room (design_new.md, "A calibration
             # leg holds no reservation-end standoff").
             zero_reservation_end_standoff=True,
-            tasks=[
-                RouteTask(
-                    task_kind="stop",
-                    task_location=BlockTarget(block_id=far_block_id),
-                )
-            ],
+            tasks=tasks,
         )
         self.register_route(route)
         route.assign_train(train_id)
         run.active_leg_route_id = route_id
+
+    def _calibration_leg_tasks(
+        self, train_id: str, run, far_block_id: str
+    ) -> Optional[List[RouteTask]]:
+        """The leg route's two tasks: a `waypoint` at the measured block and a
+        `stop` at the far outer block, each with the direction the stretch
+        crosses it in (design_new.md "Speed calibration", A leg runs on the
+        stretch, with the points as they are set).
+
+        The stretch is the walk out of the near outer block, through the measured
+        block, and into the far one, with every switch on it where it is set. It
+        is picked from the shared graph query's candidates for the calibration
+        train (`PathDispatcher.find_walk_candidates`, over
+        `RailwayPathfinder.query_graph_walks`).
+
+        The waypoint keeps the leg's path off any second way between the two
+        outer blocks (the far side of a loop, or a siding beside the measured
+        block), and the directions make it enter each block from the stretch's
+        side, so the leg throws no switch. Returns `None` when no such walk
+        exists for this train.
+        """
+        from train_route import BlockTarget
+
+        near_block_id = next(
+            (b for b in run.outer_block_ids if b != far_block_id), ""
+        )
+        measured_block_id = run.measured_block_id
+        stretch = [near_block_id, measured_block_id, far_block_id]
+        for candidate in self.path_dispatcher.find_walk_candidates(
+            near_block_id, far_block_id, train_id=train_id, manual_override=False
+        ):
+            if list(candidate.ordered_blocks or ()) != stretch:
+                continue
+            steps = list(candidate.ordered_walk or ())
+            points_as_set = all(
+                (switch := self.network.switches.get(step.resource_id)) is not None
+                and int(switch.position) == int(step.switch_required_state)
+                for step in steps
+                if step.switch_required_state is not None
+            )
+            if not points_as_set:
+                continue
+            return [
+                RouteTask(
+                    task_kind="waypoint",
+                    task_location=BlockTarget(block_id=measured_block_id),
+                    task_direction=self._walk_direction_in(steps, measured_block_id),
+                ),
+                RouteTask(
+                    task_kind="stop",
+                    task_location=BlockTarget(block_id=far_block_id),
+                    task_direction=self._walk_direction_in(steps, far_block_id),
+                ),
+            ]
+        return None
+
+    @staticmethod
+    def _walk_direction_in(steps, block_id: str) -> str:
+        """The `GraphWalkStep.block_direction` the walk crosses `block_id` in.
+
+        The canonical block-direction helper gives one for every block but a
+        one-tile block whose rails meet at a corner (its known limit, see
+        `Block.block_direction_for_compass_exit`); that one is left to the
+        ordinary target resolution as `"either"`.
+        """
+        for step in steps:
+            if step.block_id == block_id and step.block_direction:
+                return step.block_direction
+        return "either"
 
     # ------------------------------------------------------------------ Plan
     def _run_plan_settlement(
