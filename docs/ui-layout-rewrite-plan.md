@@ -251,12 +251,25 @@ tabs:
 
 For the simple-loop owners in `product_memo_personas.md`:
 
-- An empty layout shows a centred card: **Start from a loop**, **Open a
-  layout**, **Draw from scratch**.
-- **Start from a loop** loads a small oval in the Simulation environment,
-  switches to Operate, and highlights **+ Place train**.
-- The goal to measure: from opening the app to a moving train in under five
-  clicks.
+- An empty layout shows a centred card on the Editor and Operate screens:
+  **Start from a loop**, **Open a layout**, **Draw from scratch**
+  (`frontend/src/next/first-run/`).
+- **Start from a loop** switches to Simulation if another environment is
+  active (the card says so first), then builds a 14 × 8 oval with the same
+  calls the editor makes: the track, one segment per side (each gets its own
+  block), the sides' lengths (100 cm and 200 cm, since a model layout has no
+  default length), one train, and a circular route of waypoints round the
+  four blocks, assigned to the train. It then opens Operate with that train
+  picked.
+- **Measured: three clicks** from opening the app on an empty layout to a
+  moving train: Start from a loop, Start route on the train's card, Play.
+- Why it places a train instead of highlighting **+ Place train**, as this
+  section first said: placing a train by hand takes five clicks on its own
+  (Place train, Pick on map, the track, the facing, Add Train), and the train
+  still needs a route before it can move. Saved layouts carry no routes, so
+  the loop is built rather than shipped as a layout file.
+- **Draw from scratch** opens the Editor with the Track tool picked and keeps
+  the card away for the rest of the page's life.
 - Empty lists say the next step ("No trains yet. Place one on the map")
   instead of "0 shown".
 
@@ -348,11 +361,11 @@ without the flag nothing changes until phase 8 switches the default.
 After phase 1, phases 2, 3, 4, 5 and 6 touch different screens and can run
 in parallel, each in its own session and branch.
 
-**Progress.** Phases 0–6 are done on `claude/ui-next`: the top bar, and the
-Operate, Editor, Hardware Setup and Locomotives screens and the Logs panel,
-all behind `?ui=next`. Each was built in its own session, then merged. These
-parts still show today's code inside the new layout, and are ported in later
-passes:
+**Progress.** Phases 0–7 are done on `claude/ui-next`: the top bar, the
+first-run card, the Operate, Editor, Hardware Setup and Locomotives screens,
+and the Logs panel, all behind `?ui=next`. Phases 2–6 were each built in
+their own session, then merged. These parts still show today's code inside
+the new layout, and are ported in later passes:
 
 | Part | Does for now | Until |
 |------|--------------|-------|

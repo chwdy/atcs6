@@ -1,0 +1,90 @@
+/* ============================================================================
+   First-run card (docs/ui-layout-rewrite-plan.md §9;
+   frontend/src/next/first-run/start-card.tsx).
+
+   Centred over the map while the layout has no track. The slot covers the
+   canvas but lets pointer events through, so the map still pans and draws
+   when the card is not there; only the card itself takes clicks.
+   ============================================================================ */
+
+.first-run-slot {
+    position: absolute;
+    inset: 0;
+    z-index: var(--z-shell);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    pointer-events: none;
+}
+
+.first-run-card {
+    pointer-events: auto;
+    width: min(380px, calc(100% - 32px));
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 16px;
+    background-color: var(--bg-panel);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
+}
+
+.first-run-title {
+    margin: 0 0 4px;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.first-run-option {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    width: 100%;
+    padding: 10px 12px;
+    background-color: var(--bg-dark);
+    border: 1px solid var(--border-color);
+    border-radius: var(--control-radius-sm);
+    color: var(--text-primary);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+
+.first-run-option:hover:not(:disabled) {
+    border-color: var(--accent-color);
+}
+
+.first-run-option:disabled {
+    opacity: 0.6;
+    cursor: default;
+}
+
+/* The recommended start: the accent tint (DESIGN_LANGUAGE.md §3 "Accent-tint
+   CTA"), not a solid fill. */
+.first-run-option.is-primary {
+    background-color: rgba(var(--accent-rgb), 0.12);
+    border-color: rgba(var(--accent-rgb), 0.5);
+}
+
+.first-run-icon {
+    font-size: 18px;
+    line-height: 1.2;
+    color: var(--accent-hover);
+}
+
+.first-run-text {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.first-run-label {
+    font-weight: 600;
+}
+
+.first-run-sub {
+    font-size: 12px;
+    color: var(--text-secondary);
+}

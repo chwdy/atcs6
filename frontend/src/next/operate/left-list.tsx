@@ -204,7 +204,9 @@ function RouteRunsList({ host }: { host: OperateHost }) {
 function StationsList({ host }: { host: OperateHost }) {
   const stations = usePolledList<any>(async () => (await api.listStationGroups())?.stations ?? [], 10000);
   if (stations === null) return <Empty>Loading…</Empty>;
-  if (stations.length === 0) return <Empty>No stations on this layout.</Empty>;
+  if (stations.length === 0) {
+    return <Empty>No stations on this layout. Draw platforms in the Editor, then group them into a station.</Empty>;
+  }
   return (
     <>
       {stations.map((s) => {
@@ -232,7 +234,15 @@ function EntityList({ host, kind }: { host: OperateHost; kind: 'block' | 'switch
     .map((e: any) => ({ id: String(kind === 'block' ? e.block_id : e.switch_id), name: String(e.name || '').trim(), e }))
     .sort((a, b) => (a.name || a.id).localeCompare(b.name || b.id));
   const sel = selection.value;
-  if (items.length === 0) return <Empty>None on this layout.</Empty>;
+  if (items.length === 0) {
+    return (
+      <Empty>
+        {kind === 'block'
+          ? 'No blocks yet. Each segment drawn in the Editor gets its own block.'
+          : 'No switches. Draw a branch off existing track in the Editor to make one.'}
+      </Empty>
+    );
+  }
   return (
     <>
       {items.map(({ id, name, e }) => (

@@ -28,6 +28,10 @@ export const simulationSpeed = signal<number>(1);
 /** The screen the top bar's tabs show as picked. */
 export const screen = signal<Screen>('editor');
 
+/** Whether the layout has no track yet. Null before the first snapshot, so
+ *  nothing that waits for an empty layout flashes up while one loads. */
+export const layoutEmpty = signal<boolean | null>(null);
+
 /** Keep the picked tab in step when the editor mode changes some other way:
  *  Editor mode is the Editor tab, and Operate mode is the Operate tab unless
  *  Locomotives (which also runs in Operate mode) is already picked. */
@@ -53,5 +57,7 @@ export function updateFromNetwork(network: any): void {
   const env: string | null = network?.operation_environment ?? null;
   if (operationEnvironment.peek() !== env) operationEnvironment.value = env;
   if (typeof network?.simulation_speed === 'number') simulationSpeed.value = network.simulation_speed;
+  const empty = Array.isArray(network?.tracks) ? network.tracks.length === 0 : null;
+  if (layoutEmpty.peek() !== empty) layoutEmpty.value = empty;
   updateLocomotivesFromNetwork(network);
 }

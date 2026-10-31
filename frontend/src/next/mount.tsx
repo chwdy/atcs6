@@ -13,6 +13,7 @@ import { render } from 'preact';
 
 import type { Editor } from '../editor/editor';
 import { mountEditorScreen } from './editor/screen';
+import { mountFirstRun, type FirstRunHost } from './first-run/mount';
 import { mountHardwareSetup } from './hardware/screen';
 import { showHardwareSetup } from './hardware/state';
 import { mountLocomotivesScreen, type LocomotivesHost } from './locomotives';
@@ -28,7 +29,7 @@ export function isNextUI(search: string = window.location.search): boolean {
 
 /** The App methods the new layout calls. Each is what one of today's header
  *  buttons runs, so both headers behave the same. */
-export interface NextHost extends LocomotivesHost {
+export interface NextHost extends LocomotivesHost, FirstRunHost {
   editor: Editor;
   newLayout(): Promise<void>;
   openLoadLayoutDialog(): Promise<void>;
@@ -106,4 +107,5 @@ export function mountNextUI(host: NextHost): void {
   });
   mountLocomotivesScreen(host, () => showScreen(host, 'locomotives'));
   mountLogsPanel();
+  mountFirstRun(host, (next) => showScreen(host, next));
 }
