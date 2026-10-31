@@ -130,6 +130,10 @@ class FakeCh347Device:
         self.closed = False
         # PWM state: address -> {channel: (on, off)}
         self.pwm: Dict[int, Dict[int, Tuple[int, int]]] = {}
+        # Rail channels that swamp a '165 bit while driven: (PCA9685 address,
+        # the block's rail channels, '165 select, bit index, active_low). See
+        # `set_drive_swamp`.
+        self.drive_swamp: List[Tuple[int, Tuple[int, ...], str, int, bool]] = []
         # '595 last latched bytes per select line.
         self.latched: Dict[str, bytes] = {}
         # '165 input bytes per select line (settable by tests).
@@ -232,8 +236,23 @@ class FakeCh347Device:
     def load_in(self, count: int, select: str) -> bytes:
         self._raise_if_closed("load_in")
         self._raise_if_fault("shift_read_error")
-        raw = bytes(self.inputs.get(select, bytearray(count)))
-        return (raw + bytes(count))[:count]
+        raw = bytearray((bytes(self.inputs.get(select, bytearray(count))) + bytes(count))[:count])
+        # A driven rail swamps its block's digital detector (design_new.md
+        # "Occupancy source follows drive state"): while any of the block's
+        # rail channels carries a duty, its bit reads asserted, whatever the
+        # stored input says. The stored input is left alone, so the bit reads
+        # its own value again once the rails go quiet.
+        for addr, channels, swamp_select, index, active_low in self.drive_swamp:
+            if swamp_select != select or not any(self.duty_cycle(addr, ch) > 0 for ch in channels):
+                continue
+            byte_idx, bit_idx = divmod(index, 8)
+            if byte_idx >= len(raw):
+                continue
+            if active_low:
+                raw[byte_idx] &= ~(1 << bit_idx)
+            else:
+                raw[byte_idx] |= (1 << bit_idx)
+        return bytes(raw)
 
     # -- deterministic fault injection ---------------------------------
     # Low-level CHIP-TRANSPORT fault vocabulary. These are an implementation
@@ -380,6 +399,13 @@ class FakeCh347Device:
         if byte_idx >= len(logical):
             return False
         return bool(logical[byte_idx] & (1 << bit_idx))
+
+    def set_drive_swamp(self, entries: List[Tuple[int, Tuple[int, ...], str, int, bool]]) -> None:
+        """Name which rail channels swamp which '165 bit while driven, as
+        `(pca9685_address, (rail channels...), select, bit index, active_low)`.
+        Replaces the whole list. `virtual_rig.install_drive_swamp` builds it
+        from a Hardware Setup."""
+        self.drive_swamp = list(entries)
 
     def set_input_bit(self, select: str, index: int, value: bool, width: int = 1) -> None:
         """Set a '165 input bit that a later `load_in(width, select)` returns."""

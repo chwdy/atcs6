@@ -78,6 +78,96 @@ IDLE_TIMEOUT_S = 120.0
 # that choice is deliberate rather than discovered afterwards.
 DEFAULT_DRIVE_PERCENT = 40.0
 
+# The block check (design_new.md "Hardware setup", Occupancy bench, Block
+# check). The pulse is long enough for many reads and short enough that a
+# locomotive on the block only twitches. At `current_sense_min_drive_v` the
+# digital detector asserts on roughly the duty-cycle fraction of reads, so the
+# pulse takes as many reads as it can rather than a fixed few.
+CHECK_PULSE_S = 0.3
+CHECK_REST_READS = 3
+CHECK_READ_GAP_S = 0.01
+
+
+class BlockCheckRefused(ValueError):
+    """The block cannot be checked: it has no rail binding."""
+
+
+def summarize_block_check(
+    block_id: str,
+    volts: float,
+    rest: List[Dict[str, Any]],
+    pulse: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Judge one block check from its reads (each a `read_all_sources()`
+    result): the rest reads with every block at 0 V, and the reads taken while
+    `block_id` was pulsed.
+
+    `digital` is `followed_drive` (clear at rest, asserted in the pulse),
+    `present_at_rest`, `no_response`, or `unbound`. `current` is `load`,
+    `none`, or `unbound`. `others` names every other block whose bit or current
+    channel was quiet at rest and changed during the pulse. `verdict` is
+    `wired` when the bit followed the drive (or read present at rest with the
+    current channel reading a load) and nothing else changed; otherwise it
+    names the first thing wrong.
+    """
+
+    def bound(reads: List[Dict[str, Any]], bid: str, key: str) -> bool:
+        return any((r.get(bid) or {}).get(key) is not None for r in reads)
+
+    def any_on(reads: List[Dict[str, Any]], bid: str, key: str) -> bool:
+        return any(bool((r.get(bid) or {}).get(key)) for r in reads)
+
+    if not bound(rest, block_id, "digital"):
+        digital = "unbound"
+    elif any_on(rest, block_id, "digital"):
+        digital = "present_at_rest"
+    elif any_on(pulse, block_id, "digital"):
+        digital = "followed_drive"
+    else:
+        digital = "no_response"
+
+    if not bound(rest, block_id, "current"):
+        current = "unbound"
+    else:
+        current = "load" if any_on(pulse, block_id, "current") else "none"
+
+    readings = [
+        abs((r.get(block_id) or {}).get("current_ma") or 0.0) for r in pulse
+    ]
+    peak_ma = round(max(readings), 3) if readings else None
+
+    block_ids = sorted({bid for r in rest + pulse for bid in r} - {block_id})
+    others = []
+    for bid in block_ids:
+        changed = [
+            key
+            for key in ("digital", "current")
+            if bound(rest, bid, key) and not any_on(rest, bid, key) and any_on(pulse, bid, key)
+        ]
+        if changed:
+            others.append({"block_id": bid, "changed": changed})
+
+    if others:
+        verdict = "crossed"
+    elif digital == "followed_drive" or (digital == "present_at_rest" and current == "load"):
+        verdict = "wired"
+    elif digital == "present_at_rest":
+        verdict = "present_without_load"
+    else:
+        verdict = digital   # "no_response" or "unbound"
+
+    return {
+        "block_id": block_id,
+        "volts": volts,
+        "rest_reads": len(rest),
+        "pulse_reads": len(pulse),
+        "digital": digital,
+        "current": current,
+        "peak_ma": peak_ma,
+        "others": others,
+        "verdict": verdict,
+    }
+
 
 class OccupancyBenchSession:
     """One bench at a time, holding a controller open across requests."""
@@ -398,6 +488,56 @@ class OccupancyBenchSession:
                 entry["peak_samples"] = peak["samples"] if peak else 0
             self._touch()
             return {"blocks": blocks, "peak": self._peak_summary_locked(), **self.status()}
+
+    def check_block(
+        self,
+        block_id: str,
+        pulse_s: float = CHECK_PULSE_S,
+        rest_reads: int = CHECK_REST_READS,
+        sleep: Callable[[float], None] = time.sleep,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> Dict[str, Any]:
+        """Check one block's wiring (design_new.md "Hardware setup", Occupancy
+        bench, Block check): read every block at rest, pulse this block at
+        `current_sense_min_drive_v` while reading every block, then drive it
+        back to 0 V. The block goes back to 0 V even when a read fails.
+
+        Raises `BlockCheckRefused` when the block has no rail binding.
+        """
+        with self._lock:
+            self._require_open()
+            if block_id not in self._track_bound:
+                raise BlockCheckRefused(f"block {block_id!r} has no rail binding")
+            if self._current_sense_min_drive_v is None:
+                raise BlockCheckRefused("the bench does not know current_sense_min_drive_v")
+            # The check needs every other block at 0 V, so a running bench
+            # drive stops first.
+            if self._running:
+                self._running = False
+                self._reset_peaks_locked()
+            for bid in self._block_ids:
+                self._track.set_voltage(bid, 0.0)
+
+            rest: List[Dict[str, Any]] = []
+            for i in range(max(1, rest_reads)):
+                if i:
+                    sleep(CHECK_READ_GAP_S)
+                rest.append(self._occupancy.read_all_sources())
+
+            volts = float(self._current_sense_min_drive_v)
+            pulse: List[Dict[str, Any]] = []
+            try:
+                self._track.set_voltage(block_id, volts)
+                deadline = clock() + max(0.0, pulse_s)
+                while True:
+                    pulse.append(self._occupancy.read_all_sources())
+                    if clock() >= deadline:
+                        break
+                    sleep(CHECK_READ_GAP_S)
+            finally:
+                self._track.set_voltage(block_id, 0.0)
+            self._touch()
+            return summarize_block_check(block_id, volts, rest, pulse)
 
     def link_status(self) -> Optional[Dict[str, Any]]:
         """The USB bridge's own view of itself, or None for a device with no link

@@ -654,6 +654,7 @@ def register(app, state: AppState) -> None:
         """
         if environment is not OperationMode.VIRTUAL_HARDWARE:
             return None
+        from hardware import virtual_rig
         from hardware.fake import FakeCh347Device
 
         def _open():
@@ -663,6 +664,12 @@ def register(app, state: AppState) -> None:
                 }
             )
             device.open()
+            # An untouched fake reads every '165 bit as zero, which an
+            # active-low chain reports as a train on every block. The session
+            # writes its fresh device clear at start; this one starts clear too.
+            for block_id in virtual_rig.bound_block_ids(cfg):
+                virtual_rig.set_block_presence(cfg, device, block_id, False)
+            virtual_rig.install_drive_swamp(cfg, device)
             return device
 
         return _open
@@ -752,6 +759,34 @@ def register(app, state: AppState) -> None:
             except Exception as exc:  # noqa: BLE001 - reported to the panel
                 return jsonify({"ok": False, "error": str(exc)}), 200
         return jsonify({"ok": True, **status})
+
+    @app.route("/api/hardware/bench/check-block", methods=["POST"])
+    def hardware_bench_check_block():
+        """Run the block check on one block (design_new.md "Hardware setup",
+        Occupancy bench, Block check).
+
+        Body: ``{block_id}``. Refused with ``409`` when the bench is not open and
+        with ``400`` when the block has no rail binding. A failed read is
+        reported as ``ok: false`` with its error; the block is back at 0 V
+        either way.
+        """
+        from hardware.occupancy_bench import BlockCheckRefused
+
+        data = request.get_json(silent=True) or {}
+        block_id = str(data.get("block_id") or "").strip()
+        if not block_id:
+            return jsonify({"ok": False, "error": "block_id is required"}), 400
+        session = _bench_session()
+        if not session.is_open():
+            return jsonify({"ok": False, "error": "the occupancy bench is not open"}), 409
+        with state.simulation_lock:
+            try:
+                result = session.check_block(block_id)
+            except BlockCheckRefused as exc:
+                return jsonify({"ok": False, "error": str(exc)}), 400
+            except Exception as exc:  # noqa: BLE001 - reported to the panel
+                return jsonify({"ok": False, "error": str(exc)}), 200
+        return jsonify({"ok": True, **result})
 
     @app.route("/api/hardware/bench/threshold", methods=["POST"])
     def hardware_bench_threshold():

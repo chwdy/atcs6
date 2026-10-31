@@ -136,10 +136,11 @@ let scanned = false;
 // Shift registers (SPI / GPIO) cannot be scanned for — they have no
 // acknowledgement and no ID register, so a '595 or '165 reads exactly the same
 // unplugged as wired. Running a test is not proof either: a dead chain takes
-// every write and an unwired one returns bits without an error. The only proof
-// is the user watching the board and saying it worked, so the chips confirmed
+// every write and an unwired one returns bits without an error. A '165 is
+// proven when Test the rig reads its bits following the rail drive; a '595
+// only when the user watches the board and says it worked. The chips proven
 // this session are recorded here (design_new.md "A shift register is proven
-// only when the operator confirms it").
+// by a read-back or by the operator").
 let manualProven = new Set<string>();
 // Shift registers whose test ran without an error and now wait for the user to
 // say whether the board did what the test asked.
@@ -352,8 +353,8 @@ function onBus(addr: number | null): boolean {
   return addr != null && i2cScan.includes(hexAddr(addr));
 }
 // How sure we are this chip is really there. An I²C chip answers a scan or it
-// does not; a shift register cannot be scanned for at all, so the user's own
-// port test is what proves it (see `manualProven`).
+// does not; a shift register cannot be scanned for at all, so a read-back or
+// the user's own test is what proves it (see `manualProven`).
 function chipState(chip: ChipCfg): ChipState {
   if (chip.bus !== 'i2c') return manualProven.has(chip.chip_id) ? 'alive' : 'untested';
   if (!scanned || chip.i2c_address == null) return 'untested';
@@ -1502,6 +1503,26 @@ async function activateEnvironment(): Promise<void> {
 }
 
 // --- detect / rescan -------------------------------------------------------
+/** What one bus scan found. */
+export interface SelfTestAnswer {
+  reachable: boolean;
+  /** Why the controller could not be reached. */
+  error?: string;
+  /** Every I²C address that answered, as lowercase hex ("0x40"). */
+  answered: string[];
+}
+
+/** Run self-test on the setup on screen and record what answered, as the
+ *  Detect button does, without its toast. Throws when the request fails. */
+export async function runSelfTest(): Promise<SelfTestAnswer> {
+  const res = await api.scanHardwareBus(payload());
+  controllerReachable = !!res?.ok && !!res?.controller?.reachable;
+  i2cScan = res?.controller?.i2c_scan || [];
+  scanned = controllerReachable;
+  render();
+  return { reachable: controllerReachable, error: res?.error || undefined, answered: [...i2cScan] };
+}
+
 // Read the bus and repaint. This is the panel's only automatic proof, and it
 // asks the bus rather than the configuration: it re-reads which addresses are
 // answering right now, so a chip that was just plugged in, unplugged, or
@@ -1510,13 +1531,9 @@ async function scanBus(): Promise<void> {
   const btn = document.querySelector<HTMLButtonElement>('[data-hw="detect"]');
   if (btn) btn.disabled = true;
   try {
-    const res = await api.scanHardwareBus(payload());
-    controllerReachable = !!res?.ok && !!res?.controller?.reachable;
-    i2cScan = res?.controller?.i2c_scan || [];
-    scanned = controllerReachable;
-    render();
-    if (!controllerReachable) {
-      showToast(res?.error ? `Controller not reachable: ${res.error}` : 'Controller not reachable.', 'error', 4000);
+    const res = await runSelfTest();
+    if (!res.reachable) {
+      showToast(res.error ? `Controller not reachable: ${res.error}` : 'Controller not reachable.', 'error', 4000);
       return;
     }
     const i2cChips = state.chips.filter((c) => c.bus === 'i2c');
@@ -1624,6 +1641,38 @@ function noteTestFailed(id: string, message: string): void {
 function confirmProven(id: string): void {
   awaitingConfirm.delete(id);
   manualProven.add(id);
+  render();
+}
+
+/** What a Setup run learned about one chip: proven by a read-back, ran
+ *  without an error and now waits for the operator, or failed. */
+export interface ChipProofNote {
+  chip_id: string;
+  result: 'proven' | 'ran' | 'failed';
+  /** Why it failed. */
+  reason?: string;
+}
+
+/** Record what the Hardware Setup screen's Test the rig learned (design_new.md
+ *  "A shift register is proven by a read-back or by the operator"), with one
+ *  redraw and no toasts: the run shows its own summary. An I²C chip's proof
+ *  is the bus scan's, so notes about I²C chips are ignored. */
+export function recordChipProof(notes: ChipProofNote[]): void {
+  for (const note of notes) {
+    const chip = state.chips.find((c) => c.chip_id === note.chip_id);
+    if (!chip || chip.bus === 'i2c') continue;
+    if (note.result === 'proven') {
+      chipErrors.delete(note.chip_id);
+      awaitingConfirm.delete(note.chip_id);
+      manualProven.add(note.chip_id);
+    } else if (note.result === 'ran') {
+      noteTestRan(note.chip_id);
+    } else {
+      chipErrors.set(note.chip_id, note.reason || 'The test failed.');
+      awaitingConfirm.delete(note.chip_id);
+      manualProven.delete(note.chip_id);
+    }
+  }
   render();
 }
 

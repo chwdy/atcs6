@@ -796,6 +796,58 @@ def test_the_bench_borrows_the_setup_device_and_closing_it_never_activates(clien
     assert device.closed is False
 
 
+def test_the_block_check_runs_on_the_virtual_rig_and_needs_an_open_bench(client):
+    """`POST /api/hardware/bench/check-block` (design_new.md "Hardware setup",
+    Occupancy bench, Block check): refused while the bench is closed and for a
+    block with no rail binding, and in Virtual Hardware a well-wired block checks
+    out because the fake device models the swamped detector."""
+    test_client, state = client
+    _ready_virtual_layout(state)
+    assert test_client.post("/api/operation/activate").status_code == 200
+    assert test_client.post("/api/operation/setup").status_code == 200
+
+    closed = test_client.post("/api/hardware/bench/check-block", json={"block_id": "B1"})
+    assert closed.status_code == 409
+
+    assert test_client.post("/api/hardware/bench/open").get_json()["ok"] is True
+    try:
+        unknown = test_client.post("/api/hardware/bench/check-block", json={"block_id": "B9"})
+        assert unknown.status_code == 400
+
+        data = test_client.post("/api/hardware/bench/check-block", json={"block_id": "B1"}).get_json()
+        assert data["ok"] is True
+        assert data["block_id"] == "B1"
+        assert data["digital"] in ("followed_drive", "present_at_rest")
+        assert data["others"] == []
+    finally:
+        test_client.post("/api/hardware/bench/close")
+
+
+def test_a_bench_on_its_own_fake_device_starts_with_every_block_clear(client):
+    """Setup entered without ever activating Virtual Hardware: no session holds
+    a fake device, so the bench opens its own. An untouched fake reads every
+    '165 bit as zero, which an active-low chain reports as a train on every
+    block, so the bench writes every block clear first and an empty block's bit
+    follows the drive (design_new.md "Hardware setup", Virtual Hardware)."""
+    from block import Block
+
+    test_client, state = client
+    state.network.blocks["B1"] = Block(block_id="B1")
+    payload = _develop_payload(switch_output={})
+    payload["chips"][2]["active_low"] = True        # in1, the hc165
+    hardware_config.apply_updates(payload, persist=False)
+    assert test_client.post("/api/operation/setup").status_code == 200
+    assert hardware_config.get_live_device() is None
+
+    assert test_client.post("/api/hardware/bench/open").get_json()["ok"] is True
+    try:
+        data = test_client.post("/api/hardware/bench/check-block", json={"block_id": "B1"}).get_json()
+        assert data["digital"] == "followed_drive"
+        assert data["verdict"] == "wired"
+    finally:
+        test_client.post("/api/hardware/bench/close")
+
+
 def test_an_expired_bench_leaves_the_session_in_setup(client, monkeypatch):
     test_client, state = client
     _ready_virtual_layout(state)

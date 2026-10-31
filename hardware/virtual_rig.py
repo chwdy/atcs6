@@ -65,6 +65,29 @@ def set_block_presence(cfg: Any, device: Any, block_id: str, present: bool) -> N
             device.set_ina3221_current(chip.address, current.port + 1, milliamps / 1000.0)
 
 
+def install_drive_swamp(cfg: Any, device: Any) -> None:
+    """Make the fake device's '165 bit for each block read asserted while the
+    block's rails are driven, as the swamped detector does on the rig
+    (design_new.md "Hardware setup", Virtual Hardware). Only a block bound both
+    to rails on a PCA9685 and to a '165 bit gets an entry."""
+    entries = []
+    for block_id, digital in cfg.block_occupancy.items():
+        track = cfg.block_track.get(block_id)
+        digital_spec = _chip_spec(cfg, digital.chip_id)
+        track_spec = _chip_spec(cfg, track.chip_id) if track is not None else None
+        if track_spec is None or digital_spec is None or track_spec.i2c_address is None:
+            continue
+        chip = build_chip(device, digital_spec)
+        entries.append((
+            track_spec.i2c_address,
+            (track.forward, track.reverse),
+            chip.select,
+            digital.port,
+            bool(getattr(digital_spec, "active_low", False)),
+        ))
+    device.set_drive_swamp(entries)
+
+
 def bound_block_ids(cfg: Any) -> List[str]:
     """Every block this module can write a presence for, in configured order.
 

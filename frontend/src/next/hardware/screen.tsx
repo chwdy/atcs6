@@ -31,7 +31,9 @@ import {
   enterHardwareSetup,
   hardwareSectionHtml,
   hardwareSetupFacts,
+  recordChipProof,
   reloadHardwareEnvironment,
+  runSelfTest,
   saveHardwareSetup,
   selectHardwareEnvironment,
   stopHardwareTests,
@@ -41,6 +43,7 @@ import {
   type ReadinessNote,
 } from '../../ui/hardware-panel';
 import { operationEnvironment, screen, sessionState, type Screen } from '../state';
+import { runRigTest, type RigTestCalls, type RigTestReport } from './rig-test';
 import { hardwareStep } from './state';
 import {
   SETUP_STEPS,
@@ -67,6 +70,10 @@ const panelVersion = signal(0);
 
 /** Whether the Occupancy Bench in step 4 holds the controller. */
 const benchOpen = signal(false);
+
+/** The Occupancy Bench on screen in step 4, so Test the rig can close it
+ *  before it opens the bench itself. */
+let benchOnScreen: { close(): Promise<void> } | null = null;
 
 interface HostedBox {
   el: HTMLElement;
@@ -520,10 +527,10 @@ function ProveChips(props: StepProps) {
       {...props}
       intro={
         <p>
-          Prove the board one chip at a time. An I²C chip proves itself by answering the bus scan.
-          A shift register answers nothing, so run its test, watch the board, and press It worked.
-          The tests that drive outputs (a chip sweep, a port pulse and the Occupancy Bench) run
-          only in Setup.
+          Test the rig runs every check that needs no one to watch it. An I²C chip proves itself
+          by answering the bus scan, and an hc165 by its bits following the drive when each block
+          is driven for a moment. Nothing reads an hc595 back, so watch the switches move and
+          press It worked on its card. The tests that drive outputs run only in Setup.
         </p>
       }
     >
@@ -535,6 +542,15 @@ function ProveChips(props: StepProps) {
           </button>
         </p>
       )}
+      <RigTest
+        sf={sf}
+        inSetup={inSetup}
+        beforeRun={async () => {
+          // The run opens the bench itself, so the one on screen closes first.
+          await benchOnScreen?.close();
+          setOccupancyOpen(false);
+        }}
+      />
       <Hosted name="controller" />
       <Hosted name="chips" chipList={TEST_CHIPS} />
 
@@ -543,7 +559,14 @@ function ProveChips(props: StepProps) {
         open={occupancyOpen}
         onToggle={(e) => setOccupancyOpen((e.currentTarget as HTMLDetailsElement).open)}
       >
-        <summary>Occupancy Bench</summary>
+        <summary
+          onClick={(e) => {
+            // The bench would take the outputs from the running Test the rig.
+            if (rigRunning.value) e.preventDefault();
+          }}
+        >
+          Occupancy Bench
+        </summary>
         <div class="tc-disclosure-body">
           <p class="nhs-tool-desc">
             Holds every bound block at one voltage and shows both detectors for each block side by
@@ -580,6 +603,139 @@ function ProveChips(props: StepProps) {
   );
 }
 
+// --- Test the rig -------------------------------------------------------------
+
+/** What Test the rig is doing now; null when it is not running. */
+const rigProgress = signal<string | null>(null);
+const rigRunning = signal(false);
+/** The last run's summary, kept while the app is open. */
+const rigReport = signal<RigTestReport | null>(null);
+
+/** The real calls Test the rig makes. */
+function rigTestCalls(): RigTestCalls {
+  // The switch throw test posts the setup it throws with: the saved one.
+  let saved: unknown = null;
+  return {
+    async readSetup() {
+      const [res, switches] = await Promise.all([api.getHardwareConfig(), api.getSwitches()]);
+      const config = res?.config;
+      if (!config) throw new Error('the server sent no setup');
+      saved = config;
+      const switchPositions: Record<string, number> = {};
+      for (const sw of Array.isArray(switches) ? switches : []) switchPositions[sw.switch_id] = sw.position;
+      return {
+        setup: {
+          chips: config.chips || [],
+          block_track: config.block_track || {},
+          block_occupancy: config.block_occupancy || {},
+          switch_output: config.switch_output || {},
+        },
+        switchPositions,
+      };
+    },
+    selfTest: runSelfTest,
+    openBench: () => api.openOccupancyBench(),
+    checkBlock: (blockId) => api.checkOccupancyBenchBlock(blockId),
+    closeBench: async () => {
+      await api.closeOccupancyBench();
+    },
+    throwSwitch: (switchId, position) => api.switchThrowTest(saved, switchId, position),
+    releaseSwitches: async () => {
+      await api.commissionClose();
+    },
+    pause: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    progress: (text) => {
+      rigProgress.value = text || null;
+    },
+  };
+}
+
+/** Step 4's one button: every check that needs no one watching, then one
+ *  summary (design_new.md "Hardware setup", Test the rig). */
+function RigTest({
+  sf,
+  inSetup,
+  beforeRun,
+}: {
+  sf: ScreenFacts;
+  inSetup: boolean;
+  beforeRun(): Promise<void>;
+}) {
+  const running = rigRunning.value;
+  const report = rigReport.value;
+  const unsaved = sf.panel.unsaved;
+  const start = async () => {
+    rigRunning.value = true;
+    rigReport.value = null;
+    try {
+      await beforeRun();
+      await stopHardwareTests();
+      const result = await runRigTest(rigTestCalls());
+      recordChipProof(result.chipNotes);
+      rigReport.value = result;
+    } finally {
+      rigRunning.value = false;
+      rigProgress.value = null;
+    }
+  };
+  return (
+    <section class="nhs-rig-test">
+      <div class="nhs-action-row">
+        <button
+          type="button"
+          class="btn btn-accent"
+          disabled={!inSetup || unsaved || running}
+          onClick={() => void start()}
+        >
+          <i class={running ? 'ti ti-hourglass' : 'ti ti-player-play'} aria-hidden="true" />{' '}
+          {running ? 'Testing…' : 'Test the rig'}
+        </button>
+        <span class="nhs-rig-status">
+          {running
+            ? rigProgress.value || 'Starting…'
+            : unsaved && inSetup
+              ? 'Save the setup in step 2 first: the run tests the saved setup.'
+              : 'Scans the bus, drives each block for a moment to read its detectors, and throws each switch to its other position and back. It asks you nothing.'}
+        </span>
+      </div>
+      {report && <RigSummary report={report} />}
+    </section>
+  );
+}
+
+function RigSummary({ report }: { report: RigTestReport }) {
+  const groups: { title: string; tone: string; icon: string; items: string[] }[] = [
+    { title: 'Failed', tone: 'danger', icon: 'ti ti-x', items: report.failed },
+    { title: 'Still needs you', tone: 'warn', icon: 'ti ti-hand-finger', items: report.needsYou },
+    { title: 'Proved', tone: 'ok', icon: 'ti ti-check', items: report.proved },
+  ];
+  const headline = report.failed.length
+    ? `${report.failed.length} check${report.failed.length === 1 ? '' : 's'} failed.`
+    : report.needsYou.length
+      ? 'Nothing failed. Some checks still need you.'
+      : 'Every check passed.';
+  return (
+    <div class="nhs-rig-summary" aria-live="polite">
+      <p class="nhs-rig-headline">{headline}</p>
+      {groups
+        .filter((g) => g.items.length)
+        .map((g) => (
+          <div key={g.title} class="nhs-rig-group">
+            <h3>{g.title}</h3>
+            <ul class="nhs-rows">
+              {g.items.map((text, i) => (
+                <li key={i} class="nhs-row" data-tone={g.tone}>
+                  <i class={g.icon} aria-hidden="true" />
+                  <span class="nhs-row-name">{text}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ))}
+    </div>
+  );
+}
+
 /** The Occupancy Bench, open while this box is on screen. */
 function OccupancyBenchBox() {
   const ref = useRef<HTMLDivElement>(null);
@@ -589,7 +745,7 @@ function OccupancyBenchBox() {
     void (async () => {
       // One Setup tool at a time: a running chip test gives the outputs back.
       await stopHardwareTests();
-      if (!gone && ref.current) bench = mountOccupancyBench(ref.current);
+      if (!gone && ref.current) bench = benchOnScreen = mountOccupancyBench(ref.current);
     })();
     // The bench says nothing when it opens or times out, so step 5's mark
     // asks it twice a second. This reads a field; it sends nothing.
@@ -600,6 +756,7 @@ function OccupancyBenchBox() {
       gone = true;
       clearInterval(watch);
       benchOpen.value = false;
+      if (benchOnScreen === bench) benchOnScreen = null;
       void bench?.close();
     };
   }, []);

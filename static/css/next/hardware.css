@@ -386,6 +386,15 @@ html[data-screen="hardware"] .app-body > .content-area {
 .nhs-row[data-tone="ok"] { border-left-color: var(--success-color); }
 .nhs-row[data-tone="warn"] { border-left-color: var(--warning-color); }
 .nhs-row[data-tone="info"] { border-left-color: var(--info-color); }
+.nhs-row[data-tone="danger"] { border-left-color: var(--danger-color); }
+
+.nhs-row[data-tone="danger"] > i {
+    color: var(--danger-color);
+}
+
+.nhs-row[data-tone="ok"] > i {
+    color: var(--success-color);
+}
 
 .nhs-row > i {
     color: var(--text-secondary);
@@ -411,6 +420,51 @@ html[data-screen="hardware"] .app-body > .content-area {
 .nhs-row-value {
     font-size: var(--font-size-body);
     color: var(--text-secondary);
+}
+
+/* ---- Step 4: Test the rig ---- */
+.nhs-rig-test {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-12);
+    padding: var(--space-12);
+    border: 1px solid var(--border-color);
+    border-radius: var(--control-radius-sm);
+    background-color: var(--bg-panel);
+}
+
+.nhs-rig-test .btn {
+    flex: 0 0 auto;
+}
+
+.nhs-rig-status {
+    flex: 1 1 16rem;
+    font-size: var(--font-size-body);
+    color: var(--text-secondary);
+    line-height: 1.5;
+}
+
+.nhs-rig-summary {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-10);
+}
+
+.nhs-rig-headline {
+    margin: 0;
+    font-size: var(--font-size-value);
+    font-weight: 600;
+}
+
+.nhs-rig-group h3 {
+    margin: 0 0 var(--space-4);
+    font-size: var(--font-size-body);
+    font-weight: 600;
+    color: var(--text-secondary);
+}
+
+.nhs-rig-summary .nhs-row-name {
+    line-height: 1.45;
 }
 
 /* ---- Step 2: the save row ---- */

@@ -375,8 +375,14 @@ deleted today's header, tool rail, the inspector's tab groups, navigator,
 pinning, split windows and tab drag (`editor/tab-group.ts`,
 `editor/tab-drag.ts`), the canvas session bar, the Display popover, the
 Hardware Setup dialog, and the Event Log, Raw Occupancy, Diagnostics and
-Occupancy Bench windows; §13 is the checklist it worked from. These parts
-still show today's code inside the new layout, and are ported in later
+Occupancy Bench windows; §13 is the checklist it worked from. After phase 9,
+Hardware Setup step 4 gained **Test the rig** (`next/hardware/rig-test.ts`,
+design_new.md "Hardware setup", Test the rig): one button that runs self-test,
+the occupancy bench's block check on every block with a rail binding, and a
+throw of every bound switch to its other position and back, then lists what
+passed, what failed and what still needs the operator. An hc165 is now proven
+by its bits following the drive; an hc595 still waits for It worked. These
+parts still show today's code inside the new layout, and are ported in later
 passes:
 
 | Part | Does for now | Until |

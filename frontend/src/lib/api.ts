@@ -572,6 +572,17 @@ export class API implements LayoutDataClient, SimClient {
     return this._request('/hardware/bench/close', { method: 'POST' }, 'closeOccupancyBench');
   }
 
+  /** Check one block's wiring on the open bench: read every block at rest,
+   * pulse this one at `current_sense_min_drive_v`, and report whether its
+   * detectors followed the pulse and whether any other block's did. */
+  async checkOccupancyBenchBlock(blockId: string): Promise<any> {
+    return this._request(
+      '/hardware/bench/check-block',
+      { method: 'POST', body: { block_id: blockId } },
+      'checkOccupancyBenchBlock'
+    );
+  }
+
   /** Both occupancy detectors for every bound block, plus what the bench is
    * driving. Answers `{open: false}` rather than erroring when no bench holds
    * the device, so the panel can poll one endpoint either way. */

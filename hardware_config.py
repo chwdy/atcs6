@@ -1635,6 +1635,7 @@ def build_session_interfaces(
             # `active_low` detector chain an unwritten fake reads every block
             # occupied, which is the one state a real rig can never be in.
             virtual_rig.seed_startup_presence(cfg, device)
+            virtual_rig.install_drive_swamp(cfg, device)
         except Exception as exc:
             raise HardwareBackendUnavailable(
                 f"failed to initialize fake hardware chips: {exc}"
