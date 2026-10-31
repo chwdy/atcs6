@@ -114,17 +114,10 @@ export function TopBar({ actions }: { actions: TopBarActions }) {
           <MenuButton label="View" icon="ti ti-palette" title="Themes and canvas layers" align="right" sections={viewSections} />
           <MenuButton
             icon="ti ti-settings"
-            title="Settings and setup tools"
+            title="Settings"
             align="right"
             sections={() => [
               { items: [{ label: 'Settings…', icon: 'ti ti-settings', onSelect: actions.openSettings }] },
-              {
-                heading: 'Setup tools',
-                items: [
-                  { label: 'Occupancy Bench', icon: 'ti ti-circuit-resistor', onSelect: () => actions.toggleWindow('occupancyBench') },
-                  { label: 'Virtual Bench', icon: 'ti ti-flask', onSelect: () => actions.toggleWindow('virtualBench') },
-                ],
-              },
               { items: [{ label: 'Restart server', icon: 'ti ti-refresh', emphasis: 'danger', onSelect: actions.restartServer }] },
             ]}
           />

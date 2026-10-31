@@ -23,7 +23,8 @@
  *
  * setupHardwarePanel() wires the delegated handlers once; refreshHardwarePanel()
  * loads the catalog + persisted config and renders — call it each time the modal
- * opens.
+ * opens. Under ?ui=next, attachHardwareScreen() shows the same sections in the
+ * Hardware Setup screen instead (the end of this file).
  */
 import { api } from '../lib/api';
 import { showToast } from '../lib/toast';
@@ -97,6 +98,8 @@ interface EnvironmentInfo {
   is_active: boolean;
   /** The session state (design_new.md "Session state"). */
   session_state?: SessionStateView;
+  /** Saved setup changes the running session is not using yet. */
+  awaits_activation?: boolean;
 }
 interface DevBindings {
   block_occupancy: Record<string, any>;
@@ -189,6 +192,9 @@ let awaitingConfirm = new Set<string>();
 let chipErrors = new Map<string, string>();
 let controllerReachable = false;
 let savedSinceEdit = false;
+// An edit made since the setup was loaded or last saved, which the saved
+// setup does not have yet.
+let editedSinceSave = false;
 let adding = false;
 
 // Virtual Hardware: running-session info, bindings, latest read-back, and poll.
@@ -850,18 +856,7 @@ export function setupHardwarePanel(): void {
     return;
   }
 
-  const root = modal;
-  root.addEventListener('click', (e) => void onClick(e));
-  root.addEventListener('change', (e) => onChange(e));
-  root.addEventListener('input', (e) => onInput(e));
-  // `toggle` does not bubble, so this only reaches `root` via the capture
-  // phase — needed because render() rebuilds #hw-body (and its <details>)
-  // from scratch on every interaction, which would otherwise re-close the
-  // wiring reference the instant the user did anything else in the panel.
-  root.addEventListener('toggle', (e) => {
-    const t = e.target as HTMLElement;
-    if (t.classList?.contains('hw-wiring')) wiringOpen = (t as HTMLDetailsElement).open;
-  }, true);
+  listenOn(modal);
 
   // Stop any live/sweep activity (and release the device) when the modal closes
   // via any path — close button, backdrop, or Escape all drop the `active` class.
@@ -870,12 +865,37 @@ export function setupHardwarePanel(): void {
   }).observe(modal, { attributes: true, attributeFilter: ['class'] });
 }
 
-function onEdit(): void { savedSinceEdit = false; }
+/** Handle the panel's clicks, changes and typing inside `root` (the dialog, or
+ *  the ?ui=next Hardware Setup screen). Returns a function that stops. */
+function listenOn(root: HTMLElement): () => void {
+  const click = (e: Event) => void onClick(e);
+  // `toggle` does not bubble, so this only reaches `root` via the capture
+  // phase — needed because render() rebuilds #hw-body (and its <details>)
+  // from scratch on every interaction, which would otherwise re-close the
+  // wiring reference the instant the user did anything else in the panel.
+  const toggle = (e: Event) => {
+    const t = e.target as HTMLElement;
+    if (t.classList?.contains('hw-wiring')) wiringOpen = (t as HTMLDetailsElement).open;
+  };
+  root.addEventListener('click', click);
+  root.addEventListener('change', onChange);
+  root.addEventListener('input', onInput);
+  root.addEventListener('toggle', toggle, true);
+  return () => {
+    root.removeEventListener('click', click);
+    root.removeEventListener('change', onChange);
+    root.removeEventListener('input', onInput);
+    root.removeEventListener('toggle', toggle, true);
+  };
+}
+
+function onEdit(): void { savedSinceEdit = false; editedSinceSave = true; }
 
 // --- refresh (each open) ---------------------------------------------------
 export async function refreshHardwarePanel(): Promise<void> {
   await stopCommissioning();
   savedSinceEdit = false;
+  editedSinceSave = false;
   adding = false;
   i2cScan = [];
   scanned = false;
@@ -973,6 +993,8 @@ const isReady = (): boolean => state.chips.length > 0 && readiness().every((c) =
 
 // --- render ----------------------------------------------------------------
 function render(): void {
+  // Under ?ui=next the Hardware Setup screen shows these sections instead.
+  if (screenDraw) { screenDraw(); return; }
   const body = el('hw-body');
   const gate = el('hw-gate');
   if (!body || !gate || !catalog) return;
@@ -1155,27 +1177,33 @@ function controllerStageHtml(): string {
   </section>`;
 }
 
-function chipsStageHtml(): string {
+/** What the chip list offers. The dialog shows both; the ?ui=next screen
+ *  edits the list in step 2 (`edit`: add, remove, port count, detector
+ *  polarity) and runs each chip's test in step 4 (`test`). */
+export interface ChipListOptions { edit: boolean; test: boolean; }
+const FULL_CHIP_LIST: ChipListOptions = { edit: true, test: true };
+
+function chipsStageHtml(opts: ChipListOptions = FULL_CHIP_LIST): string {
   const proven = state.chips.length > 0 && readiness()[1].ok && readiness()[2].ok;
-  const groups = BUS_ORDER.map(busGroupHtml).join('');
+  const groups = BUS_ORDER.map((bus) => busGroupHtml(bus, opts)).join('');
   return `<section class="hw-stage${proven ? ' done' : ''}">
     <div class="hw-stage-head"><span class="hw-stage-num">${proven ? '✓' : '2'}</span>
       <span class="hw-stage-title"><i class="ti ti-cpu" aria-hidden="true"></i> Your chips, by bus</span></div>
     <p class="hw-stage-desc">Every chip on the board — grouped by the bus it lives on, ordered by its address or latch line. An I²C chip proves itself by answering the bus scan; a shift register answers nothing, so run its test and watch the board.</p>
-    <div class="hw-indent">${groups}${addFormHtml()}</div>
+    <div class="hw-indent">${groups}${opts.edit ? addFormHtml() : ''}</div>
   </section>`;
 }
 
-function busGroupHtml(bus: string): string {
+function busGroupHtml(bus: string, opts: ChipListOptions): string {
   const chips = state.chips.filter((c) => c.bus === bus).sort((a, b) => coordSort(a) - coordSort(b));
-  const cards = chips.length ? chips.map(chipCardHtml).join('') : `<div class="hw-bus-empty">No chips on this bus yet.</div>`;
+  const cards = chips.length ? chips.map((c) => chipCardHtml(c, opts)).join('') : `<div class="hw-bus-empty">No chips on this bus yet.</div>`;
   return `<div class="hw-bus" data-bus="${bus}">
     <div class="hw-bus-head"><span class="hw-bus-badge hw-bus-${bus}">${BUS_LABEL[bus]}</span>
       <span class="hw-bus-order">${BUS_ORDERED_BY[bus]}</span></div>
     ${cards}</div>`;
 }
 
-function chipCardHtml(chip: ChipCfg): string {
+function chipCardHtml(chip: ChipCfg, opts: ChipListOptions = FULL_CHIP_LIST): string {
   const ck = catalogChip(chip.kind);
   const dir = chipDirection(chip);
   const stateCls = chipState(chip);
@@ -1207,15 +1235,15 @@ function chipCardHtml(chip: ChipCfg): string {
       </div>
       <div class="hw-chip-actions">
         ${badge}
-        ${confirmBtn}
-        ${testBtn}
-        <button type="button" class="hw-chip-remove" data-hw="remove" data-id="${esc(chip.chip_id)}" title="Remove chip" aria-label="Remove chip">&times;</button>
+        ${opts.test ? confirmBtn : ''}
+        ${opts.test ? testBtn : ''}
+        ${opts.edit ? `<button type="button" class="hw-chip-remove" data-hw="remove" data-id="${esc(chip.chip_id)}" title="Remove chip" aria-label="Remove chip">&times;</button>` : ''}
       </div>
     </div>
     ${errorRow}
-    ${chip.bus !== 'i2c' && ck?.cascadable ? portCountRowHtml(chip) : ''}
-    ${ck?.port_kind === 'digital_in' ? polarityRowHtml(chip) : ''}
-    ${portsHtml(chip)}
+    ${opts.edit && chip.bus !== 'i2c' && ck?.cascadable ? portCountRowHtml(chip) : ''}
+    ${opts.edit && ck?.port_kind === 'digital_in' ? polarityRowHtml(chip) : ''}
+    ${opts.test ? portsHtml(chip) : ''}
   </div>`;
 }
 
@@ -1479,7 +1507,18 @@ function gateHtml(): string {
   const notes = (activationReadiness?.warnings || []).map((note: any) =>
     `<span class="hw-check" title="This does not block activation."><i class="ti ti-info-circle" aria-hidden="true"></i> ${esc(note.message || note.code)}</span>`
   ).join('');
-  const deadband = `<label class="hw-deadband" title="A block commanded above this voltage is read by its current-sense channel; at or below it, by its '165 detector.">
+  return `<div class="hw-checklist"><strong>Run Environment</strong> ${choices}
+      <span class="hw-check ${selectedActive ? 'ok' : 'warn'}">${esc(status)}</span>${issues}${notes}</div>
+    <div class="hw-gate-actions">
+      ${idleThresholdHtml()}
+      <button type="button" class="btn btn-secondary" data-hw="save">Save Hardware Setup</button>
+      ${setupButton}
+      <button type="button" class="btn btn-primary" data-hw="activate"${activateBlocked ? ` disabled title="${esc(activateBlocked)}"` : ''}>Activate ${esc(selectedLabel)}</button>
+    </div>`;
+}
+
+function idleThresholdHtml(): string {
+  return `<label class="hw-deadband" title="A block commanded above this voltage is read by its current-sense channel; at or below it, by its '165 detector.">
       <span class="hw-deadband-text"><span class="hw-deadband-label">Idle threshold</span>
         <span class="hw-deadband-sub">below this, a block counts as parked</span></span>
       <span class="hw-deadband-field">
@@ -1489,14 +1528,6 @@ function gateHtml(): string {
         <span class="hw-deadband-unit">V</span>
       </span>
     </label>`;
-  return `<div class="hw-checklist"><strong>Run Environment</strong> ${choices}
-      <span class="hw-check ${selectedActive ? 'ok' : 'warn'}">${esc(status)}</span>${issues}${notes}</div>
-    <div class="hw-gate-actions">
-      ${deadband}
-      <button type="button" class="btn btn-secondary" data-hw="save">Save Hardware Setup</button>
-      ${setupButton}
-      <button type="button" class="btn btn-primary" data-hw="activate"${activateBlocked ? ` disabled title="${esc(activateBlocked)}"` : ''}>Activate ${esc(selectedLabel)}</button>
-    </div>`;
 }
 
 // --- event handlers --------------------------------------------------------
@@ -1674,6 +1705,7 @@ async function enterSetup(): Promise<void> {
 async function activateEnvironment(): Promise<void> {
   try {
     await api.setHardwareConfig(payload());
+    editedSinceSave = false;
     activationReadiness = await api.getOperationReadiness();
     // A blocker refuses activation and leaves the session, and any open Setup
     // tool, in Setup (design_new.md "Hardware setup", Setup). So check first,
@@ -1792,6 +1824,8 @@ async function commandVirtualRig(action: string): Promise<void> {
 }
 
 function startDevPoll(): void {
+  // The ?ui=next screen carries the Virtual Bench instead of these controls.
+  if (screenDraw) return;
   if (devPollTimer || !sessionInfo?.virtual_hardware_active) return;
   void pollDev();
   devPollTimer = setInterval(() => void pollDev(), 1000);
@@ -2046,6 +2080,7 @@ async function save(): Promise<void> {
   try {
     await api.setHardwareConfig(payload());
     savedSinceEdit = true;
+    editedSinceSave = false;
     activationReadiness = await api.getOperationReadiness();
     render();
     showToast('Hardware Setup saved.', 'success', 2200);
@@ -2054,4 +2089,135 @@ async function save(): Promise<void> {
   } finally {
     if (btn) btn.disabled = false;
   }
+}
+
+// --- the ?ui=next Hardware Setup screen ------------------------------------
+// The screen (frontend/src/next/hardware/, docs/ui-layout-rewrite-plan.md §7)
+// shows the sections above inside its seven steps instead of in the dialog,
+// and runs the same code for every button in them. While it is attached,
+// render() calls the screen's draw function instead of filling #hw-body and
+// #hw-gate, and the dialog's Virtual Hardware controls stay off: the screen
+// shows the Virtual Bench in their place.
+
+let screenDraw: (() => void) | null = null;
+
+/** The dialog's sections the screen shows. */
+export type HardwareSection = 'wiring' | 'controller' | 'chips' | 'coverage' | 'idle-threshold';
+
+/** One section's HTML, or '' before the catalog has loaded. */
+export function hardwareSectionHtml(name: HardwareSection, chipList: ChipListOptions = FULL_CHIP_LIST): string {
+  if (!catalog) return '';
+  switch (name) {
+    case 'wiring': return wiringDiagramHtml();
+    case 'controller': return controllerStageHtml();
+    case 'chips': return chipsStageHtml(chipList);
+    case 'coverage': return coverageStageHtml();
+    case 'idle-threshold': return idleThresholdHtml();
+  }
+}
+
+/**
+ * Show the panel in the screen's `root` instead of the dialog, and load the
+ * setup again, as opening the dialog does. `draw` is called after every change
+ * and redraws the sections the screen is showing. The returned function gives
+ * the panel back to the dialog and stops any chip test, as closing the dialog
+ * does.
+ */
+export function attachHardwareScreen(root: HTMLElement, draw: () => void): () => void {
+  // The dialog keeps no copy of the sections, so an element id (the add-chip
+  // form's) or a `data-hw` button lookup finds the screen's.
+  const body = el('hw-body');
+  const gate = el('hw-gate');
+  if (body) body.innerHTML = '';
+  if (gate) gate.innerHTML = '';
+  screenDraw = draw;
+  const stopListening = listenOn(root);
+  void refreshHardwarePanel();
+  return () => {
+    stopListening();
+    if (screenDraw === draw) screenDraw = null;
+    void stopCommissioning();
+  };
+}
+
+/** A readiness blocker or advisory note, as `GET /api/operation/readiness`
+ *  lists it. */
+export interface ReadinessNote { code: string; message?: string; ids?: string[]; }
+
+/** What the screen's step list and step bodies read from the panel. */
+export interface HardwareSetupFacts {
+  /** The catalog and the saved setup have loaded. */
+  loaded: boolean;
+  /** The selected environment, which Activate starts. */
+  selected: string;
+  /** Saved setup changes the running session is not using yet. */
+  awaitsActivation: boolean;
+  chipCount: number;
+  /** Chips not proven since the setup was loaded (see `chipState`). */
+  unprovenCount: number;
+  /** An edit the saved setup does not have yet. */
+  unsaved: boolean;
+  /** Whether every block and switch in the layout is bound; null when the
+   *  coverage report did not load. */
+  coverageComplete: boolean | null;
+  /** The last readiness report: blockers and advisory notes. */
+  readiness: { ready: boolean; issues: ReadinessNote[]; warnings: ReadinessNote[] };
+  /** A chip test holds the commissioning session. */
+  commissioning: boolean;
+}
+
+export function hardwareSetupFacts(): HardwareSetupFacts {
+  return {
+    loaded: catalog != null,
+    selected: environmentInfo.selected,
+    awaitsActivation: !!environmentInfo.awaits_activation,
+    chipCount: state.chips.length,
+    unprovenCount: state.chips.filter((c) => chipState(c) !== 'alive').length,
+    unsaved: editedSinceSave,
+    coverageComplete: coverage ? coverage.complete : null,
+    readiness: {
+      ready: activationReadiness?.ready !== false,
+      issues: activationReadiness?.issues || [],
+      warnings: activationReadiness?.warnings || [],
+    },
+    commissioning: commissionActive,
+  };
+}
+
+/** Select an environment (step 1). Selecting activates nothing. */
+export const selectHardwareEnvironment = selectEnvironment;
+
+/** Enter Setup for the selected environment (step 3); from Live it asks first. */
+export const enterHardwareSetup = enterSetup;
+
+/** Save the controller, the chips and the idle threshold (step 2). */
+export const saveHardwareSetup = save;
+
+/** Save the setup, then activate the selected environment (step 7), as the
+ *  dialog's Activate does. */
+export const activateFromHardwareSetup = activateEnvironment;
+
+/** Stop the running chip test and give the commissioning session back
+ *  (step 5), then redraw. */
+export async function stopHardwareTests(): Promise<void> {
+  await stopCommissioning();
+  render();
+}
+
+/** Read the environment and the readiness report again: the session state
+ *  changed somewhere else (the top bar's Activate, Emergency stop), or the
+ *  operator asked for the report (step 6). */
+export async function reloadHardwareEnvironment(): Promise<void> {
+  try {
+    const [env, ready] = await Promise.all([
+      api.getOperationEnvironment(),
+      api.getOperationReadiness(),
+    ]);
+    environmentInfo = env as EnvironmentInfo;
+    activationReadiness = ready || { ready: false, issues: [] };
+  } catch (e: any) {
+    showToast(e?.message || 'Could not read the readiness report.', 'error', 3500);
+    return;
+  }
+  render();
 }

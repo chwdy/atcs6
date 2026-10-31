@@ -1,0 +1,481 @@
+/* ============================================================================
+   ?ui=next Hardware Setup screen (docs/ui-layout-rewrite-plan.md §7;
+   frontend/src/next/hardware/screen.tsx).
+
+   A full screen over the page body: the seven steps in a column on the left,
+   the picked step on the right. The dialog's own sections drawn into steps 2
+   and 4 keep their hardware.css styles; this file only lays them out.
+   ============================================================================ */
+
+/* While Hardware Setup is the screen, today's canvas area is hidden but keeps
+   its size, so the layout canvas does not have to resize when you come back.
+   `visibility` also hides the train monitor, which lives inside it. */
+html[data-ui="next"][data-screen="hardware"] .app-body > .content-area {
+    visibility: hidden;
+}
+
+.next-hardware-slot {
+    display: contents;
+}
+
+.nhs {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    min-height: 0;
+    background-color: var(--bg-dark);
+    font-family: var(--font-main);
+    color: var(--text-primary);
+}
+
+/* ---- Left column: the steps ---- */
+.nhs-rail {
+    flex: 0 0 272px;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-8);
+    padding: var(--space-16) var(--space-12);
+    border-right: 1px solid var(--border-color);
+    background-color: var(--bg-panel);
+    overflow-y: auto;
+}
+
+.nhs-rail-head {
+    padding: 0 var(--space-8);
+    font-size: var(--font-size-label);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-secondary);
+}
+
+.nhs-steps {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+}
+
+.nhs-step {
+    width: 100%;
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-10);
+    padding: var(--space-8);
+    border: 1px solid transparent;
+    border-radius: var(--control-radius-sm);
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+
+.nhs-step:hover {
+    background-color: var(--bg-hover);
+}
+
+.nhs-step[aria-current="step"] {
+    background-color: rgba(var(--accent-rgb), 0.12);
+    border-color: rgba(var(--accent-rgb), 0.5);
+}
+
+.nhs-step-mark {
+    flex: 0 0 22px;
+    height: 22px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--radius-pill);
+    border: 1px solid var(--border-color);
+    font-family: var(--font-mono);
+    font-size: var(--font-size-label);
+    color: var(--text-secondary);
+}
+
+.nhs-step[data-mark="done"] .nhs-step-mark {
+    border-color: rgba(var(--success-rgb), 0.5);
+    background-color: rgba(var(--success-rgb), 0.12);
+    color: var(--success-color);
+}
+
+.nhs-step[aria-current="step"] .nhs-step-mark {
+    border-color: var(--accent-color);
+    color: var(--accent-hover);
+}
+
+.nhs-step[aria-current="step"][data-mark="done"] .nhs-step-mark {
+    color: var(--success-color);
+}
+
+.nhs-step-text {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    min-width: 0;
+}
+
+.nhs-step-title {
+    font-size: var(--font-size-value);
+    font-weight: 600;
+    line-height: 22px;
+}
+
+.nhs-step[data-mark="skipped"] .nhs-step-title {
+    color: var(--text-secondary);
+}
+
+.nhs-step-status {
+    font-size: var(--font-size-body);
+    color: var(--text-secondary);
+}
+
+/* ---- Right side: the picked step ---- */
+.nhs-body {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow-y: auto;
+    padding: var(--space-16) calc(var(--space-16) * 2);
+}
+
+.nhs-step-body {
+    max-width: 880px;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-12);
+}
+
+.nhs-step-head {
+    display: flex;
+    align-items: center;
+    gap: var(--space-10);
+}
+
+.nhs-step-head h2 {
+    margin: 0;
+    font-size: 18px;
+    font-weight: 600;
+}
+
+.nhs-step-num {
+    width: 28px;
+    height: 28px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--radius-pill);
+    background-color: rgba(var(--accent-rgb), 0.18);
+    color: var(--accent-hover);
+    font-family: var(--font-mono);
+    font-size: var(--font-size-value);
+    font-weight: 600;
+}
+
+.nhs-done-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-4);
+    padding: 2px var(--space-8);
+    border-radius: var(--radius-pill);
+    border: 1px solid rgba(var(--success-rgb), 0.4);
+    background-color: rgba(var(--success-rgb), 0.1);
+    color: var(--success-color);
+    font-size: var(--font-size-label);
+    font-weight: 600;
+}
+
+.nhs-intro p,
+.nhs-line,
+.nhs-aside,
+.nhs-tool-desc {
+    margin: 0;
+    font-size: var(--font-size-value);
+    line-height: 1.55;
+    color: var(--text-secondary);
+}
+
+.nhs-intro {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-6);
+}
+
+.nhs-line strong {
+    color: var(--text-primary);
+}
+
+.nhs-aside,
+.nhs-tool-desc {
+    font-size: var(--font-size-body);
+}
+
+.nhs-subhead {
+    margin: var(--space-4) 0 0;
+    font-size: var(--font-size-label);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-secondary);
+}
+
+.nhs-step-foot {
+    display: flex;
+    justify-content: flex-end;
+    padding-top: var(--space-8);
+    border-top: 1px solid var(--border-color);
+}
+
+/* ---- Notes: a status-accented line (DESIGN_LANGUAGE §6) ---- */
+.nhs-note {
+    margin: 0;
+    padding: var(--space-8) var(--space-10);
+    border-left: 3px solid var(--border-color);
+    border-radius: var(--radius-xs);
+    background-color: var(--bg-panel);
+    font-size: var(--font-size-value);
+    line-height: 1.5;
+}
+
+.nhs-note-ok {
+    border-left-color: var(--success-color);
+    background-color: rgba(var(--success-rgb), 0.08);
+}
+
+.nhs-note-warn {
+    border-left-color: var(--warning-color);
+    background-color: rgba(var(--warning-rgb), 0.1);
+}
+
+.nhs-note-info {
+    border-left-color: var(--info-color);
+    background-color: rgba(var(--info-rgb), 0.06);
+}
+
+.nhs-link {
+    padding: 0;
+    border: none;
+    background: none;
+    color: var(--accent-hover);
+    font: inherit;
+    text-decoration: underline;
+    cursor: pointer;
+}
+
+.nhs-action-row {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: var(--space-12);
+}
+
+.nhs-action-row .nhs-note {
+    flex: 1 1 320px;
+}
+
+.nhs-reason {
+    font-size: var(--font-size-body);
+    color: var(--text-secondary);
+}
+
+.nhs-body .btn {
+    height: var(--control-height-sm);
+    padding: 0 var(--space-12);
+    font-size: var(--font-size-value);
+}
+
+/* Step 7's Activate is the page's one main action, filled like the top bar's
+   Activate (DESIGN_LANGUAGE §3: solid accent is for top-level CTAs). */
+.nhs .nhs-activate {
+    background-color: var(--accent-color);
+    border: 1px solid var(--accent-color);
+    color: #fff;
+    font-weight: 600;
+}
+
+.nhs .nhs-activate:hover:not(:disabled) {
+    background-color: var(--accent-hover);
+    border-color: var(--accent-hover);
+}
+
+.nhs .btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+/* ---- Step 1: the three environments ---- */
+.nhs-choices {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: var(--space-8);
+}
+
+.nhs-choice {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-10);
+    padding: var(--space-12);
+    border: 1px solid var(--border-color);
+    border-radius: var(--control-radius-sm);
+    background-color: var(--bg-panel);
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+
+.nhs-choice > i {
+    font-size: 18px;
+    color: var(--text-secondary);
+}
+
+.nhs-choice:hover:not(:disabled) {
+    border-color: var(--accent-color);
+}
+
+.nhs-choice[aria-checked="true"] {
+    border-color: var(--accent-color);
+    background-color: rgba(var(--accent-rgb), 0.12);
+}
+
+.nhs-choice[aria-checked="true"] > i {
+    color: var(--accent-hover);
+}
+
+.nhs-choice-text {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+}
+
+.nhs-choice-title {
+    font-size: var(--font-size-value);
+    font-weight: 600;
+}
+
+.nhs-choice-desc {
+    font-size: var(--font-size-body);
+    line-height: 1.5;
+    color: var(--text-secondary);
+}
+
+/* ---- Rows: step 5's tools, step 6's report ---- */
+.nhs-rows {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+}
+
+.nhs-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-10);
+    min-height: var(--control-height-sm);
+    padding: var(--space-6) var(--space-10);
+    border: 1px solid var(--border-color);
+    border-left: 3px solid var(--border-color);
+    border-radius: var(--control-radius-sm);
+    background-color: var(--bg-panel);
+    font-size: var(--font-size-value);
+}
+
+.nhs-row[data-tone="ok"] { border-left-color: var(--success-color); }
+.nhs-row[data-tone="warn"] { border-left-color: var(--warning-color); }
+.nhs-row[data-tone="info"] { border-left-color: var(--info-color); }
+
+.nhs-row > i {
+    color: var(--text-secondary);
+}
+
+.nhs-row[data-tone="warn"] > i {
+    color: var(--warning-color);
+}
+
+.nhs-row-name {
+    flex: 1 1 auto;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+}
+
+.nhs-row-ids {
+    font-family: var(--font-mono);
+    font-size: var(--font-size-body);
+    color: var(--text-secondary);
+}
+
+.nhs-row-value {
+    font-size: var(--font-size-body);
+    color: var(--text-secondary);
+}
+
+/* ---- Step 2: the save row ---- */
+.nhs-save-row {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: var(--space-12);
+    padding: var(--space-10) var(--space-12);
+    border: 1px solid var(--border-color);
+    border-radius: var(--control-radius-sm);
+    background-color: var(--bg-panel);
+}
+
+.nhs-save-row .nhs-hosted-idle-threshold {
+    flex: 1 1 auto;
+}
+
+.nhs-save-state {
+    font-size: var(--font-size-body);
+    color: var(--success-color);
+}
+
+.nhs-save-state[data-unsaved="true"] {
+    color: var(--warning-color);
+}
+
+/* ---- The dialog's sections drawn into steps 2 and 4 ---- */
+
+/* The dialog numbers its own sections 1 to 3, which would read as the
+   screen's steps; the screen keeps only the tick a finished section shows. */
+.nhs-hosted .hw-stage:not(.done) .hw-stage-num {
+    display: none;
+}
+
+.nhs-hosted:empty {
+    display: none;
+}
+
+/* ---- Step 4: the benches ---- */
+
+/* The benches hide parts with the `hidden` attribute, which a class that sets
+   `display` would otherwise override (as #hardware-modal [hidden] does). */
+.nhs [hidden] {
+    display: none !important;
+}
+
+.nhs-bench {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    border: 1px solid var(--border-color);
+    border-radius: var(--control-radius-sm);
+    background-color: var(--bg-panel);
+    font-size: var(--font-size-body);
+    overflow: hidden;
+}
+
+/* The Occupancy Bench draws the layout at its own shape, so it needs a fixed
+   stage height to fill, as its floating window gave it. */
+.nhs-occupancy-bench {
+    height: 560px;
+}
+
+.nhs-virtual-bench {
+    max-height: 560px;
+    font-size: var(--font-size-value);
+}

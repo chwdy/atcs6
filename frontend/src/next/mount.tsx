@@ -13,6 +13,8 @@ import { render } from 'preact';
 
 import type { Editor } from '../editor/editor';
 import { mountEditorScreen } from './editor/screen';
+import { mountHardwareSetup } from './hardware/screen';
+import { showHardwareSetup } from './hardware/state';
 import { screen, type Screen } from './state';
 import { TopBar, type TopBarActions, type ToolWindow } from './top-bar';
 
@@ -42,12 +44,13 @@ export interface NextHost {
 
 /**
  * Until each screen is built (plan §11), a tab maps onto today's layout:
- * Editor and Operate are today's two editor modes, Hardware Setup opens its
- * dialog, and Locomotives is Operate with the Speed Profiles panel open.
+ * Editor and Operate are today's two editor modes, and Locomotives is Operate
+ * with the Speed Profiles panel open. Hardware Setup is its own screen
+ * (next/hardware/).
  */
 export function showScreen(host: NextHost, next: Screen): void {
   if (next === 'hardware') {
-    host.openHardwareSetup();
+    showHardwareSetup();
     return;
   }
   host.setEditorMode(next === 'editor' ? 'edit' : 'sim');
@@ -66,7 +69,8 @@ export function topBarActions(host: NextHost): TopBarActions {
     openLayout: () => host.openLoadLayoutDialog(),
     saveLayout: () => host.openSaveLayoutDialog(),
     showScreen: (next) => showScreen(host, next),
-    openHardwareSetup: () => host.openHardwareSetup(),
+    // The session-state chip opens Hardware Setup at step 1, choose the environment.
+    openHardwareSetup: () => showHardwareSetup(1),
     activate: () => host.activateEnvironment(),
     togglePlayPause: () => host.togglePlayPause(),
     setSpeed: (speed) => host.setSimulationSpeed(speed),
@@ -93,4 +97,8 @@ export function mountNextUI(host: NextHost): void {
   oldHeader?.parentElement?.insertBefore(slot, oldHeader);
   render(<TopBar actions={topBarActions(host)} />, slot);
   mountEditorScreen(host.editor);
+  mountHardwareSetup({
+    activate: () => host.activateEnvironment(),
+    showScreen: (next) => showScreen(host, next),
+  });
 }
