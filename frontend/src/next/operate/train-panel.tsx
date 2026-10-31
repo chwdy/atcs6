@@ -34,7 +34,7 @@ import {
 } from '../../lib/train-status';
 import { stateManager } from '../../lib/state-manager';
 import { formatATOEta, formatSimClock, middleTruncate } from '../../editor/train-format';
-import { showScreen } from '../mount';
+import { openLocomotiveForTrain } from '../locomotives';
 import { usePoll } from '../poll';
 import { sessionState } from '../state';
 import { liveVersion, simClock, trainView, type TrainView } from './live';
@@ -122,7 +122,7 @@ export function TrainPanel({ host, trainId }: { host: OperateHost; trainId: stri
           type="button"
           class="tc-btn tc-btn-ghost op-calibrate-btn"
           title="Open the Locomotives screen to calibrate this train's speed profile"
-          onClick={() => showScreen(host, 'locomotives')}
+          onClick={() => openLocomotiveForTrain(trainId)}
         >
           <i class="ti ti-chart-line" aria-hidden="true" /> Calibrate
         </button>
