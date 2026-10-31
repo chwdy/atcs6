@@ -1139,7 +1139,6 @@ class BlockManager:
         "S": (0, -1),
         "W": (-1, 0),
     }
-    _OPPOSITE_EDGE: Dict[str, str] = {"N": "S", "S": "N", "E": "W", "W": "E"}
 
     def adjacent_blocks(self, block_id: str) -> List[str]:
         """The blocks reachable out of this block's ends, points as aligned.
@@ -1181,9 +1180,13 @@ class BlockManager:
         controller, or ``travel_direction`` state.
 
         Walks tile connectivity through any intervening switch tiles using
-        the current ``Switch.position``. Returns ``(None, None)`` if the walk
-        runs off the network, hits a dead end, or loops back into the same
-        block.
+        the current ``Switch.position``. Every step must be a real track
+        connection per ``RailwayNetwork.get_connection_edges``: the tile stepped
+        onto must have track on the edge the walk enters it by. A grid
+        neighbour whose rails do not meet that edge — the cell past a buffer
+        stop, say — is not reachable, even when it belongs to a block. Returns
+        ``(None, None)`` if the walk runs off the network, hits a dead end, or
+        loops back into the same block.
         """
         if self.network is None:
             return (None, None)
@@ -1210,10 +1213,10 @@ class BlockManager:
         if exit_tile is None:
             return (None, None)
 
-        # Step out into the neighbour tile and walk forward. `entry_edge`
-        # tracks the edge through which the walk enters the current tile; it
-        # starts as the geometric opposite of the CAUTION block's exit edge and
-        # is updated as the walk crosses each switch leg, so when the walk
+        # Step out into the neighbour tile and walk forward. `entry_edge` is
+        # the edge through which the walk enters the current tile, read from
+        # the connection between the tile it left and the tile it entered (the
+        # far edge of a tunnel is not the cardinal opposite), so when the walk
         # reaches the next block tile it holds that block's actual chain-entry
         # edge.
         first_neighbour = self.network.get_neighbor(
@@ -1221,8 +1224,9 @@ class BlockManager:
         )
         if first_neighbour is None:
             return (None, None)
+        prev_tile = exit_tile
+        leave_edge = direction
         cur_x, cur_y = first_neighbour.x, first_neighbour.y
-        entry_edge = self._OPPOSITE_EDGE[direction]
         visited: Set[Tuple[int, int]] = set()
 
         while True:
@@ -1232,6 +1236,12 @@ class BlockManager:
             tile = self.network.get_track(cur_x, cur_y)
             if tile is None:
                 return (None, None)
+            # The tile next door is only reachable when the two tiles' rails
+            # meet on the edge the walk left by.
+            connection = self.network.get_connection_edges(prev_tile, (cur_x, cur_y))
+            if connection is None or connection[0] != leave_edge:
+                return (None, None)
+            entry_edge = connection[1]
             # Plain block tile: this is the next reachable block.
             if tile.block_id and not tile.is_switch:
                 return (self._block_registry.get(tile.block_id), entry_edge)
@@ -1249,8 +1259,9 @@ class BlockManager:
                 step = self.network.get_neighbor(cur_x, cur_y, exit_edge)
                 if step is None:
                     return (None, None)
+                prev_tile = (cur_x, cur_y)
+                leave_edge = exit_edge
                 cur_x, cur_y = step.x, step.y
-                entry_edge = self._OPPOSITE_EDGE[exit_edge]
                 continue
             # Plain track tile not assigned to any block: nothing protectable
             # ahead.
