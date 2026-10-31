@@ -44,6 +44,21 @@ def test_eb_release_returns_the_handle_to_neutral():
     assert controller.ops.handle_position == HandlePosition.N
 
 
+def test_eb_release_returns_the_retained_power_percentage_to_zero():
+    """design_new.md "EB release": release returns the retained percentage to
+    `0` through `ManualDriving.reset_power_percent_for_safety()`, so a
+    percentage set after the last tick's EB hold cannot drive the train off
+    once it is granted a reservation."""
+    controller = _off_train()
+    assert controller.commands.power_on_cmd().success
+    assert controller.eb.activate().success
+    controller.manual.manual_power_percent = 60.0  # set between ticks
+
+    assert controller.eb.release().success
+
+    assert controller.manual.manual_power_percent == 0.0
+
+
 def test_the_ghost_freeze_writes_only_the_speed():
     controller = _off_train()
     controller.ops.handle_position = HandlePosition.EB

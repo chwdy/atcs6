@@ -257,6 +257,29 @@ def test_a_new_environment_lists_every_block_again(tmp_path):
     assert line["readings"]["BLK_0"] == {"present": True}
 
 
+def test_entering_setup_lists_every_block_with_no_environment(tmp_path):
+    """design_new.md "Detector reading log": Setup leaves no environment
+    active, so entering it is an environment change — the next line lists
+    every block with `environment` empty — and Setup's passes keep logging."""
+    network, sim, _detector = build_sim(tmp_path)
+    hardware = FakeDetector(network.blocks)
+    sim.activate_interfaces(OperationMode.VIRTUAL_HARDWARE, hardware, None, None)
+    sim.update(0.1)
+
+    # Setup keeps the detector open; its stopped passes read it.
+    sim.deactivate_environment([])
+    sim.poll_hardware_occupancy()
+    hardware.current["BLK_1"] = True
+    sim.poll_hardware_occupancy()
+
+    entering, during = lines_of(sim)[-2:]
+    assert entering["full"] == FULL_ENVIRONMENT
+    assert entering["environment"] is None
+    assert set(entering["readings"]) == {"BLK_0", "BLK_1", "BLK_2"}
+    assert "full" not in during
+    assert during["readings"] == {"BLK_1": {"present": True}}
+
+
 def test_the_simulated_driver_is_recorded_too(tmp_path):
     network = build_network(["BLK_0", "BLK_1"])
     sim = SimulationController(network, PathDispatcher(network))
@@ -425,7 +448,11 @@ def test_a_driver_detail_that_raises_does_not_stop_the_tick(tmp_path):
     assert len(_write_failure_events(sim)) == 1
 
 
-def test_a_directory_that_cannot_be_made_leaves_the_log_off(tmp_path):
+def test_a_directory_that_cannot_be_made_is_a_failed_write_that_retries(tmp_path):
+    """design_new.md "Detector reading log", A failed write never stops the
+    session: a folder that cannot be made at boot is reported once, the log
+    stays on, and the first line that does get written is the `"start"` line,
+    which resolves the warning."""
     blocker = tmp_path / "not_a_dir"
     blocker.write_text("a file where the directory should be")
     network = build_network(["BLK_0"])
@@ -433,10 +460,19 @@ def test_a_directory_that_cannot_be_made_leaves_the_log_off(tmp_path):
 
     sim.detector_reading_log.enable(blocker / "readings")
     sim.update(0.1)
+    sim.update(0.1)
 
-    assert not sim.detector_reading_log.enabled
-    assert sim.simulation_time == pytest.approx(0.1)
+    assert sim.detector_reading_log.enabled
+    assert sim.simulation_time == pytest.approx(0.2)
     assert len(_write_failure_events(sim)) == 1
+    assert WRITE_FAILED_CONDITION_KEY in sim.notification_center._active_conditions
+
+    blocker.unlink()
+    sim.update(0.1)
+
+    [line] = lines_of(sim)
+    assert line["full"] == FULL_START
+    assert WRITE_FAILED_CONDITION_KEY not in sim.notification_center._active_conditions
 
 
 # ------------------------------------------------------------- file limits

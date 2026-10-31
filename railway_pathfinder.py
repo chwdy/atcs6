@@ -1,7 +1,7 @@
 """
 Railway Pathfinder
 
-Per design_new.md "Pathfinding-home migration":
+Per design_new.md "Operational pathfinding home":
 this module is the canonical operational pathfinding home that
 `RouteExecutor` platform-end resolution, `PathDispatcher.create_path(...)`
 start-side selection, and `PathDispatcher.extend_path(...)` suffix
@@ -42,8 +42,9 @@ if TYPE_CHECKING:
 class RailwayPathfinder:
     """Canonical operational pathfinder.
 
-    Public entry point: ``find_ordered_walk(...)`` returns the list of
-    surviving directed walk candidates, sorted in winning order.
+    Public entry point: ``query_graph_walks(request)`` returns the list of
+    surviving directed walk candidates, sorted in winning order;
+    ``find_ordered_walk(request)`` is its thin adapter.
     """
 
     def __init__(self, network: "RailwayNetwork"):
@@ -52,23 +53,31 @@ class RailwayPathfinder:
     # ------------------------------------------------------------------ public
 
     def find_ordered_walk(
+        self, request: GraphWalkQuery
+    ) -> List[GraphWalkCandidate]:
+        """Thin adapter over ``query_graph_walks``: the same input, the same
+        ranked candidates, best first (design_new.md "Operational pathfinding
+        home", the ``find_ordered_walk`` row of the function table). A caller
+        that needs one chosen walk takes the first element. A caller that
+        starts from block IDs builds the request with ``block_walk_query``.
+        """
+        return self.query_graph_walks(request)
+
+    def block_walk_query(
         self,
         start_block_id: str,
         end_block_id: str,
         direction_constraint: Optional[str] = None,
-        max_candidates: Optional[int] = None,
         manual_override: bool = False,
         train_min_radius_cm: Optional[float] = None,
         train_max_speed_kmh: Optional[float] = None,
         train_max_slope_percent: Optional[float] = None,
-    ) -> List[GraphWalkCandidate]:
-        """Thin adapter over ``query_graph_walks`` for block-ID callers.
+    ) -> Optional[GraphWalkQuery]:
+        """Build the ``GraphWalkQuery`` for a block-to-block search, or None
+        when either block is unknown or has no tiles.
 
-        Builds a ``GraphWalkQuery`` from the block-level arguments and
-        delegates all BFS, filtering, deduplication, ranking, and
-        ``GraphWalkCandidate`` construction to ``query_graph_walks``.
-        Existing callers are unaffected: the returned list has the same
-        shape and ordering as before.
+        The locators name each block and one of its tiles; the search inside
+        ``query_graph_walks`` fans out from every tile in the start block.
 
         Args:
             start_block_id: Block where the walk begins.
@@ -76,56 +85,36 @@ class RailwayPathfinder:
             direction_constraint: Optional ``"forward"`` / ``"reverse"``
                 resolved block-relative direction the terminal traversal
                 must satisfy on the destination block.
-            max_candidates: Optional cap on the number of returned
-                candidates after sorting.
+            manual_override: Whether manual blocks/switches may be used.
             train_min_radius_cm: The train's minimum curve radius capability
-                in centimetres, or None for geometry-only callers. When set,
-                candidates that traverse a block or switch leg whose curve
-                radius is tighter than this value are rejected.
+                in centimetres, or None for geometry-only callers.
             train_max_speed_kmh: The train's maximum speed in km/h, or None for
-                geometry-only callers. When set, surviving candidates are
-                ranked by estimated travel time (posted block speed limits
-                capped at this max) instead of distance alone.
+                geometry-only callers; when set, candidates rank by estimated
+                travel time.
             train_max_slope_percent: The train's maximum climbable gradient
-                (percent grade), or None / 0.0 for no limit. When set above
-                zero, candidates that climb a block steeper than this in the
-                traversed direction are rejected.
-
-        Returns:
-            List of ``GraphWalkCandidate`` sorted in winning order by
-            ``GraphWalkCandidate.comparison_key()`` (estimated travel time ASC
-            when ``train_max_speed_kmh`` is supplied, then ``tile_count`` ASC,
-            ``walk_length_cm`` ASC, ``candidate_rank`` ASC). Empty when no
-            walk satisfies every filter.
+                (percent grade), or None / 0.0 for no limit.
         """
         if start_block_id not in self.network.blocks:
-            return []
+            return None
         if end_block_id not in self.network.blocks:
-            return []
-
-        # Resolve start and end to one representative tile each.
+            return None
         start_positions = self.network.get_block_positions(start_block_id)
         end_positions = self.network.get_block_positions(end_block_id)
         if not start_positions or not end_positions:
-            return []
-
-        # Use the first tile in each block as the locator tile; the BFS
-        # inside query_graph_walks fans out from all tiles in the block.
-        start_locator = GraphLocator(
-            tile=next(iter(start_positions)),
-            block_id=start_block_id,
-            resource_type="block",
-            resource_id=start_block_id,
-        )
-        end_locator = GraphLocator(
-            tile=next(iter(end_positions)),
-            block_id=end_block_id,
-            resource_type="block",
-            resource_id=end_block_id,
-        )
-        request = GraphWalkQuery(
-            start_locator=start_locator,
-            end_locator=end_locator,
+            return None
+        return GraphWalkQuery(
+            start_locator=GraphLocator(
+                tile=next(iter(start_positions)),
+                block_id=start_block_id,
+                resource_type="block",
+                resource_id=start_block_id,
+            ),
+            end_locator=GraphLocator(
+                tile=next(iter(end_positions)),
+                block_id=end_block_id,
+                resource_type="block",
+                resource_id=end_block_id,
+            ),
             requested_destination_direction=direction_constraint,
             return_tiles=True,
             return_blocks=True,
@@ -134,17 +123,13 @@ class RailwayPathfinder:
             train_max_speed_kmh=train_max_speed_kmh,
             train_max_slope_percent=train_max_slope_percent,
         )
-        candidates = self.query_graph_walks(request)
-        if max_candidates is not None and max_candidates >= 0:
-            candidates = candidates[:max_candidates]
-        return candidates
 
     def query_graph_walks(
         self, request: GraphWalkQuery
     ) -> List[GraphWalkCandidate]:
         """Canonical operational graph walk query.
 
-        Per design_new.md "Pathfinding-home migration": accepts a
+        Per design_new.md "Operational pathfinding home": accepts a
         ``GraphWalkQuery`` with tile-precise locators, skips disabled
         blocks/switches, searches topology-only regardless of current switch
         position, rejects candidates whose terminal

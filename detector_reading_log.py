@@ -169,19 +169,20 @@ class DetectorReadingLog:
         opened, so a run is found by when it happened. Opening a file also
         deletes the oldest files until the folder holds no more than
         `DETECTOR_READING_LOG_MAX_TOTAL_BYTES`.
-        A directory that cannot be created is reported like any failed write
-        and leaves the log off.
+        A directory that cannot be created is a failed write like any other:
+        it is reported, the log stays on, and each later pass tries again, so
+        the first line that does get written is the `"start"` line and resolves
+        the warning (design_new.md "Detector reading log", A failed write never
+        stops the session).
         """
         self._dir = Path(directory)
+        self._full_reason = FULL_START
         try:
             self._open_new_file()
         except Exception as exc:  # noqa: BLE001 - logging must not stop the boot
             self._report_failure(exc)
             self._close_file()
-            self._dir = None
             self._path = None
-            return
-        self._full_reason = FULL_START
 
     def request_full(self, reason: str) -> None:
         """Make the next line list every block, saying `reason`.
@@ -203,12 +204,13 @@ class DetectorReadingLog:
         delta_seconds: float,
         operating_delta_seconds: float,
         detector: "BlockOccupancyDetector",
-        environment: str,
+        environment: Optional[str],
     ) -> None:
         """Write this pass's line. Never raises.
 
         Called right after `detector.step()` read the detectors, with that
-        detector, so `detector.last_raw` is this pass's read.
+        detector, so `detector.last_raw` is this pass's read. `environment` is
+        the active environment's name, or None while none is active (Setup).
         """
         if self._dir is None:
             return
@@ -225,8 +227,10 @@ class DetectorReadingLog:
             )
         except Exception as exc:  # noqa: BLE001 - logging must not stop the tick
             # The lines from here until the next success are missing, so the
-            # next written line restates every block, into a reopened file.
-            self._full_reason = FULL_WRITE_FAILURE
+            # next written line restates every block, into a reopened file. A
+            # log that has written nothing yet keeps `"start"` for that line.
+            if self._full_reason != FULL_START:
+                self._full_reason = FULL_WRITE_FAILURE
             self._close_file()
             self._report_failure(exc)
             return
@@ -245,7 +249,7 @@ class DetectorReadingLog:
         delta_seconds: float,
         operating_delta_seconds: float,
         detector: "BlockOccupancyDetector",
-        environment: str,
+        environment: Optional[str],
     ) -> None:
         raw = detector.last_raw
         detail_reader = getattr(detector.input_interface, "last_read_detail", None)

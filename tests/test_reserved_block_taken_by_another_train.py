@@ -259,6 +259,40 @@ def test_a_foreign_train_taking_a_locked_block_emergency_brakes_the_reserver():
     assert dispatcher.active_path_id_by_train("T1") == path_id
 
 
+def test_a_conflict_block_is_never_left_reserved_for_a_train_that_does_not_touch_it():
+    """design_new.md "Reservation truncation", Observe caller: a `conflict`
+    block goes to no train, but when it is reserved for a train that is not
+    one of its candidates, Observe still resolves that reservation, so the
+    reserving train never drives onto current."""
+    network = build_abc()
+    sim, dispatcher, controller, train, path_id = rolling_train_with_authority_to_c(
+        network
+    )
+    assert network.blocks["BLK_C"].reserved_for_train == "T1"
+
+    sim._truncate_authority_at_occupied_reservations(
+        [AttributionResult(AttributionKind.CONFLICT, "BLK_C", candidates=("T8", "T9"))]
+    )
+
+    assert network.blocks["BLK_C"].reserved_for_train is None
+    assert dispatcher.get_path(path_id).get_reservation_end_block_id() != "BLK_C"
+
+
+def test_a_conflict_block_the_reserving_train_touches_keeps_its_reservation():
+    """Only a reservation for a train that does not touch the block is resolved:
+    when the reserving train is one of the candidates, nothing changes."""
+    network = build_abc()
+    sim, dispatcher, controller, train, path_id = rolling_train_with_authority_to_c(
+        network
+    )
+
+    sim._truncate_authority_at_occupied_reservations(
+        [AttributionResult(AttributionKind.CONFLICT, "BLK_C", candidates=("T1", "T9"))]
+    )
+
+    assert network.blocks["BLK_C"].reserved_for_train == "T1"
+
+
 # ---------------------------------------------------------------------------
 # truncate_path_before_resource directly
 # ---------------------------------------------------------------------------

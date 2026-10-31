@@ -73,15 +73,29 @@ def test_end_a_is_a_no_op_on_the_frame():
     assert c._facing_direction() == Direction.EAST
 
 
-def test_reset_to_default_flips_back():
+def test_end_a_after_end_b_flips_back():
     c = _train_on_line()
     span = c.physics_sync.current_span
     assert c._apply_head_frame("end_b") is None
-    c._reset_head_frame_to_default()
+    assert c._apply_head_frame("end_a") is None
 
-    # Head defaults back to end_a, and the frame follows it back east-forward.
+    # The head goes back to end_a, and the frame follows it back east-forward.
     assert _frame(span) == {"a": ("W", 100.0), "b": ("W", 60.0)}
     assert c._facing_direction() == Direction.EAST
+
+
+def test_power_off_keeps_the_frame():
+    """design_new.md "Reservation-side head derivation": losing power, like
+    losing a reservation, never flips the head."""
+    c = _train_on_line()
+    span = c.physics_sync.current_span
+    assert c._apply_head_frame("end_b") is None
+    framed = _frame(span)
+
+    c.complete_power_off()
+
+    assert _frame(span) == framed
+    assert c._facing_direction() == Direction.WEST
 
 
 def test_end_a_to_end_b_still_flips_after_a_redundant_end_a():

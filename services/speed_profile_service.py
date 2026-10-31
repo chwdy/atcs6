@@ -151,7 +151,8 @@ def update_profile(
     Raises:
         ValidationError when the body's profile_id disagrees with the URL
             id, the body changes a model-profile field on an instance profile,
-            a curve has fewer than two points, or the data does not parse.
+            a curve has fewer than two points, a curve's speed falls as power
+            rises, or the data does not parse.
         NotFoundError when no profile has that id.
     """
     data = dict(data or {})
@@ -192,6 +193,20 @@ def update_profile(
             updated = SpeedProfile.from_dict(merged)
         except (ValueError, KeyError, TypeError) as exc:
             raise ValidationError(f"Invalid profile data: {exc}") from exc
+        if curve is not None:
+            # design_new.md "SpeedProfile", A hand-edited curve must stay
+            # invertible: physics reads the curve in both directions, so speed
+            # must not fall as power rises. `from_dict` has sorted it by power.
+            points = updated.power_speed_curve or []
+            for (low_power, low_speed), (high_power, high_speed) in zip(
+                points, points[1:]
+            ):
+                if high_speed < low_speed:
+                    raise ValidationError(
+                        "power_speed_curve speed must not fall as power rises: "
+                        f"{high_power:g}% is {high_speed:g} km/h, below "
+                        f"{low_speed:g} km/h at {low_power:g}%"
+                    )
         state.speed_profile_registry.register(updated)
 
     return updated

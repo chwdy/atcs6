@@ -425,7 +425,9 @@ class BlockOccupancyDetector:
                 train_id = self._match_entry(block_id, claimed)
                 if train_id is None:
                     continue
-                results[block_id] = self._credited(block_id, train_id)
+                results[block_id] = self._credited(
+                    block_id, train_id, claimed.get(train_id, set())
+                )
                 claimed.setdefault(train_id, set()).add(block_id)
                 pending.discard(block_id)
                 resolved = True
@@ -534,7 +536,9 @@ class BlockOccupancyDetector:
             for block_id, train_ids in touching.items():
                 if len(train_ids) == 1:
                     train_id = train_ids[0]
-                    results[block_id] = self._credited(block_id, train_id)
+                    results[block_id] = self._credited(
+                        block_id, train_id, evidence.get(train_id, set())
+                    )
                     evidence.setdefault(train_id, set()).add(block_id)
                     pending.discard(block_id)
                     resolved = True
@@ -546,15 +550,29 @@ class BlockOccupancyDetector:
             if not resolved:
                 break
 
-    def _credited(self, block_id: str, train_id: str) -> AttributionResult:
-        """The result for a block credited to `train_id`: `entry` when the block
-        is reserved for that train or the train holds no path, otherwise
-        `overrun_entry` (design_new.md "Block occupancy detection", Match order
-        for a newly OCCUPIED block, ranks 2 and 3). A train with no path has no
-        authority to run past."""
+    def _credited(
+        self, block_id: str, train_id: str, gained: Set[str]
+    ) -> AttributionResult:
+        """The result for a block credited to `train_id` (design_new.md "Block
+        occupancy detection", Match order for a newly OCCUPIED block, ranks 2
+        and 3). `gained` is what this read has already credited the train.
+
+        - `entry` when the block is reserved for that train (rank 2).
+        - `overrun_entry` when the block is in front of a train that holds a
+          path — it touches the train on its head side — because the train ran
+          past its authority to get there.
+        - `entry` otherwise: a train with no path has no authority to run
+          past, and a block behind a train is its own body, such as a
+          locomotive or lit car bridging the joint behind a stopped train.
+        """
         block = self.network.blocks.get(block_id)
         reserved_for = getattr(block, "reserved_for_train", None) if block else None
         if reserved_for == train_id or not self._holds_path(train_id):
+            return AttributionResult(AttributionKind.ENTRY, block_id, train_id)
+        if (
+            self.head_side is not None
+            and self.head_side(train_id, set(gained)) != block_id
+        ):
             return AttributionResult(AttributionKind.ENTRY, block_id, train_id)
         return AttributionResult(AttributionKind.OVERRUN_ENTRY, block_id, train_id)
 

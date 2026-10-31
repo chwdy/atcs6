@@ -29,6 +29,10 @@ class _OpenRun:
     def get_propulsion_override(self, train_id):
         return self.override if train_id == self.train_id else None
 
+    def taint_current_crossing(self, train_id, reason):
+        # No crossing is being timed in these tests, so nothing is marked.
+        return False
+
 
 def _make_controller(override=None):
     from track import TRACK_EW, Tile

@@ -149,7 +149,7 @@ def _connected_pair(network, pf):
     blocks = list(network.blocks.keys())
     for a in blocks:
         for b in blocks:
-            if a != b and pf.find_ordered_walk(a, b):
+            if a != b and pf.find_ordered_walk(pf.block_walk_query(a, b)):
                 return a, b
     raise AssertionError("demo_5 contains no connected block pair")
 
@@ -160,13 +160,13 @@ def test_query_populates_estimate_only_with_max_speed_and_keeps_cache_clean():
     a, b = _connected_pair(network, pf)
 
     # Geometry-only query: every candidate leaves the estimate None.
-    geo = pf.find_ordered_walk(a, b)
+    geo = pf.find_ordered_walk(pf.block_walk_query(a, b))
     assert geo, "expected at least one walk for a connected pair"
     assert all(c.estimated_travel_seconds is None for c in geo)
 
     # With a train max speed: the estimate is populated (>= 0) on every
     # returned candidate.
-    fast = pf.find_ordered_walk(a, b, train_max_speed_kmh=80.0)
+    fast = pf.find_ordered_walk(pf.block_walk_query(a, b, train_max_speed_kmh=80.0))
     assert fast
     assert all(c.estimated_travel_seconds is not None for c in fast)
     assert all(c.estimated_travel_seconds >= 0.0 for c in fast)
@@ -174,5 +174,5 @@ def test_query_populates_estimate_only_with_max_speed_and_keeps_cache_clean():
     # The estimate is written onto per-query copies, never the shared cached
     # (max-speed-independent) candidate list, so a later geometry-only query
     # still sees None.
-    geo_again = pf.find_ordered_walk(a, b)
+    geo_again = pf.find_ordered_walk(pf.block_walk_query(a, b))
     assert all(c.estimated_travel_seconds is None for c in geo_again)

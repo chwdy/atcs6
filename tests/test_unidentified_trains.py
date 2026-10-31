@@ -410,6 +410,42 @@ def test_an_unidentified_train_group_that_splits_keeps_its_id_on_the_longest_hel
     assert network.blocks["BLK_2"].occupied_by in remaining
 
 
+@pytest.mark.parametrize("east_first", [False, True])
+def test_a_middle_block_clear_on_an_unidentified_train_goes_straight_to_free(east_first):
+    """design_new.md "Unidentified trains", Direction: a middle block has held
+    neighbours on both sides, so no single edge leads toward the train and the
+    vacate passes `direction = None` — the block goes to FREE, not CAUTION,
+    whichever part of the split keeps the original id."""
+    network = RailwayNetwork()
+    names = ["BLK_C", "BLK_B", "BLK_A"] if east_first else ["BLK_A", "BLK_B", "BLK_C"]
+    for x, name in enumerate(names):
+        tile = Tile(x=x, y=0, track_bits=TRACK_EW)
+        tile.segment_id = segment_id_for_block(name)
+        network.add_track(tile)
+        block = Block(block_id=name, length_cm=100.0)
+        block.ordered_tiles = [(x, 0, "W")]
+        network.blocks[name] = block
+    detector = FakeDetector()
+    sim = SimulationController(network, PathDispatcher(network), input_interface=detector)
+    sim._fake_clock = 0.0
+    sim.unidentified_clock = lambda: sim._fake_clock
+    first, middle, last = names
+    detector.current = {first: True}
+    tick(sim)
+    detector.current = {first: True, middle: True}
+    tick(sim)
+    detector.current = {first: True, middle: True, last: True}
+    tick(sim)
+
+    detector.current = {first: True, last: True}
+    tick(sim, times=OCCUPANCY_OFF_THRESHOLD)
+    tick(sim, times=3)
+
+    assert len(unidentified_ids(network)) == 2
+    assert network.blocks[middle].caution is None
+    assert network.blocks[middle].state == BlockState.FREE
+
+
 # ------------------------------------------------------------ never energized
 
 

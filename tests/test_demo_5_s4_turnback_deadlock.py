@@ -191,8 +191,14 @@ def test_caution_terminal_block_is_exempt_from_junction_rule():
     assert dispatcher._terminal_fouls_two_way_switch_block(
         segment, "BLK_X2_TO_S4_S") is True
 
-    # Carve-out: with the block in CAUTION the exclusion yields.
-    foul_block.caution = CautionState(exit_edge="W")  # leader vacated toward S4-S
+    # A caution left by a train going the other way does not exempt FOLLOW:
+    # FOLLOW leaves the block through E, so it is not following that train.
+    foul_block.caution = CautionState(exit_edge="W")
+    assert dispatcher._terminal_fouls_two_way_switch_block(
+        segment, "BLK_X2_TO_S4_S") is True
+
+    # Carve-out: with the block in CAUTION toward S4-S the exclusion yields.
+    foul_block.caution = CautionState(exit_edge="E")  # leader vacated toward S4-S
     assert dispatcher._terminal_fouls_two_way_switch_block(
         segment, "BLK_X2_TO_S4_S") is False, (
         "a two-way block in CAUTION must be exempt from the junction-fouling "

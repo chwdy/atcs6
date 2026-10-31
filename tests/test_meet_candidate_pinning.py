@@ -68,8 +68,9 @@ def _routing_train(net, train_id="T1", tile_x=0, block_id="BLOCK_A"):
 def _keys(disp, start, end, direction="forward"):
     """The pinned key list a meet calc would emit for the best `start -> end`
     candidate (the same shared pathfinder Plan and meet coordination use)."""
-    cands = disp._pathfinder.find_ordered_walk(
-        start, end, direction_constraint=direction
+    pf = disp._pathfinder
+    cands = pf.find_ordered_walk(
+        pf.block_walk_query(start, end, direction_constraint=direction)
     )
     assert cands, f"expected a walk {start} -> {end}"
     return PathDispatcher._ordered_walk_keys(cands[0].ordered_walk)
@@ -133,10 +134,30 @@ def _live_path_to_b(net):
     return disp, res.path_id
 
 
-def test_extend_path_matches_pinned_suffix():
-    """The meet calc pins the FULL head->target (A->E) route; an extend from the
-    current authority end (B->E) is the forward tail of that route, so it matches
-    and grows."""
+def test_extend_path_matches_keys_built_from_the_reservation_end():
+    """Meet coordination builds the keys from where the next call starts — the
+    reservation end (B) for an extend — so the extend's own walk B->E matches
+    them exactly and grows."""
+    net = _linear_network()
+    disp, path_id = _live_path_to_b(net)
+    walks = disp.next_call_walk_candidates("T1", "BLOCK_E", "forward")
+    assert walks
+    res = disp.extend_path(
+        path_id=path_id,
+        requested_destination_block_id="BLOCK_E",
+        required_candidate_resource_keys=PathDispatcher._ordered_walk_keys(
+            walks[0].ordered_walk
+        ),
+    )
+    assert res.success
+    assert res.appended_resource_count > 0
+    assert res.reached_target
+    assert disp.get_path(path_id).get_reservation_end_block_id() == "BLOCK_E"
+
+
+def test_extend_path_refuses_keys_that_also_cover_the_live_path():
+    """The match is exact: keys for the whole head->target walk (A->E) are not
+    the extend's walk (B->E), so the extend appends nothing."""
     net = _linear_network()
     disp, path_id = _live_path_to_b(net)
     res = disp.extend_path(
@@ -145,9 +166,8 @@ def test_extend_path_matches_pinned_suffix():
         required_candidate_resource_keys=_keys(disp, "BLOCK_A", "BLOCK_E"),
     )
     assert res.success
-    assert res.appended_resource_count > 0
-    assert res.reached_target
-    assert disp.get_path(path_id).get_reservation_end_block_id() == "BLOCK_E"
+    assert res.appended_resource_count == 0
+    assert disp.get_path(path_id).get_reservation_end_block_id() == "BLOCK_B"
 
 
 def test_extend_path_refuses_mismatched_pin_as_no_growth():

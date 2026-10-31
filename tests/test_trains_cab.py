@@ -126,11 +126,11 @@ class TestHeadFrameEndPositions:
         assert span.end_a.entry_edge == expected_new_entry_a
         assert span.end_b.entry_edge == expected_new_entry_b
 
-    def test_reset_to_default_re_expresses_the_span_frame(self, network):
-        """`_reset_head_frame_to_default()` (the end_b -> end_a power-off reset used
-        by `complete_power_off()`) moves the head from end_b to end_a, so it must
-        re-express both span end frames like any other head-frame writer
-        (design_new.md "Reversed-frame re-expression")."""
+    def test_power_off_keeps_the_span_frame(self, network):
+        """`complete_power_off()` leaves the framing alone: losing power, like
+        losing a reservation, never flips the head (design_new.md
+        "Reservation-side head derivation"), so a train framed with end_b as
+        its head keeps the same rear block."""
         train, controller = self._setup_two_tile_train(network)
 
         controller._apply_head_frame("end_b")
@@ -138,23 +138,12 @@ class TestHeadFrameEndPositions:
         entry_a_at_b = span.end_a.entry_edge
         entry_b_at_b = span.end_b.entry_edge
 
-        def _flip(tile, edge):
-            track = network.get_track(*tile)
-            if track:
-                exits = track.get_exits(edge, use_switch_state=True)
-                if exits:
-                    return exits[0]
-            return edge
+        controller.complete_power_off()
 
-        expected_entry_a = _flip(span.end_a.tile, entry_a_at_b)
-        expected_entry_b = _flip(span.end_b.tile, entry_b_at_b)
-
-        controller._reset_head_frame_to_default()
-
-        assert controller._framed_head_end == "end_a"
+        assert controller._framed_head_end == "end_b"
         span = controller.physics_sync.current_span
-        assert span.end_a.entry_edge == expected_entry_a
-        assert span.end_b.entry_edge == expected_entry_b
+        assert span.end_a.entry_edge == entry_a_at_b
+        assert span.end_b.entry_edge == entry_b_at_b
 
     def test_reframe_preserves_occupied_tiles_order(self, network):
         """occupied_tiles order stays the same - physical train didn't move."""

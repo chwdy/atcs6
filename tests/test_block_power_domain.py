@@ -170,6 +170,21 @@ def test_reserve_rejected_when_block_reserved_for_other_path():
     assert result.reason == "reserved_by_other_path"
 
 
+def test_a_reservation_never_changes_a_blocks_caution():
+    """design_new.md BlockManager, A reservation never changes a block's
+    caution: reserving a CAUTION block for a traversal out of its other end
+    leaves `block.caution` as it was; the caution cap reads the traversal."""
+    from block import CautionState
+
+    net = _grouped_network()
+    bm = net.block_manager
+    net.blocks["G"].caution = CautionState(exit_edge="E")
+    assert bm.reserve_blocks_for_path(
+        ["G"], "P1", "T1", directions={"G": _fwd("W")}
+    ).success is True
+    assert net.blocks["G"].caution == CautionState(exit_edge="E")
+
+
 # --- power: one feed per block ---------------------------------------------
 
 

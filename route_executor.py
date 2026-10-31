@@ -22,7 +22,7 @@ flow.
 from dataclasses import dataclass, field
 import logging
 import time
-from typing import Any, Callable, ClassVar, Dict, Iterable, List, Optional, Set, Tuple, TYPE_CHECKING, Union
+from typing import Any, Callable, ClassVar, Dict, FrozenSet, Iterable, List, Optional, Set, Tuple, TYPE_CHECKING, Union
 
 from constants import (
     DELAY_CLASS_ON_TIME_TOLERANCE_SECONDS,
@@ -46,6 +46,7 @@ if TYPE_CHECKING:
     from path import Path
     from train import Train
     from train_route import Route
+    from meet_coordination import MeetEntry
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +82,40 @@ _HELD_REQUEST_TEARDOWN_CONDITIONS = frozenset(
         ControllerCondition.POWER_OFF_PENDING,
     }
 )
+
+
+def _keys_lie_on_walk(keys, walk) -> bool:
+    """True when `keys` is one unbroken stretch of `walk` (design_new.md
+    Planning Kernel step `66aa`, Required walk).
+
+    The two end steps are matched on less than all four parts, because a walk
+    that starts or stops on a tile writes a fallback edge there:
+    - the first step on `(resource_type, resource_id, exit_edge)` — its
+      `entry_edge` is the walk's back-edge fallback;
+    - the last step on `(resource_type, resource_id, entry_edge)` — a walk
+      ending at its target writes the terminal tile's fallback `exit_edge`,
+      which differs from the edge the longer walk leaves that tile by.
+    Every step in between matches on all four parts.
+    """
+    keys = [tuple(k) for k in keys or ()]
+    walk = [tuple(k) for k in walk or ()]
+    n = len(keys)
+    if not n or n > len(walk):
+        return False
+    for start in range(len(walk) - n + 1):
+        stretch = walk[start:start + n]
+        if n == 1:
+            # One step is both ends: only its resource can be compared.
+            if stretch[0][:2] == keys[0][:2]:
+                return True
+            continue
+        first_matches = (stretch[0][0], stretch[0][1], stretch[0][3]) == (
+            keys[0][0], keys[0][1], keys[0][3]
+        )
+        last_matches = stretch[-1][:3] == keys[-1][:3]
+        if first_matches and last_matches and stretch[1:-1] == keys[1:-1]:
+            return True
+    return False
 
 
 # =============================================================================
@@ -678,26 +713,33 @@ class RouteExecutor:
         # per-train loop); retained across no ticks, so they are not latches and
         # hold no Latch-Table entry.
         #   contention_snapshot: the tick's ContentionSnapshot — `edges` (one per
-        #     holder of each blocked waiter, for wedge/meet detection). Built from
+        #     holder of each blocked waiter, for wedge detection). Built from
         #     the full PathDispatcher.get_waiting_conflict(...).
-        #   meet_assignment: train_id -> MeetCeiling capping how far it may
-        #     reserve this tick and pinning which candidate it may acquire when a
-        #     higher-priority train needs the same track.
         self.contention_snapshot: ContentionSnapshot = ContentionSnapshot()
+        #   meet_assignment: train_id -> MeetEntry for each train meet
+        #     coordination steers this tick: the walk it must take and, for a
+        #     train that waits, the passing place it may reserve no further than.
+        #   meet_kept_ways: waiting train -> its way (the resources from its head
+        #     up to and including its passing place), which no other train may
+        #     acquire or preempt; read by PathDispatcher through
+        #     `meet_way_holder(...)`.
+        #   meet_waiting_for: waiting train -> the train it lets by.
+        self.meet_assignment: Dict[str, "MeetEntry"] = {}
+        self.meet_kept_ways: Dict[str, FrozenSet[Tuple[str, str]]] = {}
+        self.meet_waiting_for: Dict[str, str] = {}
+        self._meet_way_holders: Dict[Tuple[str, str], str] = {}
         #   wedge_report: the tick's WedgeReport — the set of deadlocks present,
         #     each a set of trains that are each stopped with nowhere to go and
-        #     waiting on a resource another member holds. Built between the
+        #     waiting on a resource another member holds. Built after the
         #     contention snapshot and the meet assignment (design_new.md "Wedge
         #     detection"). Read-only; not a latch.
         self.wedge_report: WedgeReport = WedgeReport()
-        self.meet_assignment: Dict[str, "MeetCeiling"] = {}
-        # Trains for which meet coordination found no holding point on the last
-        # pass, so it emitted the live `meet_hold` diagnostic and left the key
-        # active. `MeetCoordinator` (rebuilt each tick) reconciles this set each
-        # pass and calls `NotificationCenter.resolve_condition(...)` for every
-        # train that has dropped out of it (design_new.md "Error events",
-        # Resolution and recurrence).
+        # Trains held at a passing place on the last pass, and the pairs that
+        # had no place to pass, so `MeetCoordinator` (rebuilt each tick) can call
+        # `NotificationCenter.resolve_condition(...)` for each one that is gone
+        # this pass (design_new.md "Error events", Resolution and recurrence).
         self.meet_hold_train_ids: Set[str] = set()
+        self.meet_no_place_pairs: Set[Tuple[str, str]] = set()
         # Condition keys for the wedges reported on the last pass, so the next
         # pass can call `NotificationCenter.resolve_condition(...)` for every
         # wedge that has cleared (design_new.md "Error events", Resolution and
@@ -1513,24 +1555,25 @@ class RouteExecutor:
         return ordered
 
     # ------------------------------------------------------------------
-    # Per-tick coordination (design_new.md "Contention snapshot" +
-    # "Meet coordination"). Built after order_runnable_trains and
-    # before the first train's Plan.
+    # Per-tick coordination (design_new.md "Contention snapshot",
+    # "Meet coordination", "Wedge detection"). Built after
+    # order_runnable_trains and before the first train's Plan.
     # ------------------------------------------------------------------
 
     def build_tick_coordination(self, ordered_train_ids: List[str]) -> None:
-        """Rebuild the contention snapshot and meet assignment for this tick.
+        """Rebuild the contention snapshot, meet assignment, and wedge report
+        for this tick.
 
-        design_new.md "Contention snapshot" + "Wedge detection" + "Meet
-        coordination": all three are read-only tick-start views — recomputed
-        from scratch every tick and retained across none. The order is the
-        doc's: the contention snapshot is built first; the wedge report reads
-        that snapshot's edges; meet coordination then seeds its conflict
-        detection from the same snapshot's contending pairs.
+        All three are read-only tick-start views — recomputed from scratch every
+        tick and retained across none. The order is the doc's (design_new.md
+        "Planning Kernel"): the contention snapshot first, then the meet
+        assignment, which finds its pairs from the trains' routes, then the
+        wedge report, which reads the snapshot's edges and the assignment's
+        steered trains.
         """
         self.contention_snapshot = self._build_contention_snapshot(ordered_train_ids)
+        self._build_meet_assignment(ordered_train_ids)
         self.wedge_report = self._build_wedge_report(ordered_train_ids)
-        self.meet_assignment = self._build_meet_assignment(ordered_train_ids)
 
     def _build_contention_snapshot(
         self, ordered_train_ids: List[str]
@@ -1561,20 +1604,30 @@ class RouteExecutor:
                 )
         return ContentionSnapshot(edges=edges)
 
-    def _build_meet_assignment(
-        self, ordered_train_ids: List[str]
-    ) -> Dict[str, "MeetCeiling"]:
-        """Per-tick `train_id -> MeetCeiling` (design_new.md "Meet coordination").
-
-        Delegated to `MeetCoordinator`, which reads the just-built
-        `contention_snapshot` to seed conflict detection.
-        """
+    def _build_meet_assignment(self, ordered_train_ids: List[str]) -> None:
+        """Rebuild the tick's meet assignment and the ways it keeps
+        (design_new.md "Meet coordination"). Delegated to `MeetCoordinator`."""
         from meet_coordination import MeetCoordinator
 
-        return MeetCoordinator(self).build(ordered_train_ids)
+        decision = MeetCoordinator(self).build(ordered_train_ids)
+        self.meet_assignment = decision.entries
+        self.meet_kept_ways = decision.kept_ways
+        self.meet_waiting_for = decision.waiting_for
+        self._meet_way_holders = {
+            key: train_id
+            for train_id, way in decision.kept_ways.items()
+            for key in way
+        }
+
+    def meet_way_holder(self, resource_type: str, resource_id: str) -> Optional[str]:
+        """The train the current meet assignment keeps this resource for, or
+        None (design_new.md "Meet coordination", The waiting train's way is kept
+        for it). `PathDispatcher` reads it to refuse acquisition and Preemption
+        of a resource on another train's kept way."""
+        return self._meet_way_holders.get((resource_type, resource_id))
 
     # ------------------------------------------------------------------
-    # Wedge detection (design_new.md "Wedge detection"). Built between the
+    # Wedge detection (design_new.md "Wedge detection"). Built after the
     # contention snapshot and the meet assignment, once per tick, reading
     # tick-start committed state only.
     # ------------------------------------------------------------------
@@ -1601,10 +1654,53 @@ class RouteExecutor:
             for train_id in ordered_train_ids
             if self._is_wedge_participant(train_id)
         }
-        wedges = self._find_wedges(self.contention_snapshot.edges, participants)
+        wedges = self._find_wedges(self._wedge_edges(ordered_train_ids), participants)
         report = WedgeReport(wedges=wedges)
         self._emit_wedge_events(wedges)
         return report
+
+    def _wedge_edges(self, ordered_train_ids: List[str]) -> List[ContentionEdge]:
+        """The wait-for edges wedge detection reads (design_new.md "Wedge
+        detection"): each train's edges from the contention snapshot, except for
+        a train the meet assignment steers. A steered train's edges come from a
+        fresh `get_waiting_conflict(...)` on the walk its entry chose, and a
+        train standing on its passing place contributes none — it waits there
+        by design."""
+        edges: List[ContentionEdge] = []
+        for train_id in ordered_train_ids:
+            entry = self.meet_assignment.get(train_id)
+            if entry is None:
+                edges.extend(
+                    e for e in self.contention_snapshot.edges
+                    if e.waiting_train_id == train_id
+                )
+                continue
+            ceiling = entry.meet_ceiling_block_id
+            block = self.network.blocks.get(ceiling) if ceiling else None
+            if block is not None and getattr(block, "occupied_by", None) == train_id:
+                continue
+            armed = self.find_armed_task(train_id)
+            if armed is None or self.path_dispatcher is None:
+                continue
+            keys = entry.candidate_resource_keys
+            conflict = self.path_dispatcher.get_waiting_conflict(
+                train_id,
+                armed.stored_resolved_target,
+                self._manual_override_for(train_id),
+                reservation_cap_block_id=ceiling,
+                required_candidate_resource_keys=list(keys) if keys else None,
+            )
+            if conflict is None:
+                continue
+            for holder_id in conflict.holding_train_ids:
+                edges.append(
+                    ContentionEdge(
+                        waiting_block_id=conflict.waiting_block_id,
+                        waiting_train_id=train_id,
+                        holding_train_id=holder_id,
+                    )
+                )
+        return edges
 
     def _is_wedge_participant(self, train_id: str) -> bool:
         """True when `train_id` is stopped with nowhere to go — the wedge
@@ -1869,7 +1965,9 @@ class RouteExecutor:
         design_new.md "Contention snapshot": obtain `stored_resolved_target` from
         `find_armed_task(train_id)`, resolve the run's manual override, and call
         the full `PathDispatcher.get_waiting_conflict(...)` with no meet constraint
-        (`reservation_cap_block_id=None`, `required_candidate_resource_keys=None`).
+        (`reservation_cap_block_id=None`). The keys are `None` too, except for a
+        route with a required walk, whose part is the train's only candidate
+        (step `66aa`, Required walk).
         """
         if self.path_dispatcher is None:
             return None
@@ -1877,12 +1975,15 @@ class RouteExecutor:
         if armed is None:
             return None
         manual_override = self._manual_override_for(train_id)
+        target = armed.stored_resolved_target
         return self.path_dispatcher.get_waiting_conflict(
             train_id,
-            armed.stored_resolved_target,
+            target,
             manual_override,
             reservation_cap_block_id=None,
-            required_candidate_resource_keys=None,
+            required_candidate_resource_keys=self._required_walk_part_for_target(
+                train_id, target, manual_override
+            ),
         )
 
     def waiting_for_block_id_for(self, train_id: str) -> Optional[str]:
@@ -1894,10 +1995,10 @@ class RouteExecutor:
         resolves the run's manual override, then forwards the complete request to
         the canonical
         `PathDispatcher.get_waiting_for_block_id(...)` projection with no meet
-        constraint (`reservation_cap_block_id=None`,
-        `required_candidate_resource_keys=None`), matching the tick-start
-        contention view. Returns `None` when there is no dispatcher, no armed
-        task, or nothing blocking the forward suffix.
+        constraint (`reservation_cap_block_id=None`), matching the tick-start
+        contention view — including a required walk's part as the keys, by the
+        same rule (`_waiting_conflict_for`). Returns `None` when there is no
+        dispatcher, no armed task, or nothing blocking the forward suffix.
         """
         if self.path_dispatcher is None:
             return None
@@ -1905,12 +2006,81 @@ class RouteExecutor:
         if armed is None:
             return None
         manual_override = self._manual_override_for(train_id)
+        target = armed.stored_resolved_target
         return self.path_dispatcher.get_waiting_for_block_id(
             train_id,
-            armed.stored_resolved_target,
+            target,
             manual_override,
             reservation_cap_block_id=None,
-            required_candidate_resource_keys=None,
+            required_candidate_resource_keys=self._required_walk_part_for_target(
+                train_id, target, manual_override
+            ),
+        )
+
+    def _required_walk_keys_of(self, train_id: str) -> Optional[List[Tuple[str, str, str, str]]]:
+        """The assigned route's `Route.required_walk_keys`, or None."""
+        route_id = self.assigned_route_id_for(train_id)
+        route = self.route_registry.get(route_id) if route_id else None
+        keys = getattr(route, "required_walk_keys", None) if route else None
+        return [tuple(key) for key in keys] if keys else None
+
+    def required_walk_candidates(self, train_id: str, candidates: list) -> list:
+        """The candidates that lie on the train's required walk (design_new.md
+        Planning Kernel step `66aa`, Required walk, The only candidate). With no
+        required walk every candidate is kept. Meet coordination reads this, so
+        a required walk is a train's only candidate there too."""
+        required = self._required_walk_keys_of(train_id)
+        if required is None or self.path_dispatcher is None:
+            return list(candidates)
+        return [
+            cand
+            for cand in candidates
+            if _keys_lie_on_walk(
+                self.path_dispatcher._ordered_walk_keys(
+                    getattr(cand, "ordered_walk", None)
+                ),
+                required,
+            )
+        ]
+
+    def _required_walk_part(
+        self,
+        train_id: str,
+        target_block_id: Optional[str],
+        target_direction: Optional[str],
+        manual_override: bool,
+    ) -> Optional[List[Tuple[str, str, str, str]]]:
+        """The part of the train's required walk its next create/extend call
+        must take, written exactly as that call enumerates it (design_new.md
+        Planning Kernel step `66aa`, Required walk): the call's own walk from
+        where it starts — the start-side span end, or the reservation end — to
+        the armed target, when one lies on the required walk.
+
+        None when the route carries no required walk. When no walk the call
+        enumerates lies on it, the whole required walk is returned instead; it
+        matches none of them, so the call fails rather than falling through to
+        another walk."""
+        required = self._required_walk_keys_of(train_id)
+        if required is None:
+            return None
+        if self.path_dispatcher is None or not target_block_id:
+            return required
+        candidates = self.path_dispatcher.next_call_walk_candidates(
+            train_id, target_block_id, target_direction, manual_override
+        )
+        for cand in self.required_walk_candidates(train_id, candidates):
+            return self.path_dispatcher._ordered_walk_keys(cand.ordered_walk)
+        return required
+
+    def _required_walk_part_for_target(
+        self, train_id: str, target, manual_override: bool
+    ) -> Optional[List[Tuple[str, str, str, str]]]:
+        """`_required_walk_part` for a `ResolvedRouteTarget` (or None)."""
+        return self._required_walk_part(
+            train_id,
+            getattr(target, "requested_destination_block_id", None),
+            getattr(target, "requested_destination_direction", None),
+            manual_override,
         )
 
     def _manual_override_for(self, train_id: str) -> bool:
@@ -2229,7 +2399,20 @@ class RouteExecutor:
                     self.unregister_route(finished_leg_route_id)
         run.leg_armed = run.active_leg_route_id is not None
 
-        command = calibration.plan_tick(train_id)
+        # A leg that loses its walk fails the pass (design_new.md "Speed
+        # calibration"): checked first, while the leg route is still assigned
+        # and no live path holds the train.
+        lost_leg = self._calibration_leg_lost_walk(train_id, controller, run)
+        if lost_leg is not None:
+            near_block_id, far_block_id = lost_leg
+            command = calibration.fail(
+                run,
+                f"the leg from {near_block_id} through {run.measured_block_id} "
+                f"into {far_block_id} lost its way — a block or switch on it was "
+                "made disabled or manual, or the track changed",
+            )
+        else:
+            command = calibration.plan_tick(train_id)
         if command is None:
             return
 
@@ -2251,14 +2434,67 @@ class RouteExecutor:
 
         if command.deactivate_route:
             # Abandon this leg by tearing its route down (design_new.md "Speed
-            # calibration", Pass-abandonment cases). The inclusive latch cancels a
-            # still-live path in the same step; an already-completed leg (its path
-            # gone) needs no cancel.
-            controller.route_hooks.phase_latches.set_route_deactivate(
-                reason=f"calibration leg abandoned for {train_id}",
-                has_active_path=controller.path_projection.received_path_plan
-                is not None,
+            # calibration", How a run is ended) — only while the leg route is
+            # still assigned, and never twice (An existing teardown is not
+            # duplicated). The inclusive latch cancels a still-live path in the
+            # same step; an already-completed leg (its path gone) needs no cancel.
+            latches = controller.route_hooks.phase_latches
+            leg_assigned = (
+                run.active_leg_route_id is not None
+                and self.assigned_route_id_for(train_id) == run.active_leg_route_id
             )
+            if leg_assigned and not latches.route_deactivate:
+                latches.set_route_deactivate(
+                    reason=f"calibration leg abandoned for {train_id}",
+                    has_active_path=controller.path_projection.received_path_plan
+                    is not None,
+                )
+
+    def _calibration_leg_lost_walk(
+        self, train_id: str, controller, run
+    ) -> Optional[Tuple[str, str]]:
+        """The leg's `(near, far)` outer blocks when it has lost its walk, else
+        None (design_new.md "Speed calibration", A leg that loses its walk fails
+        the pass).
+
+        Checked only when **both hold**: the leg route is still assigned to the
+        train, and the train holds no live path. A leg with a live path meets a
+        lost walk through its next extend, which cancels the path, so the check
+        runs once that cancel has committed. The walk is lost when none of the
+        walks a create toward the far outer block would enumerate — from the
+        train's start-side span end, with `manual_override = False` and the
+        train's own capabilities, as at arming — lies on the route's required
+        walk. A train already on the far outer block has nothing left to walk.
+        """
+        leg_route_id = run.active_leg_route_id
+        if leg_route_id is None or self.assigned_route_id_for(train_id) != leg_route_id:
+            return None
+        if self._get_active_path_id(train_id) is not None:
+            return None
+        route = self.route_registry.get(leg_route_id)
+        if (
+            route is None
+            or not getattr(route, "required_walk_keys", None)
+            or not route.tasks
+            or self.path_dispatcher is None
+        ):
+            return None
+        stop = route.tasks[-1]
+        far_block_id = getattr(stop.task_location, "block_id", None)
+        if not far_block_id or controller._get_current_block_id() == far_block_id:
+            return None
+        direction = (
+            stop.task_direction if stop.task_direction in ("forward", "reverse") else None
+        )
+        candidates = self.path_dispatcher.next_call_walk_candidates(
+            train_id, far_block_id, direction, False
+        )
+        if self.required_walk_candidates(train_id, candidates):
+            return None
+        near_block_id = next(
+            (b for b in run.outer_block_ids if b != far_block_id), ""
+        )
+        return near_block_id, far_block_id
 
     def _arm_calibration_leg(
         self, train_id: str, controller, run, far_block_id: str
@@ -2282,8 +2518,8 @@ class RouteExecutor:
 
         from train_route import Route
 
-        tasks = self._calibration_leg_tasks(train_id, run, far_block_id)
-        if tasks is None:
+        leg = self._calibration_leg_tasks(train_id, run, far_block_id)
+        if leg is None:
             near_block_id = next(
                 (b for b in run.outer_block_ids if b != far_block_id), ""
             )
@@ -2294,6 +2530,7 @@ class RouteExecutor:
                 "as they are set — the leg cannot cross the measured block",
             )
             return
+        tasks, walk_keys = leg
 
         seq = getattr(self, "_calibration_leg_seq", 0) + 1
         self._calibration_leg_seq = seq
@@ -2307,6 +2544,9 @@ class RouteExecutor:
             # outer block is run-up / stopping room (design_new.md, "A calibration
             # leg holds no reservation-end standoff").
             zero_reservation_end_standoff=True,
+            # Every reservation for the leg follows the walk it was checked on
+            # (design_new.md step `66aa`, Required walk).
+            required_walk_keys=walk_keys,
             tasks=tasks,
         )
         self.register_route(route)
@@ -2315,11 +2555,12 @@ class RouteExecutor:
 
     def _calibration_leg_tasks(
         self, train_id: str, run, far_block_id: str
-    ) -> Optional[List[RouteTask]]:
-        """The leg route's two tasks: a `waypoint` at the measured block and a
+    ) -> Optional[Tuple[List[RouteTask], List[Tuple[str, str, str, str]]]]:
+        """The leg route's two tasks — a `waypoint` at the measured block and a
         `stop` at the far outer block, each with the direction the stretch
-        crosses it in (design_new.md "Speed calibration", A leg runs on the
-        stretch, with the points as they are set).
+        crosses it in — and the stretch's walk keys, which become the route's
+        `required_walk_keys` (design_new.md "Speed calibration", A leg runs on
+        the stretch, with the points as they are set).
 
         The stretch is the walk out of the near outer block, through the measured
         block, and into the far one, with every switch on it where it is set. It
@@ -2330,8 +2571,8 @@ class RouteExecutor:
         The waypoint keeps the leg's path off any second way between the two
         outer blocks (the far side of a loop, or a siding beside the measured
         block), and the directions make it enter each block from the stretch's
-        side, so the leg throws no switch. Returns `None` when no such walk
-        exists for this train.
+        side. The required walk then pins every reservation to that one walk.
+        Returns `None` when no such walk exists for this train.
         """
         from train_route import BlockTarget
 
@@ -2354,7 +2595,7 @@ class RouteExecutor:
             )
             if not points_as_set:
                 continue
-            return [
+            tasks = [
                 RouteTask(
                     task_kind="waypoint",
                     task_location=BlockTarget(block_id=measured_block_id),
@@ -2366,6 +2607,7 @@ class RouteExecutor:
                     task_direction=self._walk_direction_in(steps, far_block_id),
                 ),
             ]
+            return tasks, self.path_dispatcher._ordered_walk_keys(steps)
         return None
 
     @staticmethod
@@ -3594,6 +3836,11 @@ class RouteExecutor:
                 )
                 return False
 
+        # A train that waits in a meet first gives back any reservation past
+        # its passing place (design_new.md "Meet coordination", Giving back
+        # reservation past the passing place).
+        self._give_back_past_meet_ceiling(train_id)
+
         # Holding-point chunking (design_new.md "Holding-point chunking"): step
         # `66aa` owns the hold. A live reservation that ends at a holding point
         # is not extended past it until the lock end reaches it; a train standing
@@ -3662,6 +3909,38 @@ class RouteExecutor:
                 # Terminal walk — no later task on the directed walk.
                 break
         return any_success
+
+    def _give_back_past_meet_ceiling(self, train_id: str) -> None:
+        """Cut a waiting train's live reservation back to its passing place
+        (design_new.md "Meet coordination", Giving back reservation past the
+        passing place).
+
+        Cuts before the first resource past the passing place, through
+        `PathDispatcher.truncate_path_before_resource(...)`. The cut never
+        enters the train's lock, because a passing place is never behind its
+        lock end.
+        """
+        entry = self.meet_assignment.get(train_id)
+        ceiling = entry.meet_ceiling_block_id if entry is not None else None
+        if not ceiling or self.path_dispatcher is None:
+            return
+        path = self.path_dispatcher.get_active_path(train_id)
+        if path is None:
+            return
+        head_index = int(getattr(path, "current_resource_index", 0) or 0)
+        sequence = path.resource_sequence
+        for i, resource in enumerate(sequence):
+            if i < head_index:
+                continue
+            if resource.resource_type == "block" and resource.resource_id == ceiling:
+                if i + 1 < len(sequence):
+                    other = self.meet_waiting_for.get(train_id, "another train")
+                    self.path_dispatcher.truncate_path_before_resource(
+                        path.path_id,
+                        i + 1,
+                        f"meet: waits at passing place {ceiling} for {other}",
+                    )
+                return
 
     def _held_at_holding_point(self, train_id: str) -> bool:
         """True while the train's live reservation ends at a holding point the
@@ -3745,28 +4024,25 @@ class RouteExecutor:
                 if forward_dir is not None:
                     target_dir = forward_dir
 
-        # Meet-coordination ceiling + candidate pin (design_new.md "Meet
-        # coordination" + "Reservation-cap rule"):
-        # when this train carries a meet entry, pass its `candidate_resource_keys`
-        # as `required_candidate_resource_keys` so the dispatcher acquires the
-        # exact route meet coordination evaluated, and — when the entry also caps
-        # short of the real route target — keep the request at that target and
-        # pass the ceiling as the reservation cap. The dispatcher acquires toward
-        # the real target but stores no authority past the cap, so
-        # `reservation_end_block_id` lands on the ceiling while
+        # Meet entry (design_new.md "Meet coordination", Passing the entry):
+        # pass its `candidate_resource_keys` as `required_candidate_resource_keys`
+        # so the dispatcher acquires exactly the walk meet coordination chose,
+        # and — for a train that waits — keep the request at the route target and
+        # pass the passing place as the reservation cap. The dispatcher acquires
+        # toward the real target but stores no reservation past the cap, so
+        # `reservation_end_block_id` lands on the passing place while
         # `requested_destination_block_id` (and the `task_runs[...].resolved_target`
         # written on success below) stay the farther route target. The capped
-        # authority never completes, so the train holds at the ceiling. A train
-        # outside a meet passes neither constraint and requests its route target
-        # normally.
+        # reservation never completes, so the train holds at the passing place.
+        # A train with no entry passes neither constraint.
         required_candidate_resource_keys: Optional[List[Tuple[str, str, str, str]]] = None
         meet_ceiling_block: Optional[str] = None
-        ceiling = self.meet_assignment.get(train.train_id)
-        if ceiling is not None:
-            if ceiling.candidate_resource_keys:
-                required_candidate_resource_keys = list(ceiling.candidate_resource_keys)
-            if ceiling.block_id and ceiling.block_id != target_block:
-                meet_ceiling_block = ceiling.block_id
+        entry = self.meet_assignment.get(train.train_id)
+        if entry is not None:
+            if entry.candidate_resource_keys:
+                required_candidate_resource_keys = list(entry.candidate_resource_keys)
+            if entry.meet_ceiling_block_id and entry.meet_ceiling_block_id != target_block:
+                meet_ceiling_block = entry.meet_ceiling_block_id
 
         # design_new.md "`disabled` and `manual` availability flags": forward the assigned route's
         # operator override into the acquisition chain so an operator-initiated
@@ -3776,6 +4052,16 @@ class RouteExecutor:
         zero_reservation_end_standoff = bool(
             getattr(route, "zero_reservation_end_standoff", False)
         )
+
+        # Required walk (design_new.md step `66aa`, Required walk): a route that
+        # carries `Route.required_walk_keys` passes the part of that walk this
+        # call enumerates. It wins over a meet entry's differing keys; the
+        # entry's ceiling still applies.
+        required_walk_part = self._required_walk_part(
+            train.train_id, target_block, target_dir, manual_override
+        )
+        if required_walk_part is not None:
+            required_candidate_resource_keys = required_walk_part
 
         # Reservation cap (design_new.md "Reservation-cap rule"): MEET-ONLY. The
         # braking distance sizes the lock (per "Braking-distance lock"), not this
@@ -4685,7 +4971,11 @@ class RouteExecutor:
              (one only a deactivate was holding — an earlier consumer would
              already have committed it), replacing the stored assignment the
              way `remove_train_route_run(...)` does when no run exists;
-          3. discards the held structural re-assignment without applying it.
+          3. discards the held structural re-assignment without applying it;
+          4. deletes the `ONE_OFF` route that re-assignment named when it now
+             has no assigned train and no live run — the earlier abort or
+             power-off consumer kept it only because the re-assignment named
+             it.
 
         It is this latch's consume-side emitter on this branch.
         """
@@ -4702,7 +4992,9 @@ class RouteExecutor:
                     old_route.unassign_train(train_id)
             self._commit_pending_route_assignment(train_id)
             self._delete_if_emptied_one_off(old_route_id)
+        dropped_reassign_route_id = self._pending_reassign.get(train_id)
         self.discard_pending_reassign(train_id)
+        self._delete_if_emptied_one_off(dropped_reassign_route_id)
         self.finalize_pending_route_deletions()
         self._emit_event(
             "settle_deactivate_without_run",

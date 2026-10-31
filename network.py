@@ -39,7 +39,7 @@ from speed_profile import SpeedProfileRegistry
 from switch_power import SwitchOutputOwner
 
 if TYPE_CHECKING:
-    from path_utils import GraphLocator, DirectedBlockFrame
+    from path_utils import GraphLocator, GraphWalkStep, ReservationEnd
 
 
 logger = logging.getLogger(__name__)
@@ -477,7 +477,7 @@ class RailwayNetwork(SwitchOutputOwner):
         """Return the connecting edge pair for two tiles, either via grid
         adjacency or via a tunnel.
 
-        Per design_new.md "Pathfinding-home migration": answers two questions at once
+        Per design_new.md "Operational pathfinding home": answers two questions at once
         — are the two tiles track-connected, and if so, which edge on each
         tile connects to the other?
 
@@ -516,25 +516,41 @@ class RailwayNetwork(SwitchOutputOwner):
 
         return None
 
-    def project_authority_boundary_delta(
+    def project_reservation_boundary_delta(
         self,
+        ordered_walk: List["GraphWalkStep"],
         head_locator: "GraphLocator",
-        authority_end: "DirectedBlockFrame",
+        reservation_end: "ReservationEnd",
         safety_margin_cm: float,
     ) -> float:
-        """Project the head's forward distance to the safety-margin-adjusted
-        authority boundary (design_new.md, "Pathfinding-home migration").
+        """The head's forward distance to the safety-margin-adjusted
+        reservation boundary (design_new.md "Boundary-projection helper").
 
-        ``head_locator`` carries the already-measured forward clearance from the
-        head to ``authority_end`` in ``head_locator.distance_cm`` (the
-        head→authority-end walk produced by the canonical lookahead, which steps
-        ``authority_end``'s directed frame tile-by-tile). ``safety_margin_cm`` is
-        the controller's effective safety margin. The boundary delta is the
-        clearance minus that margin, clamped at zero so a head already inside the
-        margin reports ``0`` rather than a negative overshoot. This is the same
-        axis the ``speed_curves`` samples use while authority is live.
+        ``ordered_walk`` is the live reservation's directed walk from the
+        head's resolved occurrence on; ``head_locator`` names the head's tile
+        and its in-tile ``distance_cm``; ``reservation_end`` names the
+        reservation-end block and its terminal frame. The distance is measured
+        along the walk from the head to the last tile of the terminal frame,
+        minus ``safety_margin_cm``. It is never negative: a head at or past the
+        boundary returns ``0``. This is for braking and diagnostics only, not
+        the path-completion gate.
         """
-        clearance_cm = max(0.0, float(head_locator.distance_cm or 0.0))
+        from path_utils import GraphLocator
+        from railway_pathfinder import RailwayPathfinder
+
+        frame_tiles = list(getattr(reservation_end.terminal_frame, "path_tiles", None) or [])
+        if not ordered_walk or not frame_tiles:
+            return 0.0
+        last_tile = frame_tiles[-1]
+        end_locator = GraphLocator(
+            tile=(last_tile[0], last_tile[1]),
+            resource_type="block",
+            resource_id=reservation_end.block_id,
+            block_id=reservation_end.block_id,
+        )
+        clearance_cm = RailwayPathfinder(self).measure_along_walk(
+            ordered_walk, head_locator, end_locator
+        )
         return max(0.0, clearance_cm - float(safety_margin_cm))
 
     # ------------------------------------------------------------------

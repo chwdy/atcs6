@@ -32,6 +32,29 @@ if TYPE_CHECKING:
     from train_controller import TrainController
 
 
+def caution_caps(
+    block_state: Any, caution_exit_edge: Optional[str], exit_edge: Optional[str]
+) -> bool:
+    """Whether a block's CAUTION caps this train (design_new.md "ATC speed
+    limit"): the block's computed state is CAUTION and the train's own
+    traversal of it — the `exit_edge` of the block's entry in its live
+    `Path.resource_sequence` — equals `block.caution.exit_edge`. A train
+    crossing the block out of its other end is not capped."""
+    state = getattr(block_state, "value", block_state)
+    return (
+        state == BlockState.CAUTION.value
+        and exit_edge is not None
+        and exit_edge == caution_exit_edge
+    )
+
+
+def caution_caps_entry(block: Dict[str, Any]) -> bool:
+    """`caution_caps` for one lookahead block entry."""
+    return caution_caps(
+        block.get("state"), block.get("caution_exit_edge"), block.get("exit_edge")
+    )
+
+
 def calculate_max_safe_speed(
     clearance_cm: float,
     deceleration_rate: float,
@@ -275,16 +298,16 @@ class SpeedCurveCalculator:
 
         # Add block speed limits as restrictions (for braking curve calculation)
         # This creates braking curves to slow down BEFORE entering speed-limited blocks.
-        # A CAUTION block always contributes the controller-owned global cap
-        # CAUTION_SPEED_LIMIT_KMH (design_new.md, "ATC speed limit"), taking the lower of that
-        # cap and any nominal block limit; this applies even when the block has
-        # no nominal speed_limit_kmh of its own.
+        # A CAUTION block this train leaves through `caution.exit_edge`
+        # contributes the controller-owned global cap CAUTION_SPEED_LIMIT_KMH
+        # (design_new.md, "ATC speed limit"), taking the lower of that cap and
+        # any nominal block limit; this applies even when the block has no
+        # nominal speed_limit_kmh of its own.
         if lookahead_blocks:
             for block in lookahead_blocks:
                 block_start = block.get("start_cm", 0)
                 block_speed = block.get("speed_limit_kmh")  # None if no limit
-                block_state = block.get("state")
-                is_caution = block_state == BlockState.CAUTION.value
+                is_caution = caution_caps_entry(block)
                 if is_caution:
                     block_code = AtcLimitReasonCode.CAUTION
                     restriction_speed = (
@@ -411,8 +434,7 @@ class SpeedCurveCalculator:
                     block_end = block.get("end_cm", 0)
                     if block_start <= sample_distance < block_end:
                         block_speed = block.get("speed_limit_kmh")  # None if no limit
-                        block_state = block.get("state")
-                        is_caution = block_state == BlockState.CAUTION.value
+                        is_caution = caution_caps_entry(block)
                         if is_caution:
                             inside_code = AtcLimitReasonCode.CAUTION
                             # CAUTION always caps at the global limit, lower of

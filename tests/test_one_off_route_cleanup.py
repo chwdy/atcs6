@@ -94,6 +94,26 @@ def test_a_power_off_with_no_run_deletes_the_emptied_one_off_route(state):
     assert "Q" not in rex.route_registry
 
 
+def test_a_deactivate_with_no_run_deletes_the_one_off_route_its_dropped_reassignment_kept(state):
+    """design_new.md "Action latched-cancel consumption", step 4: an earlier
+    abort or power-off consumer kept an emptied one-off route only because a
+    held structural re-assignment named it; the deactivate consumer drops that
+    re-assignment and so deletes the route."""
+    rex = _rex(state)
+    _one_off(state, "Q")
+    assert rex.request_route_assignment("TRAIN_A", "Q").success
+    rex._commit_pending_route_assignment("TRAIN_A")
+    rex.record_pending_reassign("TRAIN_A", "Q")
+
+    rex.remove_train_route_run("TRAIN_A")  # the earlier consumer: no run
+    assert "Q" in rex.route_registry  # kept for the held re-assignment
+
+    rex.settle_deactivate_without_run("TRAIN_A")
+
+    assert "TRAIN_A" not in rex._pending_reassign
+    assert "Q" not in rex.route_registry
+
+
 def test_assignment_refuses_an_unknown_route(state):
     result = _rex(state).request_route_assignment("TRAIN_A", "NOPE")
 

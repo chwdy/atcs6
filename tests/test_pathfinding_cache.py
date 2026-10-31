@@ -40,7 +40,7 @@ def _connected_pair(network, pf):
     blocks = list(network.blocks.keys())
     for a in blocks:
         for b in blocks:
-            if a != b and pf.find_ordered_walk(a, b):
+            if a != b and pf.find_ordered_walk(pf.block_walk_query(a, b)):
                 return a, b
     raise AssertionError(
         "demo_5 contains no connected block pair; the cache test fixture no "
@@ -75,14 +75,14 @@ def test_walk_cache_populates_and_warm_matches_cold():
     # Cold: force a miss, then the query must compute and store the candidates.
     network.invalidate_pathfinding_cache()
     assert (a, b) not in network._walk_cache
-    cold = pf.find_ordered_walk(a, b)
+    cold = pf.find_ordered_walk(pf.block_walk_query(a, b))
     assert (a, b) in network._walk_cache, "query did not populate the cache"
     assert cold, "expected at least one walk for a connected pair"
     assert all(c.ordered_walk for c in cold), "ordered_walk must be populated"
 
     # Warm: served from the cache -- and identical to the cold computation,
     # including the per-step ordered_walk geometry (caching must not change it).
-    warm = pf.find_ordered_walk(a, b)
+    warm = pf.find_ordered_walk(pf.block_walk_query(a, b))
     assert _block_lists(warm) == _block_lists(cold)
     assert _ordered_walk_sig(warm) == _ordered_walk_sig(cold)
 
@@ -132,7 +132,7 @@ def test_topology_mutation_clears_walk_cache(mutate):
     network, sim = _bootstrap()
     pf = sim.path_dispatcher._pathfinder
     a, b = _connected_pair(network, pf)
-    pf.find_ordered_walk(a, b)
+    pf.find_ordered_walk(pf.block_walk_query(a, b))
     assert network._walk_cache, "cache should be populated before the mutation"
 
     mutate(network)
