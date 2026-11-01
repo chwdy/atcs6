@@ -258,10 +258,14 @@ def test_every_step_is_timed_in_both_directions(state):
         return original_record(r, entered, now)
 
     state.sim_controller.speed_calibration.record_detected_entries = record
+    # This stretch is too short for the top steps (see
+    # test_a_stretch_too_short_for_the_top_step_fails_at_once), so time three
+    # low steps.
+    run.power_steps = [30.0, 20.0, 10.0]
     _run_pass(state, run, until_step=3)
 
     assert run.phase != PHASE_FAILED, run.failure_reason
-    assert [s.power_percent for s in run.samples] == [10.0, 20.0, 30.0]
+    assert [s.power_percent for s in run.samples] == [30.0, 20.0, 10.0]
     # The default profile's curve is linear, so each step reads its own percent.
     for sample in run.samples:
         assert sample.speed_kmh == pytest.approx(sample.power_percent, rel=0.05)
@@ -269,6 +273,21 @@ def test_every_step_is_timed_in_both_directions(state):
     assert len(headings) == 3 * 2 * CALIBRATION_ROUND_TRIPS
     assert headings.count(LEFT) == headings.count(RIGHT)
     assert _switch_positions(state) == before
+
+
+def test_a_stretch_too_short_for_the_top_step_fails_at_once(state):
+    """design_new.md "Speed calibration", The sweep runs down from `100%` in
+    `CALIBRATION_POWER_STEP_PERCENT` steps: a stretch too short for the top step
+    fails the pass at its first step. Every outer block here is 50 cm, too
+    short to stop from the default profile's 100% speed, so every 100% crossing
+    is capped and the pass fails before measuring anything."""
+    _place(state, (9, 13), "WEST")
+    run = train_service.calibrate_train(state, TRAIN, measured_block_id=UP)
+    _run_pass(state, run, until_step=1)
+
+    assert run.phase == PHASE_FAILED
+    assert "too short to measure 100%" in run.failure_reason
+    assert run.samples == []
 
 
 def test_a_pass_will_not_open_with_the_train_on_the_measured_block(state):

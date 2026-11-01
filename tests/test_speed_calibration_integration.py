@@ -326,7 +326,7 @@ def test_the_runtime_tick_arms_the_pass_as_a_one_off_route(state):
     run = train_service.calibrate_train(state, train_id, measured_block_id=block_id)
     assert run.leg_armed is False
     assert run.active_leg_route_id is None
-    assert run.current_power == 10.0
+    assert run.current_power == 100.0
 
     # Which outer block this opening leg runs toward — the one the train is not
     # standing in — is the far end the leg route's stop task targets.

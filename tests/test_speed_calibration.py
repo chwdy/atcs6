@@ -1,7 +1,7 @@
 """C5 — Speed calibration: the shuttle pass, its state machine, and the commit.
 
-design_new.md "Speed calibration". A pass sweeps `power_percent` in
-`CALIBRATION_POWER_STEP_PERCENT` increments up to 100%, times the head across
+design_new.md "Speed calibration". A pass sweeps `power_percent` down from 100%
+in `CALIBRATION_POWER_STEP_PERCENT` steps, times the head across
 one operator-named measured block between two confirmed block entries, turns the
 train around at each end itself, and averages `CALIBRATION_ROUND_TRIPS` round
 trips per step — half the crossings in each direction, so the stretch's grade
@@ -17,11 +17,12 @@ import pytest
 
 from constants import (
     CALIBRATION_CAP_RETRY_LIMIT,
+    CALIBRATION_MIN_CROSSING_SPEED_KMH,
     CALIBRATION_POWER_STEP_PERCENT,
     CALIBRATION_ROUND_TRIPS,
     CALIBRATION_STEP_TIMEOUT_S,
 )
-from model_scale import cm_per_sec_to_kmh
+from model_scale import cm_per_sec_to_kmh, kmh_to_cm_per_sec
 from speed_calibration import (
     PHASE_FAILED,
     PHASE_MEASURED,
@@ -95,11 +96,11 @@ def _run_full_pass(cal, run, *, seconds_for_step=None):
 # --- the sweep ---------------------------------------------------------------
 
 
-def test_sweep_runs_in_power_increments_up_to_100():
+def test_the_sweep_runs_down_from_100():
     steps = power_sweep()
-    assert steps[0] == float(CALIBRATION_POWER_STEP_PERCENT)
-    assert steps[-1] == 100.0
-    assert all(b - a == CALIBRATION_POWER_STEP_PERCENT for a, b in zip(steps, steps[1:]))
+    assert steps[0] == 100.0
+    assert steps[-1] == float(CALIBRATION_POWER_STEP_PERCENT)
+    assert all(a - b == CALIBRATION_POWER_STEP_PERCENT for a, b in zip(steps, steps[1:]))
 
 
 def test_zero_percent_is_the_origin_and_is_not_measured():
@@ -187,56 +188,134 @@ def test_a_step_collects_two_crossings_per_round_trip():
 # --- stall band, overrun, monotonicity ---------------------------------------
 
 
-def test_a_step_that_does_not_move_the_train_records_zero():
+def _measure_top_step(cal, run, *, seconds=2.0):
+    """Measure the 100% step cleanly; return the clock with the next step due."""
+    clock = 0.0
+    for _ in range(run.crossings_target):
+        clock = _crossing(cal, run, clock, seconds=seconds)
+    assert run.current_power == 100.0 - CALIBRATION_POWER_STEP_PERCENT
+    return clock
+
+
+def _window_s():
+    return BLOCK_LENGTH_CM / kmh_to_cm_per_sec(CALIBRATION_MIN_CROSSING_SPEED_KMH)
+
+
+def test_a_step_that_does_not_move_the_train_ends_the_sweep():
+    """design_new.md "Speed calibration", A step that does not move the train
+    records `0 km/h`: that step and every step below it record 0 km/h without
+    being commanded, and the pass is finished."""
     cal, run, _profile = _open_run()
-    cal.advance(run, CalibrationObservation(now=0.0))  # arm
+    clock = _measure_top_step(cal, run)
+    cal.advance(run, CalibrationObservation(now=clock))  # arm the 90% leg
     # The leg's authority appears, starting the step clock (design_new.md "Speed
     # calibration": the timeout does not run until the path exists).
-    cal.advance(run, CalibrationObservation(now=0.0, path_present=True))
+    cal.advance(run, CalibrationObservation(now=clock, path_present=True))
     command = cal.advance(
         run,
-        CalibrationObservation(now=CALIBRATION_STEP_TIMEOUT_S + 1.0, path_present=True),
+        CalibrationObservation(
+            now=clock + CALIBRATION_STEP_TIMEOUT_S + 1.0, path_present=True
+        ),
     )
-    assert run.samples[0].speed_kmh == 0.0
-    assert run.step_index == 1
-    # The train never left the outer block, so it is not turned around.
-    assert run.needs_reverse is False
-    # A stalled leg never reached the far block, so its route is torn down.
+    assert run.phase == PHASE_MEASURED
+    assert [s.power_percent for s in run.samples] == run.power_steps
+    assert run.samples[0].speed_kmh > 0.0
+    assert all(s.speed_kmh == 0.0 for s in run.samples[1:])
+    # The stalled leg never reached the far block, so its route is torn down.
+    assert command.deactivate_route is True
+    assert command.arm_leg_to is None
+    # No step below the stall is commanded: the pass no longer drives.
+    assert cal.get_propulsion_override("T1") is None
+    assert "did not move at 90% and below" in cal._measured_reason(run)
+
+
+def test_a_crossing_that_stops_inside_the_stretch_ends_the_sweep():
+    """design_new.md "Speed calibration", A crossing that stops inside the
+    stretch ends the sweep: a part-crossing is no measurement, and the power that
+    did not carry the train across B is the top edge of the stall band."""
+    cal, run, _profile = _open_run()
+    clock = _measure_top_step(cal, run)
+    cal.advance(run, CalibrationObservation(now=clock))  # arm the 90% leg
+    _observe(cal, run, clock + 1.0, ("B",), path_present=True)
+    entered_b = clock + 1.0
+    # Still inside the window: the pass keeps waiting for the far block.
+    cal.advance(run, CalibrationObservation(now=entered_b + _window_s() - 1.0, path_present=True))
+    assert run.is_measuring
+    command = cal.advance(
+        run, CalibrationObservation(now=entered_b + _window_s() + 1.0, path_present=True)
+    )
+    assert run.phase == PHASE_MEASURED
+    assert [s.speed_kmh for s in run.samples[1:]] == [0.0] * (len(run.power_steps) - 1)
     assert command.deactivate_route is True
 
 
-def test_a_leg_that_starts_crossing_and_never_arrives_fails_the_pass():
-    # A part-crossing is not a slow measurement, it is no measurement: timing it
-    # would put a speed on the curve the locomotive never held.
+def test_a_stall_drops_the_crossings_its_step_already_measured():
+    """A step whose power moved the train on one crossing but not on the next
+    records 0 km/h, whatever crossings it already measured."""
+    cal, run, _profile = _open_run()
+    clock = _measure_top_step(cal, run)
+    clock = _crossing(cal, run, clock, seconds=2.0)  # one clean 90% crossing
+    assert len(run.crossings) == 1
+    cal.advance(run, CalibrationObservation(now=clock))  # arm the leg back
+    cal.advance(run, CalibrationObservation(now=clock, path_present=True))
+    cal.advance(run, CalibrationObservation(
+        now=clock + CALIBRATION_STEP_TIMEOUT_S + 1.0, path_present=True))
+    assert run.phase == PHASE_MEASURED
+    assert run.samples[1].power_percent == 90.0
+    assert run.samples[1].speed_kmh == 0.0
+
+
+@pytest.mark.parametrize("enters_b", [False, True])
+def test_a_sweep_in_which_every_step_records_zero_fails(enters_b):
+    """design_new.md "Speed calibration", A sweep in which every step records
+    `0 km/h` fails the pass: all-zero is a stretch the pass could not measure on,
+    and storing it would say the loco stands still at 100%. The 100% step
+    stalling settles every step below it, so the pass fails at once."""
+    cal, run, profile = _open_run()
+    cal.advance(run, CalibrationObservation(now=0.0))  # arm
+    if enters_b:
+        _observe(cal, run, 1.0, ("B",), path_present=True)
+        timed_out = 1.0 + _window_s() + 1.0
+    else:
+        cal.advance(run, CalibrationObservation(now=0.0, path_present=True))
+        timed_out = CALIBRATION_STEP_TIMEOUT_S + 1.0
+    command = cal.advance(run, CalibrationObservation(now=timed_out, path_present=True))
+    assert run.phase == PHASE_FAILED
+    assert "every step recorded 0 km/h" in run.failure_reason
+    assert command.deactivate_route is True
+    assert profile.calibrated_at is None
+
+
+def test_time_standing_short_of_the_reservation_is_not_counted():
+    """design_new.md "Speed calibration", Time the train stands short of its
+    reservation is not counted: another train's claim holding the leg short
+    delays the step instead of recording a false stall."""
     cal, run, _profile = _open_run()
     cal.advance(run, CalibrationObservation(now=0.0))  # arm
+    cal.advance(run, CalibrationObservation(now=0.0, path_present=True))
+    held = 3 * CALIBRATION_STEP_TIMEOUT_S
+    cal.advance(run, CalibrationObservation(now=held, path_present=True, held_short=True))
+    assert run.is_measuring
+    assert run.samples == []
+    # Released: the wait for B counts again, from where it left off.
+    cal.advance(run, CalibrationObservation(
+        now=held + CALIBRATION_STEP_TIMEOUT_S - 1.0, path_present=True))
+    assert run.is_measuring
+    cal.advance(run, CalibrationObservation(
+        now=held + CALIBRATION_STEP_TIMEOUT_S + 1.0, path_present=True))
+    assert run.phase == PHASE_FAILED  # the 100% step: every step records 0
+
+
+def test_a_crossing_held_short_is_not_taken_for_a_stall():
+    cal, run, _profile = _open_run()
+    cal.advance(run, CalibrationObservation(now=0.0))  # arm
+    far = run.heading_toward_block_id
     _observe(cal, run, 1.0, ("B",), path_present=True)
-    cal.advance(
-        run,
-        CalibrationObservation(
-            now=1.0 + CALIBRATION_STEP_TIMEOUT_S + 1.0, path_present=True
-        ),
-    )
-    assert run.phase == PHASE_FAILED
-    assert "never reached" in run.failure_reason
-
-
-def test_a_sweep_in_which_nothing_moved_fails_rather_than_storing_a_dead_curve():
-    # All-zero is not a locomotive that cannot move; it is a stretch the pass
-    # could not measure on. Storing it would say the loco stands still at 100%.
-    cal, run, profile = _open_run()
-    clock = 0.0
-    for _ in range(len(run.power_steps)):
-        cal.advance(run, CalibrationObservation(now=clock))  # arm
-        # authority appears, starting the step clock
-        cal.advance(run, CalibrationObservation(now=clock, path_present=True))
-        clock += CALIBRATION_STEP_TIMEOUT_S + 1.0
-        cal.advance(
-            run, CalibrationObservation(now=clock, path_present=True)
-        )  # times out
-    assert run.phase == PHASE_FAILED
-    assert "no step moved the train" in run.failure_reason
-    assert profile.calibrated_at is None
+    late = 1.0 + 2 * _window_s()
+    cal.advance(run, CalibrationObservation(now=late, path_present=True, held_short=True))
+    assert run.is_measuring
+    _observe(cal, run, late + 1.0, (far,), path_present=True)
+    assert len(run.crossings) == 1
 
 
 def test_a_leg_that_overruns_the_stretch_fails_the_pass():
@@ -309,22 +388,24 @@ def test_a_failed_pass_leaves_no_open_run_to_block_a_restart():
     assert cal.runs.get("T1") is None  # but no open run lingers in the registry
 
 
-def test_a_slower_step_is_measured_once_more_then_fails():
+def test_a_step_faster_than_the_step_above_it_is_measured_once_more_then_fails():
     cal, run, _profile = _open_run()
-    # Step 1 fast, step 2 slow twice: the re-measure tells a noisy crossing
-    # apart from a locomotive that really does run slower at more power.
+    # 100% slow, then 90% fast twice: the re-measure tells a noisy crossing
+    # apart from a locomotive that really does run faster at less power
+    # (design_new.md "Speed calibration", A step that measures faster than the
+    # step above it is measured once more).
     clock = 0.0
     for _ in range(run.crossings_target):
-        clock = _crossing(cal, run, clock, seconds=1.0)
+        clock = _crossing(cal, run, clock, seconds=9.0)
     assert run.step_index == 1
     for _ in range(run.crossings_target):
-        clock = _crossing(cal, run, clock, seconds=9.0)
+        clock = _crossing(cal, run, clock, seconds=1.0)
     assert run.step_remeasured is True
     assert run.step_index == 1  # repeated, not banked
     for _ in range(run.crossings_target):
-        clock = _crossing(cal, run, clock, seconds=9.0)
+        clock = _crossing(cal, run, clock, seconds=1.0)
     assert run.phase == PHASE_FAILED
-    assert "slower" in run.failure_reason
+    assert "faster" in run.failure_reason
 
 
 def test_ending_open_runs_drops_an_open_pass():
@@ -416,10 +497,21 @@ def test_the_committed_curve_is_non_decreasing_so_it_reads_backwards():
         assert profile._speed_to_power(speed) == pytest.approx(power, abs=1e-6)
 
 
+def test_the_committed_curve_runs_in_order_of_power():
+    # The sweep measures 100% first; the curve still reads from 0% up.
+    cal, run, profile = _open_run()
+    _run_full_pass(cal, run, seconds_for_step=lambda power: 100.0 / power)
+    curve = cal.commit("T1", profile)
+    powers = [p for p, _s in curve]
+    assert powers == sorted(powers)
+    assert powers[0] == 0.0 and powers[-1] == 100.0
+
+
 def test_commit_rejects_a_curve_that_falls_with_power():
     cal, run, profile = _open_run()
     _run_full_pass(cal, run)
-    run.samples[-1] = type(run.samples[-1])(power_percent=100.0, speed_kmh=0.0)
+    assert run.samples[0].power_percent == 100.0
+    run.samples[0] = type(run.samples[0])(power_percent=100.0, speed_kmh=0.0)
     with pytest.raises(ValueError):
         cal.commit("T1", profile)
 
@@ -597,18 +689,21 @@ def test_a_train_that_never_clears_the_measured_block_fails():
     assert "never cleared" in run.failure_reason
 
 
-def test_the_crossing_has_its_own_timeout_from_the_measured_block_entry():
-    """A long run-up does not eat into the crossing's time: the timeout that
-    fails a crossing counts from B's confirmation, not from the leg's start."""
+def test_the_crossing_window_is_set_by_the_measured_block_length():
+    """design_new.md "Speed calibration", The crossing window is set by B's
+    length: a crossing gets the time B takes at
+    `CALIBRATION_MIN_CROSSING_SPEED_KMH`, counted from B's confirmation, so a
+    long run-up does not eat into it and a slow crawl is timed."""
     cal, run, _profile = _open_run()
+    assert run.crossing_window_s == pytest.approx(_window_s())
+    assert run.crossing_window_s > CALIBRATION_STEP_TIMEOUT_S
     cal.advance(run, CalibrationObservation(now=0.0))  # arm the leg
     far = run.heading_toward_block_id
     cal.advance(run, CalibrationObservation(now=0.0, path_present=True))
     entered_b = CALIBRATION_STEP_TIMEOUT_S - 1.0
     _observe(cal, run, entered_b, ("B",), path_present=True)
-    cal.advance(run, CalibrationObservation(
-        now=entered_b + CALIBRATION_STEP_TIMEOUT_S - 1.0, path_present=True))
-    assert run.phase != PHASE_FAILED
-    _observe(cal, run, entered_b + CALIBRATION_STEP_TIMEOUT_S - 0.5, (far,),
-             path_present=True)
-    assert len(run.crossings) == 1
+    crawl = run.crossing_window_s - 1.0  # far longer than the step timeout
+    cal.advance(run, CalibrationObservation(now=entered_b + crawl - 0.5, path_present=True))
+    assert run.is_measuring
+    _observe(cal, run, entered_b + crawl, (far,), path_present=True)
+    assert run.crossings == [pytest.approx(cm_per_sec_to_kmh(BLOCK_LENGTH_CM / crawl))]

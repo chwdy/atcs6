@@ -1,8 +1,11 @@
 """Speed calibration — measure a locomotive's power/speed response and write it
 into a `SpeedProfile` (design_new.md "Speed calibration").
 
-A pass sweeps `power_percent` in `CALIBRATION_POWER_STEP_PERCENT` increments up
-to `100%` and measures the speed that comes back at each. It must work this way
+A pass sweeps `power_percent` down from `100%` in `CALIBRATION_POWER_STEP_PERCENT`
+steps and measures the speed that comes back at each. The first step that does
+not carry the train across the measured block records `0 km/h` for itself and
+every step below it and ends the sweep: a power that cannot move the train
+cannot move it with less. It must work this way
 round: `power_speed_curve` is the curve that turns a wanted speed into a control
 value, and it is the very thing the pass is building, so the pass must not ask
 for a target speed while building it.
@@ -42,16 +45,17 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from constants import (
     CALIBRATION_CAP_RETRY_LIMIT,
+    CALIBRATION_MIN_CROSSING_SPEED_KMH,
     CALIBRATION_POWER_STEP_PERCENT,
     CALIBRATION_ROUND_TRIPS,
     CALIBRATION_STEP_TIMEOUT_S,
     LIGHTING_VOLTAGE_STEP_V,
 )
-from model_scale import cm_per_sec_to_kmh
+from model_scale import cm_per_sec_to_kmh, kmh_to_cm_per_sec
 
-# A measured mean this far below the previous step's is treated as equal rather
-# than as a fall, so float noise in the crossing mean cannot trip the
-# non-decreasing rule.
+# A measured mean this far above the previous (higher-power) step's is treated
+# as equal rather than as a rise, so float noise in the crossing mean cannot trip
+# the non-decreasing rule.
 _MONOTONIC_EPSILON_KMH = 1e-6
 
 # Run phases. "leg", "clearing" and "stopping" are the three parts of one leg:
@@ -108,6 +112,15 @@ class CalibrationObservation:
     and then loses it, the loss means the leg route completed through ordinary
     stop completion — the train came to rest at the far outer block."""
 
+    held_short: bool = False
+    """Whether the train stands at a reservation end short of the far outer
+    block: it is stopped and the last block of its `received_path_plan` is not
+    the far outer block — as when another train's claim on the walk holds the
+    leg short. The step's power is not what holds it there, so the time it
+    stands like this counts toward neither the wait for the measured block nor
+    the crossing window (design_new.md "Speed calibration", Time the train
+    stands short of its reservation is not counted)."""
+
     measured_block_held: bool = False
     """Whether the train is still on the measured block in either view of
     occupancy (design_new.md "Power", Two views of occupancy): its calculated
@@ -138,7 +151,8 @@ class CalibrationCommand:
     reverse_cab: bool = False
     deactivate_route: bool = False
     """Tear the active leg route down. Set on every leg-end that did NOT reach
-    the far block — a stall, an overrun, a never-arrives leg, or any pass
+    the far block — a step that does not move the train or a crossing that
+    stops inside the stretch (both end the sweep), an overrun, or any pass
     abandonment. A leg that reaches the far block sets nothing here: it finishes
     through ordinary stop completion, which tears its route down for it."""
     arm_leg_to: Optional[str] = None
@@ -179,6 +193,7 @@ class CalibrationRun:
     train_id: str
     profile_id: str
     power_steps: List[float]
+    """The power steps, highest first (see `power_sweep()`)."""
 
     # The stretch. `outer_block_ids` is (A, C); `heading_to` indexes the one the
     # train is currently running toward, so it names the stopping room this leg
@@ -200,8 +215,7 @@ class CalibrationRun:
     leg route completed and gave the authority back" (seen, then gone)."""
     needs_reverse: bool = False
     """Whether arming this leg must re-frame the span to its other head end
-    first. False for the opening leg and after a stall, where the train never
-    turned around."""
+    first. False for the opening leg, where the train has not turned around."""
     step_index: int = 0
     samples: List[CalibrationSample] = field(default_factory=list)
     crossings: List[float] = field(default_factory=list)
@@ -212,6 +226,16 @@ class CalibrationRun:
     first appeared, not the tick it armed. `None` until then, so the timeout does
     not run while acquisition is still in progress (design_new.md "Speed
     calibration", Plan acquires leg authority all-or-nothing)."""
+    wait_counted_s: float = 0.0
+    """Counted seconds this leg has waited for the measured block to confirm,
+    measured against `CALIBRATION_STEP_TIMEOUT_S`. Time the train stands short
+    of its reservation is left out (`CalibrationObservation.held_short`)."""
+    crossing_counted_s: float = 0.0
+    """Counted seconds since the measured block confirmed, measured against the
+    crossing window (`crossing_window_s`), with the same time left out."""
+    counted_until: Optional[float] = None
+    """The operating time the two counters above have reached, or `None` until
+    the leg's authority first appears."""
     crossing_started_at: Optional[float] = None
     """When the current crossing's clock started — the moment B was confirmed
     occupied for this leg — or `None` before it starts. Written in Observe by
@@ -256,6 +280,17 @@ class CalibrationRun:
     def crossings_target(self) -> int:
         """Twice the round-trip count: one crossing of B per leg."""
         return 2 * max(1, int(CALIBRATION_ROUND_TRIPS))
+
+    @property
+    def crossing_window_s(self) -> float:
+        """The time the pass allows from the measured block's confirmation to
+        the far outer block's: the time `block_length_cm` takes at
+        `CALIBRATION_MIN_CROSSING_SPEED_KMH` (design_new.md "Speed calibration",
+        The crossing window is set by B's length)."""
+        slowest_cm_s = kmh_to_cm_per_sec(CALIBRATION_MIN_CROSSING_SPEED_KMH)
+        if slowest_cm_s <= 0.0:
+            return float("inf")
+        return self.block_length_cm / slowest_cm_s
 
     @property
     def current_power(self) -> float:
@@ -317,15 +352,16 @@ class LightingCalibrationRun:
 
 
 def power_sweep() -> List[float]:
-    """The commanded steps: `CALIBRATION_POWER_STEP_PERCENT` increments up to
-    `100%`.
+    """The steps, highest first: `100%` down in `CALIBRATION_POWER_STEP_PERCENT`
+    steps (design_new.md "Speed calibration", The sweep runs down from `100%` in
+    `CALIBRATION_POWER_STEP_PERCENT` steps).
 
     `0%` is not measured. `0%` power is `lighting_voltage`, the voltage at which
     the train is lit and holds, so `(0%, 0 km/h)` is the curve's origin by
     definition and the commit writes it as such.
     """
     step = max(1, int(CALIBRATION_POWER_STEP_PERCENT))
-    return [float(p) for p in range(step, 101, step)]
+    return [float(p) for p in range(100, 0, -step)]
 
 
 class SpeedCalibration:
@@ -563,6 +599,9 @@ class SpeedCalibration:
             run.leg_armed = True
             run.leg_authority_seen = False
             run.leg_started_at = None
+            run.wait_counted_s = 0.0
+            run.crossing_counted_s = 0.0
+            run.counted_until = None
             run.crossing_started_at = None
             run.crossing_finished_at = None
             run.clearing_started_at = None
@@ -593,6 +632,8 @@ class SpeedCalibration:
             run.leg_authority_seen = True
             if run.leg_started_at is None:
                 run.leg_started_at = obs.now
+                run.counted_until = obs.now
+        self._count_leg_time(run, obs)
 
         if run.crossing_finished_at is not None and run.crossing_started_at is not None:
             elapsed = run.crossing_finished_at - run.crossing_started_at
@@ -640,18 +681,36 @@ class SpeedCalibration:
         if run.leg_authority_seen and not obs.path_present:
             return self._resolve_incomplete_leg(run, obs)
 
-        # The step timeout runs only once the leg's authority has appeared. It
-        # gives the run-up its own window to reach B, and the crossing its own
-        # window from B's confirmation to reach the far block, so a long run-up
-        # never eats into the crossing.
-        started = (
-            run.crossing_started_at
-            if run.crossing_started_at is not None
-            else run.leg_started_at
-        )
-        if started is None or obs.now - started < CALIBRATION_STEP_TIMEOUT_S:
+        # Both limits run only once the leg's authority has appeared. The run-up
+        # has `CALIBRATION_STEP_TIMEOUT_S` to reach B, and the crossing has its
+        # own window from B's confirmation, sized by B's length, so a long
+        # run-up never eats into the crossing and a slow crawl across B is
+        # timed rather than taken for a stall.
+        if run.crossing_started_at is None:
+            if run.wait_counted_s < CALIBRATION_STEP_TIMEOUT_S:
+                return None
+        elif run.crossing_counted_s < run.crossing_window_s:
             return None
         return self._resolve_incomplete_leg(run, obs)
+
+    @staticmethod
+    def _count_leg_time(run: CalibrationRun, obs: CalibrationObservation) -> None:
+        """Add the time since the last Plan pass to the leg's counted wait for
+        B, or to its crossing once B has confirmed — unless the train stood
+        short of its reservation (design_new.md "Speed calibration", Time the
+        train stands short of its reservation is not counted)."""
+        last = run.counted_until
+        if last is None:
+            return
+        run.counted_until = obs.now
+        if obs.held_short:
+            return
+        if run.crossing_started_at is None:
+            run.wait_counted_s += max(0.0, obs.now - last)
+        else:
+            run.crossing_counted_s += max(
+                0.0, obs.now - max(last, run.crossing_started_at)
+            )
 
     def _leave_measured_block(
         self, run: CalibrationRun, obs: CalibrationObservation
@@ -708,22 +767,17 @@ class SpeedCalibration:
         self, run: CalibrationRun, obs: CalibrationObservation
     ) -> Optional[CalibrationCommand]:
         """Resolve a leg that ran out of authority or time without reaching the
-        far block. Two different faults share this exit, and they are not the
-        same thing."""
-        if run.crossing_started_at is None:
-            # The locomotive never reached the measured block: the low steps may
-            # not overcome its stiction at all. The flat bottom this leaves on
-            # the curve is that locomotive's real stall band.
-            return self._record_stall(run, obs)
-        # It entered the measured block and never came out the far end, so it
-        # stopped somewhere inside the stretch. A part-crossing is not a slow
-        # measurement, it is no measurement, and timing it would put a speed on
-        # the curve that the locomotive never held.
-        return self.fail(
-            run,
-            f"train entered {run.measured_block_id} but never reached "
-            f"{run.heading_toward_block_id}",
-        )
+        far block. Both ways it happens end the sweep at this step.
+
+        The locomotive never reached the measured block: this power does not
+        overcome its stiction (design_new.md "Speed calibration", A step that
+        does not move the train records `0 km/h`). Or it entered the measured
+        block and stopped inside the stretch: this power started it but did not
+        carry it across, the top edge of the stall band (A crossing that stops
+        inside the stretch ends the sweep). The part-crossing is not timed — it
+        is no measurement, and timing it would put a speed on the curve the
+        locomotive never held."""
+        return self._end_sweep_at_stall(run)
 
     def _advance_stopping(
         self, run: CalibrationRun, obs: CalibrationObservation
@@ -755,17 +809,21 @@ class SpeedCalibration:
         caller should carry on to the next leg.
         """
         mean_speed = sum(run.crossings) / len(run.crossings)
-        previous = run.samples[-1].speed_kmh if run.samples else 0.0
+        previous = run.samples[-1].speed_kmh if run.samples else None
         run.crossings = []
 
-        if mean_speed + _MONOTONIC_EPSILON_KMH < previous:
+        if previous is not None and mean_speed > previous + _MONOTONIC_EPSILON_KMH:
             # `power_speed_curve` must stay invertible, so samples have to rise
-            # with power. One re-measure tells a noisy crossing apart from a
-            # locomotive that really does run slower at more power.
+            # with power. The sweep runs down, so the step measured just before
+            # this one had more power (design_new.md "Speed calibration", A step
+            # that measures faster than the step above it is measured once
+            # more). One re-measure tells a noisy crossing apart from a
+            # locomotive that really does run faster at less power.
             if run.step_remeasured:
                 return self.fail(
                     run,
-                    f"{run.current_power:.0f}% measured slower than a lower step twice",
+                    f"{run.current_power:.0f}% measured faster than the step "
+                    "above it twice",
                 )
             run.step_remeasured = True
             return None
@@ -783,19 +841,22 @@ class SpeedCalibration:
     def _finish_sweep(
         self, run: CalibrationRun, *, deactivate_route: bool = False
     ) -> CalibrationCommand:
-        """Close a sweep that has run every step.
+        """Close a sweep that has a sample for every step.
 
-        A sweep in which no step moved the locomotive is not a curve of a
+        A sweep in which every step recorded `0 km/h` is not a curve of a
         locomotive that cannot move — it is a stretch the pass could not measure
         on. Committing it would store a profile saying the locomotive stands
         still at full power, and every speed the app later asked of it would map
-        back to that. So the pass reports the stretch instead.
+        back to that. So the pass reports the stretch instead (design_new.md
+        "Speed calibration", A sweep in which every step records `0 km/h` fails
+        the pass).
         """
         if not any(s.speed_kmh > 0.0 for s in run.samples):
             return self.fail(
                 run,
-                "no step moved the train across the measured block — check the "
-                "stretch is long enough for the consist and clear to run",
+                "every step recorded 0 km/h: the train did not cross the "
+                "measured block even at 100% — check the stretch is long enough "
+                "for the consist and clear to run",
             )
         run.phase = PHASE_MEASURED
         # The pass has stopped driving and is waiting for a commit target, so the
@@ -806,42 +867,46 @@ class SpeedCalibration:
             run.train_id,
             operation="speed_calibration",
             success=True,
-            reason=f"measured {len(run.samples)} points — pick a profile to write",
+            reason=self._measured_reason(run),
         )
         # A sweep reached here by ordinary stop completion (the final leg
         # reached the far block) needs no route op — its route already finished.
-        # A sweep reached here from a last-step STALL still holds a RUNNING leg
-        # route (the stall kept authority), so that caller passes
-        # deactivate_route=True to tear it down.
+        # A sweep ended early by a stall still holds a RUNNING leg route (the
+        # stall kept authority), so that caller passes deactivate_route=True to
+        # tear it down.
         return CalibrationCommand(
             power_percent=0.0, deactivate_route=deactivate_route
         )
 
-    def _record_stall(
-        self, run: CalibrationRun, obs: CalibrationObservation
-    ) -> Optional[CalibrationCommand]:
-        """Bank a `0 km/h` sample and move on without turning the train around.
+    @staticmethod
+    def _measured_reason(run: CalibrationRun) -> str:
+        """What a finished pass reports, naming where the stall band starts."""
+        stalled = [s.power_percent for s in run.samples if s.speed_kmh <= 0.0]
+        if not stalled:
+            return f"measured {len(run.samples)} points — pick a profile to write"
+        return (
+            f"measured {len(run.samples)} points; the train did not move at "
+            f"{max(stalled):.0f}% and below — pick a profile to write"
+        )
 
-        The train never left the outer block it stood in, so the next step
-        commands from where it stands, facing the way it already faces.
+    def _end_sweep_at_stall(self, run: CalibrationRun) -> CalibrationCommand:
+        """Record `0 km/h` for this step and every step below it, and end the
+        sweep (design_new.md "Speed calibration", A step that does not move the
+        train records `0 km/h`).
+
+        A power that cannot carry the train across the measured block cannot
+        with less, so the steps below are recorded without being commanded and
+        count as measured. Crossings this step already measured are dropped:
+        its power did not move the train every time. The leg route never reached
+        the far block, so the returned command tears it down.
         """
         run.crossings = []
         run.step_remeasured = False
         run.step_cap_retries = 0
-        run.samples.append(
-            CalibrationSample(power_percent=run.current_power, speed_kmh=0.0)
-        )
-        run.step_index += 1
-        if run.step_index >= len(run.power_steps):
-            # A last-step stall still holds the RUNNING leg route (a stall keeps
-            # authority), so tear it down here.
-            return self._finish_sweep(run, deactivate_route=True)
-        # The train is still standing where the leg began, facing the same way,
-        # so the next step re-arms in place without turning around. The stalled
-        # leg's route never reached the far block, so it is torn down.
-        run.leg_armed = False
-        run.needs_reverse = False
-        return CalibrationCommand(power_percent=0.0, deactivate_route=True)
+        for power in run.power_steps[run.step_index:]:
+            run.samples.append(CalibrationSample(power_percent=power, speed_kmh=0.0))
+        run.step_index = len(run.power_steps)
+        return self._finish_sweep(run, deactivate_route=True)
 
     # -- runtime hook -----------------------------------------------------
 
@@ -933,14 +998,30 @@ class SpeedCalibration:
         controller = self._controller(train_id)
         if controller is None:
             return None
+        is_stopped = bool(controller.is_stopped())
+        plan = controller.path_projection.received_path_plan
         obs = CalibrationObservation(
             now=self._operating_time(),
-            is_stopped=bool(controller.is_stopped()),
+            is_stopped=is_stopped,
             head_block=self._head_block(controller),
-            path_present=controller.path_projection.received_path_plan is not None,
+            path_present=plan is not None,
+            held_short=is_stopped
+            and plan is not None
+            and self._last_reserved_block(plan) != run.heading_toward_block_id,
             measured_block_held=self._on_measured_block(run, controller),
         )
         return self.advance(run, obs)
+
+    @staticmethod
+    def _last_reserved_block(plan) -> str:
+        """The last block a received path plan reserves, or "" when it names
+        none."""
+        blocks = [
+            entry.resource_id
+            for entry in getattr(plan, "resource_sequence", ()) or ()
+            if getattr(entry, "resource_type", None) == "block"
+        ]
+        return blocks[-1] if blocks else ""
 
     def _on_measured_block(self, run: CalibrationRun, controller) -> bool:
         """Whether the train is still on the measured block in either view of
@@ -1070,8 +1151,11 @@ class SpeedCalibration:
     # -- commit -----------------------------------------------------------
 
     def measured_curve(self, run: CalibrationRun) -> List[Tuple[float, float]]:
-        """The `power_speed_curve` this pass measured, origin included."""
-        return [(0.0, 0.0)] + [(s.power_percent, s.speed_kmh) for s in run.samples]
+        """The `power_speed_curve` this pass measured, origin included, in
+        order of power. The sweep runs down, so the samples arrive highest
+        first."""
+        points = sorted((s.power_percent, s.speed_kmh) for s in run.samples)
+        return [(0.0, 0.0)] + points
 
     def commit(
         self, train_id: str, target_profile, *, clear_profile=None

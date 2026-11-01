@@ -147,7 +147,7 @@ LIGHTING_CLEAR_HOLD_READS: int = 30
 UNIDENTIFIED_GAP_HOLD_S: float = 5.0
 
 # Speed calibration (design_new.md "Speed calibration"). A pass sweeps
-# power_percent in CALIBRATION_POWER_STEP_PERCENT increments up to 100% and
+# power_percent down from 100% in CALIBRATION_POWER_STEP_PERCENT steps and
 # measures the speed the locomotive reaches at each, filling
 # SpeedProfile.power_speed_curve. The 0% point needs no measurement: 0% power
 # is lighting_voltage, so (0%, 0 km/h) is the curve's origin by definition.
@@ -160,9 +160,17 @@ CALIBRATION_POWER_STEP_PERCENT: int = 10
 CALIBRATION_ROUND_TRIPS: int = 2
 
 # A step whose measured-block entry does not confirm within this many seconds
-# of `AppState.operating_time` records 0 km/h and the pass moves on. The flat
-# bottom this leaves on the curve is that locomotive's real stall band.
+# of `AppState.operating_time` records 0 km/h, as does every step below it, and
+# the sweep ends. The flat bottom this leaves on the curve is that locomotive's
+# real stall band. The same limit bounds driving the train off the measured
+# block after a crossing.
 CALIBRATION_STEP_TIMEOUT_S: float = 30.0
+
+# The slowest crossing speed the pass times, in scale km/h. A crossing gets the
+# time the measured block's length takes at this speed (the crossing window);
+# one that has not reached the far outer block by then stopped inside the
+# stretch, and ends the sweep like a step that does not move the train.
+CALIBRATION_MIN_CROSSING_SPEED_KMH: float = 2.0
 
 # When a measured crossing is capped by the leg's own reservation end (the
 # stretch is too short for this step's speed even at the zero reservation-end
