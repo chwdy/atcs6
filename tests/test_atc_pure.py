@@ -53,6 +53,7 @@ class FakeBlock:
     block_id: str
     length_cm: float
     state: BlockState = BlockState.FREE
+    caution_exit_edge: Optional[str] = None
 
 
 @dataclass
@@ -248,27 +249,42 @@ def test_speed_limit_block_cap_dominant():
 
 
 def test_caution_ahead_first_block_caution():
-    blocks = [FakeBlock("B1", 200.0, BlockState.CAUTION)]
-    assert is_caution_ahead_pure(blocks) is True
+    """The train leaves the CAUTION block through its caution exit edge, so
+    it follows the departed train and is capped."""
+    blocks = [FakeBlock("B1", 200.0, BlockState.CAUTION, caution_exit_edge="E")]
+    assert is_caution_ahead_pure(blocks, {"B1": "E"}) is True
+
+
+def test_caution_ahead_other_way_is_not_capped():
+    """A train crossing the CAUTION block out of its other end is not capped."""
+    blocks = [FakeBlock("B1", 200.0, BlockState.CAUTION, caution_exit_edge="E")]
+    assert is_caution_ahead_pure(blocks, {"B1": "W"}) is False
+
+
+def test_caution_ahead_needs_the_trains_own_traversal():
+    """With no entry for the block in the live path there is no traversal to
+    compare, so the caution caps nothing."""
+    blocks = [FakeBlock("B1", 200.0, BlockState.CAUTION, caution_exit_edge="E")]
+    assert is_caution_ahead_pure(blocks, {}) is False
 
 
 def test_caution_ahead_first_block_free():
     """First block FREE means no caution, even if later blocks are CAUTION."""
     blocks = [
         FakeBlock("B1", 200.0, BlockState.FREE),
-        FakeBlock("B2", 200.0, BlockState.CAUTION),
+        FakeBlock("B2", 200.0, BlockState.CAUTION, caution_exit_edge="E"),
     ]
-    assert is_caution_ahead_pure(blocks) is False
+    assert is_caution_ahead_pure(blocks, {"B1": "E", "B2": "E"}) is False
 
 
 def test_caution_ahead_empty_list():
-    assert is_caution_ahead_pure([]) is False
+    assert is_caution_ahead_pure([], {}) is False
 
 
 def test_caution_ahead_skips_none():
     """None entries in the list are skipped; first concrete block matters."""
-    blocks = [None, FakeBlock("B1", 200.0, BlockState.CAUTION)]
-    assert is_caution_ahead_pure(blocks) is True
+    blocks = [None, FakeBlock("B1", 200.0, BlockState.CAUTION, caution_exit_edge="E")]
+    assert is_caution_ahead_pure(blocks, {"B1": "E"}) is True
 
 
 # ---------------------------------------------------------------------------

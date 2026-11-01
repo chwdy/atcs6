@@ -171,11 +171,8 @@ class EBWorkflow:
             return CommandResult(
                 False, "Pre-EB path authority has not cleared yet"
             )
-        # No power-notch check at release: EB springs both driver inputs to
-        # their safe rest for as long as the latch is set (the per-tick EB hold
-        # re-zeros `manual_power_percent`), so there is no retained percentage to
-        # cross-check here (design_new.md "ATO status"). Release reads only the
-        # physical-safety conditions above.
+        # No power-notch check at release: release reads only the
+        # physical-safety conditions above (design_new.md "EB release").
         self.active = False
         # A cut-out resets back to normal exactly as an emergency brake does
         # (design_new.md "Emergency cut-out").
@@ -183,6 +180,11 @@ class EBWorkflow:
         # Non-driving reset goes through the Operational-state helper, not a raw
         # handle_position write (design_new.md Module boundaries rule 5).
         c.ops.reset_handle_to_neutral()
+        # Return the retained percentage to 0 (design_new.md "EB release"). The
+        # per-tick EB hold re-zeros it while the latch is set, but a percentage
+        # set between the last tick and this release would otherwise survive and
+        # drive the train off once it is granted a reservation.
+        c.manual.reset_power_percent_for_safety()
 
         # `train_status` / `ato_status` are derived reads (design_new.md
         # "Controller state machine" / "ATO status"), so clearing `eb.active` is

@@ -911,6 +911,10 @@ class ValidationErrorType(Enum):
     SWITCH_MANUAL = "switch_manual"  # switch.manual==True and no manual_override
     SWITCH_DISABLED = "switch_disabled"
     FLANK_SWITCH_CONFLICT = "flank_switch_conflict"
+    # A free resource on a way the current meet assignment keeps for another
+    # train (design_new.md "Resource acquisition", A meet keeps a waiting
+    # train's way). `ValidationError.kept_for_train` names that train.
+    MEET_WAY_KEPT = "meet_way_kept"
 
     def is_occupancy_class(self) -> bool:
         # Live-state conflicts that acquisition truncates around per
@@ -930,6 +934,7 @@ class ValidationErrorType(Enum):
             ValidationErrorType.BLOCK_OCCUPIED,
             ValidationErrorType.BLOCK_RESERVED,
             ValidationErrorType.SWITCH_LOCKED,
+            ValidationErrorType.MEET_WAY_KEPT,
         )
 
 
@@ -944,6 +949,7 @@ class ValidationError:
     position: Optional[Tuple[int, int]] = None
     occupied_by: Optional[str] = None
     locked_by_path: Optional[str] = None
+    kept_for_train: Optional[str] = None
 
 
 @dataclass
@@ -1060,3 +1066,7 @@ class RouteExecutorForPathDispatcher(Protocol):
         requested_destination_direction: Optional[str] = None,
         event_time: Optional[float] = None,
     ) -> bool: ...
+
+    def meet_way_holder(
+        self, resource_type: str, resource_id: str
+    ) -> Optional[str]: ...

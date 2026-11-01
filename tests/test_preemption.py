@@ -126,6 +126,30 @@ def test_higher_priority_takes_a_reserved_but_unlocked_block():
     assert network.blocks["BLK_2"].locked_by_path == "P_LOCAL"
 
 
+def test_a_block_on_the_holders_kept_way_is_never_taken():
+    """A block on the way the meet assignment keeps for the holder is never
+    preempted, even by a strictly higher-priority run (design_new.md
+    "Preemption", When it applies)."""
+    network, disp = _setup(
+        {"T_EXPRESS": 9, "T_LOCAL": 5},
+        ["BLK_2", "BLK_3", "BLK_4"],
+        ["BLK_2"],
+        ["BLK_1", "BLK_2", "BLK_3", "BLK_4"],
+    )
+    disp._route_executor.meet_way_holder = (
+        lambda rtype, rid: "T_LOCAL" if rid in ("BLK_2", "BLK_3") else None
+    )
+    segment = _express_segment("BLK_3", 3)
+    validation = disp.validate_path(segment, "P_EXP", "T_EXPRESS")
+
+    result = disp._apply_preemption(validation, segment, "P_EXP", "T_EXPRESS", False)
+
+    assert result.valid is False
+    assert any(e.type == ValidationErrorType.MEET_WAY_KEPT for e in result.errors)
+    assert disp.paths["P_LOCAL"].get_reservation_end_block_id() == "BLK_4"
+    assert network.blocks["BLK_3"].reserved_by_path == "P_LOCAL"
+
+
 def test_equal_priority_never_preempts():
     network, disp = _setup(
         {"T_EXPRESS": 5, "T_LOCAL": 5},

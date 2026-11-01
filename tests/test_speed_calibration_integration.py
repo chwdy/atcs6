@@ -107,6 +107,113 @@ def test_a_measured_block_resolves_two_outer_blocks(state):
     assert length_cm > 0
 
 
+def test_a_stretch_never_crosses_a_buffer_stop(state):
+    """The outer blocks are found by walking the track out of each end of the
+    measured block (design_new.md "Speed calibration", The operator names the
+    measured block), so a block that ends at a buffer stop has no neighbour at
+    that end.
+
+    demo_6's Yard A 1 platform, PLT_YA_1_BLOCK, ends at a buffer stop on its
+    north tile (24, 22). The grid cell beyond it, (24, 23), belongs to
+    PLT_YA_8_APPROACH, but that tile's rails do not meet the edge they would
+    have to cross, so the two blocks are not connected and the platform has a
+    block at one end only.
+    """
+    from services import ValidationError
+
+    with pytest.raises(ValidationError, match="block at both ends"):
+        train_service.resolve_calibration_stretch(state, "PLT_YA_1_BLOCK")
+
+
+def test_every_resolved_stretch_runs_through_its_measured_block(state):
+    """Whatever stretch the resolver names, a train can run it end to end: the
+    path planner finds a walk from one outer block to the other through the
+    measured block and nothing else. A stretch that is not such a run would
+    open a pass whose legs can never plan.
+
+    A crossing block meets four blocks, two per track, and is left out here:
+    which of its two tracks a stretch should run along is not decided yet.
+    """
+    from services import ValidationError
+
+    dispatcher = state.path_dispatcher
+    manager = state.network.block_manager
+    not_a_run = []
+    for block_id in state.network.blocks:
+        if len(manager.adjacent_blocks(block_id)) > 2:
+            continue
+        try:
+            outer, _length = train_service.resolve_calibration_stretch(
+                state, block_id
+            )
+        except ValidationError:
+            continue
+        walks = dispatcher.find_paths(outer[0], outer[1])
+        if not any(list(w.blocks) == [outer[0], block_id, outer[1]] for w in walks):
+            not_a_run.append((block_id, outer))
+    assert not_a_run == []
+
+
+def test_a_train_beside_a_dead_end_platform_is_told_before_the_pass_opens(state):
+    """The case seen on the dev server on 2026-10-18: a train standing in
+    PLT_YA_8_APPROACH with PLT_YA_1_BLOCK named as the measured block. The
+    readiness line used to say ready, Start armed a leg to PLT_YA_1_APPROACH,
+    and the leg could never plan (`No path exists between start and
+    destination`), because PLT_YA_8_APPROACH is not connected to the platform.
+    The readiness line now names the problem and Start opens nothing.
+    """
+    from services import ConflictError
+
+    sim = state.sim_controller
+    # T_YA_8 stands in PLT_YA_8_BLOCK, next to the tile the new train goes on.
+    # A train is deleted only once it is OFF.
+    assert sim.controllers["T_YA_8"].commands.power_off_cmd().success
+    for _ in range(5):
+        sim.update(0.1)
+    train_service.delete_train(state, "T_YA_8")
+    train_service.create_train(
+        state,
+        train_id="T_PROBE",
+        position={"x": 25, "y": 24},
+        direction="WEST",
+        length_cm=5.0,
+    )
+    controller = sim.get_or_create_controller("T_PROBE")
+    assert controller.get_current_span().occupied_blocks == ["PLT_YA_8_APPROACH"]
+
+    unmet = train_service.calibration_readiness(
+        state, "T_PROBE", measured_block_id="PLT_YA_1_BLOCK"
+    )
+    assert any("block at both ends" in u for u in unmet)
+    with pytest.raises(ConflictError, match="block at both ends"):
+        train_service.calibrate_train(
+            state, "T_PROBE", measured_block_id="PLT_YA_1_BLOCK"
+        )
+    assert sim.speed_calibration.runs.get("T_PROBE") is None
+
+
+@pytest.mark.parametrize("head_end", ["end_a", "end_b"])
+def test_the_first_leg_plans_whichever_way_the_train_faces(state, head_end):
+    """The operator does not choose a direction (design_new.md "Speed
+    calibration", The panel): a leg takes its direction from its leg route,
+    per Reservation-side head derivation. Running this with the span framed
+    each way covers a train whose head faces away from the measured block;
+    either way the opening leg's path is created on the tick the leg arms.
+    """
+    sim = state.sim_controller
+    train_id = _free_train(state)
+    block_id = _first_calibratable_block(state, train_id)
+    controller = _ready_manual_train(sim, state.network, train_id)
+    sim.update(0.1)  # drain the setup commands
+    controller._apply_head_frame(head_end)
+
+    run = train_service.calibrate_train(state, train_id, measured_block_id=block_id)
+    sim.update(0.1)
+
+    assert run.active_leg_route_id is not None
+    assert sim.path_dispatcher.active_path_id_by_train(train_id) is not None
+
+
 def test_a_block_with_no_recorded_length_is_refused(state):
     from services import ValidationError
 
@@ -242,10 +349,11 @@ def test_the_runtime_tick_arms_the_pass_as_a_one_off_route(state):
     assert leg_route.mode == RouteMode.ONE_OFF
     assert train_id in leg_route.assigned_train_ids
     assert leg_route.manual_override is False
-    # One task: a stop at the far outer block.
-    assert len(leg_route.tasks) == 1
-    assert leg_route.tasks[0].task_kind == "stop"
-    assert leg_route.tasks[0].task_location.block_id == far_block
+    # Two tasks: a waypoint at the measured block, then a stop at the far outer
+    # block, so the path crosses the measured block on its way.
+    assert [t.task_kind for t in leg_route.tasks] == ["waypoint", "stop"]
+    assert leg_route.tasks[0].task_location.block_id == block_id
+    assert leg_route.tasks[1].task_location.block_id == far_block
 
     # The leg has real authority (a path), and the step's power drives the train
     # back through get_propulsion_override, not a zero no-authority cap.

@@ -804,22 +804,10 @@ class BlockManager:
         for block_id in block_ids:
             block = self._block_registry[block_id]
             traversal = directions[block_id]
+            # A reservation never changes a block's caution (design_new.md
+            # "BlockManager"): a train leaving the block out of its other end is
+            # simply not capped, which the readers decide from its own traversal.
             block.reserve_for_path(path_id, train_id, traversal.exit_edge)
-            # Opposing-traversal caution clear (design_new.md "Opposing-traversal
-            # caution clear"): a block is a switch-free two-ended run, so this
-            # reserved exit_edge either equals block.caution.exit_edge (the
-            # reserving train traverses the way the departing train went — keep
-            # the margin, which the CAUTION_SPEED_LIMIT_KMH cap exists for) or is
-            # the block's other end (it traverses away from the protected chain,
-            # whose margin now sits behind it and restricts nothing ahead — retire
-            # it, so the computed state becomes RESERVED). No _reevaluate_caution
-            # cascade is needed: clearing one block's caution changes no block's
-            # occupied_by, which is the only thing the reevaluator's keep test reads.
-            if (
-                block.caution is not None
-                and traversal.exit_edge != block.caution.exit_edge
-            ):
-                block.caution = None
             self._index_add_reserved(block_id, train_id)
             self._record_history(
                 block_id,
@@ -1113,12 +1101,9 @@ class BlockManager:
                 cleared.append(block.block_id)
                 continue
             # An OCCUPIED forward block keeps this CAUTION: a train is still
-            # standing in the protected chain. Retiring a margin the protecting
-            # train has reversed away from is NOT this walk's job — that is the
-            # Opposing-traversal caution clear in reserve_blocks_for_path
-            # (design_new.md: the reevaluator reads no train, controller, or
-            # travel_direction state; occupancy of the one forward block is the
-            # whole test).
+            # standing in the protected chain. The reevaluator reads no train,
+            # controller, or travel_direction state; occupancy of the one
+            # forward block is the whole test (design_new.md "Block", `caution`).
 
         for block_id in cleared:
             self._record_history(
@@ -1139,7 +1124,6 @@ class BlockManager:
         "S": (0, -1),
         "W": (-1, 0),
     }
-    _OPPOSITE_EDGE: Dict[str, str] = {"N": "S", "S": "N", "E": "W", "W": "E"}
 
     def adjacent_blocks(self, block_id: str) -> List[str]:
         """The blocks reachable out of this block's ends, points as aligned.
@@ -1181,9 +1165,13 @@ class BlockManager:
         controller, or ``travel_direction`` state.
 
         Walks tile connectivity through any intervening switch tiles using
-        the current ``Switch.position``. Returns ``(None, None)`` if the walk
-        runs off the network, hits a dead end, or loops back into the same
-        block.
+        the current ``Switch.position``. Every step must be a real track
+        connection per ``RailwayNetwork.get_connection_edges``: the tile stepped
+        onto must have track on the edge the walk enters it by. A grid
+        neighbour whose rails do not meet that edge — the cell past a buffer
+        stop, say — is not reachable, even when it belongs to a block. Returns
+        ``(None, None)`` if the walk runs off the network, hits a dead end, or
+        loops back into the same block.
         """
         if self.network is None:
             return (None, None)
@@ -1210,10 +1198,10 @@ class BlockManager:
         if exit_tile is None:
             return (None, None)
 
-        # Step out into the neighbour tile and walk forward. `entry_edge`
-        # tracks the edge through which the walk enters the current tile; it
-        # starts as the geometric opposite of the CAUTION block's exit edge and
-        # is updated as the walk crosses each switch leg, so when the walk
+        # Step out into the neighbour tile and walk forward. `entry_edge` is
+        # the edge through which the walk enters the current tile, read from
+        # the connection between the tile it left and the tile it entered (the
+        # far edge of a tunnel is not the cardinal opposite), so when the walk
         # reaches the next block tile it holds that block's actual chain-entry
         # edge.
         first_neighbour = self.network.get_neighbor(
@@ -1221,8 +1209,9 @@ class BlockManager:
         )
         if first_neighbour is None:
             return (None, None)
+        prev_tile = exit_tile
+        leave_edge = direction
         cur_x, cur_y = first_neighbour.x, first_neighbour.y
-        entry_edge = self._OPPOSITE_EDGE[direction]
         visited: Set[Tuple[int, int]] = set()
 
         while True:
@@ -1232,6 +1221,12 @@ class BlockManager:
             tile = self.network.get_track(cur_x, cur_y)
             if tile is None:
                 return (None, None)
+            # The tile next door is only reachable when the two tiles' rails
+            # meet on the edge the walk left by.
+            connection = self.network.get_connection_edges(prev_tile, (cur_x, cur_y))
+            if connection is None or connection[0] != leave_edge:
+                return (None, None)
+            entry_edge = connection[1]
             # Plain block tile: this is the next reachable block.
             if tile.block_id and not tile.is_switch:
                 return (self._block_registry.get(tile.block_id), entry_edge)
@@ -1249,8 +1244,9 @@ class BlockManager:
                 step = self.network.get_neighbor(cur_x, cur_y, exit_edge)
                 if step is None:
                     return (None, None)
+                prev_tile = (cur_x, cur_y)
+                leave_edge = exit_edge
                 cur_x, cur_y = step.x, step.y
-                entry_edge = self._OPPOSITE_EDGE[exit_edge]
                 continue
             # Plain track tile not assigned to any block: nothing protectable
             # ahead.

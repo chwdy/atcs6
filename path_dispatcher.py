@@ -187,6 +187,17 @@ class PathDispatcher:
     def _get_route_executor(self) -> Optional[RouteExecutorForPathDispatcher]:
         return self._route_executor
 
+    def _meet_way_holder(self, resource_type: str, resource_id: str) -> Optional[str]:
+        """The train the current meet assignment keeps this resource for, or
+        None (design_new.md "Resource acquisition", A meet keeps a waiting
+        train's way). Read through the injected route resolver, the same one
+        that answers priority."""
+        rx = self._get_route_executor()
+        getter = getattr(rx, "meet_way_holder", None) if rx is not None else None
+        if not callable(getter):
+            return None
+        return getter(resource_type, resource_id)
+
     def _get_controller(self, train_id: str):
         # Look up (never create) an occupant/covered controller from the injected
         # registry; controller existence is a RouteExecutor precondition.
@@ -496,7 +507,7 @@ class PathDispatcher:
         ``RailwayPathfinder.get_reachable_endpoints`` — the dispatcher
         keeps this entry point for existing callers; the traversal
         itself lives in the pathfinder home (design_new.md
-        "Pathfinding-home migration").
+        "Operational pathfinding home").
         """
         return self._pathfinder.get_reachable_endpoints(
             start_block_id, include_stations
@@ -581,12 +592,19 @@ class PathDispatcher:
                 if not next_track:
                     continue
                 next_x, next_y = next_track.x, next_track.y
+                # `get_neighbor` returns the next grid tile even when its
+                # rails do not meet ours (a buffer stop), so ask
+                # `get_connection_edges` before counting the tile; it also
+                # gives the right entry edge across a tunnel.
+                edges = self.network.get_connection_edges(
+                    (curr_x, curr_y), (next_x, next_y)
+                )
+                if edges is None:
+                    continue
+                next_entry_edge = edges[1]
                 next_block_id = next_track.block_id
                 if next_block_id and next_block_id not in existing_blocks:
                     reachable_blocks.add(next_block_id)
-                next_entry_edge = OPPOSITE_EDGE.get(curr_exit)
-                if not next_entry_edge or next_entry_edge not in next_track.edges:
-                    continue
                 all_exits = next_track.get_exits(
                     next_entry_edge, use_switch_state=False
                 )
@@ -742,15 +760,18 @@ class PathDispatcher:
                 train_min_radius_cm = train.min_radius_cm
                 train_max_speed_kmh = train.max_speed
                 train_max_slope_percent = train.max_slope
-        return self._pathfinder.find_ordered_walk(
-            start_block_id=start_block_id,
-            end_block_id=end_block_id,
+        request = self._pathfinder.block_walk_query(
+            start_block_id,
+            end_block_id,
             direction_constraint=direction_constraint,
             manual_override=manual_override,
             train_min_radius_cm=train_min_radius_cm,
             train_max_speed_kmh=train_max_speed_kmh,
             train_max_slope_percent=train_max_slope_percent,
         )
+        if request is None:
+            return []
+        return self._pathfinder.find_ordered_walk(request)
 
     # ========================================================================
     # Validation
@@ -839,6 +860,19 @@ class PathDispatcher:
                             message=f"Block {block_id} is reserved",
                         )
                     )
+            kept_for = self._meet_way_holder("block", block_id)
+            if kept_for is not None and kept_for != train_id:
+                errors.append(
+                    ValidationError(
+                        type=ValidationErrorType.MEET_WAY_KEPT,
+                        block_id=block_id,
+                        kept_for_train=kept_for,
+                        message=(
+                            f"Block {block_id} is on the way kept for {kept_for} "
+                            "in a meet"
+                        ),
+                    )
+                )
 
         for pos, required_state in path.required_switches.items():
             track = self.network.get_track(*pos)
@@ -888,6 +922,20 @@ class PathDispatcher:
                         message=f"Switch at {pos} locked",
                     )
                 )
+            if switch_entity is not None:
+                kept_for = self._meet_way_holder("switch", switch_entity.switch_id)
+                if kept_for is not None and kept_for != train_id:
+                    errors.append(
+                        ValidationError(
+                            type=ValidationErrorType.MEET_WAY_KEPT,
+                            position=pos,
+                            kept_for_train=kept_for,
+                            message=(
+                                f"Switch at {pos} is on the way kept for "
+                                f"{kept_for} in a meet"
+                            ),
+                        )
+                    )
 
         return ValidationResult(valid=len(errors) == 0, errors=errors, path=path)
 
@@ -2997,10 +3045,13 @@ class PathDispatcher:
         if block is None:
             return False
         # A block no opposing move can reach is safe to stop just inside it,
-        # whether it is one-way or in CAUTION behind a leader (design_new.md
-        # item 11; canonical home Block.excludes_opposing_traversal). Hold the
-        # authority back only for a genuine two-way block entered off a switch.
-        if block.excludes_opposing_traversal():
+        # whether it is one-way or in CAUTION behind a leader this train follows
+        # (design_new.md item 11; canonical home Block.excludes_opposing_traversal).
+        # Hold the authority back only for a genuine two-way block entered off a
+        # switch.
+        if block.excludes_opposing_traversal(
+            self._segment_block_exit_edge(segment, terminal_block_id)
+        ):
             return False
         # Locate the terminal block's first non-switch tile in path order.
         first_idx: Optional[int] = None
@@ -3023,6 +3074,45 @@ class PathDispatcher:
             return bool(prev.is_switch)
         return False
 
+    def _segment_block_exit_edge(
+        self, segment: "PathSegment", block_id: str
+    ) -> Optional[str]:
+        """The edge through which `segment` leaves `block_id`: the heading from
+        the block's last tile to the next tile of the segment, or, when the
+        block ends the segment, that last tile's geometric exit for the edge
+        the segment entered it by. `None` when the segment does not cross the
+        block. Same frame as the exit edge a tail records when it clears a
+        block, which `Block.caution.exit_edge` holds.
+        """
+        tiles = segment.tiles
+        last_idx: Optional[int] = None
+        for idx, tile in enumerate(tiles):
+            track = self.network.get_track(*tile)
+            if track is not None and track.block_id == block_id:
+                last_idx = idx
+            elif last_idx is not None:
+                break
+        if last_idx is None:
+            return None
+        if last_idx + 1 < len(tiles):
+            here, there = tiles[last_idx], tiles[last_idx + 1]
+            return direction_from_delta(there[0] - here[0], there[1] - here[1])
+        if last_idx == 0:
+            return None
+        prev, here = tiles[last_idx - 1], tiles[last_idx]
+        heading_in = direction_from_delta(here[0] - prev[0], here[1] - prev[1])
+        if heading_in is None:
+            return None
+        # On a corner tile the heading in is not the exit, so read the tile's
+        # one exit for the edge the segment came in by.
+        track = self.network.get_track(*here)
+        exits = (
+            track.get_exits(OPPOSITE_DIRECTIONS[heading_in], use_switch_state=True)
+            if track is not None
+            else []
+        )
+        return exits[0] if len(exits) == 1 else heading_in
+
     def _block_is_holding_point(self, block_id: str) -> bool:
         """True when ``block_id`` is an operator-marked holding point.
 
@@ -3043,17 +3133,21 @@ class PathDispatcher:
         path's ``resource_sequence`` rather than a ``PathSegment``.
 
         A block no opposing move can reach is safe to stop just inside, whether
-        it is one-way or in CAUTION behind a leader
-        (``Block.excludes_opposing_traversal``). Otherwise the terminal fouls the
-        junction when the path enters it directly off a switch — i.e. the
-        resource entry immediately before it in the sequence is a switch. This is
-        the ``resource_sequence`` companion to
+        it is one-way or in CAUTION behind a leader this path follows
+        (``Block.excludes_opposing_traversal``, given the terminal entry's own
+        ``exit_edge``). Otherwise the terminal fouls the junction when the path
+        enters it directly off a switch — i.e. the resource entry immediately
+        before it in the sequence is a switch. This is the
+        ``resource_sequence`` companion to
         ``_terminal_fouls_two_way_switch_block``.
         """
         block = self.network.blocks.get(terminal_block_id)
         if block is None:
             return False
-        if block.excludes_opposing_traversal():
+        terminal_exit_edge = (
+            path.resource_sequence[terminal_seq_index].exit_edge or None
+        )
+        if block.excludes_opposing_traversal(terminal_exit_edge):
             return False
         prev_index = terminal_seq_index - 1
         return (
@@ -4316,6 +4410,78 @@ class PathDispatcher:
             return None
         return max(terminals, key=lambda p: p.last_status_updated_time)
 
+    def next_call_walk_candidates(
+        self,
+        train_id: str,
+        requested_destination_block_id: str,
+        requested_destination_direction: Optional[str] = None,
+        manual_override: bool = False,
+    ) -> List[GraphWalkCandidate]:
+        """The walks this train's next acquisition call enumerates, best first,
+        before any meet key filter (design_new.md "Meet coordination", Conflict
+        detection).
+
+        With a live path that is `extend_path(...)`'s list: walks from the
+        reservation-end block that continue forward and revisit nothing the
+        path still holds. Without one it is `create_path(...)`'s list: walks
+        from the start-side span end, with no internal repeat. Meet
+        coordination builds its routes and `candidate_resource_keys` from this
+        list, so the keys it chooses are ones the next call can match. Returns
+        an empty list wherever that call would fail before choosing a walk.
+        Read-only.
+        """
+        if not train_id or not requested_destination_block_id:
+            return []
+        if requested_destination_block_id not in self.network.blocks:
+            return []
+        path = self.get_active_path(train_id)
+        if path is not None:
+            held_blocks = self._blocks_held_by(path)
+            if requested_destination_block_id in held_blocks:
+                return []
+            candidates = self._find_walk_candidates(
+                path.get_reservation_end_block_id(),
+                requested_destination_block_id,
+                train_id,
+                manual_override=manual_override,
+                direction_constraint=requested_destination_direction,
+            )
+            held_switches = self._switches_held_by(path)
+            return [
+                cand
+                for cand in candidates
+                if self._segment_continues_forward(path, cand.walk)
+                and not self._segment_would_revisit_resources(
+                    cand.walk, held_blocks, held_switches
+                )
+            ]
+        train = self._get_train(train_id)
+        if train is None:
+            return []
+        head_block = self._get_current_block_id_for_train(train)
+        if not head_block or head_block == requested_destination_block_id:
+            return []
+        start_block_id = self._resolve_create_start_block(
+            train,
+            train_id,
+            requested_destination_block_id,
+            head_block,
+            manual_override,
+        )
+        candidates = self._find_walk_candidates(
+            start_block_id,
+            requested_destination_block_id,
+            train_id,
+            manual_override=manual_override,
+            direction_constraint=requested_destination_direction,
+        )
+        empty: Set[str] = set()
+        return [
+            cand
+            for cand in candidates
+            if not self._segment_would_revisit_resources(cand.walk, empty, empty)
+        ]
+
     def get_waiting_conflict(
         self,
         train_id: str,
@@ -4444,7 +4610,12 @@ class PathDispatcher:
             if err.block_id:
                 # A block conflict: the occupied / reserved block ahead is both
                 # the failed resource and the block the waiter is stuck behind.
-                holders = self._block_conflict_holders(err)
+                # A free block on a kept way is held by the train the way is
+                # kept for (design_new.md "Contention snapshot").
+                if err.type == ValidationErrorType.MEET_WAY_KEPT:
+                    holders = (err.kept_for_train,) if err.kept_for_train else ()
+                else:
+                    holders = self._block_conflict_holders(err)
                 if not holders:
                     continue
                 return WaitingConflict(
@@ -4466,6 +4637,8 @@ class PathDispatcher:
                 if held_block is None:
                     continue
                 switch_id, holders = self._switch_conflict_holders(err)
+                if err.type == ValidationErrorType.MEET_WAY_KEPT:
+                    holders = (err.kept_for_train,) if err.kept_for_train else ()
                 if not holders:
                     continue
                 return WaitingConflict(
@@ -4558,43 +4731,29 @@ class PathDispatcher:
     def _candidate_matches_pinned_keys(
         cls, ordered_walk, required_keys: Optional[List[CandidateResourceKey]]
     ) -> bool:
-        """True when this acquisition's candidate is the exact route the meet
-        calc pinned (design_new.md "Meet coordination").
+        """True when this acquisition's candidate is exactly the walk the
+        caller pinned (design_new.md "Path And PathDispatcher", `create_path()`
+        flow step 4).
 
-        `required_keys` is the full head -> target key list the meet calc chose;
-        the candidate's own key list must appear as one contiguous run inside it,
-        anchored at the candidate's first step. On `create_path(...)` the
-        candidate is the whole head -> target route, so the run is the list
-        itself; on `extend_path(...)` it is a forward tail (authority-end ->
-        target), so the run is that tail of the same route. The tail's first step
-        is the anchor: its `entry_edge` is the walk's back-edge fallback and can
-        differ from the same tile's entry mid-route (a curved authority-end
-        tile), so the anchor matches on `(type, id, exit_edge)` and every step
-        after it on the full `(type, id, entry_edge, exit_edge)` frame — which is
-        what pins the traversal direction through the contested zone.
+        `required_keys` start where this call starts — the start-side span end
+        for `create_path(...)`, the reservation end for `extend_path(...)` —
+        because meet coordination and the required walk build them from the
+        same enumeration (`next_call_walk_candidates`). So the candidate must
+        have the same steps, in the same order, from the first to the last. The
+        first step matches on `(type, id, exit_edge)` only: its `entry_edge` is
+        the walk's back-edge fallback and can differ from the same tile's entry
+        mid-route (a curved reservation-end tile). Every later step matches on
+        the full `(type, id, entry_edge, exit_edge)` frame, which pins the
+        traversal direction.
         """
         required = [tuple(k) for k in (required_keys or [])]
-        if not required:
-            return False
         cand = cls._ordered_walk_keys(ordered_walk)
-        m, n = len(cand), len(required)
-        if m == 0 or m > n:
+        if not required or len(cand) != len(required):
             return False
-        for start in range(n - m + 1):
-            match = True
-            for j in range(m):
-                rk = required[start + j]
-                ck = cand[j]
-                if j == 0:
-                    if (ck[0], ck[1], ck[3]) != (rk[0], rk[1], rk[3]):
-                        match = False
-                        break
-                elif ck != rk:
-                    match = False
-                    break
-            if match:
-                return True
-        return False
+        first_c, first_r = cand[0], required[0]
+        if (first_c[0], first_c[1], first_c[3]) != (first_r[0], first_r[1], first_r[3]):
+            return False
+        return cand[1:] == required[1:]
 
     def get_active_path_progress(self, train_id: str) -> Optional[Dict[str, Any]]:
         """Read-only projection of dispatcher state for a single train.

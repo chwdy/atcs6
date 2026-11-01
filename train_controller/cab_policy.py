@@ -36,7 +36,7 @@ class CabFlipPolicy:
         a unit vector. We delegate edge resolution to
         ``RailwayNetwork.get_connection_edges(...)``, which already handles
         both grid adjacency and tunnel adjacency per design_new.md
-        "Pathfinding-home migration" / "Tunnels".
+        "Operational pathfinding home" / "Tunnels".
 
         Returns:
             True if cab should be flipped, False otherwise or if the check

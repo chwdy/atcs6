@@ -362,6 +362,42 @@ def test_an_unreserved_block_next_to_a_train_with_a_path_is_an_overrun_entry():
     assert blocks_joined_by_train(results) == {"T1": {"A"}}
 
 
+def _stopped_train_on_b_with_head_side_c():
+    """Line A - B - C: T1 stands on B, holds a path, and is stopped, so it is
+    touched on either side; its head side is C."""
+    net, det = make_detector(
+        ["A", "B", "C"],
+        [{"A": True, "B": True, "C": False}, {"A": False, "B": True, "C": True}],
+        on=1,
+        neighbours={"A": {"B"}, "B": {"A", "C"}, "C": {"B"}},
+        directional=lambda tid: False,
+        head_side=lambda tid, gained: "C",
+    )
+    det.controllers.update(_train_holding("B", net, with_path=True))
+    det.seed_occupied({"B"})
+    return net, det
+
+
+def test_a_block_behind_a_stopped_train_with_a_path_is_an_entry():
+    """Rank 3 (design_new.md "Block occupancy detection"): a block that touches
+    the train only on its rear side is its own body — a locomotive or lit car
+    bridging the joint behind it — so it is a plain `entry`, never an overrun
+    that would cut the train out."""
+    net, det = _stopped_train_on_b_with_head_side_c()
+    entered, _ = det.step()
+    results = det.attribute(entered, set())
+    assert results == [AttributionResult(AttributionKind.ENTRY, "A", "T1")]
+
+
+def test_a_block_in_front_of_a_stopped_train_with_a_path_is_an_overrun_entry():
+    """The same train touched on its head side has run past its authority."""
+    net, det = _stopped_train_on_b_with_head_side_c()
+    det.step()
+    entered, _ = det.step()
+    results = det.attribute(entered, set())
+    assert AttributionResult(AttributionKind.OVERRUN_ENTRY, "C", "T1") in results
+
+
 def test_an_unreserved_block_next_to_a_train_with_no_path_is_an_entry():
     """A train with no path has no authority to run past, so the block it
     touches is an `entry` and raises no cut-out."""

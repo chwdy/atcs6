@@ -504,7 +504,111 @@ def test_a_stretch_that_caps_every_crossing_fails_the_pass():
     assert profile.power_speed_curve == curve_before
 
 
+def test_a_cap_before_the_clock_starts_discards_nothing():
+    """A crossing is discarded only for a cap during it (design_new.md, "A capped
+    crossing is discarded"). A cap in the run-up — before the measured block
+    confirms — leaves the crossing that follows clean."""
+    cal, run, _profile = _open_run()
+    cal.advance(run, CalibrationObservation(now=0.0))  # arm the leg
+    far = run.heading_toward_block_id
+    assert run.crossing_started_at is None
+
+    assert cal.taint_current_crossing(
+        "T1", "reservation-end braking during a measured crossing"
+    ) is False
+    assert run.current_crossing_tainted is False
+
+    _observe(cal, run, 1.0, ("B",))
+    _observe(cal, run, 3.0, (far,))
+    assert len(run.crossings) == 1
+
+
 def test_taint_current_crossing_ignores_a_train_with_no_open_pass():
     cal, _run, _profile = _open_run()
     # No open run for a train at all -> no-op.
     assert cal.taint_current_crossing("T_NONE", "caution") is False
+
+
+# --- the turnaround waits for the train to leave B ----------------------------
+# design_new.md "Speed calibration", The pass turns the train around at each
+# end: the next leg is timed from a fresh entry into B, so the train must be
+# off B before it stops.
+
+
+def _cross_into_far_block(cal, run, *, measured_block_held):
+    """Arm, enter B, enter the far block; return the clock at the far entry."""
+    cal.advance(run, CalibrationObservation(now=0.0))  # arm the leg
+    far = run.heading_toward_block_id
+    _observe(cal, run, 1.0, ("B",), path_present=True)
+    _observe(
+        cal, run, 3.0, (far,), path_present=True,
+        measured_block_held=measured_block_held,
+    )
+    return 3.0
+
+
+def test_the_pass_keeps_driving_until_the_train_is_off_the_measured_block():
+    cal, run, _profile = _open_run()
+    clock = _cross_into_far_block(cal, run, measured_block_held=True)
+
+    # The crossing is banked, but the tail is still on B: the step's power stays.
+    assert len(run.crossings) == 1
+    assert cal.get_propulsion_override("T1").value == run.current_power
+    cal.advance(run, CalibrationObservation(
+        now=clock + 0.5, path_present=True, measured_block_held=True))
+    assert cal.get_propulsion_override("T1").value == run.current_power
+
+    # Once the span no longer covers B the pass cuts power and, stopped, turns.
+    cal.advance(run, CalibrationObservation(
+        now=clock + 1.0, path_present=True, measured_block_held=False))
+    assert cal.get_propulsion_override("T1").value == 0.0
+    heading = run.heading_to
+    cal.advance(run, CalibrationObservation(now=clock + 2.0, is_stopped=True))
+    assert run.heading_to == 1 - heading
+    assert run.needs_reverse is True
+
+
+def test_a_train_already_off_the_measured_block_stops_at_once():
+    cal, run, _profile = _open_run()
+    _cross_into_far_block(cal, run, measured_block_held=False)
+    assert len(run.crossings) == 1
+    assert cal.get_propulsion_override("T1").value == 0.0
+
+
+def test_a_leg_that_ends_with_the_train_still_on_the_measured_block_fails():
+    """The far outer block is too short to hold the train past B: its leg ends
+    at the far block's far seam with the tail still on B, so the leg back could
+    never be timed."""
+    cal, run, _profile = _open_run()
+    clock = _cross_into_far_block(cal, run, measured_block_held=True)
+    cal.advance(run, CalibrationObservation(
+        now=clock + 1.0, path_present=False, measured_block_held=True))
+    assert run.phase == PHASE_FAILED
+    assert "too short" in run.failure_reason
+
+
+def test_a_train_that_never_clears_the_measured_block_fails():
+    cal, run, _profile = _open_run()
+    clock = _cross_into_far_block(cal, run, measured_block_held=True)
+    cal.advance(run, CalibrationObservation(
+        now=clock + CALIBRATION_STEP_TIMEOUT_S + 1.0,
+        path_present=True, measured_block_held=True))
+    assert run.phase == PHASE_FAILED
+    assert "never cleared" in run.failure_reason
+
+
+def test_the_crossing_has_its_own_timeout_from_the_measured_block_entry():
+    """A long run-up does not eat into the crossing's time: the timeout that
+    fails a crossing counts from B's confirmation, not from the leg's start."""
+    cal, run, _profile = _open_run()
+    cal.advance(run, CalibrationObservation(now=0.0))  # arm the leg
+    far = run.heading_toward_block_id
+    cal.advance(run, CalibrationObservation(now=0.0, path_present=True))
+    entered_b = CALIBRATION_STEP_TIMEOUT_S - 1.0
+    _observe(cal, run, entered_b, ("B",), path_present=True)
+    cal.advance(run, CalibrationObservation(
+        now=entered_b + CALIBRATION_STEP_TIMEOUT_S - 1.0, path_present=True))
+    assert run.phase != PHASE_FAILED
+    _observe(cal, run, entered_b + CALIBRATION_STEP_TIMEOUT_S - 0.5, (far,),
+             path_present=True)
+    assert len(run.crossings) == 1

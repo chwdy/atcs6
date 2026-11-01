@@ -640,23 +640,32 @@ class Block(TrackResource):
             return True
         return False
 
-    def excludes_opposing_traversal(self) -> bool:
+    def excludes_opposing_traversal(self, exit_edge: Optional[str]) -> bool:
         """True when no train coming the other way can reach this block, so a
-        follower stopped just inside it cannot foul an opposing move:
+        train with traversal exit `exit_edge` stopped just inside it cannot
+        foul an opposing move:
 
         - the block is one-way (`allowed_travel_directions` restricted to a
           single direction), which structurally has no opposing traversal; or
-        - the block is in CAUTION — a leader has just passed forward through it,
-          committing the corridor to one-directional following use and still
-          occupying the block ahead in the protect direction, so no opposing
-          move can be routed up to it.
+        - the block is in CAUTION and the train leaves it through
+          `caution.exit_edge` — it follows a leader that has just passed
+          forward through it, the corridor is committed to one-directional
+          following use, and the leader still occupies the block ahead in the
+          protect direction, so no opposing move can be routed up to it. A
+          train leaving out of the other end is not following, so the CAUTION
+          does not exempt it (design_new.md "Path And PathDispatcher",
+          best-effort truncation end rules).
 
         Canonical home for that exemption: best-effort truncation
         (`PathDispatcher._terminal_fouls_two_way_switch_block`) consults this
         rather than re-checking `caution` / `allowed_travel_directions` at the
         call site, so both exemptions travel with the block.
         """
-        if self.caution is not None:
+        if (
+            self.caution is not None
+            and exit_edge is not None
+            and exit_edge == self.caution.exit_edge
+        ):
             return True
         atd = self.allowed_travel_directions
         return atd is not None and len(atd) < 2

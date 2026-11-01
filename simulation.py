@@ -350,6 +350,9 @@ class SimulationController(SwitchOutputOwner):
             operating_clock=lambda: self.operating_clock(),
             notification_center=self.notification_center,
             operation_mode=lambda: self.operation_mode,
+            block_holder=lambda block_id: getattr(
+                self.network.blocks.get(block_id), "occupied_by", None
+            ),
         )
 
         # Bumped by every safe-state entry. A `CalibrationRun` captures it when
@@ -1211,11 +1214,14 @@ class SimulationController(SwitchOutputOwner):
 
         This is the sequence itself. Points are dropped before block voltages,
         and each half is its controller's non-recording device write, so this
-        call touches no recorded model field and is safe from any thread —
-        including the Real Hardware `OutputWatchdog` daemon, which is the sole
-        direct caller. Every runtime-thread caller goes through
-        `enter_output_safe_state()` instead, which advances the safe-state
-        generation and reconciles the recorded fields afterwards.
+        call touches no recorded model field and is safe from any thread.
+        It has two direct callers: the Real Hardware `OutputWatchdog` daemon,
+        and process shutdown (`shutdown.py` `_apply_safe_state`), which writes
+        the safe state before it closes the device (design_new.md Power,
+        Runtime-thread callers reach the sequence through
+        `SimulationController.enter_output_safe_state()`). Every runtime-thread
+        caller goes through `enter_output_safe_state()` instead, which advances
+        the safe-state generation and reconciles the recorded fields afterwards.
         """
         if self.switch_power_controller is not None:
             self.switch_power_controller.de_energize_device_outputs()
@@ -1723,6 +1729,9 @@ class SimulationController(SwitchOutputOwner):
         # debounce counted it) before attribution runs, so a later failure in
         # this pass cannot lose the reading that led to it. The log catches its
         # own failures; it never raises into the tick.
+        # Setup leaves no environment active, so its passes log with none —
+        # entering Setup is an environment change that lists every block again
+        # (design_new.md "Detector reading log").
         self.detector_reading_log.record_pass(
             pass_kind=pass_kind,
             wall_time=self._pass_started_wall_time,
@@ -1730,7 +1739,7 @@ class SimulationController(SwitchOutputOwner):
             delta_seconds=delta_seconds,
             operating_delta_seconds=operating_delta_seconds,
             detector=detector,
-            environment=self.operation_mode.value,
+            environment=self.operation_mode.value if self.environment_active else None,
         )
         # One result per changed block, with its `kind` (design_new.md "Block
         # occupancy detection", The attribution result). The detector owns the
@@ -2080,91 +2089,109 @@ class SimulationController(SwitchOutputOwner):
         `reserved_for_other_train` fatal conflict. It reads every result that
         adds a block to a train's block list (`entry`, `overrun_entry` and
         `unidentified`, design_new.md "Block occupancy detection", The
-        attribution result).
+        attribution result), and every `conflict` block reserved for a train
+        none of its candidates is, so a conflict block is never left reserved
+        for a train that would drive onto current.
         """
         dispatcher = self.path_dispatcher
+        # Each newly occupied block still reserved for a train that does not
+        # touch it, with who took it: a block a train joined, or a `conflict`
+        # block that goes to no train (design_new.md "Reservation truncation",
+        # Observe caller).
+        taken: List[Tuple[str, str]] = []
         for train_id, block_ids in sorted(blocks_joined_by_train(results).items()):
             for block_id in sorted(block_ids):
                 block = self.network.blocks.get(block_id)
-                if block is None:
-                    continue
                 reserved_for = getattr(block, "reserved_for_train", None)
-                if reserved_for is None or reserved_for == train_id:
-                    continue
+                if reserved_for is not None and reserved_for != train_id:
+                    taken.append((block_id, train_id))
+        for result in sorted(results, key=lambda r: r.block_id):
+            if result.kind is not AttributionKind.CONFLICT:
+                continue
+            block = self.network.blocks.get(result.block_id)
+            reserved_for = getattr(block, "reserved_for_train", None)
+            if reserved_for is not None and reserved_for not in result.candidates:
+                taken.append((result.block_id, " and ".join(result.candidates)))
 
-                reason = (
-                    f"block {block_id} is physically occupied by {train_id}"
+        for block_id, taken_by in taken:
+            block = self.network.blocks[block_id]
+            # An earlier truncation in this loop may already have released it.
+            reserved_for = block.reserved_for_train
+            if reserved_for is None:
+                continue
+            reason = (
+                f"block {block_id} is physically occupied by {taken_by}"
+            )
+            path_id = (
+                dispatcher.active_path_id_by_train(reserved_for)
+                if dispatcher is not None
+                else None
+            )
+            # design_new.md "Reservation truncation", Observe caller: split
+            # on whether the reserving train had LOCKED the taken block. A
+            # block reserved by a path is locked only by that same path, so
+            # `locked_by_path is None` means reserved-but-unlocked.
+            victim_path = (
+                dispatcher.paths.get(path_id)
+                if path_id and dispatcher is not None
+                else None
+            )
+            taken_index = (
+                dispatcher._forward_resource_index(victim_path, "block", block_id)
+                if victim_path is not None
+                else None
+            )
+            if (
+                path_id
+                and getattr(block, "locked_by_path", None) is None
+                and taken_index is not None
+            ):
+                # Reserved-but-unlocked: pull the reservation back gracefully
+                # to before the taken block's occurrence. The call always
+                # succeeds (falling back to the lock end), so the reserving
+                # train brakes to its shortened reservation end — no cancel.
+                dispatcher.truncate_path_before_resource(
+                    path_id, taken_index, reason
                 )
-                path_id = (
-                    dispatcher.active_path_id_by_train(reserved_for)
-                    if dispatcher is not None
-                    else None
-                )
-                # design_new.md "Reservation truncation", Observe caller: split
-                # on whether the reserving train had LOCKED the taken block. A
-                # block reserved by a path is locked only by that same path, so
-                # `locked_by_path is None` means reserved-but-unlocked.
-                victim_path = (
-                    dispatcher.paths.get(path_id)
-                    if path_id and dispatcher is not None
-                    else None
-                )
-                taken_index = (
-                    dispatcher._forward_resource_index(victim_path, "block", block_id)
-                    if victim_path is not None
-                    else None
-                )
-                if (
-                    path_id
-                    and getattr(block, "locked_by_path", None) is None
-                    and taken_index is not None
-                ):
-                    # Reserved-but-unlocked: pull the reservation back gracefully
-                    # to before the taken block's occurrence. The call always
-                    # succeeds (falling back to the lock end), so the reserving
-                    # train brakes to its shortened reservation end — no cancel.
-                    dispatcher.truncate_path_before_resource(
-                        path_id, taken_index, reason
-                    )
-                    continue
+                continue
 
-                # Locked (the foreign train is inside the reserving train's
-                # braking distance): a graceful pull-back cannot leave room to
-                # stop, so the reserving train is emergency-braked. Release only
-                # the taken block's reservation and lock through the coordinator
-                # tail-release so the foreign entry commits cleanly; the rest of
-                # the reserving train's reservation and lock come down through
-                # the ordinary EB cancellation once it stops (design_new.md
-                # "Reservation truncation", Observe caller, Locked branch).
-                reserved_by_path = getattr(block, "reserved_by_path", None)
-                if reserved_by_path:
-                    if self.resource_coordinator is not None:
-                        self.resource_coordinator.release_reservation_tail(
-                            [block_id], [], reserved_by_path
-                        )
-                    elif self.block_manager is not None:
-                        self.block_manager.release_path_block_reservations(
-                            [block_id], reserved_by_path, completed=False
-                        )
-                controller = self.controllers.get(reserved_for)
-                if controller is not None and path_id:
-                    # Latch an emergency brake request on the reserving train
-                    # (design_new.md "Reservation truncation", Observe caller,
-                    # Locked branch). The same tick's Action step `01f2`
-                    # applies it through the canonical EB activation effects,
-                    # which latch `pending_path_cancel_request` with
-                    # `error.origin = "eb"` for Action to commit once the train
-                    # has stopped. This is what forces the reserving train to a
-                    # stand; a soft cancel alone would not, and the train is
-                    # inside its braking distance of an occupied block.
-                    controller.route_hooks.phase_latches.set_emergency_request(
-                        "brake",
-                        ErrorRecord(
-                            f"{reserved_for}'s locked block {block_id} was "
-                            f"entered by another train",
-                            "locked_foreign_entry",
-                        ),
+            # Locked (the foreign train is inside the reserving train's
+            # braking distance): a graceful pull-back cannot leave room to
+            # stop, so the reserving train is emergency-braked. Release only
+            # the taken block's reservation and lock through the coordinator
+            # tail-release so the foreign entry commits cleanly; the rest of
+            # the reserving train's reservation and lock come down through
+            # the ordinary EB cancellation once it stops (design_new.md
+            # "Reservation truncation", Observe caller, Locked branch).
+            reserved_by_path = getattr(block, "reserved_by_path", None)
+            if reserved_by_path:
+                if self.resource_coordinator is not None:
+                    self.resource_coordinator.release_reservation_tail(
+                        [block_id], [], reserved_by_path
                     )
+                elif self.block_manager is not None:
+                    self.block_manager.release_path_block_reservations(
+                        [block_id], reserved_by_path, completed=False
+                    )
+            controller = self.controllers.get(reserved_for)
+            if controller is not None and path_id:
+                # Latch an emergency brake request on the reserving train
+                # (design_new.md "Reservation truncation", Observe caller,
+                # Locked branch). The same tick's Action step `01f2`
+                # applies it through the canonical EB activation effects,
+                # which latch `pending_path_cancel_request` with
+                # `error.origin = "eb"` for Action to commit once the train
+                # has stopped. This is what forces the reserving train to a
+                # stand; a soft cancel alone would not, and the train is
+                # inside its braking distance of an occupied block.
+                controller.route_hooks.phase_latches.set_emergency_request(
+                    "brake",
+                    ErrorRecord(
+                        f"{reserved_for}'s locked block {block_id} was "
+                        f"entered by another train",
+                        "locked_foreign_entry",
+                    ),
+                )
 
     def _update_presence_unknown(self, detector) -> None:
         """Flag each train whose calculated position no physical reading backs
@@ -2356,6 +2383,19 @@ class SimulationController(SwitchOutputOwner):
         # transaction resumes from the retained last span.
         if controller.presence_unknown:
             self._freeze_lost_train_controller(controller)
+            # Detection returning on a block next to the retained span is
+            # credited to the ghost, but the flag still holds this pass: that
+            # block is not on its span and not yet held by it. The entry still
+            # has to be committed, or the block is never the ghost's again
+            # (design_new.md "Movement feedback runs only when movement is
+            # calculated; detection feedback always runs", Running pass,
+            # ghost). Only an entry counts as such a change: a clear on the
+            # rising edge is already covered by the ghost's release of every
+            # block it held.
+            if controller.physics_sync.pending_detected_entered_blocks:
+                controller.build_detected_progress_report(time.time())
+                self._commit_train_observe(controller, train)
+                return
             self._sync_persistent_train_state(train, controller)
             return
 

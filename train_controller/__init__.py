@@ -971,12 +971,6 @@ class TrainController:
         drives is lit. OFF (physics checks `powered`) and the emergency cut-out
         (`voltage_source_track_voltage = 0`) are the only 0 V outputs.
         """
-        # design_new.md, "A capped crossing is discarded": when the
-        # Propulsion cap step lowers the calibration drive through an external
-        # ATC restriction during a measured crossing, taint that crossing so it
-        # is discarded and re-measured rather than banked. EB and power-off end
-        # the whole pass separately, through run_still_valid at step `26f5`.
-        self._taint_calibration_crossing_on_cap()
         if not self.power_on:
             # Per design_new.md "Power/mode command contracts": clear manual_power_percent on
             # power-off so the set-and-forget contract holds.
@@ -1105,6 +1099,13 @@ class TrainController:
                 target = cap
                 if not driven_by_calibration:
                     self.manual.reset_power_percent_for_safety()
+                else:
+                    # design_new.md, "A capped crossing is discarded": the cap
+                    # lowered the calibration drive, so the crossing being timed
+                    # is tainted, discarded and re-measured rather than banked.
+                    # EB and power-off end the whole pass separately, through
+                    # run_still_valid at step `26f5`.
+                    self._taint_calibration_crossing_on_cap()
                 # The cap outranks the commanded percent, so the capped speed —
                 # not the discarded percent — is this tick's authoritative
                 # operating point, and voltage derives from it.
@@ -1155,17 +1156,15 @@ class TrainController:
         rather than banked, and the pass goes on. Only a pass actively driving a
         crossing is affected.
 
-        An ATC `CAUTION` block ahead and a posted block `SPEED_LIMIT` lower the
-        drive without ending the pass, and so does the leg's own reservation-end
-        braking (`RESERVATION_STOP`): it reaches back into a crossing being timed
-        only when the stretch is too short for the step (the leg drives to the far
-        seam of its far outer block, per "A calibration leg holds no reservation-end
-        standoff"), so tainting it there is how a too-short stretch is caught —
-        `taint_current_crossing(...)` marks a crossing only while one is being
-        timed. `NO_RESERVATION` is the leg losing its authority, a lifecycle event
-        that ends the pass through `SpeedCalibration.run_still_valid(...)`, so it
-        is excluded, as are EB and power-off, which end the whole pass at Action
-        step `26f5`.
+        Every cap that lowers the drive taints the crossing, whatever its
+        reason; the reason code only names it in the report. The leg's own
+        reservation-end braking (`RESERVATION_STOP`) reaches back into a crossing
+        being timed only when the stretch is too short for the step (the leg
+        drives to the far seam of its far outer block, per "A calibration leg
+        holds no reservation-end standoff"), so tainting it there is how a
+        too-short stretch is caught — `taint_current_crossing(...)` marks a
+        crossing only while one is being timed. EB and power-off end the whole
+        pass separately, at Action step `26f5`.
         """
         calibration = self._speed_calibration
         if calibration is None:
@@ -1173,6 +1172,9 @@ class TrainController:
         driving_pct = self._calibration_power_percent_override()
         if driving_pct is None or driving_pct <= 0.0:
             return
+        # Any cap that lowered the calibration drive discards the crossing
+        # (design_new.md "A capped crossing is discarded"); the reason code only
+        # names it in the report.
         reason_code = self.atc._last_limit_reason_code
         if reason_code == AtcLimitReasonCode.CAUTION:
             reason = "CAUTION restriction during a measured crossing"
@@ -1180,8 +1182,10 @@ class TrainController:
             reason = "block speed limit during a measured crossing"
         elif reason_code == AtcLimitReasonCode.RESERVATION_STOP:
             reason = "reservation-end braking during a measured crossing"
+        elif reason_code is not None:
+            reason = f"ATC limit ({reason_code.value}) during a measured crossing"
         else:
-            return
+            reason = "ATC limit during a measured crossing"
         calibration.taint_current_crossing(self.train_id, reason)
 
     def calibration_run_open(self) -> bool:
@@ -1582,15 +1586,6 @@ class TrainController:
         if not self.is_stopped():
             return
         self._apply_head_frame(self._authority_head_end())
-
-    def _reset_head_frame_to_default(self) -> None:
-        """Reset the span framing to its ``end_a`` head default, re-expressing the
-        two end locators when the head moves off ``end_b`` (design_new.md
-        "Reversed-frame re-expression"). Called by `complete_power_off()` during
-        OFF cleanup: with power off there is no live authority, so the head is
-        the ``end_a`` default. A no-op when the frame is already ``end_a`` or the
-        span cannot be re-expressed."""
-        self._apply_head_frame("end_a")
 
     def _authority_head_end(self) -> str:
         """The physical span end ("end_a"/"end_b") that faces into the live
@@ -2453,9 +2448,10 @@ class TrainController:
         It is the only ``OFF``-writing site besides the startup default, so the
         Operational state machine stays the single writer of ``powered``. It
         sets ``powered = False`` (so ``train_status`` derives to ``OFF``),
-        resets the span framing to its ``end_a`` head default, writes the
-        neutral notch, clears ``eb.active``, and sets ``control_mode =
-        "manual"`` (which clears ``commands.engaged``).
+        writes the neutral notch, clears ``eb.active``, and sets ``control_mode
+        = "manual"`` (which clears ``commands.engaged``). It leaves the span
+        framing alone: losing power, like losing a reservation, never flips the
+        head (design_new.md "Reservation-side head derivation").
 
         Idempotent and valid from any state. Its callers are the Action
         ``pending_power_off`` consumer (step ``886a`` of the Power-off
@@ -2467,7 +2463,6 @@ class TrainController:
         train ``OFF`` keeps its route removal for its own Action step.
         """
         self.powered = False
-        self._reset_head_frame_to_default()
         self.ops.reset_handle_to_neutral()
         # design_new.md, "EB workflow state machine" — clear the EB latch through the EB-owned helper so
         # the EB Workflow stays the single writer of `eb.active`.

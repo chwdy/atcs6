@@ -1,7 +1,7 @@
 """
 Railway Pathfinder
 
-Per design_new.md "Pathfinding-home migration":
+Per design_new.md "Operational pathfinding home":
 this module is the canonical operational pathfinding home that
 `RouteExecutor` platform-end resolution, `PathDispatcher.create_path(...)`
 start-side selection, and `PathDispatcher.extend_path(...)` suffix
@@ -42,8 +42,9 @@ if TYPE_CHECKING:
 class RailwayPathfinder:
     """Canonical operational pathfinder.
 
-    Public entry point: ``find_ordered_walk(...)`` returns the list of
-    surviving directed walk candidates, sorted in winning order.
+    Public entry point: ``query_graph_walks(request)`` returns the list of
+    surviving directed walk candidates, sorted in winning order;
+    ``find_ordered_walk(request)`` is its thin adapter.
     """
 
     def __init__(self, network: "RailwayNetwork"):
@@ -52,23 +53,31 @@ class RailwayPathfinder:
     # ------------------------------------------------------------------ public
 
     def find_ordered_walk(
+        self, request: GraphWalkQuery
+    ) -> List[GraphWalkCandidate]:
+        """Thin adapter over ``query_graph_walks``: the same input, the same
+        ranked candidates, best first (design_new.md "Operational pathfinding
+        home", the ``find_ordered_walk`` row of the function table). A caller
+        that needs one chosen walk takes the first element. A caller that
+        starts from block IDs builds the request with ``block_walk_query``.
+        """
+        return self.query_graph_walks(request)
+
+    def block_walk_query(
         self,
         start_block_id: str,
         end_block_id: str,
         direction_constraint: Optional[str] = None,
-        max_candidates: Optional[int] = None,
         manual_override: bool = False,
         train_min_radius_cm: Optional[float] = None,
         train_max_speed_kmh: Optional[float] = None,
         train_max_slope_percent: Optional[float] = None,
-    ) -> List[GraphWalkCandidate]:
-        """Thin adapter over ``query_graph_walks`` for block-ID callers.
+    ) -> Optional[GraphWalkQuery]:
+        """Build the ``GraphWalkQuery`` for a block-to-block search, or None
+        when either block is unknown or has no tiles.
 
-        Builds a ``GraphWalkQuery`` from the block-level arguments and
-        delegates all BFS, filtering, deduplication, ranking, and
-        ``GraphWalkCandidate`` construction to ``query_graph_walks``.
-        Existing callers are unaffected: the returned list has the same
-        shape and ordering as before.
+        The locators name each block and one of its tiles; the search inside
+        ``query_graph_walks`` fans out from every tile in the start block.
 
         Args:
             start_block_id: Block where the walk begins.
@@ -76,56 +85,36 @@ class RailwayPathfinder:
             direction_constraint: Optional ``"forward"`` / ``"reverse"``
                 resolved block-relative direction the terminal traversal
                 must satisfy on the destination block.
-            max_candidates: Optional cap on the number of returned
-                candidates after sorting.
+            manual_override: Whether manual blocks/switches may be used.
             train_min_radius_cm: The train's minimum curve radius capability
-                in centimetres, or None for geometry-only callers. When set,
-                candidates that traverse a block or switch leg whose curve
-                radius is tighter than this value are rejected.
+                in centimetres, or None for geometry-only callers.
             train_max_speed_kmh: The train's maximum speed in km/h, or None for
-                geometry-only callers. When set, surviving candidates are
-                ranked by estimated travel time (posted block speed limits
-                capped at this max) instead of distance alone.
+                geometry-only callers; when set, candidates rank by estimated
+                travel time.
             train_max_slope_percent: The train's maximum climbable gradient
-                (percent grade), or None / 0.0 for no limit. When set above
-                zero, candidates that climb a block steeper than this in the
-                traversed direction are rejected.
-
-        Returns:
-            List of ``GraphWalkCandidate`` sorted in winning order by
-            ``GraphWalkCandidate.comparison_key()`` (estimated travel time ASC
-            when ``train_max_speed_kmh`` is supplied, then ``tile_count`` ASC,
-            ``walk_length_cm`` ASC, ``candidate_rank`` ASC). Empty when no
-            walk satisfies every filter.
+                (percent grade), or None / 0.0 for no limit.
         """
         if start_block_id not in self.network.blocks:
-            return []
+            return None
         if end_block_id not in self.network.blocks:
-            return []
-
-        # Resolve start and end to one representative tile each.
+            return None
         start_positions = self.network.get_block_positions(start_block_id)
         end_positions = self.network.get_block_positions(end_block_id)
         if not start_positions or not end_positions:
-            return []
-
-        # Use the first tile in each block as the locator tile; the BFS
-        # inside query_graph_walks fans out from all tiles in the block.
-        start_locator = GraphLocator(
-            tile=next(iter(start_positions)),
-            block_id=start_block_id,
-            resource_type="block",
-            resource_id=start_block_id,
-        )
-        end_locator = GraphLocator(
-            tile=next(iter(end_positions)),
-            block_id=end_block_id,
-            resource_type="block",
-            resource_id=end_block_id,
-        )
-        request = GraphWalkQuery(
-            start_locator=start_locator,
-            end_locator=end_locator,
+            return None
+        return GraphWalkQuery(
+            start_locator=GraphLocator(
+                tile=next(iter(start_positions)),
+                block_id=start_block_id,
+                resource_type="block",
+                resource_id=start_block_id,
+            ),
+            end_locator=GraphLocator(
+                tile=next(iter(end_positions)),
+                block_id=end_block_id,
+                resource_type="block",
+                resource_id=end_block_id,
+            ),
             requested_destination_direction=direction_constraint,
             return_tiles=True,
             return_blocks=True,
@@ -134,17 +123,13 @@ class RailwayPathfinder:
             train_max_speed_kmh=train_max_speed_kmh,
             train_max_slope_percent=train_max_slope_percent,
         )
-        candidates = self.query_graph_walks(request)
-        if max_candidates is not None and max_candidates >= 0:
-            candidates = candidates[:max_candidates]
-        return candidates
 
     def query_graph_walks(
         self, request: GraphWalkQuery
     ) -> List[GraphWalkCandidate]:
         """Canonical operational graph walk query.
 
-        Per design_new.md "Pathfinding-home migration": accepts a
+        Per design_new.md "Operational pathfinding home": accepts a
         ``GraphWalkQuery`` with tile-precise locators, skips disabled
         blocks/switches, searches topology-only regardless of current switch
         position, rejects candidates whose terminal
@@ -578,8 +563,10 @@ class RailwayPathfinder:
                 npos = (neighbor.x, neighbor.y)
                 if npos in visited:
                     continue
-                opposite = OPPOSITE_EDGE.get(edge)
-                if not opposite or opposite not in neighbor.edges:
+                # The cardinal opposite is the wrong entry edge across a
+                # tunnel whose two edges are not opposites, so ask
+                # `get_connection_edges` whether the rails meet.
+                if self.network.get_connection_edges((cx, cy), npos) is None:
                     continue
                 if npos in dst_tiles:
                     return dist + 1
@@ -647,12 +634,19 @@ class RailwayPathfinder:
                         if not next_track:
                             continue
                         next_x, next_y = next_track.x, next_track.y
+                        # `get_neighbor` returns the next grid tile even when
+                        # its rails do not meet ours (a buffer stop), so ask
+                        # `get_connection_edges` before counting the tile;
+                        # it also gives the right entry edge across a tunnel.
+                        edges = self.network.get_connection_edges(
+                            (curr_x, curr_y), (next_x, next_y)
+                        )
+                        if edges is None:
+                            continue
+                        entry_edge = edges[1]
                         next_block_id = next_track.block_id
                         if next_block_id and next_block_id != start_block_id:
                             reachable_blocks.add(next_block_id)
-                        entry_edge = OPPOSITE_EDGE.get(exit_edge)
-                        if not entry_edge or entry_edge not in next_track.edges:
-                            continue
                         all_exits = next_track.get_exits(
                             entry_edge, use_switch_state=False
                         )
@@ -722,12 +716,16 @@ class RailwayPathfinder:
                 next_x, next_y = next_track.x, next_track.y
                 if (next_x, next_y) in occupied_tile_set:
                     continue  # never route back through our own body
+                # Same connection check as `get_reachable_endpoints`.
+                edges = self.network.get_connection_edges(
+                    (curr_x, curr_y), (next_x, next_y)
+                )
+                if edges is None:
+                    continue
+                entry_edge = edges[1]
                 next_block_id = next_track.block_id
                 if next_block_id and next_block_id not in occupied_block_set:
                     reachable_blocks.add(next_block_id)
-                entry_edge = OPPOSITE_EDGE.get(exit_edge)
-                if not entry_edge or entry_edge not in next_track.edges:
-                    continue
                 all_exits = next_track.get_exits(entry_edge, use_switch_state=False)
                 for next_exit in all_exits:
                     queue.append((next_x, next_y, next_exit))
@@ -854,6 +852,18 @@ class RailwayPathfinder:
             new_blocks = list(blocks)
             if next_block_id and next_block_id not in new_blocks:
                 new_blocks.append(next_block_id)
+            # The step must be a real track connection before anything else,
+            # the destination included: `get_neighbor` returns the grid
+            # neighbour even when its rails do not meet ours (a buffer stop
+            # beside another block's diagonal). `get_connection_edges` also
+            # gives the entry edge across a tunnel, where it is not the
+            # cardinal opposite of the exit.
+            connection_edges = self.network.get_connection_edges(
+                (curr_x, curr_y), (next_x, next_y)
+            )
+            if connection_edges is None:
+                continue
+            entry_edge = connection_edges[1]
             if next_block_id == end_block_id:
                 # Walk forward through the rest of the destination block so
                 # the path covers every tile inside it. Without this, the
@@ -910,19 +920,6 @@ class RailwayPathfinder:
                         blocks=new_blocks,
                     )
                 )
-                continue
-            # Tunnel-aware entry edge on the next tile. Falls back to the
-            # cardinal opposite for grid-adjacent pairs (where the lookup
-            # returns the same answer), so the change is a no-op there.
-            connection_edges = self.network.get_connection_edges(
-                (curr_x, curr_y), (next_x, next_y)
-            )
-            entry_edge = (
-                connection_edges[1]
-                if connection_edges
-                else OPPOSITE_EDGE.get(exit_edge)
-            )
-            if not entry_edge or entry_edge not in next_track.edges:
                 continue
             all_exits = next_track.get_exits(entry_edge, use_switch_state=False)
             if not all_exits:

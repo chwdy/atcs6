@@ -998,6 +998,9 @@ class TestSpeedCurveCalculation:
                 "id": "BLK_CAUTION",
                 "name": "BLK_CAUTION",
                 "state": BlockState.CAUTION.value,
+                # The train leaves the block the way the departed train did.
+                "caution_exit_edge": "E",
+                "exit_edge": "E",
                 "start_cm": 300.0,
                 "end_cm": 900.0,
                 "length_cm": 600.0,
@@ -1023,6 +1026,38 @@ class TestSpeedCurveCalculation:
             p.get("atc_limit_reason_code") == "caution" for p in inside
         ), "expected at least one in-block point tagged CAUTION"
 
+    def test_caution_block_left_the_other_way_is_not_capped(
+        self, train_and_controller
+    ):
+        """A train crossing a CAUTION block out of its other end is not capped
+        (design_new.md "ATC speed limit"): its own exit edge differs from the
+        block's caution exit edge."""
+        from constants import CAUTION_SPEED_LIMIT_KMH
+
+        train, controller = train_and_controller
+        lookahead_blocks = [
+            {
+                "id": "BLK_CAUTION",
+                "name": "BLK_CAUTION",
+                "state": BlockState.CAUTION.value,
+                "caution_exit_edge": "E",
+                "exit_edge": "W",
+                "start_cm": 300.0,
+                "end_cm": 900.0,
+                "length_cm": 600.0,
+                "speed_limit_kmh": None,
+            }
+        ]
+        curves = controller.calculate_speed_curves(
+            max_distance_cm=3000, lookahead_blocks=lookahead_blocks
+        )
+        inside = [p for p in curves if 300.0 <= p["distance_cm"] < 900.0]
+        assert inside, "expected curve sample points inside the CAUTION block"
+        assert not any(
+            p.get("atc_limit_reason_code") == "caution" for p in inside
+        )
+        assert any(p["atc_limit"] > CAUTION_SPEED_LIMIT_KMH for p in inside)
+
     def test_caution_block_with_high_nominal_limit_still_capped(
         self, train_and_controller
     ):
@@ -1036,6 +1071,9 @@ class TestSpeedCurveCalculation:
                 "id": "BLK_CAUTION_HI",
                 "name": "BLK_CAUTION_HI",
                 "state": BlockState.CAUTION.value,
+                # The train leaves the block the way the departed train did.
+                "caution_exit_edge": "E",
+                "exit_edge": "E",
                 "start_cm": 300.0,
                 "end_cm": 900.0,
                 "length_cm": 600.0,

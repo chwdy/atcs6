@@ -202,6 +202,11 @@ class UnidentifiedTrainTracker:
         goes into `physics_sync.pending_block_exit_edges`, the one carrier for a
         per-block tail-vacate direction, and the controller's movement callback
         consumes it on this same tick — for an unidentified train it never buffers across ticks.
+
+        A middle block — one with held neighbours on both sides, whose clear
+        splits the train — has no single edge toward the train, so it gets no
+        edge: the vacate passes `direction = None` and the block goes straight
+        to FREE. So does a vacated block next to no held block.
         """
         if not vacated:
             return
@@ -213,12 +218,14 @@ class UnidentifiedTrainTracker:
             # Last block clearing: `direction` stays None, the block goes
             # straight to FREE, and the unidentified train enters the gap hold.
             return
+        pending = controller.physics_sync.pending_block_exit_edges
         for block_id in sorted(vacated):
-            for edge in _EDGES:
-                next_block = self._next_block(block_id, edge)
-                if next_block is not None and next_block in still_held:
-                    controller.physics_sync.pending_block_exit_edges[block_id] = edge
-                    break
+            held_by_edge = self._held_neighbours_by_edge(block_id, still_held)
+            held_neighbours = set().union(*held_by_edge.values())
+            if len(held_neighbours) == 1:
+                pending[block_id] = next(e for e in _EDGES if e in held_by_edge)
+            else:
+                pending.pop(block_id, None)
 
     def write_detected_span(
         self, unidentified_id: str, entered: Set[str], vacated: Set[str]
@@ -633,19 +640,24 @@ class UnidentifiedTrainTracker:
     # Topology helpers
     # ------------------------------------------------------------------
 
-    def _next_block(self, block_id: str, edge: str) -> Optional[str]:
-        """The first block reached leaving `block_id` through `edge`, if any.
+    def _held_neighbours_by_edge(
+        self, block_id: str, still_held: Set[str]
+    ) -> Dict[str, Set[str]]:
+        """For each edge out of `block_id`, the blocks in `still_held` its walk
+        reaches; edges that reach none are left out.
 
         Used for the vacate direction: the edge whose walk lands on a block the
         unidentified train still holds is the vacated block's `exit_edge`.
+        Every tile is walked, because both ends of a curved block can leave
+        through the same compass edge.
         """
+        held_by_edge: Dict[str, Set[str]] = {}
         for tile in self._network.get_block_tracks(block_id):
-            if edge not in (tile.edges or ()):
-                continue
-            found = self._walk_out(tile, edge, block_id)
-            if found:
-                return sorted(found)[0]
-        return None
+            for edge in tile.edges or ():
+                held = self._walk_out(tile, edge, block_id) & still_held
+                if held:
+                    held_by_edge.setdefault(edge, set()).update(held)
+        return held_by_edge
 
     def reachable_blocks(self, block_id: str) -> Set[str]:
         """Every block reachable from `block_id` through undetected track.
