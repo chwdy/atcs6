@@ -156,6 +156,47 @@ def test_activate_emergency_idempotent_rejects_duplicate():
     assert result.success is False
 
 
+def test_eb_release_waits_for_the_pre_eb_authority_to_clear():
+    """A stopped, powered train cannot release EB while its pre-EB reservation
+    is still live: the release reads "no live reservation" as one of its four
+    conditions (design_new.md "EB workflow state machine", row `ad04`). Once
+    the next tick's Action commits the EB cancel and the reservation clears,
+    the same release is accepted."""
+    network = _build_three_block_network()
+    car = TrainCar(car_id="C1", car_type="LOCOMOTIVE", length_cm=20.0)
+    train = Train(train_id="T_REL", consist=[car], max_speed=60.0)
+    network.add_train(train)
+    span = network.place_train(train, 0, 0, direction=Direction.EAST)
+
+    dispatcher = PathDispatcher(network)
+    sim = SimulationController(network, dispatcher)
+    controller = sim._get_or_create_controller(train)
+    controller.physics_sync.current_span = span
+    assert controller.commands.power_on_cmd().success
+    result = dispatcher.create_path(
+        train_id=train.train_id,
+        requested_destination_block_id="BLK_C",
+    )
+    assert result.success, f"Failed to create path: {result.reason}"
+    assert controller.is_stopped()
+
+    assert controller.eb.activate().success
+    assert controller.path_projection.received_path_plan is not None
+
+    refused = controller.eb.release()
+    assert refused.success is False
+    assert controller.eb.active is True, "a refused release changes nothing"
+    assert controller.route_hooks.phase_latches.path_cancel_request is not None
+
+    sim.update(0.1)
+    assert controller.path_projection.received_path_plan is None
+    assert dispatcher.get_active_path(train.train_id) is None
+
+    accepted = controller.eb.release()
+    assert accepted.success is True, accepted.message
+    assert controller.eb.active is False
+
+
 # =============================================================================
 # Inclusive-latch writers (per design_new.md "Latch Table")
 # =============================================================================

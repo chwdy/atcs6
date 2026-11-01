@@ -143,3 +143,39 @@ def test_an_ato_train_that_brakes_to_its_stop_still_arrives():
             break
     assert sim.route_executor.assigned_route_id_for("T") is None
     assert dispatcher.get_active_path("T") is None
+
+
+def test_arrival_tolerance_is_two_centimetres_at_or_below(monkeypatch):
+    """4a's distance test reads "at or below `RESERVATION_STOP_ARRIVAL_TOLERANCE_CM`
+    — `2.0` cm" (design_new.md "Stop-arrival check"). The train stands short of
+    its terminal block, so 4b cannot answer for it; only the distance to the
+    braking target decides. Everything but that one distance comes from the
+    train's own lookahead, which a train cannot be parked to the centimetre to
+    produce."""
+    assert RESERVATION_STOP_ARRIVAL_TOLERANCE_CM == 2.0
+
+    sim, dispatcher, controller, target = _train_with_stop_route()
+    _tick(sim)
+    assert _active_path(dispatcher) is not None
+    assert controller.is_stopped()
+    head = controller._get_head_tile()
+    assert sim.network.tile_to_block_id(head[0], head[1]) != target
+
+    real_lookahead = controller._compute_canonical_lookahead
+
+    def stand_at(target_stop_cm):
+        def lookahead():
+            payload = real_lookahead()
+            payload["lookahead"] = {
+                **payload["lookahead"], "target_stop_cm": target_stop_cm
+            }
+            return payload
+
+        monkeypatch.setattr(controller, "_compute_canonical_lookahead", lookahead)
+        reason = lookahead()["lookahead"]["speed_curves"][0]["atc_limit_reason_code"]
+        assert reason == "reservation_stop"
+        return controller.is_stopped_at_reservation_end()
+
+    assert stand_at(RESERVATION_STOP_ARRIVAL_TOLERANCE_CM) is True
+    assert stand_at(0.0) is True
+    assert stand_at(RESERVATION_STOP_ARRIVAL_TOLERANCE_CM + 0.5) is False

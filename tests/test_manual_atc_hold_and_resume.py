@@ -15,19 +15,23 @@ Regression guard: the earlier controller-side rewrite
 (`TrainController.tick(...)` overwriting `handle_position` with a braking notch)
 destroyed the raw command, so once ATC braked a manual train the notch stuck and
 the train braked past the limit toward a stand and never auto-resumed. Every
-assertion below fails under that behavior.
+assertion in the hold test fails under that behavior.
+
+The last test covers the other side of the margin: an overspeed past
+`OVERSPEED_EB_THRESHOLD_KMH` raises the emergency brake instead of holding.
 """
 
 import pytest
 
-from enums import HandlePosition
+import train_controller
+from enums import HandlePosition, TrainStatus
 from tests.journey.scenes.demo_scene import DemoScene
 from tests.journey.harness import ProgressTracker
 
 pytestmark = pytest.mark.scene("demo_main")
 
 
-def _drive_manual_into_atc_limit(dt: float):
+def _manual_train_at_cruise(dt: float):
     fx = DemoScene().build()
     sim = fx.sim_controller
     network = fx.network
@@ -56,6 +60,11 @@ def _drive_manual_into_atc_limit(dt: float):
     step_seconds(4.5)
     cruise = c.physics_sync.current_speed_kmh
     assert cruise > 10.0, f"train did not reach a manual cruise (got {cruise:.1f})"
+    return c, network, step_seconds, cruise
+
+
+def _drive_manual_into_atc_limit(dt: float):
+    c, network, step_seconds, cruise = _manual_train_at_cruise(dt)
 
     # Impose a gentle ATC restriction ~6 km/h below the current speed. That is
     # under the 10 km/h ATC-EB threshold, so it exercises the service-brake ATC
@@ -98,3 +107,34 @@ def _drive_manual_into_atc_limit(dt: float):
 @pytest.mark.parametrize("dt", [0.1, 0.2, 0.3])
 def test_manual_simulation_holds_at_atc_limit_and_auto_resumes(dt):
     _drive_manual_into_atc_limit(dt)
+
+
+@pytest.mark.parametrize("dt", [0.1, 0.3])
+def test_overspeed_past_the_eb_margin_raises_the_emergency_brake(dt):
+    """The counterpart of the hold above: once the train runs faster than its
+    ATC limit by more than `OVERSPEED_EB_THRESHOLD_KMH`, ATC raises the
+    emergency brake on that same tick (design_new.md "Controller tick order",
+    step `914f`). A positive limit keeps this on the ordinary margin rather
+    than the zero-limit fail-safe."""
+    c, network, step_seconds, _ = _manual_train_at_cruise(dt)
+    step_seconds(3.0)  # run up well past the margin above any positive limit
+    cruise = c.physics_sync.current_speed_kmh
+    margin = train_controller.OVERSPEED_EB_THRESHOLD_KMH
+    limit = round(cruise - margin - 3.0, 1)
+    assert limit > 0.0, (
+        f"cruise {cruise:.1f} km/h is too slow to overspeed past the "
+        f"{margin} km/h margin under a positive limit"
+    )
+    assert not c.eb.active
+
+    for blk in network.blocks.values():
+        blk.speed_limit_kmh = limit
+    step_seconds(dt)  # one tick
+
+    assert c.atc.speed_limit == pytest.approx(limit)
+    assert c.eb.active, (
+        f"speed {cruise:.1f} km/h under a {limit:.1f} km/h limit is past the "
+        f"{margin} km/h margin; ATC must raise the emergency brake"
+    )
+    assert c.train_status == TrainStatus.EB
+    assert c.ops.handle_position == HandlePosition.EB

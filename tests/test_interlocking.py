@@ -85,6 +85,48 @@ class TestSwitchLocking:
             is False
         )
 
+    @pytest.mark.parametrize(
+        "held, requested",
+        [
+            # Another train's flank protection asks for the other position.
+            (
+                dict(path_id="PATH_1", train_id="TRAIN_A", locked_state=0),
+                dict(path_id="PATH_2", train_id="TRAIN_B", locked_state=1,
+                     source_switch_id="SW_2"),
+            ),
+            # A main claim asks against another train's held flank protection.
+            (
+                dict(path_id="PATH_2", train_id="TRAIN_B", locked_state=1,
+                     source_switch_id="SW_2"),
+                dict(path_id="PATH_1", train_id="TRAIN_A", locked_state=0),
+            ),
+            # The same train's second path asks for the other position.
+            (
+                dict(path_id="PATH_1", train_id="TRAIN_A", locked_state=0),
+                dict(path_id="PATH_3", train_id="TRAIN_A", locked_state=1),
+            ),
+        ],
+        ids=["flank_against_main", "main_against_flank", "same_train_two_paths"],
+    )
+    def test_no_lock_is_granted_against_a_lock_at_the_other_position(
+        self, held, requested
+    ):
+        """No future lock may require a different state (design_new.md
+        "Switch Entity", Canonical `Switch.position` mutation workflow, step 2).
+        The cross-train main-claim rule alone does not cover these cases: a
+        flank claim, or a second claim from the same train."""
+        from switch import Switch
+        from runtime_payloads import SwitchLockClaim
+
+        switch = Switch(switch_id="SW_1", x=0, y=0)
+        switch.position = held["locked_state"]
+        assert switch.acquire_lock(SwitchLockClaim(**held)) is True
+
+        assert switch.acquire_lock(SwitchLockClaim(**requested)) is False
+        assert list(switch.locks) == [
+            (held["path_id"], held.get("source_switch_id"))
+        ]
+
     def test_switch_position_change_blocked_when_locked(self):
         from switch import Switch
         from runtime_payloads import SwitchLockClaim
