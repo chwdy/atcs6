@@ -2922,12 +2922,17 @@ class TrainPhysics:
             self._next_reserved_block = None
             self._blocks_past_authority = set()
             return set()
-        energized = self._standing_blocks_for_train(train)
+        standing = self._standing_blocks_for_train(train)
+        # The walk passes over only the blocks the train stands on. The
+        # pending-entry block is the block in front of the head, not under it:
+        # handing it to the walk as stood-on made the walk skip it and energize
+        # the reserved block beyond as well, two blocks ahead of the head.
+        self._next_reserved_block = self._resolve_next_reserved_block(
+            train, standing
+        )
+        energized = set(standing)
         if self._pending_entry_block is not None:
             energized.add(self._pending_entry_block)
-        self._next_reserved_block = self._resolve_next_reserved_block(
-            train, energized
-        )
         if self._next_reserved_block is not None:
             energized.add(self._next_reserved_block)
         self._blocks_past_authority = self._detected_blocks_past_authority(
