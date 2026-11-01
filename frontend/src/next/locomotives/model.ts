@@ -204,7 +204,7 @@ export function selectionForProfile(profileId: string, roster: RosterEntry[], tr
 /** The five steps of design_new.md "Operator workflows" → "Calibrating a
  *  locomotive", in order. */
 export const CALIBRATION_STEPS: ReadonlyArray<{ title: string; hint: string }> = [
-  { title: 'Name the locomotive', hint: 'Pick the train in the Locomotive row below.' },
+  { title: 'Name the locomotive', hint: 'Pick the train in the Locomotive row.' },
   { title: 'Find the lighting voltage', hint: 'Press Calibrate on the lighting-voltage row, step up until the locomotive creeps, step back down one, and save.' },
   { title: 'Name the measured block and start the speed pass', hint: 'Press Calibrate speed, pick a block on the map or in the list, then Start.' },
   { title: 'Let the pass run', hint: 'The train runs back and forth across the measured block at each power step. Stop ends it and writes nothing.' },

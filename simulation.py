@@ -2726,7 +2726,7 @@ class SimulationController(SwitchOutputOwner):
         # preconditions; each is ended through its own teardown.
         if speed_open:
             calibration.abandon(
-                train_id, reason="calibration pass ended: conditions no longer hold"
+                train_id, reason="conditions no longer hold"
             )
         if lighting_open:
             calibration.cancel_lighting(train_id)
@@ -3153,7 +3153,7 @@ class SimulationController(SwitchOutputOwner):
         # or layout load, so a later train with the same id can open a run. No
         # open run reaches here: the power-off that left the train OFF ended it.
         self.speed_calibration.abandon(
-            train_id, reason="calibration ended: the train was deleted"
+            train_id, reason="the train was deleted"
         )
 
         self.network.remove_train(train_id)

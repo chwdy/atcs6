@@ -123,6 +123,9 @@ interface CalibrationGroupState {
   stretchResolved: boolean;
   /** How the last speed pass ended, shown in the setup. */
   message: string;
+  /** The pass ended on its own (EB, a power-off, a session stop, a
+   *  measurement fault), not by the operator's Stop: shown as a warning. */
+  messageWarn: boolean;
   timer: number | null;
   /** A request is on its way; the refresh tick skips rather than piles up. */
   busy: boolean;
@@ -918,14 +921,51 @@ export class SpeedProfileEditorHandler {
     return { yMin: 0, yMax: Math.max(30, Math.ceil(top * 1.25)) };
   }
 
+  /** One of the profile's own values, beside the label it belongs to. A value
+   *  a locomotive's own profile reads from its model profile is plain text,
+   *  not a disabled input: it is edited on the model profile. */
+  private _scalarRowHtml(
+    id: string,
+    label: string,
+    value: string,
+    opts: { editable: boolean; unit?: string; attrs?: string; placeholder?: string }
+  ): string {
+    const unit = opts.unit ? `<span class="sp-scalar-unit">${opts.unit}</span>` : '';
+    const field = opts.editable
+      ? `<input id="${id}" class="input-small-field sp-scalar-input" value="${escapeAttr(value)}" ${opts.attrs || ''}${
+          opts.placeholder ? ` placeholder="${escapeAttr(opts.placeholder)}"` : ''
+        }>`
+      : value
+        ? `<span class="sp-scalar-value">${escapeAttr(value)}</span>`
+        : '<span class="sp-scalar-value is-empty">not set</span>';
+    return `
+                    <div class="sp-scalar-row">
+                        <label class="input-small-label"${opts.editable ? ` for="${id}"` : ''}>${label}</label>
+                        ${field}${unit}
+                    </div>`;
+  }
+
   private _editorHtml(p: SpeedProfileData): string {
     const ro = this._isInstance();
     return `
             <div class="sp-editor">
                 ${this._instanceNoteHtml()}
+                <div class="control-section sp-model-section">
+                    ${this._scalarRowHtml('sp-model', 'Model', p.model || '', {
+                      editable: !ro,
+                      attrs: 'type="text"',
+                      placeholder: 'e.g. Kato EF66',
+                    })}
+                </div>
+
                 <div class="control-section">
                     <div class="control-section-header">Voltage ↔ Power</div>
-                    <div class="text-muted text-xs mb-8">X = power %, Y = track voltage. Click the line to add a point · drag to move · right-click a point to remove. The 0% point is the lighting voltage; its Calibrate below is the one way to move it.</div>
+                    ${this._scalarRowHtml('sp-maxv', 'Max voltage (100% power)', fmt(p.max_voltage), {
+                      editable: !ro,
+                      unit: 'V',
+                      attrs: 'type="number" min="0" step="0.1"',
+                    })}
+                    <div class="text-muted text-xs mb-8">X = power %, Y = track voltage. Click the line to add a point · drag to move · right-click a point to remove. The 0% point is the lighting voltage; its Calibrate in the calibration group is the one way to move it.</div>
                     <div class="sp-plot-block">
                         <div class="sp-point-list" id="sp-vp-list"></div>
                         <canvas class="sp-canvas" id="sp-vp-canvas"></canvas>
@@ -934,6 +974,11 @@ export class SpeedProfileEditorHandler {
 
                 <div class="control-section">
                     <div class="control-section-header">Power ↔ Speed</div>
+                    ${this._scalarRowHtml('sp-topspeed', 'Top speed (100% power)', fmt(topSpeed(p.power_speed_curve)), {
+                      editable: true,
+                      unit: 'km/h',
+                      attrs: 'type="number" min="0" step="1"',
+                    })}
                     <div class="text-muted text-xs mb-8">X = power %, Y = speed (km/h). Click the line to add a point · drag to move · right-click to remove. Left point is pinned at the origin.</div>
                     <div class="sp-plot-block">
                         <div class="sp-point-list" id="sp-ps-list"></div>
@@ -1119,18 +1164,6 @@ ${this._calibrationGroupHtml(p)}
     return `
                 <div class="control-section" id="sp-cal-group">
                     <div class="control-section-header">Calibration</div>
-                    <div class="input-small-row mb-8">
-                        <label class="input-small-label input-small-label-inline" for="sp-model">Model</label>
-                        <input type="text" id="sp-model" class="input-small-field input-small-field-compact" value="${escapeAttr(p.model || '')}" placeholder="e.g. Kato EF66"${this._isInstance() ? ' disabled' : ''}>
-                    </div>
-                    <div class="input-small-row mb-8">
-                        <label class="input-small-label input-small-label-inline" for="sp-maxv">Max voltage (100% power)</label>
-                        <input type="number" id="sp-maxv" class="input-small-field input-small-field-compact" value="${fmt(p.max_voltage)}" min="0" step="0.1"${this._isInstance() ? ' disabled' : ''}>
-                    </div>
-                    <div class="input-small-row mb-8">
-                        <label class="input-small-label input-small-label-inline" for="sp-topspeed">Top speed (100% power)</label>
-                        <input type="number" id="sp-topspeed" class="input-small-field input-small-field-compact" value="${fmt(topSpeed(p.power_speed_curve))}" min="0" step="1">
-                    </div>
                     <div class="input-small-row sp-cal-train-row">
                         <label class="input-small-label input-small-label-inline" for="sp-cal-train">Locomotive</label>
                         <select id="sp-cal-train" class="input-small-field" title="The placed train both calibration runs drive. Naming another train ends a run that is open."></select>
@@ -1159,6 +1192,7 @@ ${this._calibrationGroupHtml(p)}
       stretchText: '',
       stretchResolved: false,
       message: '',
+      messageWarn: false,
       timer: null,
       busy: false,
       stepChain: Promise.resolve(),
@@ -1729,18 +1763,18 @@ ${this._calibrationGroupHtml(p)}
     cal.compare = null;
     const p = this._profile;
     const stamp = p.calibrated_at
-      ? `Measured ${escapeAttr(String(p.calibrated_at).replace('T', ' ').replace('+00:00', ' UTC'))}`
-      : 'Not measured — no speed calibration has written this curve.';
+      ? `<span class="sp-cal-stamp">Measured ${escapeAttr(String(p.calibrated_at).replace('T', ' ').replace('+00:00', ' UTC'))}</span>`
+      : '<span class="sp-cal-stamp" title="No speed calibration has written this curve.">Not measured</span>';
     const head = `
             <div class="input-small-row sp-cal-run-head">
                 <label class="input-small-label input-small-label-inline">Power → speed curve</label>
+                ${stamp}
                 ${
                   cal.view === 'none' || cal.view === 'lighting'
                     ? `<button id="sp-speed-calibrate" class="btn btn-outline btn-sm" title="Measure this locomotive by running it back and forth across a block">Calibrate speed</button>`
                     : ''
                 }
-            </div>
-            <div class="text-muted text-xs mb-8">${stamp}</div>`;
+            </div>`;
 
     let body = '';
     if (cal.view === 'speed-setup') {
@@ -1762,7 +1796,13 @@ ${this._calibrationGroupHtml(p)}
                     <button id="sp-cal-pick" class="btn btn-outline btn-sm" title="Pick on map (click the block on the layout; Esc cancels)"><i class="ti ti-map-pin"></i></button>
                 </div>
                 <div class="text-muted text-xs mb-8" id="sp-cal-stretch">${escapeAttr(cal.stretchText || 'Choose a block to see the stretch.')}</div>
-                ${cal.message ? `<div class="text-xs mb-8">${escapeAttr(cal.message)}</div>` : ''}
+                ${
+                  cal.message
+                    ? cal.messageWarn
+                      ? `<div class="banner banner-warn sp-cal-message" role="status">${escapeAttr(cal.message)}</div>`
+                      : `<div class="text-xs mb-8">${escapeAttr(cal.message)}</div>`
+                    : ''
+                }
                 <div class="sp-cal-actions">
                     <button id="sp-cal-cancel" class="btn btn-outline btn-sm">Cancel</button>
                     <button id="sp-cal-start" class="btn btn-accent btn-sm" title="Take control of the train and run the pass">Start</button>
@@ -1990,6 +2030,7 @@ ${this._calibrationGroupHtml(p)}
       cal.view = 'speed-setup';
       cal.speedRun = null;
       cal.message = speedPassEndedMessage(run.last_result);
+      cal.messageWarn = true;
       this._renderCalibration();
       void this._refreshReadiness();
       return;
@@ -2011,6 +2052,7 @@ ${this._calibrationGroupHtml(p)}
     const ended = this._endShownRun(cal);
     cal.view = 'speed-setup';
     cal.message = 'Stopped. Nothing was written.';
+    cal.messageWarn = false;
     this._renderCalibration();
     await ended;
     void this._resolveStretch(cal.measuredBlockId);

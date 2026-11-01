@@ -2,16 +2,21 @@
  * Two additions to the Speed Profile panel's calibration group.
  *
  * `CalibrationSteps`, at the top of the group: the five steps of
- * design_new.md "Calibrating a locomotive" with the current step marked. The
- * group's own rows below do the work; this only says where the operator is.
+ * design_new.md "Calibrating a locomotive" with the current step marked. Each
+ * step holds the group's row that does it (`STEP_ROWS`), moved in from the
+ * panel's own HTML, so the operator reads a step's title and finds its
+ * control right under it. A step that is not current shows its row's head
+ * line only (the value and the button that opens the run); the current
+ * step's open run shows its working controls there too.
  *
  * `WhileCalibrating`, at the end of the group: while the named train reads
  * `CALIBRATING`, the train commands the spec refuses, disabled with that
  * reason, next to the two that stay available (emergency brake, and power off
  * once stopped), each of which ends the run.
  */
-import { useState } from 'preact/hooks';
+import { useLayoutEffect, useRef, useState } from 'preact/hooks';
 
+import type { CalibrationGroupSummary } from '../../editor/editor-speed-profiles';
 import { api } from '../../lib/api';
 import { showToast } from '../../lib/toast';
 import {
@@ -23,11 +28,45 @@ import {
 } from './model';
 import { calibration, trains } from './state';
 
+/**
+ * The panel rows each step holds, by step index. The speed row follows the
+ * speed pass: step 3 names the measured block and starts it, step 4 shows it
+ * running, step 5 shows the result to commit.
+ */
+function stepRows(view: CalibrationGroupSummary['view'] | undefined): string[][] {
+  const speed = view === 'speed-running' ? 3 : view === 'speed-held' ? 4 : 2;
+  const rows: string[][] = [['.sp-cal-train-row', '#sp-cal-readiness'], ['#sp-lighting-row'], [], [], []];
+  rows[speed].push('#sp-speed-row');
+  return rows;
+}
+
 export function CalibrationSteps() {
-  const states = calibrationSteps(calibration.value);
+  const summary = calibration.value;
+  const states = calibrationSteps(summary);
+  // The hint says how to start the current step. Once a run is open, the
+  // run's own controls and text say what to do.
+  const noRunOpen = !summary || summary.view === 'none';
+  const list = useRef<HTMLOListElement>(null);
+
+  // The panel draws its rows; Preact draws the steps. After each draw, put
+  // every row into its step. The rows keep their ids, so the panel goes on
+  // finding and redrawing them where they are.
+  useLayoutEffect(() => {
+    const ol = list.current;
+    const group = ol?.closest('#sp-cal-group');
+    if (!ol || !group) return;
+    stepRows(summary?.view).forEach((selectors, i) => {
+      const body = ol.querySelector<HTMLElement>(`[data-step-body="${i}"]`);
+      for (const sel of selectors) {
+        const row = group.querySelector(sel);
+        if (body && row && row.parentElement !== body) body.appendChild(row);
+      }
+    });
+  });
+
   return (
     <div class="nloco-steps">
-      <ol class="nloco-step-list" aria-label="Calibrating a locomotive">
+      <ol class="nloco-step-list" aria-label="Calibrating a locomotive" ref={list}>
         {CALIBRATION_STEPS.map((step, i) => (
           <li
             key={step.title}
@@ -39,8 +78,9 @@ export function CalibrationSteps() {
             </span>
             <span class="nloco-step-text">
               <span class="nloco-step-title">{step.title}</span>
-              {states[i] === 'current' && <span class="nloco-step-hint">{step.hint}</span>}
+              {states[i] === 'current' && noRunOpen && <span class="nloco-step-hint">{step.hint}</span>}
             </span>
+            <div class="nloco-step-body" data-step-body={i} />
           </li>
         ))}
       </ol>

@@ -908,6 +908,24 @@ inputs instead of the 28px control language.
 Reference: `.diagnostics-panel-field select` in
 [features/diagnostics.css](../static/css/features/diagnostics.css).
 
+**On a wide column, the field follows its label.** `.input-small-row`
+spreads its children to both edges. That is right in a 280px sidebar, but
+on a 700px column it pins a short field hundreds of pixels from its label
+(Proximity). There, give the label a fixed width and let the field and its
+unit follow it. Reference: `.sp-scalar-row` in
+[features/speed-profiles.css](../static/css/features/speed-profiles.css).
+
+**A value that can never be changed on this panel is plain text, not a
+disabled input.** A disabled input still looks like a field, and a row of
+greyed boxes reads as clutter. Show the value as text with its unit, and
+say where it is changed. On a locomotive's own speed profile, Model and Max
+voltage come from the model profile, so they show as text (`12 V`), and the
+note at the top of the panel names the model profile where they are edited.
+A control that is frozen only for now stays a dimmed input, because it can
+be changed in another mode (Read-only in Operate mode, below). Reference:
+`_scalarRowHtml` in
+[editor-speed-profiles.ts](../frontend/src/editor/editor-speed-profiles.ts).
+
 ### Seamless inline edit
 
 A field that reads as plain text until you click it, then becomes a normal
@@ -1300,6 +1318,11 @@ Three patterns for showing a row's status:
    over `.banner-value`). Banners belong in the panel **footer** for
    running diagnostics; an inline-in-body banner is also fine when it
    surfaces a single high-priority detail for the record on screen.
+   Use a warning banner for an outcome the operator did not cause: a speed
+   pass that ended on its own ("The pass ended: Conditions no longer hold.
+   Nothing was written.") sits in a `.banner-warn` above the step's
+   buttons. The same kind of line for something the operator did (they
+   pressed Stop) stays plain text, because it tells them nothing new.
    Canonical home: `.banner` / `.banner-{warn,danger}` / `.banner-label` /
    `.banner-value` / `.banner-text` in
    [components/status-blocks.css](../static/css/components/status-blocks.css).
@@ -1700,6 +1723,50 @@ Reference: `SETUP_STEPS` / `stepMarks` / `firstOpenStep` in
 `StepFrame` in
 [next/hardware/screen.tsx](../frontend/src/next/hardware/screen.tsx);
 `.nhs-step*` in [next/hardware.css](../static/css/next/hardware.css).
+
+**When there is no room for a step list beside the step, the steps hold
+their own controls in one column.** The calibration group on the
+Locomotives screen is the reference. That screen already has the locomotive
+list on the left and, during a run, the map on the right, so a second list
+column would squeeze both. The marks follow the rules above.
+
+- **Each step holds the control that does it.** The step's title comes
+  first, and the row that does the step sits right under it. A list of
+  steps at the top with every control in a separate form below makes the
+  operator read "pick a block" and then go looking for the block picker.
+  That is what made the calibration group feel cramped: every step's
+  controls were on screen at once, in a different order from the steps.
+- **A step that is not current shows one line:** its value and the one
+  button that opens it (the lighting-voltage row: `1.5 V` and Calibrate).
+  The operator can redo a done step from there without opening anything
+  else.
+- **Only the current step opens.** It is shaded `--bg-hover`, its mark gets
+  the accent ring, and its open run shows its working controls: the voltage
+  stepper, the block picker, the pass progress, or Save and Promote. The
+  other steps are muted, and a step still to come has a lighter title.
+- **The hint shows only while nothing is open.** It says how to start the
+  current step ("Press Calibrate speed, pick a block on the map or in the
+  list, then Start."). Once a run is open, its own controls and text say
+  what to do, and the hint would be out of date.
+- **A control that serves several steps moves with the job.** The speed
+  row sits under step 3 while the pass is set up, under step 4 while it
+  runs, and under step 5 while the result waits to be committed.
+- **Values stored on the record stay out of the steps.** The steps are a
+  job the operator does; the record's own settings are not part of it. Put
+  each setting beside the thing it sets: Max voltage is the 100% point of
+  the voltage ↔ power curve, so it sits in that curve's section, and Top
+  speed sits in the power ↔ speed section.
+- **Labels inside the steps share one width** (160px), so the values and
+  selects of every step start at the same x. When the column is narrower
+  than 420px, each label goes on its own line above its control (§4,
+  Control row layout).
+
+Reference: `CalibrationSteps` / `stepRows` in
+[next/locomotives/calibration-steps.tsx](../frontend/src/next/locomotives/calibration-steps.tsx),
+which moves the Speed Profile panel's rows into their steps after each draw;
+`calibrationSteps` in
+[next/locomotives/model.ts](../frontend/src/next/locomotives/model.ts);
+`.nloco-step*` in [next/locomotives.css](../static/css/next/locomotives.css).
 
 ### One button for a run of checks
 
@@ -2689,6 +2756,11 @@ word, that is a change to this table first.
 UPPERCASE only for the §5 label tier and §7 state chips. Spell words
 out when there's room (Density follows task); the compact cryptic form
 goes in the `title` tooltip, not on the screen.
+
+**A reason from the server is just the reason.** The panel writes the
+sentence around it ("The pass ended: … Nothing was written."). A server
+reason that carries its own "calibration pass ended:" makes the panel say
+"ended" twice, so the server sends only "conditions no longer hold".
 
 **Tooltips carry the how.** Every tool and non-obvious control gets a
 `title`: what it does, then how to use it — the Editor options row's

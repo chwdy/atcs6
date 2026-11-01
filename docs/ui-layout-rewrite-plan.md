@@ -395,7 +395,7 @@ passes:
 | **Editor:** Track → Extend | Not offered: Track has Draw and Remove, because Draw already joins track drawn from an existing end | Extend needs its own behavior first |
 | **Hardware Setup:** steps 2 and 4 | The dialog's own sections (bridge, chip list, layout tally, idle threshold, wiring overview), drawn by `ui/hardware-panel.ts` | Those sections are ported |
 | **Hardware Setup:** Occupancy Bench and Virtual Bench in step 4 | Today's bench panels, built inside the step instead of a window | The benches are ported |
-| **Locomotives:** Speed Profile panel | Today's panel code (curve editor, calibration rows) drawn into the screen, with the five steps and the refused commands added around it | The panel is rebuilt as components |
+| **Locomotives:** Speed Profile panel | Today's panel code (curve editor, calibration rows) drawn into the screen. The five steps are added around it, and each step holds the panel row that does it, moved in after each draw; the refused commands follow the steps | The panel is rebuilt as components |
 | **Logs:** Virtual inputs tab | Not built; the Virtual Bench is in Hardware Setup step 4 | Built from the Virtual Bench's fake-detector part |
 | **Hold all** | Only in the Operate train cards row; the canvas session bar is gone | — |
 | **Editor:** today's panels' title, back link and body | Three nodes kept in a hidden holder in `index.html` (`#secondary-sidebar`), which the Editor right panel moves into itself (`next/editor/legacy-panel.ts`); `editor/editor-ui.ts` is now a one-panel host with no tabs | Each panel is ported |

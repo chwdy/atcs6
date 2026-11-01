@@ -271,49 +271,73 @@ html[data-screen="locomotives"][data-loco-canvas="shown"] .workspace > .canvas-c
     order: -1;
 }
 
-/* ---- The five calibration steps --------------------------------------- */
+/* ---- The five calibration steps ---------------------------------------
+   Each step holds the row that does it (calibration-steps.tsx moves the
+   panel's rows in). The mark sits in its own column; the title, hint and
+   the step's row line up in the second column, so every control sits right
+   under the step it belongs to. The current step is tinted; the rest stay
+   flat, and a step still to come is muted. */
 
 .nloco-steps {
-    margin: 2px 0 10px;
+    margin: 4px 0 6px;
+    container-type: inline-size;
 }
 
 .nloco-step-list {
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: 4px;
     margin: 0;
     padding: 0;
     list-style: none;
 }
 
 .nloco-step {
-    display: flex;
-    align-items: flex-start;
-    gap: 8px;
-    padding: 4px 6px;
+    display: grid;
+    grid-template-columns: 22px minmax(0, 1fr);
+    column-gap: 10px;
+    padding: 8px 10px;
     font-size: 12px;
     color: var(--text-secondary);
     border-radius: var(--control-radius-sm);
 }
 
+/* Same mark as Hardware Setup's steps (next/hardware.css .nhs-step-mark). */
 .nloco-step-mark {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    flex: 0 0 18px;
-    height: 18px;
+    height: 22px;
     font-family: var(--font-mono);
     font-size: 10px;
     border: 1px solid var(--border-color);
     border-radius: 50%;
 }
 
+.nloco-step-text {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+}
+
+.nloco-step-title {
+    line-height: 22px;
+    font-weight: 600;
+}
+
+.nloco-step.is-todo .nloco-step-title {
+    font-weight: 400;
+}
+
 .nloco-step.is-done .nloco-step-mark {
     color: var(--success-color);
     border-color: rgba(var(--success-rgb), 0.5);
+    background-color: rgba(var(--success-rgb), 0.12);
 }
 
 .nloco-step.is-current {
+    padding: 12px 10px;
     color: var(--text-primary);
     background-color: var(--bg-hover);
 }
@@ -324,15 +348,60 @@ html[data-screen="locomotives"][data-loco-canvas="shown"] .workspace > .canvas-c
     border-color: var(--accent-color);
 }
 
-.nloco-step.is-current .nloco-step-title {
-    font-weight: 600;
-}
-
 .nloco-step-hint {
-    display: block;
-    margin-top: 2px;
     font-size: 11px;
     color: var(--text-secondary);
+}
+
+.nloco-step-body {
+    grid-column: 2;
+    min-width: 0;
+    padding-top: 8px;
+}
+
+.nloco-step-body:empty {
+    display: none;
+}
+
+/* Inside a step the row labels share one width, so the values and selects
+   of every step start at the same x. */
+.nloco-step-body .input-small-label-inline {
+    flex: 0 0 160px;
+    min-width: 0;
+}
+
+.nloco-step-body .input-small-row {
+    margin-bottom: 6px;
+}
+
+.nloco-step-body .sp-cal-readiness {
+    margin-bottom: 0;
+}
+
+/* The step already groups the run's controls with its head line, so the
+   run body needs no divider of its own. */
+.nloco-step-body .sp-cal-run-body {
+    margin-bottom: 0;
+    padding-top: 4px;
+    border-top: none;
+}
+
+/* An empty row container (the lighting row before the group is filled). */
+.nloco-step-body > :empty {
+    display: none;
+}
+
+/* Narrow (the map is open beside a small window): a label beside its
+   control would squeeze the control, so the label goes on its own line
+   above it (DESIGN_LANGUAGE.md §4, Control row layout). */
+@container (max-width: 420px) {
+    .nloco-step-body .input-small-row {
+        flex-wrap: wrap;
+        row-gap: 4px;
+    }
+    .nloco-step-body .input-small-label-inline {
+        flex: 1 0 100%;
+    }
 }
 
 /* While the train reads CALIBRATING: the refused commands, disabled. */

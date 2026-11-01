@@ -113,6 +113,46 @@
     gap: 0;
 }
 
+/* ---- the profile's own values ----
+   Model, and each curve's 100% point (Max voltage, Top speed) in its curve's
+   section. The value sits right beside its label (Proximity) and carries its
+   unit. A value a locomotive's own profile reads from its model profile is
+   plain text, not a disabled input. */
+.sp-scalar-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+.sp-scalar-row .input-small-label {
+    flex: 0 0 150px;
+}
+.sp-scalar-input {
+    flex: 0 1 96px;
+    min-width: 0;
+}
+.sp-model-section .sp-scalar-input {
+    flex-basis: 220px;
+}
+.sp-scalar-value {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+.sp-scalar-value.is-empty {
+    font-family: var(--font-main);
+    font-weight: 400;
+    color: var(--text-secondary);
+}
+.sp-scalar-unit {
+    font-size: 11px;
+    color: var(--text-secondary);
+}
+.sp-model-section .sp-scalar-row {
+    margin-bottom: 0;
+}
+
 /* ---- calibration group ----
    design_new.md "Speed calibration", The panel, and "Lighting-voltage
    calibration", The panel. The locomotive row names the train both runs
@@ -139,13 +179,28 @@
     margin: 2px 0 0;
     padding-left: 16px;
 }
+/* A run's head line: the label, its value right beside it (Proximity), and
+   the button that opens the run at the right edge. */
 .sp-cal-run-head {
+    justify-content: flex-start;
     margin-bottom: 6px;
+}
+.sp-cal-run-head > .btn {
+    margin-left: auto;
+}
+/* When the stored curve was measured, or that it never was. */
+.sp-cal-stamp {
+    font-size: 11px;
+    color: var(--text-secondary);
+}
+/* How the last speed pass ended on its own: a §6 warning banner over the
+   actions line. */
+.sp-cal-message {
+    margin-bottom: 8px;
 }
 /* Read-only inline numeric (DESIGN_LANGUAGE.md §9): the lighting voltage the
    named train runs on. Its Calibrate is the one way to move it. */
 .sp-cal-value {
-    margin-left: auto;
     font-family: var(--font-mono);
     font-size: 12px;
     font-weight: 600;

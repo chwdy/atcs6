@@ -26,7 +26,10 @@ function fakePanel() {
   const draw = (profileId: string) => {
     host!.el.innerHTML =
       '<div class="sp-editor"><div class="control-section" id="sp-cal-group">' +
-      '<div class="control-section-header">Calibration</div><div id="sp-cal-rows"></div></div></div>';
+      '<div class="control-section-header">Calibration</div>' +
+      '<div class="input-small-row sp-cal-train-row"><select id="sp-cal-train"></select></div>' +
+      '<div class="sp-cal-readiness" id="sp-cal-readiness"></div>' +
+      '<div id="sp-lighting-row"></div><div id="sp-speed-row"></div></div></div>';
     host!.profileShown(profileId);
   };
   return {
@@ -149,6 +152,31 @@ describe('Locomotives screen', () => {
 
     act(() => panel.host().calibrationChanged(summary({ view: 'speed-running' })));
     expect(group.querySelector('[aria-current="step"]')!.textContent).toContain('Let the pass run');
+  });
+
+  it('puts each of the group’s rows under the step it does; the speed row follows the pass', () => {
+    act(() => rowNamed('Class 47 #2').click());
+    const group = document.querySelector('#sp-cal-group')!;
+    const stepOf = (sel: string) => group.querySelector(sel)!.closest('.nloco-step')!.querySelector('.nloco-step-title')!.textContent;
+    expect(stepOf('#sp-cal-train')).toBe('Name the locomotive');
+    expect(stepOf('#sp-cal-readiness')).toBe('Name the locomotive');
+    expect(stepOf('#sp-lighting-row')).toBe('Find the lighting voltage');
+    expect(stepOf('#sp-speed-row')).toBe('Name the measured block and start the speed pass');
+
+    act(() => panel.host().calibrationChanged(summary({ view: 'speed-running' })));
+    expect(stepOf('#sp-speed-row')).toBe('Let the pass run');
+    act(() => panel.host().calibrationChanged(summary({ view: 'speed-held' })));
+    expect(stepOf('#sp-speed-row')).toBe('Commit the result');
+    act(() => panel.host().calibrationChanged(summary({ view: 'speed-setup' })));
+    expect(stepOf('#sp-speed-row')).toBe('Name the measured block and start the speed pass');
+  });
+
+  it('shows the current step’s hint only while no run is open', () => {
+    act(() => rowNamed('Class 47 #2').click());
+    act(() => panel.host().calibrationChanged(summary()));
+    expect(document.querySelector('[aria-current="step"] .nloco-step-hint')).not.toBeNull();
+    act(() => panel.host().calibrationChanged(summary({ view: 'lighting' })));
+    expect(document.querySelector('[aria-current="step"] .nloco-step-hint')).toBeNull();
   });
 
   it('does not reopen the panel when a poll changes only live values', () => {
