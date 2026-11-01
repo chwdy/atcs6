@@ -21,9 +21,10 @@ The pass turns the train around at each end itself — power to 0, wait for the
 canonical stopped predicate, re-frame the span to its other head end, re-command
 the step — so a plain length of track can measure a locomotive with no loop to
 lap. Each
-step runs `CALIBRATION_ROUND_TRIPS` round trips and averages twice that many
-crossings, half in each direction: a stretch is rarely dead level, and equal
-counts each way cancel the grade.
+step runs `CALIBRATION_ROUND_TRIPS` round trips and takes the median of twice
+that many crossings, half in each direction: a stretch is rarely dead level, and
+equal counts each way cancel the grade, while one crossing a detector timed
+wrong lands at an end of the order and does not move the sample.
 
 Measuring every step does not commit the run. It holds its finished samples
 until the operator picks a target — replace the linked profile, or save a new
@@ -40,6 +41,7 @@ operator steps up and down and nothing else.
 """
 
 from dataclasses import dataclass, field
+from statistics import median
 from datetime import datetime, timezone
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -54,9 +56,9 @@ from constants import (
 )
 from model_scale import cm_per_sec_to_kmh, kmh_to_cm_per_sec
 
-# A measured mean this far above the previous (higher-power) step's is treated
-# as equal rather than as a rise, so float noise in the crossing mean cannot trip
-# the non-decreasing rule.
+# A step's sample this far above the previous (higher-power) step's is treated
+# as equal rather than as a rise, so float noise in the crossing median cannot
+# trip the non-decreasing rule.
 _MONOTONIC_EPSILON_KMH = 1e-6
 
 # Run phases. "leg", "clearing" and "stopping" are the three parts of one leg:
@@ -71,7 +73,7 @@ PHASE_FAILED = "failed"
 
 @dataclass(frozen=True)
 class CalibrationSample:
-    """One measured curve point: the mean of a step's crossings."""
+    """One measured curve point: the median of a step's crossings."""
 
     power_percent: float
     speed_kmh: float
@@ -835,16 +837,18 @@ class SpeedCalibration:
         return None
 
     def _close_step(self, run: CalibrationRun) -> Optional[CalibrationCommand]:
-        """Average the step's crossings and either bank the sample or repeat.
+        """Take the median of the step's crossings and either bank the sample
+        or repeat (design_new.md "Speed calibration", Both directions are
+        measured, and a step's sample is their median).
 
         Returns a command when the pass is finished or failed, None when the
         caller should carry on to the next leg.
         """
-        mean_speed = sum(run.crossings) / len(run.crossings)
+        step_speed = median(run.crossings)
         previous = run.samples[-1].speed_kmh if run.samples else None
         run.crossings = []
 
-        if previous is not None and mean_speed > previous + _MONOTONIC_EPSILON_KMH:
+        if previous is not None and step_speed > previous + _MONOTONIC_EPSILON_KMH:
             # `power_speed_curve` must stay invertible, so samples have to rise
             # with power. The sweep runs down, so the step measured just before
             # this one had more power (design_new.md "Speed calibration", A step
@@ -861,7 +865,7 @@ class SpeedCalibration:
             return None
 
         run.samples.append(
-            CalibrationSample(power_percent=run.current_power, speed_kmh=mean_speed)
+            CalibrationSample(power_percent=run.current_power, speed_kmh=step_speed)
         )
         run.step_remeasured = False
         run.step_cap_retries = 0

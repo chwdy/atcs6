@@ -162,7 +162,7 @@ def test_a_leg_arms_a_one_off_route_to_its_far_end_and_finishes_without_a_route_
     assert stop.power_percent == 0.0
 
 
-def test_a_step_averages_both_directions():
+def test_a_step_takes_the_median_of_both_directions():
     cal, run, _profile = _open_run()
     # Alternate slow/fast legs — a grade makes one direction measure slow by
     # what it makes the other measure fast, and equal counts each way cancel it.
@@ -173,6 +173,40 @@ def test_a_step_averages_both_directions():
     slow = cm_per_sec_to_kmh(BLOCK_LENGTH_CM / 3.0)
     fast = cm_per_sec_to_kmh(BLOCK_LENGTH_CM / 1.0)
     assert run.samples[0].speed_kmh == pytest.approx((slow + fast) / 2)
+
+
+def test_one_mistimed_crossing_does_not_move_the_step():
+    """design_new.md "Speed calibration", Both directions are measured, and a
+    step's sample is their median: a crossing a detector timed wrong lands at
+    an end of the order and leaves the sample where the others put it."""
+    cal, run, _profile = _open_run()
+    clock = 0.0
+    for seconds in (2.0, 2.0, 2.0, 8.0):
+        clock = _crossing(cal, run, clock, seconds=seconds)
+    assert run.samples[0].speed_kmh == pytest.approx(
+        cm_per_sec_to_kmh(BLOCK_LENGTH_CM / 2.0)
+    )
+
+
+def test_the_rig_run_of_2026_10_31_measures_on():
+    """The crossing times the rig recorded measuring Up. The locomotive ran at
+    nearly the same speed at 100%, 90% and 80%, and one mistimed crossing at 90%
+    (3.71 s) made a mean of 80% read faster than 90%, so the pass re-measured
+    80% and failed. The median keeps the three steps in order."""
+    cal, run, _profile = _open_run()
+    clock = 0.0
+    for times in (
+        (2.62, 1.99, 1.92, 1.89),  # 100%
+        (3.71, 1.94, 2.01, 1.91),  # 90%
+        (2.13, 2.01, 2.02, 1.88),  # 80%
+    ):
+        for seconds in times:
+            clock = _crossing(cal, run, clock, seconds=seconds)
+    assert run.phase != PHASE_FAILED, run.failure_reason
+    assert run.step_remeasured is False
+    assert [s.power_percent for s in run.samples] == [100.0, 90.0, 80.0]
+    speeds = [s.speed_kmh for s in run.samples]
+    assert speeds == sorted(speeds, reverse=True)
 
 
 def test_a_step_collects_two_crossings_per_round_trip():

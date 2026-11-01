@@ -154,9 +154,9 @@ UNIDENTIFIED_GAP_HOLD_S: float = 5.0
 CALIBRATION_POWER_STEP_PERCENT: int = 10
 
 # Each step runs this many round trips across the measured block, so it
-# collects twice this many crossings, half in each direction. Averaging equal
-# counts each way cancels the stretch's grade: the uphill leg measures slow by
-# very nearly what the downhill leg measures fast.
+# collects twice this many crossings, half in each direction, and takes their
+# median. Equal counts each way cancel the stretch's grade: the uphill leg
+# measures slow by very nearly what the downhill leg measures fast.
 CALIBRATION_ROUND_TRIPS: int = 2
 
 # A step whose measured-block entry does not confirm within this many seconds
