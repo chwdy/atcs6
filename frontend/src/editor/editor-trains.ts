@@ -20,6 +20,7 @@ import { holdReasonText } from '../lib/hold-reason';
 import { formatSpeedReadout, formatATOEta, formatSimClock, middleTruncate } from './train-format';
 import { showToast } from '../lib/toast';
 import { copyIdButton } from '../lib/copy-id';
+import { pickableProfileChoices, type ProfileChoice } from '../lib/profile-choices';
 import type { EditorHost } from './types';
 import { showConfirmModal, getTrackExits, getNeighborPosition, formatDuration, formatDistanceCm, escapeAttr } from '../lib/helpers';
 
@@ -820,15 +821,15 @@ export class TrainEditorHandler {
     if (!idInput.value) idInput.value = `TRAIN_${Date.now().toString().slice(-4)}`;
 
     try {
-      const profiles = await this.api.getSpeedProfiles();
+      // "Default" (already in the select) seeds a fresh pair; the rest are
+      // instance profiles no train names, so not this train's own blank pair.
+      const [profiles, trains] = await Promise.all([this.api.getSpeedProfiles(), this.api.getTrains()]);
       const sel = document.getElementById('unidentified-adopt-profile') as HTMLSelectElement | null;
-      if (sel && Array.isArray(profiles)) {
-        for (const p of profiles) {
-          const id = p?.profile_id ?? p?.id;
-          if (!id) continue;
+      if (sel) {
+        for (const choice of pickableProfileChoices(profiles, trains)) {
           const opt = document.createElement('option');
-          opt.value = id;
-          opt.textContent = p?.name || id;
+          opt.value = choice.id;
+          opt.textContent = choice.label;
           sel.appendChild(opt);
         }
       }
@@ -1118,21 +1119,16 @@ export class TrainEditorHandler {
     const trainStateClass = this.getTrainStateVisualClass(trainState);
 
     // Speed-profile picker options. The panel lets the operator re-point a
-    // placed train at any registered profile; calibration then finds the train
-    // by this link. Failing to load the list is non-fatal — the current profile
-    // is always offered so the select still tells the truth.
+    // placed train at an instance profile no other train names; calibration
+    // then finds the train by this link. Failing to load the list is non-fatal
+    // — the current profile is always offered so the select still tells the truth.
     const currentProfileId = String(train.speed_profile_id || 'default');
-    let profileOptions: Array<{ id: string; label: string }> = [];
+    let profileOptions: ProfileChoice[] = [{ id: currentProfileId, label: currentProfileId }];
     try {
-      const profiles = await this.api.getSpeedProfiles();
-      profileOptions = (profiles || [])
-        .map((p: any) => ({ id: String(p?.profile_id ?? p?.id ?? ''), label: String(p?.name || p?.profile_id || p?.id || '') }))
-        .filter((o: { id: string; label: string }) => o.id);
+      const [profiles, trains] = await Promise.all([this.api.getSpeedProfiles(), this.api.getTrains()]);
+      profileOptions = pickableProfileChoices(profiles, trains, currentProfileId);
     } catch (err) {
       console.debug('[TrainEditorHandler] speed profiles load failed:', err);
-    }
-    if (!profileOptions.some((o) => o.id === currentProfileId)) {
-      profileOptions.unshift({ id: currentProfileId, label: currentProfileId });
     }
     const profileOptionsHtml = profileOptions
       .map(
