@@ -50,7 +50,7 @@ This project requires the `general` conda environment. Run Python through it for
   /opt/homebrew/anaconda3/envs/general/bin/python server.py --skip-startup-tests --port 5007 > /tmp/server.log 2>&1 &
   ```
   for the dev server, demo runs, or anything else you start with `&`. Add `-u` if you need unbuffered output from a chatty script. `.claude/launch.json` already points at this same binary.
-- **Why this matters.** `general` provides Python 3.12.13 with flask and pytest installed. Code in this repo uses 3.10+ syntax (e.g. `Flask | None` in `server.py:66`); running under 3.9 raises `TypeError: unsupported operand type(s) for |: 'type' and 'NoneType'` at import time.
+- **Why this matters.** `general` provides Python 3.12.16 with flask and pytest installed. Keep a conda-forge build made on Apple Silicon: older builds (3.12.13 and earlier) were compiled on Intel without profile-guided optimization and run the tests about 30% slower. Code in this repo uses 3.10+ syntax (e.g. `Flask | None` in `server.py:66`); running under 3.9 raises `TypeError: unsupported operand type(s) for |: 'type' and 'NoneType'` at import time.
 - **How to apply.** Anywhere a tool call would invoke `python`, `python3`, `pytest`, `flask`, or run `server.py` / `demo_main.py` / any project script, use the env binary path above. When `pytest` or similar is reported as "not found," it's the env, not a missing install — re-run via the env binary.
 - **Don't "fix" the 3.10+ syntax.** Modern union syntax (`X | None`, etc.) is intentional. Do not change it to `Optional[X]` or add `from __future__ import annotations` just because a wrong-Python invocation surfaced an error — fix the invocation instead.
 
