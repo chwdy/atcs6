@@ -342,6 +342,10 @@ def test_powering_off_mid_pass_ends_the_speed_run(state):
     assert sim.speed_calibration.runs.get(train_id) is None, (
         "a powered-off train must not leave an open calibration run behind"
     )
+    # The reason names the condition that failed, so the panel can say why.
+    result = train_service.last_speed_calibration_result(state, train_id)
+    assert result["success"] is False
+    assert result["reason"] == "the train was powered off"
 
 
 def test_emergency_brake_mid_pass_ends_the_speed_run(state):
@@ -359,11 +363,14 @@ def test_emergency_brake_mid_pass_ends_the_speed_run(state):
     sim.controllers[train_id].eb.activate()
     # The predicate is false the moment EB latches, before any further tick.
     assert sim.speed_calibration.run_still_valid(train_id) is False
+    assert sim.speed_calibration.run_invalid_reason(train_id) == "the emergency brake is on"
     for _ in range(10):
         sim.update(0.1)
         if sim.speed_calibration.runs.get(train_id) is None:
             break
     assert sim.speed_calibration.runs.get(train_id) is None
+    result = train_service.last_speed_calibration_result(state, train_id)
+    assert result["reason"] == "the emergency brake is on"
 
 
 def test_entering_a_fatal_halt_ends_an_open_speed_run(state):
@@ -517,6 +524,35 @@ def test_a_calibration_leg_completes_through_ordinary_stop_completion(state):
     # The pass writes nothing to the profile until an operator commits.
     assert profile.power_speed_curve == curve_before
     assert profile.calibrated_at is None
+
+
+def test_run_invalid_reason_names_the_first_condition_that_failed(state):
+    """`run_invalid_reason` holds `run_still_valid`'s four checks and names the
+    first one that fails, in order: the controller, power, EB, a pending
+    power-off (design_new.md "Speed calibration", Where it runs). Step `26f5`
+    reports that reason when it ends a pass, so the panel can say why."""
+    sim = state.sim_controller
+    calibration = sim.speed_calibration
+    train_id = _free_train(state)
+    block_id = _first_calibratable_block(state, train_id)
+    _ready_manual_train(sim, state.network, train_id)
+    sim.update(0.1)
+    train_service.calibrate_train(state, train_id, measured_block_id=block_id)
+    assert calibration.run_invalid_reason(train_id) is None
+    assert calibration.run_still_valid(train_id) is True
+
+    controller = sim.controllers[train_id]
+    controller.route_hooks.phase_latches.set_power_off()
+    assert calibration.run_invalid_reason(train_id) == "a power-off is pending"
+    assert calibration.run_still_valid(train_id) is False
+    controller.eb.activate()
+    assert calibration.run_invalid_reason(train_id) == "the emergency brake is on"
+
+    controller = sim.controllers.pop(train_id)
+    try:
+        assert calibration.run_invalid_reason(train_id) == "the train's controller is gone"
+    finally:
+        sim.controllers[train_id] = controller
 
 
 def test_run_still_valid_survives_the_leg_completion_window(state):

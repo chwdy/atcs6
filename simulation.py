@@ -2710,7 +2710,9 @@ class SimulationController(SwitchOutputOwner):
         for both an open speed pass and an open lighting-voltage run (design_new.md
         "Speed calibration", Where it runs). When it is false the run ends this
         same tick — a speed pass through `SpeedCalibration.abandon(...)`, a
-        lighting run through `SpeedCalibration.cancel_lighting(...)`. It is a
+        lighting run through `SpeedCalibration.cancel_lighting(...)`. The speed
+        pass reports the condition that failed, from
+        `SpeedCalibration.run_invalid_reason(...)`. It is a
         `SimulationController`-level step because the run registry lives at
         that level.
         """
@@ -2726,7 +2728,7 @@ class SimulationController(SwitchOutputOwner):
         # preconditions; each is ended through its own teardown.
         if speed_open:
             calibration.abandon(
-                train_id, reason="conditions no longer hold"
+                train_id, reason=calibration.run_invalid_reason(train_id)
             )
         if lighting_open:
             calibration.cancel_lighting(train_id)

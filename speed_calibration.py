@@ -1081,22 +1081,35 @@ class SpeedCalibration:
           - `eb.active` is False
           - no power-off is pending — `phase_latches.power_off` is False
         A measurement fault is not one of these: it ends the pass earlier, in
-        Plan step `c9e1`, through `fail(...)`.
+        Plan step `c9e1`, through `fail(...)`. `run_invalid_reason(train_id)`
+        holds the checks; this is true when it names none.
+        """
+        return self.run_invalid_reason(train_id) is None
+
+    def run_invalid_reason(self, train_id: str) -> Optional[str]:
+        """The first condition of `run_still_valid` that no longer holds, in
+        the words the panel shows, or None while the run may stay open.
+
+        Step `26f5` passes it to `abandon(train_id, reason)`, so a speed pass
+        that ends here says which condition failed (design_new.md "Speed
+        calibration", Where it runs).
         """
         speed = self.runs.get(train_id)
         lighting = self.lighting_runs.get(train_id)
         if speed is None and lighting is None:
-            return True
+            return None
         if speed is not None and speed.is_measured:
-            return True
+            return None
         controller = self._controller(train_id)
         if controller is None:
-            return False
+            return "the train's controller is gone"
         if not controller.powered:
-            return False
+            return "the train was powered off"
         if controller.eb.active:
-            return False
-        return not controller.route_hooks.phase_latches.power_off
+            return "the emergency brake is on"
+        if controller.route_hooks.phase_latches.power_off:
+            return "a power-off is pending"
+        return None
 
     def end_open_runs(self, reason: str) -> None:
         """End every open run of either kind, keeping held results

@@ -1319,7 +1319,7 @@ Three patterns for showing a row's status:
    running diagnostics; an inline-in-body banner is also fine when it
    surfaces a single high-priority detail for the record on screen.
    Use a warning banner for an outcome the operator did not cause: a speed
-   pass that ended on its own ("The pass ended: Conditions no longer hold.
+   pass that ended on its own ("The pass ended: The emergency brake is on.
    Nothing was written.") sits in a `.banner-warn` above the step's
    buttons. The same kind of line for something the operator did (they
    pressed Stop) stays plain text, because it tells them nothing new.
@@ -2760,7 +2760,9 @@ goes in the `title` tooltip, not on the screen.
 **A reason from the server is just the reason.** The panel writes the
 sentence around it ("The pass ended: … Nothing was written."). A server
 reason that carries its own "calibration pass ended:" makes the panel say
-"ended" twice, so the server sends only "conditions no longer hold".
+"ended" twice, so the server sends only the reason, and names the thing
+that failed ("the emergency brake is on"), not a general "conditions no
+longer hold".
 
 **Tooltips carry the how.** Every tool and non-obvious control gets a
 `title`: what it does, then how to use it — the Editor options row's
