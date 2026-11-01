@@ -1,9 +1,9 @@
 /**
  * The top bar (docs/ui-layout-rewrite-plan.md §3).
  *
- * Left: the app name, the Layout menu and the four screen tabs. Right: the
+ * Left: the app name, the Layout menu and the five screen tabs. Right: the
  * status control (environment, session state, and the one next-step button),
- * Emergency stop, and the Logs, View and Settings menus.
+ * Emergency stop, and the View and Settings menus.
  *
  * Its styles are the `app-header` rules in static/css/layout/shell.css and
  * static/css/layout/next-top-bar.css. It runs no logic of its own: every
@@ -20,7 +20,6 @@ import {
   sessionLabel,
 } from '../lib/session-controls';
 import { themeManager, type ThemeChannel } from '../lib/theme';
-import { logsOpen } from './logs/state';
 import { MenuButton, type MenuSection } from './menu';
 import { NEXT_STEP_BUTTON, nextStep, type NextStep } from './next-step';
 import { operationEnvironment, screen, sessionState, simulationSpeed, type Screen } from './state';
@@ -37,8 +36,6 @@ export interface TopBarActions {
   resetLayout(): Promise<void>;
   clearConflict(): Promise<void>;
   emergencyStop(): Promise<void>;
-  /** Open or close the Logs panel (plan §8). */
-  toggleLogs(): void;
   openSettings(): void;
   restartServer(): Promise<void>;
 }
@@ -48,6 +45,7 @@ const SCREENS: { id: Screen; label: string }[] = [
   { id: 'hardware', label: 'Hardware Setup' },
   { id: 'operate', label: 'Operate' },
   { id: 'locomotives', label: 'Locomotives' },
+  { id: 'logs', label: 'Logs' },
 ];
 
 const SPEEDS = [0.5, 1, 2, 3];
@@ -89,15 +87,6 @@ export function TopBar({ actions }: { actions: TopBarActions }) {
           </button>
         </div>
         <div>
-          <button
-            type="button"
-            class="btn ntb-logs"
-            title="Show or hide the Logs panel: event log, detectors and diagnostics"
-            aria-pressed={logsOpen.value}
-            onClick={actions.toggleLogs}
-          >
-            <i class="ti ti-list-search" aria-hidden="true" /> Logs
-          </button>
           <MenuButton label="View" icon="ti ti-palette" title="Themes and canvas layers" align="right" sections={viewSections} />
           <MenuButton
             icon="ti ti-settings"

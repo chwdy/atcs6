@@ -1,5 +1,5 @@
 /**
- * The snapshot shapes and helper functions behind the Logs panel's Detectors
+ * The snapshot shapes and helper functions behind the Logs screen's Detectors
  * tab (frontend/src/next/logs/detectors-tab.tsx): live read-back of what the
  * occupancy detectors actually see, one row per detected block.
  *

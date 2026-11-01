@@ -1,7 +1,9 @@
 /**
- * The Logs panel's Detectors tab: a live read-back of what the occupancy
+ * The Logs screen's Detectors tab: a live read-back of what the occupancy
  * detectors see, one row per detected block. It replaced the old Raw
- * Occupancy window; its helpers are in panels/occupancy-monitor.ts.
+ * Occupancy window; its helpers are in panels/occupancy-monitor.ts. A click
+ * on a block on the canvas marks its row and scrolls it into view
+ * (`pickedBlockId` in ./state.ts).
  *
  * It reads `GET /api/hardware/occupancy/raw`, which reports recorded state and
  * sends nothing on the bus, so reading it fast cannot disturb the detectors it
@@ -11,7 +13,7 @@
  * panels/occupancy-monitor.ts; the styles are that panel's `.occ-*` classes
  * (features/occupancy-monitor.css).
  */
-import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 
 import { api } from '../../lib/api';
 import {
@@ -25,7 +27,7 @@ import {
   type OccupancyRow,
   type RawOccupancySnapshot,
 } from '../../panels/occupancy-monitor';
-import { readPrefs, writePrefs } from './state';
+import { pickedBlockId, readPrefs, writePrefs } from './state';
 import { singleFlight, useRatePoll } from './use-rate-poll';
 
 const DEFAULT_HZ = 4;
@@ -165,20 +167,35 @@ function DetectorRows(props: {
   total: number;
 }) {
   const { snapshot, error, filter, flashing, flips, total } = props;
+  const picked = pickedBlockId.value;
   if (error) return <div class="empty-state empty-state-error">{error}</div>;
   if (!snapshot) return <div class="empty-state">Reading…</div>;
   const rows = buildRows(snapshot, filter);
+  // The block picked on the canvas may have no detector, or this filter may
+  // leave it out; say so instead of marking nothing.
+  const pickedMissing = picked && !rows.some((row) => row.blockId === picked);
+  const missingNote = pickedMissing && (
+    <div class="occ-picked-note">
+      {snapshot.blocks?.[picked]
+        ? `${picked} is hidden by the Show filter.`
+        : `${picked} has no detector.`}
+    </div>
+  );
   if (!rows.length) {
     return (
-      <div class="empty-state">
-        {total
-          ? 'No block matches this filter.'
-          : 'No block is being detected. Bind occupancy inputs in Hardware Setup.'}
-      </div>
+      <>
+        {missingNote}
+        <div class="empty-state">
+          {total
+            ? 'No block matches this filter.'
+            : 'No block is being detected. Bind occupancy inputs in Hardware Setup.'}
+        </div>
+      </>
     );
   }
   return (
     <>
+      {missingNote}
       <div class="occ-head">
         <span>Block</span>
         <span>Source</span>
@@ -193,18 +210,25 @@ function DetectorRows(props: {
           key={`${row.blockId}#${flips.get(row.blockId) ?? 0}`}
           row={row}
           flashing={flashing.has(row.blockId)}
+          picked={row.blockId === picked}
         />
       ))}
     </>
   );
 }
 
-function DetectorRow({ row, flashing }: { row: OccupancyRow; flashing: boolean }) {
+function DetectorRow({ row, flashing, picked }: { row: OccupancyRow; flashing: boolean; picked: boolean }) {
+  const el = useRef<HTMLDivElement>(null);
+  // Scroll the picked row into view when it is picked, not on every read.
+  useLayoutEffect(() => {
+    if (picked) el.current?.scrollIntoView?.({ block: 'nearest' });
+  }, [picked]);
   const classes = ['occ-row'];
   if (row.settling) classes.push('occ-row-settling');
   if (flashing) classes.push('occ-row-flash');
+  if (picked) classes.push('row-selected');
   return (
-    <div class={classes.join(' ')}>
+    <div class={classes.join(' ')} ref={el}>
       <span class="occ-block">{row.blockId}</span>
       <span class="occ-source">
         {row.source && <span class={`chip chip-${row.sourceTone}`}>{row.source}</span>}

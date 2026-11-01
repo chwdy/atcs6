@@ -1,9 +1,9 @@
 /**
- * Polling for a Logs panel tab at the refresh rate its own picker chose.
+ * Polling for a Logs screen tab at the refresh rate its own picker chose.
  *
  * Built on `pollWhileShown` (next/poll.ts): a tab starts asking the server
  * when it appears and stops when it goes away, so only the tab on show ever
- * polls, and a closed panel polls nothing.
+ * polls, and another screen polls nothing.
  */
 import { useEffect, useRef } from 'preact/hooks';
 
