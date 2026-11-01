@@ -9,6 +9,7 @@ import {
   calibrationControls,
   calibrationTrainChoices,
   compareAxisTop,
+  crossingRows,
   measuredCurve,
   readinessApplies,
   readinessKind,
@@ -175,3 +176,36 @@ describe('speedPassEndedMessage', () => {
     );
   });
 });
+
+describe('crossingRows', () => {
+  // design_new.md "Speed calibration", The panel lists every crossing.
+  const run = {
+    block_names: { BLK_L: 'Left', BLK_R: 'Right' },
+    crossings: [
+      { power_percent: 100, attempt: 1, toward_block_id: 'BLK_L', seconds: 2.62, speed_kmh: 110.4, outcome: 'used' },
+      { power_percent: 100, attempt: 1, toward_block_id: 'BLK_R', seconds: 1.99, speed_kmh: 144.7, outcome: 'discarded' },
+      { power_percent: 90, attempt: 1, toward_block_id: 'BLK_L', seconds: null, speed_kmh: null, outcome: 'ended_sweep' },
+    ],
+  };
+
+  it('names the block each crossing ran toward and formats its time and speed', () => {
+    const rows = crossingRows(run);
+    expect(rows.map((r) => r.toward)).toEqual(['Left', 'Right', 'Left']);
+    expect(rows[0]).toMatchObject({ power: 100, seconds: '2.62', speed: '110.4', used: true, note: '' });
+  });
+
+  it('marks the first crossing of each step and says why a crossing does not count', () => {
+    const rows = crossingRows(run);
+    expect(rows.map((r) => r.firstOfStep)).toEqual([true, false, true]);
+    expect(rows[1].used).toBe(false);
+    expect(rows[1].note).toContain('discarded');
+    expect(rows[2]).toMatchObject({ seconds: '—', speed: '—', used: false });
+    expect(rows[2].note).toContain('stalled');
+  });
+
+  it('falls back to the block id when the run carries no name', () => {
+    expect(crossingRows({ crossings: [run.crossings[0]] })[0].toward).toBe('BLK_L');
+    expect(crossingRows({})).toEqual([]);
+  });
+});
+

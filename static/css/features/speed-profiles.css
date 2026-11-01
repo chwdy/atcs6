@@ -281,6 +281,44 @@
     text-align: center;
     color: var(--text-primary);
 }
+/* The speed pass's crossing list: every crossing of the measured block, its
+   time and speed, grouped by step. A crossing that does not count in its
+   step's point is dimmed, with a note saying why. */
+.sp-crossing-list {
+    margin: 4px 0 8px;
+}
+.sp-crossing-head,
+.sp-crossing-row {
+    display: grid;
+    grid-template-columns: 3em 1fr 4em 4em;
+    gap: 4px;
+}
+.sp-crossing-head {
+    margin-bottom: 2px;
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-tertiary);
+}
+.sp-crossing-row {
+    padding: 1px 0;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-primary);
+}
+.sp-crossing-row.sp-crossing-step {
+    margin-top: 3px;
+    border-top: 1px dotted var(--border-color);
+}
+.sp-crossing-row.sp-crossing-unused {
+    color: var(--text-tertiary);
+}
+.sp-crossing-note {
+    grid-column: 2 / -1;
+    font-family: var(--font-main);
+    font-size: 10px;
+    color: var(--text-secondary);
+}
 .sp-compare-legend {
     display: flex;
     gap: 12px;
