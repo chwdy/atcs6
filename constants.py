@@ -172,6 +172,13 @@ CALIBRATION_STEP_TIMEOUT_S: float = 30.0
 # stretch, and ends the sweep like a step that does not move the train.
 CALIBRATION_MIN_CROSSING_SPEED_KMH: float = 2.0
 
+# Each leg starts at half the step's power for this many seconds before the
+# step's power, and each stop after a crossing holds half the step's power for
+# this long before cutting it, so the locomotive never takes a full step of
+# track voltage at once (design_new.md "Speed calibration", The pass starts
+# and stops the train at half power first).
+CALIBRATION_HALF_POWER_S: float = 0.5
+
 # When a measured crossing is capped by the leg's own reservation end (the
 # stretch is too short for this step's speed even at the zero reservation-end
 # standoff) or by a repeated conflict, that crossing is discarded and

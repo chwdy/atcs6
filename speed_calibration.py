@@ -45,6 +45,7 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from constants import (
     CALIBRATION_CAP_RETRY_LIMIT,
+    CALIBRATION_HALF_POWER_S,
     CALIBRATION_MIN_CROSSING_SPEED_KMH,
     CALIBRATION_POWER_STEP_PERCENT,
     CALIBRATION_ROUND_TRIPS,
@@ -236,6 +237,16 @@ class CalibrationRun:
     counted_until: Optional[float] = None
     """The operating time the two counters above have reached, or `None` until
     the leg's authority first appears."""
+    half_power_until: Optional[float] = None
+    """The operating time until which the pass drives half the step's power: set
+    for `CALIBRATION_HALF_POWER_S` when a leg's authority first appears and when
+    the pass stops the train after a crossing (design_new.md "Speed
+    calibration", The pass starts and stops the train at half power first).
+    `None` when neither stage is running."""
+    half_power: bool = False
+    """Whether this tick drives half the step's power. `advance(...)` decides it
+    each Plan pass from `half_power_until`, and `get_propulsion_override(...)`
+    reads it in the same tick's Action."""
     crossing_started_at: Optional[float] = None
     """When the current crossing's clock started — the moment B was confirmed
     occupied for this leg — or `None` before it starts. Written in Observe by
@@ -563,10 +574,15 @@ class SpeedCalibration:
             return None
 
         if run.phase == PHASE_LEG:
-            return self._advance_leg(run, obs)
-        if run.phase == PHASE_CLEARING:
-            return self._advance_clearing(run, obs)
-        return self._advance_stopping(run, obs)
+            command = self._advance_leg(run, obs)
+        elif run.phase == PHASE_CLEARING:
+            command = self._advance_clearing(run, obs)
+        else:
+            command = self._advance_stopping(run, obs)
+        run.half_power = (
+            run.half_power_until is not None and obs.now < run.half_power_until
+        )
+        return command
 
     def _advance_leg(
         self, run: CalibrationRun, obs: CalibrationObservation
@@ -602,6 +618,7 @@ class SpeedCalibration:
             run.wait_counted_s = 0.0
             run.crossing_counted_s = 0.0
             run.counted_until = None
+            run.half_power_until = None
             run.crossing_started_at = None
             run.crossing_finished_at = None
             run.clearing_started_at = None
@@ -633,6 +650,10 @@ class SpeedCalibration:
             if run.leg_started_at is None:
                 run.leg_started_at = obs.now
                 run.counted_until = obs.now
+                # The leg starts at half the step's power (design_new.md "Speed
+                # calibration", The pass starts and stops the train at half
+                # power first).
+                run.half_power_until = obs.now + CALIBRATION_HALF_POWER_S
         self._count_leg_time(run, obs)
 
         if run.crossing_finished_at is not None and run.crossing_started_at is not None:
@@ -726,7 +747,16 @@ class SpeedCalibration:
             run.phase = PHASE_CLEARING
             run.clearing_started_at = obs.now
             return None
+        return self._begin_stop(run, obs)
+
+    @staticmethod
+    def _begin_stop(run: CalibrationRun, obs: CalibrationObservation) -> CalibrationCommand:
+        """Stop the train after a crossing: half the step's power for
+        `CALIBRATION_HALF_POWER_S`, then `0` (design_new.md "Speed calibration",
+        The pass starts and stops the train at half power first)."""
         run.phase = PHASE_STOPPING
+        run.clearing_started_at = None
+        run.half_power_until = obs.now + CALIBRATION_HALF_POWER_S
         return CalibrationCommand(power_percent=0.0)
 
     def _advance_clearing(
@@ -736,9 +766,7 @@ class SpeedCalibration:
         if run.overrun_seen:
             return self._fail_overrun(run)
         if not obs.measured_block_held:
-            run.phase = PHASE_STOPPING
-            run.clearing_started_at = None
-            return CalibrationCommand(power_percent=0.0)
+            return self._begin_stop(run, obs)
         if not obs.path_present:
             # The leg ran out its authority at the far block's far seam and
             # completed with the train still on B.
@@ -786,6 +814,10 @@ class SpeedCalibration:
         # confirming while the train brakes is an overrun too.
         if run.overrun_seen:
             return self._fail_overrun(run)
+        # The half-power stop runs its course before the train counts as
+        # stopped, even when a ceiling has already brought it to a stand.
+        if run.half_power_until is not None and obs.now < run.half_power_until:
+            return None
         if not obs.is_stopped:
             return None
         if len(run.crossings) >= run.crossings_target:
@@ -1094,7 +1126,10 @@ class SpeedCalibration:
         An auto-profiling pass drives while it is measuring a leg — the current
         step's percent while that leg is armed, crossing, and has its authority,
         and `0` while the train is stopping at a leg's end, standing between
-        steps, or still acquiring the leg's route. Until the leg's
+        steps, or still acquiring the leg's route. The first
+        `CALIBRATION_HALF_POWER_S` of a leg and of a stop after a crossing drive
+        half the step's percent instead (design_new.md "Speed calibration", The
+        pass starts and stops the train at half power first). Until the leg's
         `received_path_plan` is present the pass selects zero power (design_new.md
         "Speed calibration", Plan acquires leg authority all-or-nothing): a leg
         without authority could not move anyway (the ATC limit is `0`), and
@@ -1117,7 +1152,12 @@ class SpeedCalibration:
             driving = run.phase in (PHASE_LEG, PHASE_CLEARING) and run.leg_armed
             if driving and not self._leg_authority_present(train_id):
                 driving = False
-            value = run.current_power if driving else 0.0
+            if driving:
+                value = run.current_power * (0.5 if run.half_power else 1.0)
+            elif run.phase == PHASE_STOPPING and run.half_power:
+                value = run.current_power * 0.5
+            else:
+                value = 0.0
             return CalibrationPropulsionOverride(
                 kind="power_percent", value=float(value)
             )

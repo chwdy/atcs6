@@ -17,6 +17,7 @@ import pytest
 
 from constants import (
     CALIBRATION_CAP_RETRY_LIMIT,
+    CALIBRATION_HALF_POWER_S,
     CALIBRATION_MIN_CROSSING_SPEED_KMH,
     CALIBRATION_POWER_STEP_PERCENT,
     CALIBRATION_ROUND_TRIPS,
@@ -650,21 +651,59 @@ def test_the_pass_keeps_driving_until_the_train_is_off_the_measured_block():
         now=clock + 0.5, path_present=True, measured_block_held=True))
     assert cal.get_propulsion_override("T1").value == run.current_power
 
-    # Once the span no longer covers B the pass cuts power and, stopped, turns.
+    # Once the span no longer covers B the pass stops the train through half
+    # power, then cuts it, and, stopped, turns.
+    off_b = clock + 1.0
     cal.advance(run, CalibrationObservation(
-        now=clock + 1.0, path_present=True, measured_block_held=False))
+        now=off_b, path_present=True, measured_block_held=False))
+    assert cal.get_propulsion_override("T1").value == run.current_power / 2
+    cal.advance(run, CalibrationObservation(now=off_b + CALIBRATION_HALF_POWER_S + 0.1))
     assert cal.get_propulsion_override("T1").value == 0.0
     heading = run.heading_to
-    cal.advance(run, CalibrationObservation(now=clock + 2.0, is_stopped=True))
+    cal.advance(run, CalibrationObservation(
+        now=off_b + CALIBRATION_HALF_POWER_S + 0.2, is_stopped=True))
     assert run.heading_to == 1 - heading
     assert run.needs_reverse is True
 
 
-def test_a_train_already_off_the_measured_block_stops_at_once():
+def test_a_train_already_off_the_measured_block_starts_its_stop_at_once():
     cal, run, _profile = _open_run()
     _cross_into_far_block(cal, run, measured_block_held=False)
     assert len(run.crossings) == 1
-    assert cal.get_propulsion_override("T1").value == 0.0
+    assert run.phase == "stopping"
+    assert cal.get_propulsion_override("T1").value == run.current_power / 2
+
+
+# --- half power at each end of a leg ------------------------------------------
+# design_new.md "Speed calibration", The pass starts and stops the train at half
+# power first.
+
+
+def test_a_leg_starts_at_half_power():
+    cal, run, _profile = _open_run()
+    cal.advance(run, CalibrationObservation(now=0.0))  # arm the leg
+    cal.advance(run, CalibrationObservation(now=1.0, path_present=True))  # authority
+    assert cal.get_propulsion_override("T1").value == run.current_power / 2
+    cal.advance(run, CalibrationObservation(
+        now=1.0 + CALIBRATION_HALF_POWER_S - 0.1, path_present=True))
+    assert cal.get_propulsion_override("T1").value == run.current_power / 2
+    cal.advance(run, CalibrationObservation(
+        now=1.0 + CALIBRATION_HALF_POWER_S + 0.1, path_present=True))
+    assert cal.get_propulsion_override("T1").value == run.current_power
+
+
+def test_the_turnaround_waits_for_the_half_power_stop():
+    """A ceiling may bring the train to a stand during the half-power stop; the
+    pass still lets the stop run its course before it turns the train."""
+    cal, run, _profile = _open_run()
+    clock = _cross_into_far_block(cal, run, measured_block_held=False)
+    heading = run.heading_to
+    cal.advance(run, CalibrationObservation(now=clock + 0.1, is_stopped=True))
+    assert run.heading_to == heading
+    assert run.phase == "stopping"
+    cal.advance(run, CalibrationObservation(
+        now=clock + CALIBRATION_HALF_POWER_S + 0.1, is_stopped=True))
+    assert run.heading_to == 1 - heading
 
 
 def test_a_leg_that_ends_with_the_train_still_on_the_measured_block_fails():
