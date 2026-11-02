@@ -696,22 +696,10 @@ class UnidentifiedTrainTracker:
                 continue
             visited.add(key)
 
-            neighbour = self._network.get_neighbor(current.x, current.y, exit_edge)
-            if neighbour is None:
+            step = self._step(current, exit_edge)
+            if step is None:
                 continue
-            # Across a tunnel the far tile is entered through the tunnel's far
-            # edge, which need not be the opposite of the exit (a W↔N tunnel);
-            # between grid neighbours it is the opposite edge.
-            tunnel_far = self._network.tunnels.get((current.x, current.y, exit_edge))
-            if tunnel_far is not None and (tunnel_far[0], tunnel_far[1]) == (
-                neighbour.x,
-                neighbour.y,
-            ):
-                entry_edge = tunnel_far[2]
-            else:
-                entry_edge = _OPPOSITE_EDGE.get(exit_edge)
-            if entry_edge is None or entry_edge not in (neighbour.edges or ()):
-                continue  # the two tiles do not actually share a rail
+            neighbour, entry_edge = step
 
             block_id = getattr(neighbour, "block_id", None)
             if block_id and block_id != origin_block_id:
@@ -722,6 +710,97 @@ class UnidentifiedTrainTracker:
             for onward in neighbour.get_exits(entry_edge, use_switch_state=True) or ():
                 frontier.append((neighbour, onward))
         return reached
+
+    def _step(self, current, exit_edge: str):
+        """The tile entered by leaving `current` through `exit_edge`, and the
+        edge it is entered by, or None when no rail continues there."""
+        neighbour = self._network.get_neighbor(current.x, current.y, exit_edge)
+        if neighbour is None:
+            return None
+        # Across a tunnel the far tile is entered through the tunnel's far
+        # edge, which need not be the opposite of the exit (a W↔N tunnel);
+        # between grid neighbours it is the opposite edge.
+        tunnel_far = self._network.tunnels.get((current.x, current.y, exit_edge))
+        if tunnel_far is not None and (tunnel_far[0], tunnel_far[1]) == (
+            neighbour.x,
+            neighbour.y,
+        ):
+            entry_edge = tunnel_far[2]
+        else:
+            entry_edge = _OPPOSITE_EDGE.get(exit_edge)
+        if entry_edge is None or entry_edge not in (neighbour.edges or ()):
+            return None  # the two tiles do not actually share a rail
+        return neighbour, entry_edge
+
+    def legs_through_unknown_switches(
+        self, block_id: str
+    ) -> Set[Tuple[str, int, str]]:
+        """`(switch_id, position, block_id)` for each leg of each switch whose
+        position is not known that the walk out of `block_id` meets at its
+        toe, naming the first block that leg leads to (design_new.md "Block
+        occupancy detection", An unknown switch takes the leg the detector
+        confirms).
+
+        Only a switch entered at its toe has two legs to choose between; one
+        entered from a leg leads to its toe whatever its position, so it says
+        nothing about where the points are and is crossed like any other.
+        """
+        legs: Set[Tuple[str, int, str]] = set()
+        for tile in self._network.get_block_tracks(block_id):
+            for edge in sorted(tile.edges or ()):
+                legs |= self._unknown_switch_legs_out(tile, edge, block_id)
+        return legs
+
+    def _unknown_switch_legs_out(
+        self, tile, edge: str, origin_block_id: str
+    ) -> Set[Tuple[str, int, str]]:
+        legs: Set[Tuple[str, int, str]] = set()
+        visited: Set[Tuple[int, int, str]] = set()
+        frontier = [(tile, edge)]
+        while frontier:
+            current, exit_edge = frontier.pop()
+            key = (current.x, current.y, exit_edge)
+            if key in visited:
+                continue
+            visited.add(key)
+            step = self._step(current, exit_edge)
+            if step is None:
+                continue
+            neighbour, entry_edge = step
+            if getattr(neighbour, "block_id", None):
+                continue  # the walk ends at the first block
+            switch = self._unknown_switch(neighbour)
+            if switch is not None:
+                by_position = {
+                    position: {
+                        reached
+                        for onward in neighbour.get_exits(
+                            entry_edge,
+                            use_switch_state=True,
+                            switch_state_override=position,
+                        )
+                        or ()
+                        for reached in self._walk_out(neighbour, onward, origin_block_id)
+                    }
+                    for position in (0, 1)
+                }
+                if by_position[0] and by_position[1]:
+                    for position, reached_blocks in by_position.items():
+                        for reached in reached_blocks:
+                            legs.add((switch.switch_id, position, reached))
+                    continue
+            for onward in neighbour.get_exits(entry_edge, use_switch_state=True) or ():
+                frontier.append((neighbour, onward))
+        return legs
+
+    def _unknown_switch(self, tile):
+        """The switch on `tile` when the app does not know its position, else
+        None."""
+        switch_id = getattr(tile, "switch_id", None)
+        switch = self._network.switches.get(switch_id) if switch_id else None
+        if switch is None or getattr(switch, "position_known", True):
+            return None
+        return switch
 
     def _held_blocks(self, unidentified_id: str) -> Set[str]:
         return {

@@ -1527,6 +1527,13 @@ class SimulationController(SwitchOutputOwner):
         self._bind_interfaces(
             input_interface, block_output_interface, switch_output_interface
         )
+        # A hardware session has thrown no coil yet, so the app does not know
+        # where any points are until it throws them or the detector shows them
+        # (design_new.md "Switch entity", `position_known`). In Simulation the
+        # model is the only layout there is.
+        known = self.operation_mode is OperationMode.SIMULATION
+        for switch in self.network.switches.values():
+            switch.position_known = known
         # Binding the interfaces marks the environment active. The session
         # flags a successful activation clears are written once the railway
         # has been started over (see `finish_activation`).
@@ -1544,7 +1551,14 @@ class SimulationController(SwitchOutputOwner):
         shows the device answers again (design_new.md "Power", Recovery is
         reactivation). Activating Simulation leaves the latch set, because
         running Simulation proves nothing about the rig.
+
+        A Virtual Hardware or Real Hardware activation then throws every switch
+        once to the position the layout shows, so the session knows where the
+        points lie (design_new.md "Switch entity", Activation throws every
+        switch to the layout).
         """
+        if self.operation_mode is not OperationMode.SIMULATION and self.switch_manager is not None:
+            self.switch_manager.throw_all_to_layout()
         self.layout_cut_out_active = False
         if self.hardware_failure and self.operation_mode is not OperationMode.SIMULATION:
             self.hardware_failure = False
@@ -1741,6 +1755,11 @@ class SimulationController(SwitchOutputOwner):
             detector=detector,
             environment=self.operation_mode.value if self.environment_active else None,
         )
+        # A new entry can show which leg of a switch whose position the app
+        # does not know a train took. Record that before attribution reads the
+        # points (design_new.md "Block occupancy detection", An unknown switch
+        # takes the leg the detector confirms).
+        self._record_detected_switch_alignments(entered)
         # One result per changed block, with its `kind` (design_new.md "Block
         # occupancy detection", The attribution result). The detector owns the
         # match order and the clear rule; everything below reads `kind`.
@@ -1961,6 +1980,53 @@ class SimulationController(SwitchOutputOwner):
                 error=error,
                 event_time=time.time(),
                 condition_key=self._conflict_condition_key(block_id),
+            )
+
+    def _record_detected_switch_alignments(self, entered: Set[str]) -> None:
+        """Record the leg a train took through a switch whose position the app
+        does not know, when this read's new entries show it (design_new.md
+        "Block occupancy detection", An unknown switch takes the leg the
+        detector confirms).
+
+        For every ordinary train, the walk out of each block it holds meets
+        such a switch at its toe and names the block each leg leads to. When
+        exactly one leg's block has just confirmed occupied and no train holds
+        it, the points must lie that way, and `SwitchManager` records it. Both
+        legs lit, or two trains pointing at different legs, say nothing, and
+        the switch stays unknown.
+        """
+        if not entered or self.switch_manager is None:
+            return
+        if all(switch.position_known for switch in self.network.switches.values()):
+            return
+        held: Dict[str, Set[str]] = {}
+        for block_id, block in self.network.blocks.items():
+            owner = getattr(block, "occupied_by", None)
+            if owner is None or self.unidentified_trains.is_unidentified(owner):
+                continue
+            held.setdefault(owner, set()).add(block_id)
+        evidence: Dict[str, Dict[int, Set[Tuple[str, str]]]] = {}
+        for train_id in sorted(held):
+            for block_id in sorted(held[train_id]):
+                legs = self.unidentified_trains.legs_through_unknown_switches(block_id)
+                for switch_id, position, reached in legs:
+                    reached_block = self.network.blocks.get(reached)
+                    if (
+                        reached in entered
+                        and reached_block is not None
+                        and reached_block.occupied_by is None
+                    ):
+                        evidence.setdefault(switch_id, {}).setdefault(
+                            position, set()
+                        ).add((train_id, reached))
+        for switch_id in sorted(evidence):
+            by_position = evidence[switch_id]
+            if len(by_position) != 1:
+                continue
+            ((position, sources),) = by_position.items()
+            train_id, block_id = sorted(sources)[0]
+            self.switch_manager.record_detected_alignment(
+                switch_id, position, train_id, block_id
             )
 
     def _raise_overrun_cut_outs(self, results: List[AttributionResult]) -> None:

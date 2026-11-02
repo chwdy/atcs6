@@ -127,6 +127,13 @@ class Switch(TrackResource):
     position: SwitchState = SwitchState.MAIN
     """Authoritative physical alignment of the switch (MAIN=0, DIVERGE=1)."""
 
+    position_known: bool = True
+    """Whether the app knows where the points are (design_new.md "Switch
+    entity", `position_known`). Activating Virtual Hardware or Real Hardware
+    sets it False on every switch, because a fresh session has thrown no coil;
+    any write through `apply_position_change(...)` or
+    `record_detected_position(...)` sets it True. Runtime only, never saved."""
+
     flip_count: int = 0
     """Maintenance counter: number of times the switch actually changed
     alignment. Incremented by `apply_position_change(...)` only on a real
@@ -604,9 +611,21 @@ class Switch(TrackResource):
         if self.position != SwitchState(new_position):
             self.flip_count += 1
         self.position = SwitchState(new_position)
+        self.position_known = True
 
         position_name = "MAIN" if new_position == 0 else "DIVERGE"
         return (True, f"Switch position changed to {position_name}")
+
+    def record_detected_position(self, position: int) -> None:
+        """Record the alignment the detector has shown the points to be in.
+
+        Writes `position` and `position_known` and nothing else: no
+        availability or claim check, because the points already sit there, and
+        no `flip_count`, because the app moved nothing (design_new.md
+        "Canonical `Switch.position` mutation workflow",
+        `SwitchManager.record_detected_alignment`)."""
+        self.position = SwitchState(position)
+        self.position_known = True
 
     # ========================================================================
     # SERIALIZATION
@@ -631,6 +650,7 @@ class Switch(TrackResource):
             "name": self.name,
             "notes": self.notes,
             "position": int(self.position),
+            "position_known": self.position_known,
             "flip_count": self.flip_count,
             "occupied_by": self.occupied_by,
             "disabled": self.disabled,

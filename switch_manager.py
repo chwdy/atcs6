@@ -690,6 +690,50 @@ class SwitchManager:
             operation="record_bench_alignment",
         )
 
+    def record_detected_alignment(
+        self, switch_id: str, position: int, train_id: str, block_id: str
+    ) -> bool:
+        """Record the alignment a detector reading has shown a switch to be in
+        (design_new.md "Canonical `Switch.position` mutation workflow",
+        `SwitchManager.record_detected_alignment`).
+
+        Observe calls it for a switch whose position is not known, when a
+        train's new entry on `block_id` could only have come down one of its
+        legs. The points already sit there and a train may be standing across
+        them, so nothing is checked and no coil is driven: the model follows
+        the points, the block reachability graph follows the model, and one
+        event says what was learned. Returns False for an unknown switch id.
+        """
+        switch = self._switch_registry.get(switch_id)
+        if switch is None:
+            return False
+        old_position = int(switch.position)
+        switch.record_detected_position(int(position))
+
+        block_manager = self._resolve_block_manager()
+        if block_manager is not None:
+            block_manager.on_switch_position_changed(switch_id)
+
+        if self.notification_emitter is not None:
+            name = "DIVERGE" if int(position) else "MAIN"
+            self.notification_emitter(
+                operation="record_detected_alignment",
+                kind=Kind.INFO,
+                message=(
+                    f"switch {switch_id} read as {name}: {train_id} entered "
+                    f"{block_id}, which only that leg leads to"
+                ),
+                entities=[switch_ref(switch_id)],
+                payload={
+                    "switch_id": switch_id,
+                    "from_position": old_position,
+                    "to_position": int(position),
+                    "train_id": train_id,
+                    "block_id": block_id,
+                },
+            )
+        return True
+
     def _apply_alignment(
         self,
         switch: "Switch",
@@ -964,6 +1008,21 @@ class SwitchManager:
         if path_id is not None and (path_id, None) in switch.locks:
             locked_route = switch.lock_routes.get((path_id, None))
             holds_granting_lock = locked_route is None or locked_route == route
+        if not holds_granting_lock and not already_occupant and self._unclaimed(switch, train_id):
+            # Nothing claims these points: no path holds a lock on them and no
+            # other train's protection covers them. A train that runs onto them
+            # has overrun its authority, which the overrun handling stops, so
+            # the entry is recorded rather than halting every train
+            # (design_new.md "Switch entity", An overrun onto unclaimed points
+            # is not an intrusion).
+            switch.add_route_occupant(route, train_id)
+            self._emit_diagnostic(
+                f"{train_id} ran onto switch {switch_id}, which no path had "
+                f"locked; recorded as part of its overrun",
+                switch_id,
+                train_id,
+            )
+            return True
         if not holds_granting_lock and not already_occupant:
             self._report_fatal_conflict(
                 switch_id=switch_id,
@@ -978,6 +1037,56 @@ class SwitchManager:
         if path_id:
             self._convert_locks_on_entry(switch, train_id, path_id)
         return True
+
+    @staticmethod
+    def _unclaimed(switch: "Switch", train_id: str) -> bool:
+        """Whether nothing claims `switch` against `train_id`: no path holds any
+        lock on it, and no other train's protection covers it."""
+        if switch.locks:
+            return False
+        return all(
+            claim_train_id == train_id
+            for claim_train_id, _source, _state in switch.train_protection_claims
+        )
+
+    def throw_all_to_layout(self) -> List[str]:
+        """Throw every switch once to the position the layout shows, at the
+        activation of Virtual Hardware or Real Hardware (design_new.md "Switch
+        entity", Activation throws every switch to the layout).
+
+        A fresh hardware session does not know where any points lie; one pulse
+        to `Switch.position` puts them there, so each switch it reaches becomes
+        known. Disabled and manual switches are left alone: automation does not
+        drive them. The write is the position the model already holds, so
+        nothing changes in the model and no flip is counted. Returns the ids
+        thrown.
+        """
+        thrown: List[str] = []
+        skipped: List[str] = []
+        failed: List[str] = []
+        for switch_id in sorted(self._switch_registry):
+            switch = self._switch_registry[switch_id]
+            if switch.disabled or switch.manual:
+                skipped.append(switch_id)
+                continue
+            if self._drive_throw(switch, int(switch.position), force=True) is None:
+                switch.position_known = True
+                thrown.append(switch_id)
+            else:
+                failed.append(switch_id)
+        if self.notification_emitter is not None and (thrown or failed):
+            self.notification_emitter(
+                operation="throw_all_to_layout",
+                kind=Kind.INFO if not failed else Kind.WARNING,
+                message=(
+                    f"activation threw {len(thrown)} switch(es) to the layout's "
+                    f"positions"
+                    + (f"; {len(failed)} could not be thrown" if failed else "")
+                ),
+                entities=[switch_ref(switch_id) for switch_id in thrown + failed],
+                payload={"thrown": thrown, "skipped": skipped, "failed": failed},
+            )
+        return thrown
 
     def _convert_locks_on_entry(
         self, switch_entity: "Switch", train_id: str, path_id: str
