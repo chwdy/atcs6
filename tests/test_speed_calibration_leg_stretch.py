@@ -290,19 +290,88 @@ def test_a_stretch_too_short_for_the_top_step_fails_at_once(state):
     assert run.samples == []
 
 
-def test_a_pass_will_not_open_with_the_train_on_the_measured_block(state):
+def _run_until(state, run, done, ticks=600):
+    sim = state.sim_controller
+    for _ in range(ticks):
+        sim.update(0.1)
+        if done() or not run.is_measuring:
+            return
+
+
+def test_a_train_in_the_sideline_is_moved_into_the_nearer_outer_block(state):
+    """design_new.md "Speed calibration", The pass first moves the train into an
+    outer block: the rig run of 2026-11-01 left the train in the Sideline, and
+    Start stayed off until the operator drove it back by hand."""
+    from speed_calibration import PHASE_LEG, PHASE_MOVING
+
+    _place(state, (10, 7), "WEST")
+    span = state.sim_controller.get_or_create_controller(TRAIN).get_current_span()
+    assert span.occupied_blocks == [SIDELINE]
+    assert train_service.calibration_readiness(state, TRAIN, measured_block_id=UP) == []
+
+    run = train_service.calibrate_train(state, TRAIN, measured_block_id=UP)
+    assert run.phase == PHASE_MOVING
+    state.sim_controller.update(0.1)
+
+    rex = state.sim_controller.route_executor
+    move_route = rex.route_registry[run.active_leg_route_id]
+    assert run.move_target_block_id == RIGHT
+    assert UP not in _walk_blocks(move_route.required_walk_keys)
+    assert [(t.task_kind, t.task_location.block_id) for t in move_route.tasks] == [
+        ("stop", RIGHT)
+    ]
+
+    _run_until(state, run, lambda: run.phase == PHASE_LEG)
+    assert run.phase == PHASE_LEG, run.failure_reason
+    assert run.heading_toward_block_id == LEFT
+    assert _leg_path_blocks(state) == [RIGHT, UP, LEFT]
+
+
+def test_a_train_on_the_measured_block_is_moved_off_it_first(state):
     """A leg is timed from the train's entry into the measured block, so a train
-    already on it cannot start one (design_new.md "Speed calibration", The train
-    must be standing in one of the two outer blocks)."""
-    from services import ConflictError
+    already on it is first moved into an outer block (design_new.md "Speed
+    calibration", The pass first moves the train into an outer block)."""
+    from speed_calibration import PHASE_LEG, PHASE_MOVING
 
     # Head in Right, body trailing back onto Up: the span covers both.
     _place(state, (9, 13), "EAST")
     span = state.sim_controller.get_or_create_controller(TRAIN).get_current_span()
     assert {RIGHT, UP} <= set(span.occupied_blocks)
 
+    run = train_service.calibrate_train(state, TRAIN, measured_block_id=UP)
+    assert run.phase == PHASE_MOVING
+    _run_until(state, run, lambda: run.phase == PHASE_LEG)
+
+    assert run.phase == PHASE_LEG, run.failure_reason
+    controller = state.sim_controller.get_or_create_controller(TRAIN)
+    assert UP not in controller.get_current_span().occupied_blocks
+    assert run.heading_toward_block_id != run.move_target_block_id
+
+
+def test_a_move_that_never_arrives_fails_the_pass(state, monkeypatch):
+    import speed_calibration
+    from constants import CALIBRATION_STEP_TIMEOUT_S
+
+    monkeypatch.setattr(speed_calibration, "CALIBRATION_MOVE_POWER_PERCENT", 0.0)
+    _place(state, (10, 7), "WEST")
+    run = train_service.calibrate_train(state, TRAIN, measured_block_id=UP)
+    _run_until(state, run, lambda: False, ticks=int(CALIBRATION_STEP_TIMEOUT_S * 10) + 50)
+
+    assert run.phase == PHASE_FAILED
+    assert "did not reach" in run.failure_reason
+    assert state.path_dispatcher.active_path_id_by_train(TRAIN) is None
+
+
+def test_with_no_way_into_an_outer_block_the_pass_does_not_open(state):
+    from services import ConflictError
+
+    _place(state, (10, 7), "WEST")
+    # A `manual` block is out of reach of every automatic path.
+    state.network.blocks[RIGHT].manual = True
+    state.network.blocks[LEFT].manual = True
+
     unmet = train_service.calibration_readiness(state, TRAIN, measured_block_id=UP)
-    assert any(f"off {UP}" in u for u in unmet)
+    assert any(u.startswith("No way leads from where the train stands") for u in unmet)
     with pytest.raises(ConflictError):
         train_service.calibrate_train(state, TRAIN, measured_block_id=UP)
 
@@ -316,4 +385,4 @@ def test_a_pass_will_not_open_while_the_train_still_holds_the_measured_block(sta
     state.network.blocks[UP].occupied_by = TRAIN
 
     unmet = train_service.calibration_readiness(state, TRAIN, measured_block_id=UP)
-    assert any(f"off {UP}" in u for u in unmet)
+    assert any("off Up," in u for u in unmet)

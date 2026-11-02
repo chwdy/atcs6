@@ -44,6 +44,7 @@ if TYPE_CHECKING:
     from notification_center import NotificationCenter
     from speed_calibration import SpeedCalibration
     from path import Path
+    from path_utils import GraphWalkCandidate
     from train import Train
     from train_route import Route
     from meet_coordination import MeetEntry
@@ -2394,7 +2395,7 @@ class RouteExecutor:
                 finished_leg_route_id = run.active_leg_route_id
                 run.active_leg_route_id = None
                 if exec_state is None and str(finished_leg_route_id).startswith(
-                    "CAL_LEG_"
+                    ("CAL_LEG_", "CAL_MOVE_")
                 ):
                     self.unregister_route(finished_leg_route_id)
         run.leg_armed = run.active_leg_route_id is not None
@@ -2402,7 +2403,16 @@ class RouteExecutor:
         # A leg that loses its walk fails the pass (design_new.md "Speed
         # calibration"): checked first, while the leg route is still assigned
         # and no live path holds the train.
-        lost_leg = self._calibration_leg_lost_walk(train_id, controller, run)
+        # The move into an outer block is not a leg: a move that cannot go on
+        # fails on its time limit instead (design_new.md "Speed calibration",
+        # The pass first moves the train into an outer block).
+        from speed_calibration import PHASE_MOVING
+
+        lost_leg = (
+            None
+            if run.phase == PHASE_MOVING
+            else self._calibration_leg_lost_walk(train_id, controller, run)
+        )
         if lost_leg is not None:
             near_block_id, far_block_id = lost_leg
             command = calibration.fail(
@@ -2428,6 +2438,9 @@ class RouteExecutor:
                 "end_a" if controller._framed_head_end == "end_b" else "end_b"
             )
             controller._apply_head_frame(target_head)
+
+        if command.move_into_place:
+            self._arm_calibration_move(train_id, run)
 
         if command.arm_leg_to:
             self._arm_calibration_leg(train_id, controller, run, command.arm_leg_to)
@@ -2552,6 +2565,91 @@ class RouteExecutor:
         self.register_route(route)
         route.assign_train(train_id)
         run.active_leg_route_id = route_id
+
+    def calibration_move_walk(
+        self, train_id: str, measured_block_id: str, outer_block_ids
+    ) -> Optional[Tuple[str, "GraphWalkCandidate"]]:
+        """The outer block a calibration pass moves the train into, and the walk
+        it takes there, or None when no walk reaches either one without crossing
+        the measured block (design_new.md "Speed calibration", The pass first
+        moves the train into an outer block).
+
+        Of the walks the train's next create would enumerate toward each outer
+        block, it keeps those that hold the measured block only as their first
+        block or not at all, and takes the best across both by
+        `GraphWalkCandidate.cross_query_key()`. Read-only: opening's readiness
+        check asks it too.
+        """
+        if self.path_dispatcher is None:
+            return None
+        best = None
+        for block_id in outer_block_ids:
+            if not block_id:
+                continue
+            for candidate in self.path_dispatcher.next_call_walk_candidates(
+                train_id, block_id, None, False
+            ):
+                if measured_block_id in list(candidate.ordered_blocks or ())[1:]:
+                    continue
+                key = candidate.cross_query_key()
+                if best is None or key < best[0]:
+                    best = (key, block_id, candidate)
+                # Candidates come best first: the first one kept is this
+                # block's best.
+                break
+        if best is None:
+            return None
+        return best[1], best[2]
+
+    def _arm_calibration_move(self, train_id: str, run) -> None:
+        """Build and assign the one-off route that moves the train into the
+        nearer outer block before the opening leg, and store its id on the run
+        (design_new.md "Speed calibration", The pass first moves the train into
+        an outer block). Waits, like a leg, while any authority lingers."""
+        if run.active_leg_route_id is not None:
+            return
+        if self._get_active_path_id(train_id) is not None:
+            return
+        if self.execution_state_for(train_id) is not None:
+            return
+
+        from train_route import BlockTarget, Route
+
+        chosen = self.calibration_move_walk(
+            train_id, run.measured_block_id, run.outer_block_ids
+        )
+        if chosen is None:
+            first, second = run.outer_block_ids
+            self._speed_calibration.fail(
+                run,
+                f"no way leads from where the train stands into {first} or "
+                f"{second} without crossing {run.measured_block_id}",
+            )
+            return
+        block_id, candidate = chosen
+        steps = list(candidate.ordered_walk or ())
+
+        seq = getattr(self, "_calibration_leg_seq", 0) + 1
+        self._calibration_leg_seq = seq
+        route_id = f"CAL_MOVE_{train_id}_{seq}"
+        route = Route(
+            route_id=route_id,
+            name=f"speed-calibration move into {block_id} for {train_id}",
+            mode=RouteMode.ONE_OFF,
+            manual_override=False,
+            required_walk_keys=self.path_dispatcher._ordered_walk_keys(steps),
+            tasks=[
+                RouteTask(
+                    task_kind="stop",
+                    task_location=BlockTarget(block_id=block_id),
+                    task_direction=self._walk_direction_in(steps, block_id),
+                )
+            ],
+        )
+        self.register_route(route)
+        route.assign_train(train_id)
+        run.active_leg_route_id = route_id
+        run.move_target_block_id = block_id
 
     def _calibration_leg_tasks(
         self, train_id: str, run, far_block_id: str

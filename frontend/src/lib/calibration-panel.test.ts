@@ -10,6 +10,7 @@ import {
   calibrationTrainChoices,
   compareAxisTop,
   crossingRows,
+  speedPassProgress,
   measuredCurve,
   readinessApplies,
   readinessKind,
@@ -209,3 +210,37 @@ describe('crossingRows', () => {
   });
 });
 
+
+describe('speedPassProgress', () => {
+  const names = { BLK_R: 'Right', BLK_U: 'Up' };
+
+  it('names the outer block the pass is moving the train into', () => {
+    const run = { phase: 'moving', move_target_block_id: 'BLK_R', block_names: names };
+    expect(speedPassProgress(run, false)).toBe(
+      'Moving the train into Right before the first crossing'
+    );
+  });
+
+  it('says the way is being found before the move has a target', () => {
+    expect(speedPassProgress({ phase: 'moving', move_target_block_id: '' }, false)).toBe(
+      'Finding the way into the nearer outer block'
+    );
+  });
+
+  it('shows the step and crossing while measuring', () => {
+    const run = {
+      phase: 'leg',
+      current_power_percent: 90,
+      step_index: 1,
+      step_count: 10,
+      crossings_done: 2,
+      crossings_target: 4,
+    };
+    expect(speedPassProgress(run, false)).toBe('Measuring 90% — step 2 of 10, crossing 3 of 4');
+  });
+
+  it('names the measured block once the result is held', () => {
+    const run = { samples: [1, 2, 3], measured_block_id: 'BLK_U', block_names: names };
+    expect(speedPassProgress(run, true)).toBe('Measured every step: 3 points across Up.');
+  });
+});

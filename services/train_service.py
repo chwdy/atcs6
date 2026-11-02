@@ -809,6 +809,12 @@ def _calibration_profile(state: AppState, train_id: str):
     return train, profile, sim
 
 
+def block_name(state: AppState, block_id: str) -> str:
+    """The block's name as the operator sees it, or its id when it has none."""
+    block = state.network.blocks.get(block_id) if state.network else None
+    return (getattr(block, "name", "") or "").strip() or block_id
+
+
 def resolve_calibration_stretch(state: AppState, measured_block_id: str):
     """The measured block's two neighbours, and its length.
 
@@ -821,8 +827,8 @@ def resolve_calibration_stretch(state: AppState, measured_block_id: str):
     length_cm = float(getattr(block, "length_cm", 0.0) or 0.0)
     if length_cm <= 0.0:
         raise ValidationError(
-            f"Block '{measured_block_id}' has no recorded length — "
-            "that length is the whole of what the measurement rests on"
+            f"Block '{block_name(state, measured_block_id)}' has no recorded "
+            "length — that length is the whole of what the measurement rests on"
         )
     manager = getattr(state.network, "block_manager", None)
     if manager is None:
@@ -830,9 +836,9 @@ def resolve_calibration_stretch(state: AppState, measured_block_id: str):
     outer = manager.adjacent_blocks(measured_block_id)
     if len(outer) < 2:
         raise ValidationError(
-            f"Block '{measured_block_id}' does not have a block at both ends as "
-            "the points are currently set — the outer blocks are the run-up and "
-            "the stopping room"
+            f"Block '{block_name(state, measured_block_id)}' does not have a "
+            "block at both ends as the points are currently set — the outer "
+            "blocks are the run-up and the stopping room"
         )
     return (outer[0], outer[1]), length_cm
 
@@ -884,21 +890,28 @@ def calibration_readiness(
         except (NotFoundError, ValidationError) as exc:
             unmet.append(str(exc))
         else:
-            if not held.intersection(outer):
+            executor = getattr(sim, "route_executor", None)
+            first, second = (block_name(state, b) for b in outer)
+            measured_name = block_name(state, measured_block_id)
+            if _span_in_outer_block(held, measured_block_id, outer):
+                if _list_holds(state, measured_block_id, train_id):
+                    # The span is off the measured block but its detector has
+                    # yet to read clear, and a standing train never lets it go.
+                    # A leg cannot reserve a block its own train holds.
+                    unmet.append(
+                        f"Move the train off {measured_name}, wholly into "
+                        f"{first} or {second} — a crossing is timed from the "
+                        "moment the train enters the measured block"
+                    )
+            elif (
+                executor is None
+                or executor.calibration_move_walk(train_id, measured_block_id, outer)
+                is None
+            ):
                 unmet.append(
-                    f"Stand the train in {outer[0]} or {outer[1]} — a leg starts "
-                    "from a stand in an outer block"
-                )
-            elif measured_block_id in held or getattr(
-                state.network.blocks.get(measured_block_id), "occupied_by", None
-            ) == train_id:
-                # Either view of occupancy: the span covers it, or the train's
-                # block list still holds it while its detector has yet to read
-                # clear. A leg cannot reserve a block its own train holds.
-                unmet.append(
-                    f"Move the train off {measured_block_id}, wholly into "
-                    f"{outer[0]} or {outer[1]} — a crossing is timed from the "
-                    "moment the train enters the measured block"
+                    f"No way leads from where the train stands into {first} or "
+                    f"{second} without crossing {measured_name} — drive it into "
+                    "one of them"
                 )
 
     if not controller.is_stopped():
@@ -980,7 +993,7 @@ def calibrate_train(
         )
         train, profile, sim = _calibration_profile(state, train_id)
         outer, length_cm = resolve_calibration_stretch(state, measured_block_id)
-        heading_to = _leg_heading(state, train_id, outer)
+        heading_to = _leg_heading(state, train_id, measured_block_id, outer)
         _take_control_for_calibration(_controller(state, train))
         return sim.speed_calibration.start(
             train,
@@ -993,26 +1006,38 @@ def calibrate_train(
         )
 
 
-def _leg_heading(state: AppState, train_id: str, outer: tuple) -> int:
-    """Which outer block the opening leg runs toward.
+def _span_in_outer_block(held: set, measured_block_id: str, outer: tuple) -> bool:
+    """Whether the train's span stands in one of the outer blocks and off the
+    measured block (design_new.md "Speed calibration", The pass first moves the
+    train into an outer block)."""
+    return bool(held.intersection(outer)) and measured_block_id not in held
 
-    A leg starts from a stand in an outer block, so the train must be standing
-    in one of the two, and the first leg runs toward the other one. Asking for
+
+def _list_holds(state: AppState, block_id: str, train_id: str) -> bool:
+    """Whether the train's block list still holds the block — its detector has
+    yet to read it clear."""
+    block = state.network.blocks.get(block_id)
+    return getattr(block, "occupied_by", None) == train_id
+
+
+def _leg_heading(
+    state: AppState, train_id: str, measured_block_id: str, outer: tuple
+) -> Optional[int]:
+    """Which outer block the opening leg runs toward, or None when the pass
+    must first move the train into one.
+
+    The opening leg runs toward the outer block the train is not in. Asking for
     authority to the block the train is already standing in is refused by the
     dispatcher, so this orientation is what makes the opening leg possible at
-    all (design_new.md "Speed calibration", Where it runs).
+    all (design_new.md "Speed calibration", The pass first moves the train into
+    an outer block).
     """
     controller = _controller(state, require_train(state, train_id))
     span = controller.get_current_span()
     held = set(getattr(span, "occupied_blocks", []) or [])
-    if outer[0] in held:
-        return 1
-    if outer[1] in held:
-        return 0
-    raise ConflictError(
-        f"Train must be standing in {outer[0]} or {outer[1]} to measure across "
-        "this block — a leg starts from a stand in an outer block"
-    )
+    if not _span_in_outer_block(held, measured_block_id, outer):
+        return None
+    return 1 if outer[0] in held else 0
 
 
 def calibrate_status(state: AppState, train_id: str):

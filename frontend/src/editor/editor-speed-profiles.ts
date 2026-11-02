@@ -20,6 +20,7 @@ import {
   calibrationTrainChoices,
   compareAxisTop,
   crossingRows,
+  speedPassProgress,
   measuredCurve,
   readinessApplies,
   readinessKind,
@@ -1880,12 +1881,7 @@ ${this._calibrationGroupHtml(p)}
     if (!cal || !run || !this._profile) return;
     const progress = cal.root.querySelector('#sp-cal-progress');
     if (progress) {
-      progress.textContent =
-        cal.view === 'speed-held'
-          ? `Measured every step: ${run.samples.length} points across ${run.measured_block_id}.`
-          : `Measuring ${run.current_power_percent}% — step ${run.step_index + 1} of ` +
-            `${run.step_count}, crossing ` +
-            `${Math.min(run.crossings_done + 1, run.crossings_target)} of ${run.crossings_target}`;
+      progress.textContent = speedPassProgress(run, cal.view === 'speed-held');
     }
     const measured = measuredCurve(run.samples || []);
     const list = cal.root.querySelector('#sp-cal-points');
@@ -1968,8 +1964,10 @@ ${this._calibrationGroupHtml(p)}
         const s = await this.api.getCalibrationStretch(this._calTrainId || '_', blockId);
         if (this._cal !== cal || cal.measuredBlockId !== blockId) return;
         outer = s.outer_block_ids || [];
+        const names: Record<string, string> = s.block_names || {};
+        const shown = outer.map((id: string) => names[id] || id);
         cal.stretchText =
-          `Run-up / stopping room: ${outer.join(' ↔ ')} · measured length ${s.length_cm} cm`;
+          `Run-up / stopping room: ${shown.join(' ↔ ')} · measured length ${s.length_cm} cm`;
         cal.stretchResolved = true;
       } catch (err: any) {
         if (this._cal !== cal || cal.measuredBlockId !== blockId) return;

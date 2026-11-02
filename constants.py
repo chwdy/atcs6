@@ -185,6 +185,12 @@ CALIBRATION_HALF_POWER_S: float = 0.5
 # After a slower crossing it keeps the step's power, which is sure to move it.
 CALIBRATION_HALF_POWER_ABOVE_KMH: float = 40.0
 
+# When a pass opens with the train not standing in an outer block, it first
+# drives the train at this power into the nearer one (design_new.md "Speed
+# calibration", The pass first moves the train into an outer block). A fixed
+# power, because the speed profile is what the pass is about to measure.
+CALIBRATION_MOVE_POWER_PERCENT: float = 50.0
+
 # When a measured crossing is capped by the leg's own reservation end (the
 # stretch is too short for this step's speed even at the zero reservation-end
 # standoff) or by a repeated conflict, that crossing is discarded and

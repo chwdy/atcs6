@@ -50,6 +50,7 @@ from constants import (
     CALIBRATION_HALF_POWER_ABOVE_KMH,
     CALIBRATION_HALF_POWER_S,
     CALIBRATION_MIN_CROSSING_SPEED_KMH,
+    CALIBRATION_MOVE_POWER_PERCENT,
     CALIBRATION_POWER_STEP_PERCENT,
     CALIBRATION_ROUND_TRIPS,
     CALIBRATION_STEP_TIMEOUT_S,
@@ -65,6 +66,7 @@ _MONOTONIC_EPSILON_KMH = 1e-6
 # Run phases. "leg", "clearing" and "stopping" are the three parts of one leg:
 # the crossing, driving on until the train is off the measured block, and coming
 # to a stand. The pass cycles through them until every step is measured.
+PHASE_MOVING = "moving"
 PHASE_LEG = "leg"
 PHASE_CLEARING = "clearing"
 PHASE_STOPPING = "stopping"
@@ -151,6 +153,11 @@ class CalibrationObservation:
     the crossing window (design_new.md "Speed calibration", Time the train
     stands short of its reservation is not counted)."""
 
+    outer_block_index: Optional[int] = None
+    """Which outer block (0 or 1) the train stands in, or `None` when it stands
+    in neither. The head's block counts first, so a train straddling both
+    reads as the one its head is in. The move into an outer block ends on it."""
+
     measured_block_held: bool = False
     """Whether the train is still on the measured block in either view of
     occupancy (design_new.md "Power", Two views of occupancy): its calculated
@@ -185,6 +192,11 @@ class CalibrationCommand:
     stops inside the stretch (both end the sweep), an overrun, or any pass
     abandonment. A leg that reaches the far block sets nothing here: it finishes
     through ordinary stop completion, which tears its route down for it."""
+    move_into_place: bool = False
+    """Build the one-off route that moves the train into the nearer outer
+    block, before the opening leg (design_new.md "Speed calibration", The pass
+    first moves the train into an outer block). `RouteExecutor` picks the
+    block, because choosing the walk needs the dispatcher."""
     arm_leg_to: Optional[str] = None
     """The far outer block to build this leg's one-off route to, before the power
     command can move the train. A leg without a route has no authority, so the
@@ -234,6 +246,12 @@ class CalibrationRun:
     heading_to: int = 1
 
     phase: str = PHASE_LEG
+    """`PHASE_MOVING` while the pass moves the train into an outer block before
+    the opening leg, then `PHASE_LEG` / `PHASE_CLEARING` / `PHASE_STOPPING`
+    through each leg, and `PHASE_MEASURED` or `PHASE_FAILED` once it ends."""
+    move_target_block_id: str = ""
+    """The outer block the move drives the train into, written by
+    `RouteExecutor` when it builds the move's route; "" before then."""
     leg_armed: bool = False
     """Whether this leg's one-off route and power have been commanded. Every leg
     starts unarmed, so one code path arms them all — including the pass's
@@ -352,7 +370,7 @@ class CalibrationRun:
 
     @property
     def is_measuring(self) -> bool:
-        return self.phase in (PHASE_LEG, PHASE_CLEARING, PHASE_STOPPING)
+        return self.phase in (PHASE_MOVING, PHASE_LEG, PHASE_CLEARING, PHASE_STOPPING)
 
     @property
     def is_measured(self) -> bool:
@@ -372,6 +390,7 @@ class CalibrationRun:
             "phase": self.phase,
             "measured_block_id": self.measured_block_id,
             "outer_block_ids": list(self.outer_block_ids),
+            "move_target_block_id": self.move_target_block_id,
             "step_index": self.step_index,
             "step_count": len(self.power_steps),
             "current_power_percent": self.current_power,
@@ -481,7 +500,7 @@ class SpeedCalibration:
         measured_block_id: str = "",
         outer_block_ids: Sequence[str] = (),
         block_length_cm: float = 0.0,
-        heading_to: int = 1,
+        heading_to: Optional[int] = 1,
         now: float = 0.0,
     ) -> CalibrationRun:
         """Open a pass over the power sweep.
@@ -490,7 +509,11 @@ class SpeedCalibration:
         length. The caller resolves the stretch, because walking the track
         through the points as they are aligned needs the network, and it passes
         `heading_to` as the index of the outer block the train is running
-        *toward* — the one it is not already standing in.
+        *toward* — the one it is not already standing in. `heading_to=None`
+        means the train stands in neither outer block, or is on the measured
+        block, so the pass first moves it into the nearer one (design_new.md
+        "Speed calibration", The pass first moves the train into an outer
+        block).
         """
         outer = tuple(outer_block_ids)[:2]
         if len(outer) < 2:
@@ -502,7 +525,8 @@ class SpeedCalibration:
             measured_block_id=measured_block_id,
             outer_block_ids=(outer[0], outer[1]),
             block_length_cm=float(block_length_cm or 0.0),
-            heading_to=1 if int(heading_to) else 0,
+            heading_to=1 if heading_to else 0,
+            phase=PHASE_MOVING if heading_to is None else PHASE_LEG,
         )
         self.runs[train.train_id] = run
         return run
@@ -624,7 +648,9 @@ class SpeedCalibration:
         if not run.is_measuring:
             return None
 
-        if run.phase == PHASE_LEG:
+        if run.phase == PHASE_MOVING:
+            command = self._advance_move(run, obs)
+        elif run.phase == PHASE_LEG:
             command = self._advance_leg(run, obs)
         elif run.phase == PHASE_CLEARING:
             command = self._advance_clearing(run, obs)
@@ -634,6 +660,66 @@ class SpeedCalibration:
             run.half_power_until is not None and obs.now < run.half_power_until
         )
         return command
+
+    def _advance_move(
+        self, run: CalibrationRun, obs: CalibrationObservation
+    ) -> Optional[CalibrationCommand]:
+        """Move the train into the nearer outer block, then hand over to the
+        opening leg (design_new.md "Speed calibration", The pass first moves
+        the train into an outer block).
+
+        The move's route finishes through ordinary stop completion like a
+        leg's, so its path having appeared and then gone means it ended. The
+        pass then checks where the train stopped.
+        """
+        in_place = obs.outer_block_index is not None and not obs.measured_block_held
+        target = run.move_target_block_id or "an outer block"
+
+        if run.leg_authority_seen and not obs.path_present:
+            if not obs.is_stopped:
+                return None
+            if not in_place:
+                return self.fail(
+                    run,
+                    f"the move into {target} ended with the train outside "
+                    f"{run.outer_block_ids[0]} and {run.outer_block_ids[1]}, "
+                    f"or still on {run.measured_block_id}",
+                )
+            # The opening leg runs toward the outer block the train is not in.
+            # Path creation picks the span end to start from, so the train may
+            # face either way (as when the pass opens with it already in place).
+            run.phase = PHASE_LEG
+            run.heading_to = 1 - obs.outer_block_index
+            run.needs_reverse = False
+            run.leg_armed = False
+            return self._advance_leg(run, obs)
+
+        if not run.leg_armed:
+            run.leg_armed = True
+            run.leg_authority_seen = False
+            run.leg_started_at = None
+            run.half_power_until = None
+            return CalibrationCommand(
+                power_percent=CALIBRATION_MOVE_POWER_PERCENT, move_into_place=True
+            )
+
+        if obs.path_present:
+            if not run.leg_authority_seen:
+                run.leg_authority_seen = True
+                run.leg_started_at = obs.now
+                run.half_power_until = obs.now + CALIBRATION_HALF_POWER_S
+        if (
+            run.leg_started_at is not None
+            and not in_place
+            and obs.now - run.leg_started_at > CALIBRATION_STEP_TIMEOUT_S
+        ):
+            return self.fail(
+                run,
+                f"the train did not reach {target} within "
+                f"{CALIBRATION_STEP_TIMEOUT_S:.0f} s at "
+                f"{CALIBRATION_MOVE_POWER_PERCENT:.0f}% power",
+            )
+        return None
 
     def _advance_leg(
         self, run: CalibrationRun, obs: CalibrationObservation
@@ -1109,6 +1195,10 @@ class SpeedCalibration:
         A leg that is not armed yet records no crossing: the leg arms in Plan
         after this, and arming resets all three.
         """
+        if run.phase == PHASE_MOVING:
+            # The move times nothing and may run through blocks outside the
+            # stretch on its way in.
+            return
         entered = set(entered)
         stretch = {run.measured_block_id, *run.outer_block_ids}
         if entered - stretch:
@@ -1154,6 +1244,7 @@ class SpeedCalibration:
             held_short=is_stopped
             and plan is not None
             and self._last_reserved_block(plan) != run.heading_toward_block_id,
+            outer_block_index=self._outer_block_index(run, controller),
             measured_block_held=self._on_measured_block(run, controller),
         )
         return self.advance(run, obs)
@@ -1177,6 +1268,16 @@ class SpeedCalibration:
             return True
         holder = self._block_holder
         return holder is not None and holder(run.measured_block_id) == run.train_id
+
+    def _outer_block_index(self, run: CalibrationRun, controller) -> Optional[int]:
+        """Which outer block the train stands in, the head's block first, or
+        None when its span is in neither."""
+        blocks = list(getattr(controller.get_current_span(), "occupied_blocks", ()) or ())
+        head = self._head_block(controller)
+        for block_id in [head, *blocks]:
+            if block_id and block_id in run.outer_block_ids:
+                return run.outer_block_ids.index(block_id)
+        return None
 
     @staticmethod
     def _head_block(controller) -> str:
@@ -1262,6 +1363,11 @@ class SpeedCalibration:
         lighting run only when none is measuring.
         """
         run = self.runs.get(train_id)
+        if run is not None and run.phase == PHASE_MOVING:
+            value = 0.0
+            if run.leg_armed and self._leg_authority_present(train_id):
+                value = CALIBRATION_MOVE_POWER_PERCENT * (0.5 if run.half_power else 1.0)
+            return CalibrationPropulsionOverride(kind="power_percent", value=float(value))
         if run is not None and run.is_measuring:
             driving = run.phase in (PHASE_LEG, PHASE_CLEARING) and run.leg_armed
             if driving and not self._leg_authority_present(train_id):

@@ -184,6 +184,30 @@ export function crossingRows(run: any): CrossingRow[] {
   });
 }
 
+/**
+ * The pass's progress line: the outer block it is moving the train into before
+ * the first crossing (design_new.md "Speed calibration", The pass first moves
+ * the train into an outer block), the step being measured, or, once held, how
+ * many points it measured. Blocks are named by name when the run carries one.
+ */
+export function speedPassProgress(run: any, held: boolean): string {
+  const names: Record<string, string> = run?.block_names || {};
+  const named = (id: string) => names[id] || id;
+  if (held) {
+    return `Measured every step: ${run.samples.length} points across ${named(run.measured_block_id)}.`;
+  }
+  if (run.phase === 'moving') {
+    return run.move_target_block_id
+      ? `Moving the train into ${named(run.move_target_block_id)} before the first crossing`
+      : 'Finding the way into the nearer outer block';
+  }
+  return (
+    `Measuring ${run.current_power_percent}% — step ${run.step_index + 1} of ` +
+    `${run.step_count}, crossing ` +
+    `${Math.min(run.crossings_done + 1, run.crossings_target)} of ${run.crossings_target}`
+  );
+}
+
 /** The top of the speed axis that holds both curves, with some headroom. */
 export function compareAxisTop(stored: Curve, measured: Curve): number {
   let top = 0;

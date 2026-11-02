@@ -313,6 +313,53 @@ def test_the_readiness_endpoint_lists_unmet_conditions(state):
     assert any("not live" in u for u in body["unmet"])
 
 
+def test_messages_and_the_stretch_name_blocks_by_their_names(state):
+    """The panel shows blocks by the names the operator gave them, so the
+    readiness line and the stretch line name the outer blocks that way, not by
+    their ids (rig, 2026-11-01: "Stand the train in BLK_4F4CF0 or
+    BLK_C37589A5")."""
+    from app_factory import create_app
+
+    train_id = _free_train(state)
+    controller = state.sim_controller.get_or_create_controller(train_id)
+    held = set(controller.get_current_span().occupied_blocks)
+    measured, outer = None, ()
+    for block_id in state.network.blocks:
+        try:
+            outer, _length = train_service.resolve_calibration_stretch(state, block_id)
+        except Exception:
+            continue
+        if not held.intersection(outer) and (
+            state.sim_controller.route_executor.calibration_move_walk(
+                train_id, block_id, outer
+            )
+            is None
+        ):
+            measured = block_id
+            break
+    assert measured is not None
+    state.network.blocks[outer[0]].name = "Right"
+    state.network.blocks[outer[1]].name = "Left"
+
+    unmet = train_service.calibration_readiness(
+        state, train_id, measured_block_id=measured
+    )
+    assert any(
+        u.startswith("No way leads from where the train stands into Right or Left")
+        for u in unmet
+    )
+
+    state.simulation_running = False
+    app = create_app(state)
+    app.config["TESTING"] = True
+    with app.test_client() as client:
+        response = client.get(f"/api/trains/{train_id}/calibrate/stretch/{measured}")
+    assert response.status_code == 200
+    names = response.get_json()["block_names"]
+    assert names[outer[0]] == "Right"
+    assert names[outer[1]] == "Left"
+
+
 def test_the_runtime_tick_arms_the_pass_as_a_one_off_route(state):
     sim = state.sim_controller
     network = state.network

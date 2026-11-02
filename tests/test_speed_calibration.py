@@ -20,6 +20,7 @@ from constants import (
     CALIBRATION_HALF_POWER_ABOVE_KMH,
     CALIBRATION_HALF_POWER_S,
     CALIBRATION_MIN_CROSSING_SPEED_KMH,
+    CALIBRATION_MOVE_POWER_PERCENT,
     CALIBRATION_POWER_STEP_PERCENT,
     CALIBRATION_ROUND_TRIPS,
     CALIBRATION_STEP_TIMEOUT_S,
@@ -27,7 +28,9 @@ from constants import (
 from model_scale import cm_per_sec_to_kmh, kmh_to_cm_per_sec
 from speed_calibration import (
     PHASE_FAILED,
+    PHASE_LEG,
     PHASE_MEASURED,
+    PHASE_MOVING,
     CalibrationObservation,
     SpeedCalibration,
     power_sweep,
@@ -877,3 +880,109 @@ def test_a_stall_lists_the_crossing_that_ended_the_sweep():
     assert outcomes[-2:] == [(90.0, 1, "dropped"), (90.0, 1, "ended_sweep")]
     assert run.crossing_log[-1].seconds is None
 
+
+
+# -- the move into an outer block -----------------------------------------
+# design_new.md "Speed calibration", The pass first moves the train into an
+# outer block.
+
+
+def test_a_pass_opened_outside_the_outer_blocks_moves_the_train_first():
+    cal, run, _ = _open_run(heading_to=None)
+    assert run.phase == PHASE_MOVING
+
+    command = cal.advance(run, CalibrationObservation(now=0.0))
+
+    assert command.move_into_place is True
+    assert command.arm_leg_to is None
+    assert command.power_percent == CALIBRATION_MOVE_POWER_PERCENT
+
+
+def test_the_move_drives_half_its_power_first_then_its_power():
+    cal, run, _ = _open_run(heading_to=None)
+    # Unwired, the unit tests read the route's path as always present, so the
+    # power before the path appears is not checked here.
+    cal.advance(run, CalibrationObservation(now=0.0))
+
+    cal.advance(run, CalibrationObservation(now=1.0, path_present=True))
+    assert run.half_power is True
+    assert cal.get_propulsion_override("T1").value == CALIBRATION_MOVE_POWER_PERCENT * 0.5
+
+    cal.advance(
+        run,
+        CalibrationObservation(now=1.0 + CALIBRATION_HALF_POWER_S, path_present=True),
+    )
+    assert cal.get_propulsion_override("T1").value == CALIBRATION_MOVE_POWER_PERCENT
+
+
+def test_after_the_move_the_opening_leg_runs_toward_the_other_outer_block():
+    cal, run, _ = _open_run(heading_to=None)
+    cal.advance(run, CalibrationObservation(now=0.0))
+    cal.advance(run, CalibrationObservation(now=1.0, path_present=True))
+
+    # The move's route completed with the train stopped in A (index 0).
+    command = cal.advance(
+        run,
+        CalibrationObservation(
+            now=5.0, is_stopped=True, head_block="A", outer_block_index=0
+        ),
+    )
+
+    assert run.phase == PHASE_LEG
+    assert command.arm_leg_to == "C"
+    assert command.reverse_cab is False
+    assert command.power_percent == run.power_steps[0]
+
+
+def test_a_move_that_ends_outside_the_outer_blocks_fails_the_pass():
+    cal, run, _ = _open_run(heading_to=None)
+    cal.advance(run, CalibrationObservation(now=0.0))
+    cal.advance(run, CalibrationObservation(now=1.0, path_present=True))
+
+    cal.advance(run, CalibrationObservation(now=5.0, is_stopped=True, head_block="X"))
+
+    assert run.phase == PHASE_FAILED
+    assert "move" in run.failure_reason
+
+
+def test_a_move_that_ends_with_the_train_still_on_b_fails_the_pass():
+    cal, run, _ = _open_run(heading_to=None)
+    cal.advance(run, CalibrationObservation(now=0.0))
+    cal.advance(run, CalibrationObservation(now=1.0, path_present=True))
+
+    cal.advance(
+        run,
+        CalibrationObservation(
+            now=5.0, is_stopped=True, outer_block_index=0, measured_block_held=True
+        ),
+    )
+
+    assert run.phase == PHASE_FAILED
+
+
+def test_a_move_that_does_not_arrive_in_time_fails_the_pass():
+    cal, run, _ = _open_run(heading_to=None)
+    cal.advance(run, CalibrationObservation(now=0.0))
+    cal.advance(run, CalibrationObservation(now=1.0, path_present=True))
+    cal.advance(
+        run, CalibrationObservation(now=1.0 + CALIBRATION_STEP_TIMEOUT_S, path_present=True)
+    )
+    assert run.phase == PHASE_MOVING
+
+    cal.advance(
+        run,
+        CalibrationObservation(now=1.5 + CALIBRATION_STEP_TIMEOUT_S, path_present=True),
+    )
+
+    assert run.phase == PHASE_FAILED
+    assert "did not reach" in run.failure_reason
+
+
+def test_the_move_records_no_crossing_and_no_overrun():
+    cal, run, _ = _open_run(heading_to=None)
+    cal.advance(run, CalibrationObservation(now=0.0))
+
+    cal.record_detected_entries(run, ("SIDING", "B", "A"), 2.0)
+
+    assert run.overrun_seen is False
+    assert run.crossing_started_at is None
