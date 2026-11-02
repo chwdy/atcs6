@@ -915,6 +915,48 @@ def test_the_move_drives_half_its_power_first_then_its_power():
     assert cal.get_propulsion_override("T1").value == CALIBRATION_MOVE_POWER_PERCENT
 
 
+def test_the_move_stops_on_the_detector():
+    """Half power once the head is in the outer block, nothing once the block
+    behind has confirmed clear (design_new.md "Speed calibration", The move
+    stops on the detector)."""
+    cal, run, _ = _open_run(heading_to=None)
+    cal.advance(run, CalibrationObservation(now=0.0))
+    run.move_target_block_id = "A"  # written by RouteExecutor with the route
+    power = lambda: cal.get_propulsion_override("T1").value  # noqa: E731
+
+    cal.advance(run, CalibrationObservation(
+        now=5.0, path_present=True, head_block="X", span_blocks=("X",)))
+    cal.advance(run, CalibrationObservation(
+        now=5.0 + CALIBRATION_HALF_POWER_S, path_present=True,
+        head_block="X", span_blocks=("X",)))
+    assert power() == CALIBRATION_MOVE_POWER_PERCENT
+
+    # The detector put the head in A; the tail is still on the block behind.
+    cal.advance(run, CalibrationObservation(
+        now=7.0, path_present=True, head_block="A", span_blocks=("A", "X")))
+    assert power() == CALIBRATION_MOVE_POWER_PERCENT * 0.5
+    cal.advance(run, CalibrationObservation(
+        now=8.0, path_present=True, head_block="A", span_blocks=("A", "X")))
+    assert power() == CALIBRATION_MOVE_POWER_PERCENT * 0.5
+
+    # The span has moved off X, but the block list still holds X until its
+    # detector confirms it clear: still half power.
+    cal.advance(run, CalibrationObservation(
+        now=8.2, path_present=True, head_block="A", span_blocks=("A",),
+        listed_blocks=("A", "X")))
+    assert run.move_blocks_behind == ("X",)
+    assert power() == CALIBRATION_MOVE_POWER_PERCENT * 0.5
+
+    # X confirmed clear: the train holds A alone, and the power stays cut.
+    cal.advance(run, CalibrationObservation(
+        now=8.5, path_present=True, head_block="A", span_blocks=("A",),
+        listed_blocks=("A",)))
+    assert power() == 0.0
+    cal.advance(run, CalibrationObservation(
+        now=9.0, path_present=True, head_block="A", span_blocks=("A",)))
+    assert power() == 0.0
+
+
 def test_after_the_move_the_opening_leg_runs_toward_the_other_outer_block():
     cal, run, _ = _open_run(heading_to=None)
     cal.advance(run, CalibrationObservation(now=0.0))

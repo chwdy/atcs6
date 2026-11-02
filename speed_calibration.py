@@ -127,6 +127,15 @@ class CalibrationObservation:
     is_stopped: bool = False
     """The canonical stopped predicate, `TrainController.is_stopped()`."""
 
+    span_blocks: Tuple[str, ...] = ()
+    """The blocks the train's calculated span covers."""
+
+    listed_blocks: Tuple[str, ...] = ()
+    """Of the blocks the pass asks about — the span's blocks and the move's
+    blocks behind — those the train's block list holds (`Block.occupied_by`
+    names the train). With `span_blocks` this is the train's place in both
+    views of occupancy (design_new.md "Power", Two views of occupancy)."""
+
     head_block: str = ""
     """The block the train's head is in. Arming a leg reads it to orient from
     where the train actually stands. It is the head's block and not the whole
@@ -252,6 +261,16 @@ class CalibrationRun:
     move_target_block_id: str = ""
     """The outer block the move drives the train into, written by
     `RouteExecutor` when it builds the move's route; "" before then."""
+    move_slowing: bool = False
+    """Whether the move drives half `CALIBRATION_MOVE_POWER_PERCENT` because
+    the head has reached the outer block (design_new.md "Speed calibration",
+    The move stops on the detector)."""
+    move_cut: bool = False
+    """Whether the move's power is cut because the train has left the block
+    behind and stands only in the outer block."""
+    move_blocks_behind: Tuple[str, ...] = ()
+    """The blocks the span covered besides the outer block when the head first
+    reached it: the blocks the move waits to see clear before it cuts."""
     leg_armed: bool = False
     """Whether this leg's one-off route and power have been commanded. Every leg
     starts unarmed, so one code path arms them all — including the pass's
@@ -699,6 +718,9 @@ class SpeedCalibration:
             run.leg_authority_seen = False
             run.leg_started_at = None
             run.half_power_until = None
+            run.move_slowing = False
+            run.move_cut = False
+            run.move_blocks_behind = ()
             return CalibrationCommand(
                 power_percent=CALIBRATION_MOVE_POWER_PERCENT, move_into_place=True
             )
@@ -708,6 +730,20 @@ class SpeedCalibration:
                 run.leg_authority_seen = True
                 run.leg_started_at = obs.now
                 run.half_power_until = obs.now + CALIBRATION_HALF_POWER_S
+        # The detector, not the calculated position, stops the move: half power
+        # once the head is in the outer block, nothing once the block behind
+        # has confirmed clear (design_new.md "Speed calibration", The move
+        # stops on the detector).
+        target_block = run.move_target_block_id
+        if run.leg_authority_seen and target_block:
+            if not run.move_slowing and obs.head_block == target_block:
+                run.move_slowing = True
+                run.move_blocks_behind = tuple(
+                    block_id for block_id in obs.span_blocks if block_id != target_block
+                )
+            behind = set(obs.span_blocks) | set(obs.listed_blocks)
+            if run.move_slowing and behind <= {target_block}:
+                run.move_cut = True
         if (
             run.leg_started_at is not None
             and not in_place
@@ -1236,9 +1272,20 @@ class SpeedCalibration:
             return None
         is_stopped = bool(controller.is_stopped())
         plan = controller.path_projection.received_path_plan
+        span_blocks = tuple(
+            getattr(controller.get_current_span(), "occupied_blocks", ()) or ()
+        )
+        holder = self._block_holder
+        listed_blocks = tuple(
+            block_id
+            for block_id in dict.fromkeys(span_blocks + run.move_blocks_behind)
+            if holder is not None and holder(block_id) == train_id
+        )
         obs = CalibrationObservation(
             now=self._operating_time(),
             is_stopped=is_stopped,
+            span_blocks=span_blocks,
+            listed_blocks=listed_blocks,
             head_block=self._head_block(controller),
             path_present=plan is not None,
             held_short=is_stopped
@@ -1365,8 +1412,13 @@ class SpeedCalibration:
         run = self.runs.get(train_id)
         if run is not None and run.phase == PHASE_MOVING:
             value = 0.0
-            if run.leg_armed and self._leg_authority_present(train_id):
-                value = CALIBRATION_MOVE_POWER_PERCENT * (0.5 if run.half_power else 1.0)
+            if (
+                run.leg_armed
+                and not run.move_cut
+                and self._leg_authority_present(train_id)
+            ):
+                half = run.half_power or run.move_slowing
+                value = CALIBRATION_MOVE_POWER_PERCENT * (0.5 if half else 1.0)
             return CalibrationPropulsionOverride(kind="power_percent", value=float(value))
         if run is not None and run.is_measuring:
             driving = run.phase in (PHASE_LEG, PHASE_CLEARING) and run.leg_armed
