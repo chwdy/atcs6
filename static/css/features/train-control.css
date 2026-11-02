@@ -716,6 +716,13 @@
     margin-bottom: 8px;
 }
 
+/* Send to… (Quick Route) shares the row and keeps its text width, so Start
+   route stays the wide button. */
+.tc-start-route-row .tc-send-to-btn {
+    flex: none;
+    padding: 0 12px;
+}
+
 /* ============================================================================
    DISCLOSURE
    ============================================================================ */

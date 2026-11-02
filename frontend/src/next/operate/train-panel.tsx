@@ -107,7 +107,7 @@ export function TrainPanel({ host, trainId }: { host: OperateHost; trainId: stri
     <div class="tc-panel train-control-panel op-train-panel" data-train-id={trainId}>
       <StatusZone view={view} />
       <CabDisplay view={view} />
-      <DrivingControls view={view} />
+      <DrivingControls host={host} view={view} />
       <section class="tc-section tc-section-debug op-train-folds">
         <Fold id="route" title="Route" summary={view.assignedRouteId ?? 'none'}>
           <RouteSection host={host} view={view} />
@@ -274,7 +274,7 @@ function inHardwareEnvironment(): boolean {
   return env === 'virtual_hardware' || env === 'real_hardware';
 }
 
-function DrivingControls({ view }: { view: TrainView }) {
+function DrivingControls({ host, view }: { host: OperateHost; view: TrainView }) {
   const c = view.controller;
   const id = view.id;
   const isATO = (c?.control_mode || 'manual') === 'ato';
@@ -300,6 +300,22 @@ function DrivingControls({ view }: { view: TrainView }) {
         >
           <span class="tc-btn-glyph">▶</span>
           <span class="tc-btn-text">Start route</span>
+        </button>
+        <button
+          type="button"
+          class="tc-btn tc-btn-ghost tc-send-to-btn"
+          title={
+            isCalibrating
+              ? 'The train is calibrating'
+              : 'Quick Route: the blocks this train can reach light up; click one to send it there'
+          }
+          disabled={isCalibrating}
+          onClick={() => {
+            const mode = host.editor.pathHandler?.buildQuickRouteMode(id);
+            if (mode) void host.editor.enterMode(mode);
+          }}
+        >
+          <i class="ti ti-map-pin" aria-hidden="true" /> Send to…
         </button>
       </div>
       <div class="tc-controls-pair">

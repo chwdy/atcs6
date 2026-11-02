@@ -151,3 +151,84 @@ describe('Quick Route cancel', () => {
     expect(handler.pathToolState.active).toBe(false);
   });
 });
+
+describe('Quick Route from a chosen train', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('lights up the reachable blocks at once, and one click sends the train and ends the mode', async () => {
+    vi.stubGlobal('document', { getElementById: () => null });
+    vi.stubGlobal('window', { app: { refreshNetwork: vi.fn(async () => {}) } });
+    const endTrack = { x: 5, y: 0, block_section_id: 'BLK_END' };
+    const editor: any = {
+      api: {
+        getReachableEndpointsForTrain: vi.fn(async () => ({ reachable_endpoints: ['BLK_END'] })),
+        createRoute: vi.fn(async () => ({})),
+        assignRoute: vi.fn(async () => ({})),
+      },
+      renderer: { requestRedraw: vi.fn(), clearRoutePreview: vi.fn() },
+      cachedNetwork: {
+        tracks: [endTrack],
+        controllers_by_train_id: { T1: { span: { occupied_blocks: ['BLK_START'] } } },
+      },
+      highlighter: { show: vi.fn(), clear: vi.fn() },
+      pathToolState: {},
+      showSecondarySidebar: vi.fn(),
+      showTrainControlPanel: vi.fn(async () => {}),
+      closeEditorTab: vi.fn(async () => {}),
+      _setSelectedTool: vi.fn(),
+    };
+    editor.exitMode = vi.fn(async () => {
+      const m = editor.activeMode;
+      editor.activeMode = null;
+      await m?.onExit();
+    });
+    const handler = new PathEditorHandler(editor);
+    handler.watchQuickRoutePathResult = vi.fn(async () => {});
+
+    const mode = handler.buildQuickRouteMode('T1');
+    editor.activeMode = mode;
+    await mode.onEnter();
+
+    expect(editor.api.getReachableEndpointsForTrain).toHaveBeenCalledWith('T1');
+    expect(handler.pathToolState.active).toBe(true);
+    expect(handler.pathToolState.startBlockId).toBe('BLK_START');
+    expect(editor.highlighter.show).toHaveBeenCalledWith(
+      { keys: new Set(['5,0']) },
+      { channel: 'reachable' }
+    );
+
+    await mode.onClick({ gridPos: { x: 5, y: 0 } });
+
+    expect(editor.api.assignRoute).toHaveBeenCalledWith('T1', expect.stringMatching(/^ROUTE_QR_/));
+    expect(editor.exitMode).toHaveBeenCalled();
+    expect(editor._setSelectedTool).toHaveBeenCalledWith('inspect');
+  });
+
+  it('stays in the mode when the click is not on a reachable block', async () => {
+    vi.stubGlobal('document', { getElementById: () => null });
+    const editor: any = {
+      api: {
+        getReachableEndpointsForTrain: vi.fn(async () => ({ reachable_endpoints: ['BLK_END'] })),
+        createRoute: vi.fn(async () => ({})),
+      },
+      renderer: { requestRedraw: vi.fn() },
+      cachedNetwork: { tracks: [{ x: 1, y: 1, block_section_id: 'BLK_OTHER' }] },
+      highlighter: { show: vi.fn(), clear: vi.fn() },
+      pathToolState: {},
+      showSecondarySidebar: vi.fn(),
+      exitMode: vi.fn(async () => {}),
+    };
+    const handler = new PathEditorHandler(editor);
+    const mode = handler.buildQuickRouteMode('T1');
+    editor.activeMode = mode;
+    await mode.onEnter();
+
+    await mode.onClick({ gridPos: { x: 1, y: 1 } });
+
+    expect(editor.api.createRoute).not.toHaveBeenCalled();
+    expect(editor.exitMode).not.toHaveBeenCalled();
+    expect(handler.pathToolState.active).toBe(true);
+  });
+});

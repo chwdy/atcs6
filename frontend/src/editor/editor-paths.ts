@@ -132,6 +132,51 @@ export class PathEditorHandler {
     };
   }
 
+  /**
+   * EditorMode for Quick Route from a train already chosen, as the train
+   * panel's Send to… starts it: the train's reachable blocks light up at once,
+   * and one click on one of them sends the train there through the same
+   * one-off route the two-click tool builds (design_new.md "Running a train",
+   * How an assignment is made). The mode ends once the route is assigned.
+   */
+  buildQuickRouteMode(trainId: string): any {
+    const mode = {
+      name: 'Quick Route',
+      toolName: 'path',
+      cancelMessage: 'Quick Route cancelled',
+      onEnter: () => this.startRouteForTrain(trainId),
+      onClick: async ({ gridPos }: { gridPos: any }) => {
+        if (!this.pathToolState.active) return true;
+        const track = this.cachedNetwork?.tracks?.find(
+          (t: any) => t.x === gridPos.x && t.y === gridPos.y
+        );
+        await this.handleRouteSecondClick(gridPos, track);
+        if (!this.pathToolState.active && this.editor.activeMode === mode) {
+          await this.editor.exitMode();
+          this.editor._setSelectedTool?.('inspect');
+        }
+        return true;
+      },
+      onExit: () => this.exitRouteToolMode(),
+    };
+    return mode;
+  }
+
+  /** Start the route tool on a known train: the start block is the block its
+   *  head is in, and its reachable blocks light up. */
+  async startRouteForTrain(trainId: string): Promise<void> {
+    const span = this.cachedNetwork?.controllers_by_train_id?.[trainId]?.span;
+    this.pathToolState = {
+      active: true,
+      startBlockId: span?.occupied_blocks?.[0] ?? null,
+      startPosition: null,
+      reachableEndpoints: [],
+      reachablePositions: new Set(),
+      trainId,
+    };
+    await this.loadRouteDestinations();
+  }
+
   async resetRouteToolState(): Promise<void> {
     this.pathToolState = {
       active: false,
@@ -215,7 +260,12 @@ export class PathEditorHandler {
       await this.resetRouteToolState();
       return;
     }
+    await this.loadRouteDestinations();
+  }
 
+  /** Light up the blocks the tool's train can reach, and show the Create Path
+   *  panel. */
+  async loadRouteDestinations(): Promise<void> {
     try {
       setStatusState('Path: Loading destinations...');
       // Span-aware reachability: only tiles the train can actually reach
