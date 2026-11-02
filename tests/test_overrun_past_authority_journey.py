@@ -258,3 +258,80 @@ def test_the_overrun_cut_out_drives_the_whole_train_to_0v():
         assert _voltage(network, bid) == pytest.approx(0.0), \
             f"cut-out block {bid} must be de-energized; got {_voltage(network, bid)}"
     assert _voltage(network, "BLK_D") == pytest.approx(0.0)
+
+
+def test_the_span_follows_an_overrun_that_raises_no_cut_out():
+    """The span follows the detector past the authority end whether or not the
+    overrun raises a cut-out (design_new.md "Block occupancy detection", The
+    correction walks through the train's own blocks only: the walk goes through
+    switch tiles at their current `Switch.position`, not along the path).
+
+    An open speed-calibration pass is the case where an overrun raises no
+    cut-out. The pass's propulsion override is what that exemption reads, so the
+    test supplies one for FAST. With the cut-out out of the picture, the span
+    must still be corrected onto the overrun block, must not be pinned there,
+    and must end on the same blocks the detector holds for the train."""
+    network, sim, controller, detector = _make_fixture()
+    real_override = sim.speed_calibration.get_propulsion_override
+    sim.speed_calibration.get_propulsion_override = (
+        lambda train_id: 50.0 if train_id == "FAST" else real_override(train_id)
+    )
+
+    log: List[dict] = []
+    march = [
+        {"BLK_A"}, {"BLK_A", "BLK_B"}, {"BLK_B"},
+        {"BLK_B", "BLK_C"}, {"BLK_C"},
+        {"BLK_C", "BLK_D"}, {"BLK_D"},            # crossing the authority end
+    ]
+    for physical in march:
+        _run_phase(sim, network, controller, detector, physical, 4, log)
+    # Long enough for BLK_C's clear to commit (OCCUPANCY_OFF_THRESHOLD reads).
+    _run_phase(sim, network, controller, detector, {"BLK_D"}, 12, log)
+
+    assert not any(r["cut_out"] for r in log), \
+        "the calibration exemption must leave the overrun without a cut-out"
+    assert network.blocks["BLK_D"].occupied_by == "FAST"
+    corrections = [
+        n for n in _overrun_warnings(sim)
+        if "BLK_D" in (n.payload or {}).get("blocks_gained", [])
+    ]
+    assert corrections, "the span must be corrected onto the overrun block"
+    held = sorted(
+        bid for bid, block in network.blocks.items() if block.occupied_by == "FAST"
+    )
+    assert held == ["BLK_D"]
+    assert log[-1]["model_occ"] == ["BLK_D"], \
+        f"the span must end on the blocks the detector holds; got {log[-1]}"
+
+
+def test_a_correction_past_the_authority_end_stops_at_the_overrun_blocks_seam():
+    """A correction onto a block past the end of the path puts the head on that
+    block's entry seam, with no cut-out requested (design_new.md "Block
+    occupancy detection", Physical detection outranks the calculated position,
+    and The correction walks through the train's own blocks only).
+
+    The span's tiles are traced from tail to head along the points as they are
+    set, so the head's own tile counts as soon as it stands on it; a trace that
+    followed the path would stop at the path's last tile, miss the overrun
+    block, and walk the head on past its seam."""
+    network, sim, controller, detector = _make_fixture()
+    train = network.trains["FAST"]
+    physics = sim._get_or_create_physics(train)
+    # The head near the far end of BLK_C, the last block of the path.
+    set_train_span(
+        controller, (5, 0), facing_direction=Direction.EAST,
+        head_distance_cm=90.0, occupied_blocks=["BLK_C"],
+    )
+    network.blocks["BLK_C"].occupied_by = "FAST"
+    detector.physical = {"BLK_C", "BLK_D"}
+    sim.block_occupancy_detector.seed_occupied({"BLK_C", "BLK_D"})
+    assert controller.route_hooks.phase_latches.emergency_request is None
+
+    controller.physics_sync.pending_detected_entered_blocks = {"BLK_D"}
+    assert physics.reconcile_to_detected_occupancy(train, controller) is True
+
+    span = controller.physics_sync.current_span
+    head = span.end_a if controller._head_end_label() == "end_a" else span.end_b
+    assert tuple(head.tile) == (6, 0) and head.distance_cm == 0.0, \
+        f"the head must sit on BLK_D's entry seam; got {head}"
+    assert sorted(span.occupied_blocks) == ["BLK_C", "BLK_D"]

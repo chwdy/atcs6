@@ -1541,7 +1541,10 @@ class TrainPhysics:
         """
         Update the list of tiles occupied by the train.
 
-        Traces from tail to head and records all tiles.
+        Traces from tail to head and records all tiles. The trace follows the
+        points as they are set, like `_update_tail_position`, not the path: the
+        body lies on the track the points lead along, and a span a correction
+        carried past the authority end has tiles the path does not have.
         """
         position = self._work
         if not position:
@@ -1575,7 +1578,9 @@ class TrainPhysics:
                 break
 
             # Get exit edge and next tile
-            exit_edge = self._calculate_exit_edge(current_tile, current_entry)
+            exit_edge = self._calculate_exit_edge(
+                current_tile, current_entry, follow_path=False
+            )
             if not exit_edge:
                 break
 
@@ -1911,6 +1916,20 @@ class TrainPhysics:
         behind the span (or on track the points do not lead to) out of the
         result.
 
+        The walk follows the points as they are set, not the train's path
+        (design_new.md "Block occupancy detection", The correction walks through
+        the train's own blocks only). The locomotive goes where the points send
+        it, and the path ends at the authority end while the track does not, so
+        a block a train overran onto is ahead of it like any other — whether or
+        not that overrun raised a cut-out.
+
+        The walk crosses only switch tiles, the given blocks, and blocks this
+        train holds (its span's blocks and those tied to it by
+        `Block.occupied_by`). It stops at the first block that is none of those.
+        The points as they are set lead on without end round a loop, and with no
+        such stop the walk would come round to a block behind the train and
+        report it as ahead.
+
         The walk also stops at the first `detected block` the detector has not
         confirmed occupied, which is the same line `_head_entry_cap` holds the
         head at. A block on the far side of one is not somewhere this train can
@@ -1938,16 +1957,15 @@ class TrainPhysics:
         detected = detector.detected_block_ids() if detector is not None else set()
         confirmed = detector.confirmed_occupied if detector is not None else set()
 
-        own_body: Set[str] = set()
-        if allow_crossing_own_body:
-            own_body = set(work.occupied_blocks or [])
-            train = self._get_train()
-            if train is not None and self.network is not None:
-                own_body |= {
-                    block_id
-                    for block_id, block in self.network.blocks.items()
-                    if getattr(block, "occupied_by", None) == train.train_id
-                }
+        held: Set[str] = set(work.occupied_blocks or [])
+        train = self._get_train()
+        if train is not None and self.network is not None:
+            held |= {
+                block_id
+                for block_id, block in self.network.blocks.items()
+                if getattr(block, "occupied_by", None) == train.train_id
+            }
+        own_body: Set[str] = held if allow_crossing_own_body else set()
 
         if work.head_is_a:
             tile, distance, entry = (
@@ -1965,7 +1983,7 @@ class TrainPhysics:
         wanted = set(entered)
         found: Set[str] = set()
         for next_tile, _travelled in self._walk_forward_tiles(
-            tile, distance, entry, float("inf")
+            tile, distance, entry, float("inf"), follow_path=False
         ):
             block_id = self._block_of_tile(next_tile)
             if block_id in wanted:
@@ -1974,9 +1992,12 @@ class TrainPhysics:
                 if not wanted:
                     break
                 continue
+            if block_id is None:
+                continue
+            if block_id not in held:
+                break
             if (
-                block_id is not None
-                and block_id in detected
+                block_id in detected
                 and block_id not in confirmed
                 and block_id not in own_body
             ):
@@ -2308,7 +2329,11 @@ class TrainPhysics:
                 return False
             to_seam: Optional[float] = None
             for next_tile, travelled in self._walk_forward_tiles(
-                tail_tile, float(tail.distance_cm), tail.entry_edge, float("inf")
+                tail_tile,
+                float(tail.distance_cm),
+                tail.entry_edge,
+                float("inf"),
+                follow_path=False,
             ):
                 if self._block_of_tile(next_tile) not in vacated:
                     to_seam = travelled
@@ -2334,7 +2359,8 @@ class TrainPhysics:
 
     def _head_room_within(self, blocks: Set[str], limit_cm: float) -> float:
         """How far the head may move forward, up to `limit_cm`, before it would
-        leave `blocks` — onto a switch tile or into any other block."""
+        leave `blocks` — onto a switch tile or into any other block. It walks the
+        points as they are set, like the entry correction."""
         work = self._work
         if work is None:
             return 0.0
@@ -2353,7 +2379,7 @@ class TrainPhysics:
         if self._block_of_tile(tile) not in blocks:
             return 0.0
         for next_tile, travelled in self._walk_forward_tiles(
-            tile, distance, entry, limit_cm
+            tile, distance, entry, limit_cm, follow_path=False
         ):
             if self._block_of_tile(next_tile) not in blocks:
                 return travelled
@@ -2446,7 +2472,9 @@ class TrainPhysics:
     ) -> bool:
         """Move the head end to the next forward tile (at its entry seam) and
         retrace the tail and occupied span. Returns False when there is no
-        forward tile. Used only by reconcile_to_detected_occupancy. It emits no
+        forward tile. Used only by reconcile_to_detected_occupancy, so it follows
+        the points as they are set rather than the path, as every correction
+        walk does (see `_entered_blocks_ahead`). It emits no
         movement events itself; when `swept` is given it appends the tile the
         head leaves, as (tile, entry_edge, exit_edge), for the caller to
         report."""
@@ -2460,7 +2488,7 @@ class TrainPhysics:
             head_tile = work.end_b_tile
             head_entry = work.end_b_entry_edge
 
-        exit_edge = self._calculate_exit_edge(head_tile, head_entry)
+        exit_edge = self._calculate_exit_edge(head_tile, head_entry, follow_path=False)
         if not exit_edge:
             return False
         next_tile = self._get_neighbor_tile(head_tile, exit_edge)
@@ -3002,7 +3030,11 @@ class TrainPhysics:
         With `follow_path` False the exit follows the points as they are set
         (`Switch.position`) and ignores the train's path, which is the
         connectivity walk attribution's adjacency uses (design_new.md "Block
-        occupancy detection", Touching).
+        occupancy detection", Touching) and the walk every detector-driven span
+        correction uses (The correction walks through the train's own blocks
+        only). With `follow_path` True a train that holds a path follows it, and
+        its last tile has no exit, so ordinary movement stops at the authority
+        end.
         """
         if not self.network:
             return None
@@ -3017,27 +3049,11 @@ class TrainPhysics:
         if not possible_exits:
             return None
 
-        # If train has a path, follow the path — unless it has been cut out, or
-        # Observe has latched a cut-out request for it on this read. Either way
-        # the detector has led it onto the block it overran past its authority
-        # end; the reconcile snap must follow past that end so the overrun block
-        # joins the calculated span and the head reaches its seam on the same
-        # read, before Action applies the request (design_new.md "Emergency
-        # cut-out"; "Block occupancy detection", An overrun entry or a conflict
-        # raises the emergency cut-out). The path-follow cap below would
-        # otherwise stop the forward walk at the authority end. Past that end the
-        # path offers no next tile anyway, so ordinary movement is unaffected.
         if not follow_path:
             return possible_exits[0]
         train = self._get_train()
         path_tiles = self._get_path_tiles()
-        eb = getattr(self.controller, "eb", None)
-        hooks = getattr(self.controller, "route_hooks", None)
-        latches = getattr(hooks, "phase_latches", None)
-        cut_out = bool(getattr(eb, "cut_out", False)) or (
-            getattr(latches, "emergency_request", None) == "cut_out"
-        )
-        if train and path_tiles and not cut_out:
+        if train and path_tiles:
             if (path_tiles[-1][0], path_tiles[-1][1]) == tile:
                 return None
             next_tile_in_path = self._get_next_tile_in_path(path_tiles, tile)
