@@ -253,7 +253,15 @@ class BlockOccupancyDetector:
             present = bool(raw.get(block_id, False))
             if present:
                 self._on_counts[block_id] = self._on_counts.get(block_id, 0) + 1
-                self._off_counts[block_id] = 0
+                # A confirmed block's clear count restarts only on the evidence
+                # an entry needs; a lone current read pauses it (design_new.md
+                # "Block occupancy detection", A lone current read pauses the
+                # clear count).
+                if (
+                    block_id not in self._confirmed
+                    or self._on_counts[block_id] >= self.on_threshold
+                ):
+                    self._off_counts[block_id] = 0
             else:
                 self._off_counts[block_id] = self._off_counts.get(block_id, 0) + 1
                 self._on_counts[block_id] = 0

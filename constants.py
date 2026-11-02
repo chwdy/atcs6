@@ -88,9 +88,11 @@ DELAY_CLASS_ON_TIME_TOLERANCE_SECONDS: float = 30.0
 # present means a train is on the block. Real contacts flicker, so a momentary
 # open circuit inside the train's span must not immediately vacate the block.
 # A block is confirmed OCCUPIED after OCCUPANCY_ON_THRESHOLD consecutive
-# current reads and confirmed CLEAR after OCCUPANCY_OFF_THRESHOLD consecutive
-# no-current reads. The bias is fail-safe: quick to occupy, slow to clear (ride
-# through dropouts). Counted in detection ticks; the runtime loop reads at 10 Hz,
+# current reads and confirmed CLEAR after OCCUPANCY_OFF_THRESHOLD no-current
+# reads. While a confirmed block counts toward clear, a lone current read pauses
+# the count and only OCCUPANCY_ON_THRESHOLD consecutive current reads restart
+# it, so one stray sample on an empty powered block cannot hold the block. The
+# bias is fail-safe: quick to occupy, slow to clear (ride through dropouts). Counted in detection ticks; the runtime loop reads at 10 Hz,
 # so occupancy is confirmed after ~0.2 s and cleared after ~1 s.
 #
 # Two reads rather than one, because a single read is one sample of a noisy

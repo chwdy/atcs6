@@ -168,6 +168,39 @@ def test_off_threshold_vacates_after_n_consecutive_clears():
     assert det.confirmed_occupied == set()
 
 
+def test_a_lone_current_read_pauses_the_clear_count():
+    # design_new.md "Block occupancy detection", A lone current read pauses the
+    # clear count: one stray sample on an empty powered block neither restarts
+    # the count nor adds to it.
+    _, det = make_detector(
+        ["A"],
+        [{"A": True}, {"A": True}, {"A": False}, {"A": True}, {"A": False}, {"A": False}],
+        on=2,
+        off=3,
+    )
+    det.step()
+    assert det.step()[0] == {"A"}  # confirmed on the second read
+    assert det.step()[1] == set()  # clear count 1
+    assert det.step()[1] == set()  # lone current read: count stays 1
+    assert det.step()[1] == set()  # clear count 2
+    entered, vacated = det.step()  # clear count 3
+    assert vacated == {"A"}
+
+
+def test_current_reads_in_a_row_restart_the_clear_count():
+    # OCCUPANCY_ON_THRESHOLD consecutive current reads — the evidence that
+    # confirms an entry — restart the count.
+    frames = [{"A": True}, {"A": True}, {"A": False}, {"A": False},
+              {"A": True}, {"A": True}, {"A": False}, {"A": False}, {"A": False}]
+    _, det = make_detector(["A"], frames, on=2, off=3)
+    vacated_at = None
+    for read in range(1, len(frames) + 1):
+        if det.step()[1] == {"A"}:
+            vacated_at = read
+            break
+    assert vacated_at == 9  # three clears after the restart at read 6
+
+
 # --------------------------------------------------------------------------
 # Multi-block per tick (fast train)
 # --------------------------------------------------------------------------
