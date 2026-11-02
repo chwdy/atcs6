@@ -13,6 +13,7 @@ import { effect } from '@preact/signals';
 import { render } from 'preact';
 import { useEffect, useRef } from 'preact/hooks';
 
+import { afterLayout, fitCanvas, type CanvasFitHost } from '../canvas-fit';
 import { screen } from '../state';
 import { PlacedTrainDetails, RosterEntryDetails, RosterEntryForm } from './details';
 import { LocomotiveList } from './list';
@@ -21,11 +22,8 @@ import { bindSpeedProfilePanel, type PanelBinding, type SpeedProfilePanel } from
 import { calibration, roster, selection, trains } from './state';
 
 /** What the screen needs from App. */
-export interface LocomotivesHost {
+export interface LocomotivesHost extends CanvasFitHost {
   editor: { speedProfileHandler?: SpeedProfilePanel };
-  renderer?: { fitToContent(tracks: any[], margin?: number, insets?: { left: number; bottom: number }): void; requestRedraw(opts?: any): void };
-  currentNetwork?: any;
-  _canvasChromeInsets?(): { left: number; bottom: number };
 }
 
 let revealScreen: (() => void) | null = null;
@@ -103,18 +101,6 @@ export function LocomotivesScreen({ panel }: { panel: PanelBinding | null }) {
       <Middle panel={panel} />
     </div>
   );
-}
-
-/** Run `fn` once the browser has laid the page out again (the canvas has its new size). */
-function afterLayout(fn: () => void): void {
-  requestAnimationFrame(() => requestAnimationFrame(fn));
-}
-
-function fitCanvas(host: LocomotivesHost): void {
-  const tracks = host.currentNetwork?.tracks;
-  if (!host.renderer || !tracks?.length) return;
-  host.renderer.fitToContent(tracks, undefined, host._canvasChromeInsets?.() ?? { left: 0, bottom: 0 });
-  host.renderer.requestRedraw({ reason: 'fit-view' });
 }
 
 /**

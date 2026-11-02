@@ -179,6 +179,12 @@ CALIBRATION_MIN_CROSSING_SPEED_KMH: float = 2.0
 # and stops the train at half power first).
 CALIBRATION_HALF_POWER_S: float = 0.5
 
+# After a crossing faster than this (scale km/h) the pass drives on at half the
+# step's power until the measured block reads clear, so the train does not
+# overrun the far outer block while the detector takes about a second to clear.
+# After a slower crossing it keeps the step's power, which is sure to move it.
+CALIBRATION_HALF_POWER_ABOVE_KMH: float = 40.0
+
 # When a measured crossing is capped by the leg's own reservation end (the
 # stretch is too short for this step's speed even at the zero reservation-end
 # standoff) or by a repeated conflict, that crossing is discarded and

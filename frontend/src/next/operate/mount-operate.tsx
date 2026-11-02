@@ -10,6 +10,7 @@ import { render } from 'preact';
 
 import type { ComponentChildren } from 'preact';
 
+import { combinePanelHosts } from '../panel-hosts';
 import { screen } from '../state';
 import { OperateLists } from './left-list';
 import { watchLiveState } from './live';
@@ -31,7 +32,8 @@ function slot(className: string): HTMLDivElement {
 export function mountOperateScreen(host: OperateHost): void {
   const workspace = document.querySelector('.workspace');
   if (!workspace) return;
-  host.editor.nextPanelHost = operatePanelHost(host);
+  // The Logs screen's hook is already there; each answers only on its own screen.
+  host.editor.nextPanelHost = combinePanelHosts(host.editor.nextPanelHost, operatePanelHost(host));
   watchLiveState();
 
   // The list and the panel sit in the canvas row; CSS orders them around the

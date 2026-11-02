@@ -1,8 +1,8 @@
 /**
  * Entry point of the page layout (docs/ui-layout-rewrite-plan.md): the top
- * bar, the four screens and the Logs panel.
+ * bar and the five screens.
  *
- * It marks <html data-screen="editor|hardware|operate|locomotives"> with the
+ * It marks <html data-screen="editor|hardware|operate|locomotives|logs"> with the
  * picked screen, so each screen's stylesheet can show its own regions and
  * hide the others' while it is the one showing.
  */
@@ -15,8 +15,7 @@ import { mountFirstRun, type FirstRunHost } from './first-run/mount';
 import { mountHardwareSetup } from './hardware/screen';
 import { showHardwareSetup } from './hardware/state';
 import { mountLocomotivesScreen, type LocomotivesHost } from './locomotives';
-import { mountLogsPanel } from './logs/logs-panel';
-import { toggleLogs } from './logs/state';
+import { mountLogsScreen } from './logs/logs-screen';
 import { screen, type Screen } from './state';
 import { TopBar, type TopBarActions } from './top-bar';
 
@@ -40,8 +39,8 @@ export interface NextHost extends LocomotivesHost, FirstRunHost {
 /**
  * Pick a screen. Editor and Operate are today's two editor modes, each with
  * its own regions (./editor, ./operate). Hardware Setup is its own screen
- * (./hardware). Locomotives is its own screen (./locomotives), in Operate
- * mode.
+ * (./hardware). Locomotives (./locomotives) and Logs (./logs) are their own
+ * screens, in Operate mode.
  */
 export function showScreen(host: NextHost, next: Screen): void {
   if (next === 'hardware') {
@@ -66,13 +65,12 @@ export function topBarActions(host: NextHost): TopBarActions {
     resetLayout: () => host.resetLayout(),
     clearConflict: () => host.clearFatalConflict(),
     emergencyStop: () => host.emergencyStop(),
-    toggleLogs,
     openSettings: () => host.openSettings(),
     restartServer: () => host.restartServer(),
   };
 }
 
-/** Mount the top bar, the screens and the Logs panel. */
+/** Mount the top bar and the screens. */
 export function mountNextUI(host: NextHost): void {
   // <html data-screen> names the picked screen, so each screen's CSS shows
   // its regions only while that screen is the one showing.
@@ -90,6 +88,6 @@ export function mountNextUI(host: NextHost): void {
     showScreen: (next) => showScreen(host, next),
   });
   mountLocomotivesScreen(host, () => showScreen(host, 'locomotives'));
-  mountLogsPanel();
+  mountLogsScreen(host);
   mountFirstRun(host, (next) => showScreen(host, next));
 }

@@ -1,5 +1,5 @@
 /**
- * The event shapes and helper functions behind the Logs panel's Event log tab
+ * The event shapes and helper functions behind the Logs screen's Event log tab
  * (frontend/src/next/logs/event-log-tab.tsx), the operator-facing viewer over
  * the one runtime event stream (design_new.md "Event log").
  *

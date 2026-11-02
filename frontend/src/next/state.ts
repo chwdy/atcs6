@@ -13,8 +13,8 @@ import { signal } from '@preact/signals';
 import type { SessionStateView } from '../lib/session-controls';
 import { updateFromNetwork as updateLocomotivesFromNetwork } from './locomotives/state';
 
-/** The four screens picked in the top bar (plan §2). */
-export type Screen = 'editor' | 'hardware' | 'operate' | 'locomotives';
+/** The five screens picked in the top bar (plan §2). */
+export type Screen = 'editor' | 'hardware' | 'operate' | 'locomotives' | 'logs';
 
 /** The session state (design_new.md "Session state"); null before the first snapshot. */
 export const sessionState = signal<SessionStateView | null>(null);
@@ -34,7 +34,7 @@ export const layoutEmpty = signal<boolean | null>(null);
 
 /** Keep the picked tab in step when the editor mode changes some other way:
  *  Editor mode is the Editor tab, and Operate mode is the Operate tab unless
- *  Locomotives (which also runs in Operate mode) is already picked. */
+ *  Locomotives or Logs (which also run in Operate mode) is already picked. */
 export function followEditorMode(mode: 'edit' | 'sim'): void {
   if (mode === 'edit') screen.value = 'editor';
   else if (screen.peek() === 'editor') screen.value = 'operate';

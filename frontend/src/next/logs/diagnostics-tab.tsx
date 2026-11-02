@@ -1,7 +1,11 @@
 /**
- * The Logs panel's Diagnostics tab: a read-only, live view of one train and
+ * The Logs screen's Diagnostics tab: a read-only, live view of one train and
  * its TrainController, as `GET /api/inspector/entity/train/<id>` reports them
- * in groups. It replaced the old Diagnostics window.
+ * in groups. It replaced the old Diagnostics window. Above the groups, the
+ * Train Monitor readings that have no other home (./train-readout.tsx).
+ *
+ * The train is picked in the tab's own list or by a click on it on the
+ * canvas (`diagnosticsTrainId` in ./state.ts).
  *
  * Kept from the old window: a row whose value changed since the last read
  * flashes; object and array values fold open one level at a time, or all at
@@ -14,7 +18,7 @@
  * this tab asks the server only for the train it shows. The styles are
  * today's `.diagnostics-*` classes (features/diagnostics.css).
  */
-import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 
 import { api } from '../../lib/api';
 import { stateManager } from '../../lib/state-manager';
@@ -38,7 +42,8 @@ import {
   type InspectorSnapshot,
   type SortMode,
 } from './diagnostics-model';
-import { readPrefs, writePrefs } from './state';
+import { diagnosticsTrainId, pickDiagnosticsTrain, readPrefs, writePrefs } from './state';
+import { TrainReadout, type ShowJson } from './train-readout';
 import { singleFlight, useRatePoll } from './use-rate-poll';
 
 const DEFAULT_HZ = 1;
@@ -75,11 +80,6 @@ function savedCollapsedGroups(): ReadonlySet<string> {
   return new Set(Array.isArray(groups) ? groups.filter((g) => typeof g === 'string') : []);
 }
 
-function savedTrainId(): string | null {
-  const id = readPrefs().diagnostics?.trainId;
-  return typeof id === 'string' && id ? id : null;
-}
-
 /** The ids of the trains in the shared network snapshot, in its order. */
 function useTrainIds(): string[] {
   const read = () =>
@@ -106,9 +106,9 @@ function copyName(name: string): void {
     .catch(() => showToast('Failed to copy name', 'error', 2000));
 }
 
-export function DiagnosticsTab() {
+export function DiagnosticsTab({ showJson }: { showJson?: ShowJson }) {
   const trainIds = useTrainIds();
-  const [trainId, setTrainId] = useState<string | null>(savedTrainId);
+  const trainId = diagnosticsTrainId.value;
   const [hz, setHz] = useState<number>(savedHz);
   const [sortMode, setSortMode] = useState<SortMode>(savedSortMode);
   const [collapsedGroups, setCollapsedGroups] = useState<ReadonlySet<string>>(savedCollapsedGroups);
@@ -160,14 +160,15 @@ export function DiagnosticsTab() {
   // one is picked; with no train picked there is nothing to ask.
   useRatePoll(read, trainId && !shown.gone ? hz : 0);
 
-  const pickTrain = (id: string | null) => {
-    current.current = { trainId: id, last: null };
+  // Another train was picked, here or by a click on the canvas: start over
+  // with it, before the old train's rows are drawn under its name.
+  useLayoutEffect(() => {
+    if (current.current.trainId === trainId) return;
+    current.current = { trainId, last: null };
     changes.current.clear();
-    setTrainId(id);
     setShown(NOTHING_SHOWN);
-    writePrefs({ diagnostics: { trainId: id } });
-    if (id) void read();
-  };
+    if (trainId) void read();
+  }, [trainId]);
 
   const changeRate = (value: string) => {
     const next = Number(value);
@@ -248,7 +249,7 @@ export function DiagnosticsTab() {
           <select
             class="diagnostics-panel-train-select"
             value={trainId ?? ''}
-            onChange={(e) => pickTrain(e.currentTarget.value || null)}
+            onChange={(e) => pickDiagnosticsTrain(e.currentTarget.value || null)}
           >
             <option value="">(select a train)</option>
             {trainOptions.map((id) => (
@@ -288,6 +289,7 @@ export function DiagnosticsTab() {
           </button>
         </div>
       </div>
+      {trainId && !shown.gone && <TrainReadout trainId={trainId} hz={hz} showJson={showJson} />}
       <div class="diagnostics-panel-body">{body}</div>
       <div class="diagnostics-panel-footer">
         {snapshot && !shown.gone && (

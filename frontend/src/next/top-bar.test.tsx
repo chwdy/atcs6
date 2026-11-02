@@ -3,7 +3,6 @@ import { render } from 'preact';
 import { act } from 'preact/test-utils';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { logsOpen } from './logs/state';
 import { canvasLayers } from '../lib/canvas-layers';
 import { operationEnvironment, screen, sessionState } from './state';
 import { TopBar, type TopBarActions } from './top-bar';
@@ -21,7 +20,6 @@ function fakeActions(): TopBarActions {
     resetLayout: vi.fn(async () => {}),
     clearConflict: vi.fn(async () => {}),
     emergencyStop: vi.fn(async () => {}),
-    toggleLogs: vi.fn(),
     openSettings: vi.fn(),
     restartServer: vi.fn(async () => {}),
   };
@@ -70,9 +68,9 @@ describe('TopBar', () => {
     expect(actions.togglePlayPause).toHaveBeenCalledTimes(1);
   });
 
-  it('has the four screen tabs and marks the picked one', () => {
+  it('has the five screen tabs and marks the picked one', () => {
     const tabs = [...root.querySelectorAll('[role="tab"]')].map((t) => t.textContent);
-    expect(tabs).toEqual(['Editor', 'Hardware Setup', 'Operate', 'Locomotives']);
+    expect(tabs).toEqual(['Editor', 'Hardware Setup', 'Operate', 'Locomotives', 'Logs']);
     expect(root.querySelector('[role="tab"][aria-selected="true"]')!.textContent).toBe('Editor');
     buttonNamed(root, 'Operate').click();
     expect(actions.showScreen).toHaveBeenCalledWith('operate');
@@ -83,17 +81,9 @@ describe('TopBar', () => {
     expect(actions.emergencyStop).toHaveBeenCalledTimes(1);
   });
 
-  it('toggles the Logs panel from Logs, and shows it pressed while open', () => {
+  it('picks the Logs screen from its tab', () => {
     buttonNamed(root, 'Logs').click();
-    expect(actions.toggleLogs).toHaveBeenCalledTimes(1);
-    expect(buttonNamed(root, 'Logs').getAttribute('aria-pressed')).toBe('false');
-    act(() => {
-      logsOpen.value = true;
-    });
-    expect(buttonNamed(root, 'Logs').getAttribute('aria-pressed')).toBe('true');
-    act(() => {
-      logsOpen.value = false;
-    });
+    expect(actions.showScreen).toHaveBeenCalledWith('logs');
   });
 
   it('turns map layers on from View and keeps the menu open for the next one', () => {

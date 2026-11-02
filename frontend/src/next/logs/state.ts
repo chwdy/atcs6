@@ -1,14 +1,15 @@
 /**
- * What the Logs panel remembers (docs/ui-layout-rewrite-plan.md §8): whether
- * it is open, its height, the last tab, and each tab's own settings (refresh
- * rate, filters). All of it is a per-viewer convenience kept in localStorage
- * under one key. Every read and write is wrapped in try/catch: storage can be
- * missing or refuse writes (private window, blocked site data), and the panel
- * must still work, just without remembering.
+ * What the Logs screen (docs/ui-layout-rewrite-plan.md §8) shows and
+ * remembers: the tab on show, the train and the block a click on the canvas
+ * picked, and each tab's own settings (refresh rate, filters). The settings
+ * are a per-viewer convenience kept in localStorage under one key. Every read
+ * and write is wrapped in try/catch: storage can be missing or refuse writes
+ * (private window, blocked site data), and the screen must still work, just
+ * without remembering.
  */
 import { signal } from '@preact/signals';
 
-/** The panel's tabs, in strip order. */
+/** The screen's tabs, in strip order. */
 export type LogsTab = 'events' | 'detectors' | 'diagnostics';
 
 export const LOGS_TABS: { id: LogsTab; label: string; icon: string }[] = [
@@ -17,19 +18,13 @@ export const LOGS_TABS: { id: LogsTab; label: string; icon: string }[] = [
   { id: 'diagnostics', label: 'Diagnostics', icon: 'ti ti-microscope' },
 ];
 
-export const DEFAULT_HEIGHT = 280;
-export const MIN_HEIGHT = 140;
-/** The panel never takes more than this share of the window, so the canvas
- *  and the screen above it always keep some room. */
-export const MAX_HEIGHT_SHARE = 0.7;
-
+// The name is from when Logs was a bottom panel; it is kept so the settings
+// saved then still apply.
 const STORAGE_KEY = 'atcs6.nextLogsPanel.v1';
 
 /** Each tab's own settings. Every field is optional: a missing or malformed
  *  one means "use the tab's default". */
 export interface LogsPrefs {
-  open?: boolean;
-  height?: number;
   tab?: LogsTab;
   events?: { refreshHz?: number; level?: string; persisted?: boolean };
   detectors?: { refreshHz?: number; filter?: string };
@@ -74,15 +69,8 @@ export function writePrefs(patch: LogsPrefs, storage: Storage | null = defaultSt
     }
     storage.setItem(STORAGE_KEY, JSON.stringify(next));
   } catch {
-    // Storage refused the write; the panel keeps working without remembering.
+    // Storage refused the write; the screen keeps working without remembering.
   }
-}
-
-/** Keep a height between MIN_HEIGHT and MAX_HEIGHT_SHARE of the window. */
-export function clampHeight(height: number, windowHeight: number): number {
-  const max = Math.max(MIN_HEIGHT, Math.round(windowHeight * MAX_HEIGHT_SHARE));
-  if (!Number.isFinite(height)) return Math.min(DEFAULT_HEIGHT, max);
-  return Math.round(Math.min(max, Math.max(MIN_HEIGHT, height)));
 }
 
 function isTab(value: unknown): value is LogsTab {
@@ -91,31 +79,43 @@ function isTab(value: unknown): value is LogsTab {
 
 const saved = readPrefs();
 
-/** Whether the panel is open. */
-export const logsOpen = signal<boolean>(saved.open === true);
-/** The tab on show while the panel is open. */
+function savedTrainId(): string | null {
+  const id = saved.diagnostics?.trainId;
+  return typeof id === 'string' && id ? id : null;
+}
+
+/** The tab on show. */
 export const logsTab = signal<LogsTab>(isTab(saved.tab) ? saved.tab : 'events');
-/** The panel's height in CSS pixels (clamped to the window when drawn). */
-export const logsHeight = signal<number>(
-  typeof saved.height === 'number' && Number.isFinite(saved.height) ? saved.height : DEFAULT_HEIGHT
-);
 
-export function toggleLogs(): void {
-  logsOpen.value = !logsOpen.peek();
-  writePrefs({ open: logsOpen.peek() });
-}
+/** The train the Diagnostics tab shows: picked in its own list, or by a
+ *  click on the train on the canvas. */
+export const diagnosticsTrainId = signal<string | null>(savedTrainId());
 
-export function closeLogs(): void {
-  logsOpen.value = false;
-  writePrefs({ open: false });
-}
+/** The block a click on the canvas picked. The Detectors tab marks its row
+ *  and scrolls it into view. Not saved: it means something only for the
+ *  click that picked it. */
+export const pickedBlockId = signal<string | null>(null);
 
 export function showLogsTab(tab: LogsTab): void {
   logsTab.value = tab;
   writePrefs({ tab });
 }
 
-export function setLogsHeight(height: number, save = true): void {
-  logsHeight.value = height;
-  if (save) writePrefs({ height });
+/** Show `trainId` in the Diagnostics tab. */
+export function pickDiagnosticsTrain(trainId: string | null): void {
+  diagnosticsTrainId.value = trainId;
+  writePrefs({ diagnostics: { trainId } });
+}
+
+/** Open the Diagnostics tab on `trainId` (a click on a train on the canvas). */
+export function showTrainInLogs(trainId: string): void {
+  pickDiagnosticsTrain(trainId);
+  showLogsTab('diagnostics');
+}
+
+/** Open the Detectors tab with `blockId`'s row marked (a click on a block on
+ *  the canvas). */
+export function showBlockInLogs(blockId: string): void {
+  pickedBlockId.value = blockId;
+  showLogsTab('detectors');
 }

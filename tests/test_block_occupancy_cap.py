@@ -488,6 +488,27 @@ def test_a_held_span_keeps_its_pending_entry_block_live():
     assert sim.power_controller.get_block_voltage("BLK_1") != 0.0
 
 
+def test_a_held_head_energizes_no_reserved_block_past_its_pending_entry_block():
+    """Only the block the train is entering may be live ahead of it.
+
+    The reported bug: during speed calibration on the rig, the far outer block
+    went live 1.5–3 s before the measured block read the locomotive. The cap
+    held the head at the measured block's seam, and the next-reserved walk
+    treated that pending-entry block as already stood on, so it skipped it and
+    energized the reserved block beyond as well (design_new.md "Power", Only
+    the next reserved block is pre-energized).
+    """
+    sim, train, controller, physics = drive_with_authority({"BLK_0"})
+
+    for _ in range(40):
+        sim.update(0.1)
+
+    assert physics.pending_entry_block == "BLK_1"
+    assert physics.next_reserved_block == "BLK_1"
+    assert sim.network.blocks["BLK_2"].reserved_for_train == "T"
+    assert sim.power_controller.get_block_voltage("BLK_2") == 0.0
+
+
 # ---------------------------------------------------------------------------
 # A head stopped on a switch still has a block to plan from
 # ---------------------------------------------------------------------------

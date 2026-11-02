@@ -8,13 +8,16 @@ const api = vi.hoisted(() => {
     getEventLog: vi.fn(async (_query?: string): Promise<any> => ({ events: [] })),
     getRawOccupancy: vi.fn(async (): Promise<any> => ({ blocks: {} })),
     getInspectorEntityTrain: vi.fn(async (_id?: string): Promise<any> => null),
+    getTrainLookahead: vi.fn(async (_id?: string): Promise<any> => null),
+    getScale: vi.fn(async (): Promise<any> => ({ scale: 160 })),
   };
 });
 vi.mock('../../lib/api', () => ({ api }));
 
 import { stateManager } from '../../lib/state-manager';
-import { LogsPanel } from './logs-panel';
-import { DEFAULT_HEIGHT, logsHeight, logsOpen, logsTab, toggleLogs } from './state';
+import { screen } from '../state';
+import { LogsScreen, logsPanelHost } from './logs-screen';
+import { diagnosticsTrainId, logsTab, pickedBlockId } from './state';
 
 const event = (id: number, kind = 'info', extra: Record<string, unknown> = {}) => ({
   notification_id: id,
@@ -50,53 +53,51 @@ const lastQuery = (): string => {
   return calls[calls.length - 1][0] ?? '';
 };
 
-describe('LogsPanel', () => {
+describe('LogsScreen', () => {
   let root: HTMLElement;
 
   beforeEach(() => {
     vi.useFakeTimers();
     localStorage.clear();
     Object.values(api).forEach((fn) => fn.mockClear());
-    logsOpen.value = false;
+    screen.value = 'editor';
     logsTab.value = 'events';
-    logsHeight.value = DEFAULT_HEIGHT;
     root = document.createElement('div');
     document.body.appendChild(root);
-    act(() => render(<LogsPanel />, root));
+    act(() => render(<LogsScreen />, root));
   });
 
   afterEach(() => {
     act(() => render(null, root));
     root.remove();
+    screen.value = 'editor';
     vi.useRealTimers();
   });
 
-  it('draws nothing and asks the server for nothing while closed', async () => {
+  it('draws nothing and asks the server for nothing on another screen', async () => {
     await advance(5000);
     expect(root.querySelector('.next-logs')).toBeNull();
     expect(api.getEventLog).not.toHaveBeenCalled();
     expect(api.getRawOccupancy).not.toHaveBeenCalled();
-    expect(document.documentElement.dataset.logs).toBeUndefined();
   });
 
-  it('opens on the last tab and remembers open state, tab and height', async () => {
-    act(() => toggleLogs());
+  it('opens on the last tab and remembers the tab', async () => {
+    act(() => {
+      screen.value = 'logs';
+    });
     await settle();
     expect(root.querySelector('.next-logs')).not.toBeNull();
-    expect(document.documentElement.dataset.logs).toBe('open');
     expect(tabNamed(root, 'Event log').getAttribute('aria-selected')).toBe('true');
 
     act(() => tabNamed(root, 'Detectors').click());
     const saved = JSON.parse(localStorage.getItem('atcs6.nextLogsPanel.v1')!);
-    expect(saved).toMatchObject({ open: true, tab: 'detectors' });
-
-    act(() => toggleLogs());
-    expect(root.querySelector('.next-logs')).toBeNull();
-    expect(document.documentElement.dataset.logs).toBeUndefined();
+    expect(saved).toMatchObject({ tab: 'detectors' });
   });
 
-  it('polls only the tab on show, and nothing once closed', async () => {
-    act(() => toggleLogs());
+  it('polls only the tab on show, and nothing once another screen is picked', async () => {
+    act(() => {
+      screen.value = 'logs';
+    });
     await settle();
     expect(api.getEventLog).toHaveBeenCalledTimes(1);
     await advance(1000); // the event log reads at 2 Hz
@@ -110,27 +111,53 @@ describe('LogsPanel', () => {
     expect(api.getEventLog).toHaveBeenCalledTimes(eventLogReads);
     expect(api.getRawOccupancy.mock.calls.length).toBeGreaterThanOrEqual(4);
 
-    act(() => toggleLogs());
+    act(() => {
+      screen.value = 'operate';
+    });
     const detectorReads = api.getRawOccupancy.mock.calls.length;
     await advance(5000);
     expect(api.getRawOccupancy).toHaveBeenCalledTimes(detectorReads);
     expect(api.getEventLog).toHaveBeenCalledTimes(eventLogReads);
   });
+});
 
-  it('resizes from the drag handle and saves the height when the drag ends', async () => {
-    act(() => toggleLogs());
-    await settle();
-    const handle = root.querySelector<HTMLElement>('.nlp-resizer')!;
-    act(() => {
-      handle.dispatchEvent(new PointerEvent('pointerdown', { button: 0, clientY: 600, bubbles: true }));
-      handle.dispatchEvent(new PointerEvent('pointermove', { clientY: 500, bubbles: true }));
+describe('A click on the canvas', () => {
+  const host = logsPanelHost();
+
+  beforeEach(() => {
+    localStorage.clear();
+    screen.value = 'logs';
+    logsTab.value = 'events';
+    diagnosticsTrainId.value = null;
+    pickedBlockId.value = null;
+    stateManager.updateFromNetwork({
+      trains: [{ id: 'T1' }],
+      controllers_by_train_id: { T1: { span: { occupied_tiles: [[3, 4]] } } },
     });
-    expect(root.querySelector<HTMLElement>('.next-logs')!.style.height).toBe(`${DEFAULT_HEIGHT + 100}px`);
-    act(() => {
-      handle.dispatchEvent(new PointerEvent('pointerup', { clientY: 500, bubbles: true }));
-    });
-    const saved = JSON.parse(localStorage.getItem('atcs6.nextLogsPanel.v1')!);
-    expect(saved.height).toBe(DEFAULT_HEIGHT + 100);
+  });
+
+  afterEach(() => {
+    screen.value = 'editor';
+    stateManager.updateFromNetwork({ trains: [] });
+  });
+
+  it('on a train opens the Diagnostics tab on that train', () => {
+    expect(host.selectTile({ x: 3, y: 4, block_section_id: 'BLK_A' })).toBe(true);
+    expect(logsTab.value).toBe('diagnostics');
+    expect(diagnosticsTrainId.value).toBe('T1');
+  });
+
+  it('on a block with no train opens the Detectors tab on that block', () => {
+    expect(host.selectTile({ x: 9, y: 9, block_section_id: 'BLK_B' })).toBe(true);
+    expect(logsTab.value).toBe('detectors');
+    expect(pickedBlockId.value).toBe('BLK_B');
+  });
+
+  it('is left to the other screens while Logs is not showing', () => {
+    screen.value = 'operate';
+    expect(host.selectTile({ x: 3, y: 4, block_section_id: 'BLK_A' })).toBe(false);
+    expect(host.showTrain('T1')).toBe(false);
+    expect(logsTab.value).toBe('events');
   });
 });
 
@@ -141,7 +168,7 @@ describe('Event log tab', () => {
     vi.useFakeTimers();
     localStorage.clear();
     Object.values(api).forEach((fn) => fn.mockClear());
-    logsOpen.value = true;
+    screen.value = 'logs';
     logsTab.value = 'events';
     root = document.createElement('div');
     document.body.appendChild(root);
@@ -150,13 +177,13 @@ describe('Event log tab', () => {
   afterEach(() => {
     act(() => render(null, root));
     root.remove();
-    logsOpen.value = false;
+    screen.value = 'editor';
     vi.useRealTimers();
   });
 
   it('asks only for newer events after the first read, and starts over when a filter changes', async () => {
     api.getEventLog.mockResolvedValueOnce({ events: [event(2, 'error'), event(1)] });
-    act(() => render(<LogsPanel />, root));
+    act(() => render(<LogsScreen />, root));
     await settle();
     expect(root.querySelectorAll('.evl-row')).toHaveLength(2);
     expect(root.querySelector('.evl-footer')!.textContent).toContain('1 error');
@@ -177,7 +204,7 @@ describe('Event log tab', () => {
 
   it('filters to an entity from its chip', async () => {
     api.getEventLog.mockResolvedValueOnce({ events: [event(1)] });
-    act(() => render(<LogsPanel />, root));
+    act(() => render(<LogsScreen />, root));
     await settle();
     act(() => root.querySelector<HTMLButtonElement>('.evl-chip')!.click());
     await settle();
@@ -193,7 +220,7 @@ describe('Detectors tab', () => {
     vi.useFakeTimers();
     localStorage.clear();
     Object.values(api).forEach((fn) => fn.mockClear());
-    logsOpen.value = true;
+    screen.value = 'logs';
     logsTab.value = 'detectors';
     root = document.createElement('div');
     document.body.appendChild(root);
@@ -202,7 +229,7 @@ describe('Detectors tab', () => {
   afterEach(() => {
     act(() => render(null, root));
     root.remove();
-    logsOpen.value = false;
+    screen.value = 'editor';
     vi.useRealTimers();
   });
 
@@ -216,12 +243,29 @@ describe('Detectors tab', () => {
         BLK_A: { raw: false, confirmed: false },
       },
     });
-    act(() => render(<LogsPanel />, root));
+    act(() => render(<LogsScreen />, root));
     await settle();
     const names = [...root.querySelectorAll('.occ-block')].map((el) => el.textContent);
     expect(names).toEqual(['BLK_A', 'BLK_B']);
     expect(root.querySelector('.occ-row-settling .occ-reading')!.textContent).toBe('14.2 mA');
     expect(root.querySelector('.occ-footer')!.textContent).toContain('read #7');
+  });
+
+  it('marks the block picked on the canvas, and says when it has no detector', async () => {
+    api.getRawOccupancy.mockResolvedValue({ blocks: { BLK_A: { raw: false, confirmed: false }, BLK_B: { raw: false, confirmed: false } } });
+    pickedBlockId.value = 'BLK_B';
+    act(() => render(<LogsScreen />, root));
+    await settle();
+    const marked = [...root.querySelectorAll('.occ-row.row-selected .occ-block')].map((el) => el.textContent);
+    expect(marked).toEqual(['BLK_B']);
+    expect(root.querySelector('.occ-picked-note')).toBeNull();
+
+    act(() => {
+      pickedBlockId.value = 'BLK_Z';
+    });
+    expect(root.querySelector('.occ-row.row-selected')).toBeNull();
+    expect(root.querySelector('.occ-picked-note')!.textContent).toBe('BLK_Z has no detector.');
+    pickedBlockId.value = null;
   });
 });
 
@@ -233,8 +277,9 @@ describe('Diagnostics tab', () => {
     localStorage.clear();
     Object.values(api).forEach((fn) => fn.mockClear());
     stateManager.updateFromNetwork({ trains: [{ id: 'T1' }, { id: 'T2' }] });
-    logsOpen.value = true;
+    screen.value = 'logs';
     logsTab.value = 'diagnostics';
+    diagnosticsTrainId.value = null;
     root = document.createElement('div');
     document.body.appendChild(root);
   });
@@ -242,7 +287,7 @@ describe('Diagnostics tab', () => {
   afterEach(() => {
     act(() => render(null, root));
     root.remove();
-    logsOpen.value = false;
+    screen.value = 'editor';
     stateManager.updateFromNetwork({ trains: [] });
     vi.useRealTimers();
   });
@@ -254,7 +299,7 @@ describe('Diagnostics tab', () => {
       fetched_at: 1_700_000_000,
       groups: [{ name: 'live', items: [{ name: 'speed', value: 12, source: 'property' }] }],
     });
-    act(() => render(<LogsPanel />, root));
+    act(() => render(<LogsScreen />, root));
     await settle();
     const select = root.querySelector<HTMLSelectElement>('.diagnostics-panel-train-select')!;
     expect([...select.options].map((o) => o.textContent)).toEqual(['(select a train)', 'T1', 'T2']);
@@ -270,10 +315,34 @@ describe('Diagnostics tab', () => {
     expect(root.querySelector('.diagnostics-row-name')!.textContent).toBe('speed');
   });
 
+  it('follows a train picked on the canvas, with its Train Monitor readings above the groups', async () => {
+    stateManager.updateFromNetwork({
+      trains: [{ id: 'T1' }, { id: 'T2' }],
+      controllers_by_train_id: { T2: { current_speed: 36, speed_limit_reason: 'route_end' } },
+    });
+    api.getInspectorEntityTrain.mockResolvedValue({ id: 'T2', groups: [] });
+    api.getTrainLookahead.mockResolvedValue({
+      lookahead: { target_stop_cm: 250, clearance_cm: 275 },
+      current_block_speed_limit: 40,
+    });
+    act(() => render(<LogsScreen />, root));
+    await settle();
+    expect(root.querySelector('.nlp-readout')).toBeNull();
+
+    act(() => {
+      diagnosticsTrainId.value = 'T2';
+    });
+    await settle();
+    expect(api.getInspectorEntityTrain).toHaveBeenCalledWith('T2');
+    expect(api.getTrainLookahead).toHaveBeenCalledWith('T2');
+    const readings = [...root.querySelectorAll('.nlp-readout-value')].map((el) => el.textContent);
+    expect(readings).toEqual(['36 km/h · 6.3 cm/s', '2.50 m', '40 km/h', 'route_end']);
+  });
+
   it('stops asking about a train the server says no longer exists', async () => {
-    localStorage.setItem('atcs6.nextLogsPanel.v1', JSON.stringify({ diagnostics: { trainId: 'T9' } }));
+    diagnosticsTrainId.value = 'T9';
     api.getInspectorEntityTrain.mockResolvedValue(null);
-    act(() => render(<LogsPanel />, root));
+    act(() => render(<LogsScreen />, root));
     await settle();
     expect(root.querySelector('.diagnostics-panel-body')!.textContent).toContain('Train no longer exists.');
     const reads = api.getInspectorEntityTrain.mock.calls.length;

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { DEFAULT_HEIGHT, MIN_HEIGHT, clampHeight, readPrefs, writePrefs } from './state';
+import { diagnosticsTrainId, logsTab, pickedBlockId, readPrefs, showBlockInLogs, showTrainInLogs, writePrefs } from './state';
 
 function memoryStorage() {
   const items = new Map<string, string>();
@@ -11,14 +11,13 @@ function memoryStorage() {
   };
 }
 
-describe('Logs panel prefs', () => {
+describe('Logs screen prefs', () => {
   it('reads back what was written, merging each tab field by field', () => {
     const storage = memoryStorage();
-    writePrefs({ height: 320, tab: 'detectors' }, storage);
+    writePrefs({ tab: 'detectors' }, storage);
     writePrefs({ events: { level: 'error' } }, storage);
     writePrefs({ events: { refreshHz: 4 } }, storage);
     expect(readPrefs(storage)).toEqual({
-      height: 320,
       tab: 'detectors',
       events: { level: 'error', refreshHz: 4 },
     });
@@ -43,18 +42,20 @@ describe('Logs panel prefs', () => {
       },
     };
     expect(readPrefs(throwing)).toEqual({});
-    expect(() => writePrefs({ open: true }, throwing)).not.toThrow();
+    expect(() => writePrefs({ tab: 'events' }, throwing)).not.toThrow();
   });
 });
 
-describe('clampHeight', () => {
-  it('keeps the height between the minimum and 70% of the window', () => {
-    expect(clampHeight(50, 1000)).toBe(MIN_HEIGHT);
-    expect(clampHeight(300, 1000)).toBe(300);
-    expect(clampHeight(900, 1000)).toBe(700);
+describe('picking from the canvas', () => {
+  it('a train opens Diagnostics on it', () => {
+    showTrainInLogs('T7');
+    expect(logsTab.value).toBe('diagnostics');
+    expect(diagnosticsTrainId.value).toBe('T7');
   });
 
-  it('falls back to the default for a height that is not a number', () => {
-    expect(clampHeight(Number.NaN, 1000)).toBe(DEFAULT_HEIGHT);
+  it('a block opens Detectors on it', () => {
+    showBlockInLogs('BLK_C');
+    expect(logsTab.value).toBe('detectors');
+    expect(pickedBlockId.value).toBe('BLK_C');
   });
 });

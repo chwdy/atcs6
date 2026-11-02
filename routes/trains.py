@@ -280,7 +280,18 @@ def register(app, state: AppState) -> None:
             return jsonify({"error": str(exc)}), 409
         except ValidationError as exc:
             return jsonify({"error": str(exc)}), 400
-        return jsonify({"status": "success", **run.to_dict()})
+        return jsonify({"status": "success", **run.to_dict(), **_stretch_names(run)})
+
+    def _stretch_names(run):
+        """The measured block's and outer blocks' names, so the panel's
+        crossing list can say which way each crossing ran."""
+        blocks = state.network.blocks
+        names = {}
+        for block_id in (run.measured_block_id, *run.outer_block_ids):
+            block = blocks.get(block_id) if block_id else None
+            if block is not None:
+                names[block_id] = (getattr(block, "name", "") or "").strip() or block_id
+        return {"block_names": names}
 
     @app.route("/api/trains/<train_id>/calibrate/readiness", methods=["GET"])
     def calibrate_readiness(train_id):
@@ -321,7 +332,7 @@ def register(app, state: AppState) -> None:
                     state, train_id
                 ),
             })
-        return jsonify({"open": True, **run.to_dict()})
+        return jsonify({"open": True, **run.to_dict(), **_stretch_names(run)})
 
     @app.route("/api/trains/<train_id>/calibrate", methods=["DELETE"])
     def calibrate_cancel(train_id):

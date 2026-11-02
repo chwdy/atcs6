@@ -1,5 +1,5 @@
 /**
- * The Logs panel's Event log tab: the operator's viewer over the one runtime
+ * The Logs screen's Event log tab: the operator's viewer over the one runtime
  * event stream (design_new.md "Event log"). It replaced the old Event Log
  * window and kept its behavior: one
  * column per field, filters answered by the server (`GET /api/event-log`),

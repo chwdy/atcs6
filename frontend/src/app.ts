@@ -103,7 +103,7 @@ class App {
     this.followTrainEnabled = false;
 
     this.setupControls();
-    // The top bar, the four screens and the Logs panel
+    // The top bar and the five screens
     // (docs/ui-layout-rewrite-plan.md).
     mountNextUI(this);
     mountOperateScreen(this);

@@ -19,6 +19,7 @@ import {
   calibrationControls,
   calibrationTrainChoices,
   compareAxisTop,
+  crossingRows,
   measuredCurve,
   readinessApplies,
   readinessKind,
@@ -1824,6 +1825,7 @@ ${this._calibrationGroupHtml(p)}
                         </div>
                     </div>
                 </div>
+                <div class="sp-crossing-list" id="sp-cal-crossings"></div>
                 ${
                   held
                     ? `<div class="text-muted text-xs mb-8">Save to this locomotive changes only this locomotive. Promote to model writes the curve to ${modelName ? escapeAttr(modelName) : 'the model'}: every locomotive of that model without its own measured curve runs on it, this one included. A locomotive saved with its own curve keeps it.</div>
@@ -1897,6 +1899,24 @@ ${this._calibrationGroupHtml(p)}
               `<div class="sp-point-readonly"><span>${fmt(pw, 0)}</span><span>${fmt(s, 1)}</span></div>`
           )
           .join('');
+    }
+    const crossings = cal.root.querySelector('#sp-cal-crossings');
+    if (crossings) {
+      const rows = crossingRows(run);
+      crossings.innerHTML = rows.length
+        ? `<div class="sp-crossing-head"><span>P%</span><span>Toward</span><span>s</span><span>km/h</span></div>` +
+          rows
+            .map(
+              (r) =>
+                `<div class="sp-crossing-row${r.used ? '' : ' sp-crossing-unused'}${r.firstOfStep ? ' sp-crossing-step' : ''}">` +
+                `<span>${r.firstOfStep ? fmt(r.power, 0) : ''}</span>` +
+                `<span>${escapeAttr(r.toward)}</span>` +
+                `<span>${r.seconds}</span><span>${r.speed}</span>` +
+                (r.note ? `<span class="sp-crossing-note">${escapeAttr(r.note)}</span>` : '') +
+                `</div>`
+            )
+            .join('')
+        : '';
     }
     const stored: Curve =
       trainStoredValue(this._namedTrain(), cal.profiles, this._profile, 'power_speed_curve') ||

@@ -136,6 +136,54 @@ export function measuredCurve(samples: any[]): Curve {
   return [[0, 0], ...points];
 }
 
+/** One line of the speed pass's crossing list (design_new.md "Speed
+ *  calibration", The panel lists every crossing). */
+export interface CrossingRow {
+  power: number;
+  toward: string;
+  seconds: string;
+  speed: string;
+  /** Plain words for what happened to the crossing; empty when it was used. */
+  note: string;
+  /** Whether the crossing counts in its step's point. */
+  used: boolean;
+  /** Whether this row starts a new step (or a re-measure of one). */
+  firstOfStep: boolean;
+}
+
+const CROSSING_NOTES: Record<string, string> = {
+  used: '',
+  discarded: 'discarded — the ATC limit lowered the drive',
+  replaced: 'replaced — the step was measured again',
+  dropped: 'dropped — a later crossing of this step stalled',
+  ended_sweep: 'stalled — this and every lower step read 0 km/h',
+};
+
+/**
+ * The pass's crossings in the order they ran, each with the outer block it ran
+ * toward (by name when the run carries one), its time, its speed, and what
+ * happened to it.
+ */
+export function crossingRows(run: any): CrossingRow[] {
+  const names: Record<string, string> = run?.block_names || {};
+  let lastKey = '';
+  return (run?.crossings || []).map((c: any) => {
+    const key = `${c.power_percent}/${c.attempt}`;
+    const firstOfStep = key !== lastKey;
+    lastKey = key;
+    const toward = String(c.toward_block_id || '');
+    return {
+      power: Number(c.power_percent),
+      toward: names[toward] || toward,
+      seconds: c.seconds == null ? '—' : Number(c.seconds).toFixed(2),
+      speed: c.speed_kmh == null ? '—' : Number(c.speed_kmh).toFixed(1),
+      note: CROSSING_NOTES[c.outcome] ?? String(c.outcome || ''),
+      used: c.outcome === 'used',
+      firstOfStep,
+    };
+  });
+}
+
 /** The top of the speed axis that holds both curves, with some headroom. */
 export function compareAxisTop(stored: Curve, measured: Curve): number {
   let top = 0;

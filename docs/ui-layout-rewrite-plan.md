@@ -19,19 +19,20 @@ Each problem from the review, and the part of this plan that removes it.
 |---|---------|----------|
 | 1 | Four controls answer "can my train move?" (session chip, Play, Editor/Operate switch, Activate buried in the Hardware Setup dialog), and "Simulation" meant two things | §3 Top bar: one status control with the next step built in. The Operate rename already shipped. |
 | 2 | The tool rail is grouped by data type (9 groups behind hover menus), mixes building tools with running tools, and its numbers moved between modes | §4 Editor screen: one flat bar of the things you place. Path, train and route tools move to §5 Operate. |
-| 3 | The header has 22 buttons, 11 of them icon-only, and five open floating debug windows that pile up over the layout | §3 Top bar (about 9 controls) and §8 Logs panel (one bottom panel with tabs instead of five windows) |
+| 3 | The header has 22 buttons, 11 of them icon-only, and five open floating debug windows that pile up over the layout | §3 Top bar (about 9 controls) and §8 Logs screen (one screen with tabs instead of five windows) |
 | 4 | The train panel mixes driving with debugging | §5 Operate: a card per train for driving, and the full panel with details folded |
 | 5 | Clicking track shows tile bits, even while operating | §4 and §5: a click shows what that screen is about. In Operate that is the block; tile bits move to Editor → Advanced |
 | 6 | Why it keeps getting harder: panels exist once and find their inputs by fixed ids, HTML is built from strings, 19 timers poll on their own, `editor.ts` is 3,000 lines | §10 How the code changes |
 
 ---
 
-## 2. The shape: four screens
+## 2. The shape: five screens
 
 `design_new.md` "Operator workflows" already describes the operator's jobs in
 order: **setting up the hardware and going live**, **calibrating a
 locomotive**, and **running a train**. Building the layout is the Editor
-session mode. So the app gets four screens, picked from tabs in the top bar:
+session mode. So the app gets four screens for those jobs, and a fifth for
+watching what the system does, picked from tabs in the top bar:
 
 | Screen | The job | Spec section it follows |
 |--------|---------|-------------------------|
@@ -39,15 +40,13 @@ session mode. So the app gets four screens, picked from tabs in the top bar:
 | **Hardware Setup** | Choose the environment, describe the rig, prove each chip and wire, go live | "Setting up the hardware and going live", steps 1–7 |
 | **Operate** | Place trains, drive them, give them routes, stop everything | "Running a train" |
 | **Locomotives** | Keep the list of locomotives you own, edit their speed profiles, calibrate them | "Train Roster", "Calibrating a locomotive", "Speed calibration" |
+| **Logs** | Watch what the system does: the event log, the detectors' raw readings, one train's diagnostics (§8) | "Data Flow To UI" |
 
 Switching screens only changes what you see, the same as the Editor/Operate
 switch does today. The session state changes only through its own buttons
 (Enter Setup, Activate, Play/Pause, Emergency stop, Reset).
 
-Two things live outside the screens:
-
-- **The top bar** (§3), always visible.
-- **The Logs panel** (§8), a bottom panel you can open on any screen.
+**The top bar** (§3) lives outside the screens and is always visible.
 
 ---
 
@@ -55,9 +54,9 @@ Two things live outside the screens:
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────────────┐
-│ RAIL  my-loop ▾      [ Editor | Hardware Setup | Operate | Locomotives ]              │
+│ RAIL  my-loop ▾      [ Editor | Hardware Setup | Operate | Locomotives | Logs ]       │
 │                         Real Hardware · Halted — not activated  [Activate]  ⏹ E-STOP │
-│                                                              Logs   View ▾   ⚙       │
+│                                                                     View ▾   ⚙       │
 └──────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -65,7 +64,7 @@ Two things live outside the screens:
 
 - **Left:** the app name, then the layout name with a menu: New, Open, Save,
   Save as. This replaces the three file buttons.
-- **Centre:** the four screen tabs.
+- **Centre:** the five screen tabs.
 - **Right:**
   - **The status control.** The operating environment and session state as
     today, followed by **one** next-step button that changes with the state:
@@ -81,14 +80,14 @@ Two things live outside the screens:
     Clicking the label itself opens Hardware Setup at step 1 (choose the
     environment).
   - **Emergency stop**, always in the same place on every screen.
-  - **Logs** opens the Logs panel. **View** holds the editor and canvas
+  - **View** holds the editor and canvas
     themes, and the canvas layers that are now debug checkboxes in Settings
     (track bits, block voltage, block length, stuck arrows, and the rest).
     **Settings** keeps the rest, including Restart server, which is rarely
     needed and should not sit in the top bar.
 - **Gone from the top bar:** the two panel-visibility toggles (the panels
   manage themselves), Diagnostics and the four bench/monitor buttons (they
-  move into the Logs panel and Hardware Setup), and the separate Play and
+  move into the Logs screen and Hardware Setup), and the separate Play and
   speed buttons (they are part of the status control).
 
 That is about 9 controls instead of 22.
@@ -229,13 +228,35 @@ out of the Speed Profile panel would need one.
 
 ---
 
-## 8. Logs panel
+## 8. Logs screen
 
-One bottom panel, open from **Logs** in the top bar on any screen, with
-tabs:
+The fifth screen, picked from **Logs** in the top bar. It is where the debug
+information lives, so the other screens keep only what their job needs. Until
+2026-11-01 this was a bottom panel that opened over any screen; it became a
+screen because a panel shares the window with the screen above it, and the
+tables never had the room they need.
 
-| Tab | Today |
+The tab on show fills the left of the screen. The canvas sits on the right,
+at 40% of the width (where Locomotives shows it during a run), so a reading
+can be matched to where the trains are while they run.
+
+| Tab | Shows |
 |-----|-------|
+| Event log | The runtime event stream, filtered by level and entity (the old Event Log window) |
+| Detectors | One row per detected block: the raw read, the confirmed verdict, the detector, its measurement and the drive (the old Raw Occupancy window) |
+| Diagnostics | One train's `TrainController`, in groups (the old Diagnostics window). Above the groups, the Train Monitor readings that had no other home: speed in km/h and cm/s, distance to the next stop, the block's speed limit, the speed limit reason, and a button that opens the raw look-ahead JSON |
+| Virtual inputs | Not built: the Virtual Bench's fake-detector part, shown only in Virtual Hardware |
+
+- **A click on the canvas picks what the tabs show.** A train opens the
+  Diagnostics tab on that train. A block opens the Detectors tab with that
+  block's row marked and scrolled into view.
+- **Each tab asks the server for data only while it is shown**, and only
+  while the Logs screen is the one showing.
+- **The screen runs in the operation mode**, like Operate and Locomotives.
+- It remembers the last tab and each tab's own settings (refresh rate,
+  filters, the picked train) in the browser.
+
+-----|-------|
 | Event log | the Event Log floating window |
 | Detectors | the Raw Occupancy floating window |
 | Diagnostics | the Diagnostics floating window |
@@ -339,7 +360,7 @@ Each phase ends with the app working and `./run_all_tests.sh` green. The new
 layout is built next to the old one, in the same page, and opened with
 `?ui=next`: the flag marks `<html data-ui="next">`, which hides each of
 today's regions that a new one has replaced, and mounts the new regions
-(`frontend/src/next/mount.tsx`). `<html data-screen="editor|hardware|operate|locomotives">`
+(`frontend/src/next/mount.tsx`). `<html data-screen="editor|hardware|operate|locomotives|logs">`
 names the picked screen, so a screen hides today's regions only while it
 is showing. Regions not rebuilt yet keep working as
 today, so the app stays fully usable under the flag at every phase, and
@@ -359,7 +380,7 @@ its own regions.
 | 3 | Editor screen (§4): flat tool bar, options row, entity panels, Advanced tile bits | Large | 1 |
 | 4 | Hardware Setup screen (§7): the seven steps, benches inside step 4 | Medium | 1 |
 | 5 | Locomotives screen (§6): Train Roster list, Speed Profile panel with its calibration group, canvas during a run | Medium | 1 |
-| 6 | Logs panel (§8) | Medium | 1 |
+| 6 | Logs panel (§8; a screen since 2026-11-01) | Medium | 1 |
 | 7 | First run (§9): empty-state card, loop layout, empty-list wording | Small | 2, 3 |
 | 8 | Make the new layout the default; delete the old regions, the tab-group code and the old panels; rewrite `DESIGN_LANGUAGE.md` "Surfaces" | Medium | all above |
 | 9 *(optional)* | Server push (a single server-sent event stream) in place of the 200 ms poll | Medium, touches the backend | 8 |
@@ -381,7 +402,9 @@ design_new.md "Hardware setup", Test the rig): one button that runs self-test,
 the occupancy bench's block check on every block with a rail binding, and a
 throw of every bound switch to its other position and back, then lists what
 passed, what failed and what still needs the operator. An hc165 is now proven
-by its bits following the drive; an hc595 still waits for It worked. These
+by its bits following the drive; an hc595 still waits for It worked. On
+2026-11-01 the Logs panel became the fifth screen (§8), and the Train Monitor
+readings with no other home moved into its Diagnostics tab. These
 parts still show today's code inside the new layout, and are ported in later
 passes:
 
@@ -399,7 +422,7 @@ passes:
 | **Logs:** Virtual inputs tab | Not built; the Virtual Bench is in Hardware Setup step 4 | Built from the Virtual Bench's fake-detector part |
 | **Hold all** | Only in the Operate train cards row; the canvas session bar is gone | — |
 | **Editor:** today's panels' title, back link and body | Three nodes kept in a hidden holder in `index.html` (`#secondary-sidebar`), which the Editor right panel moves into itself (`next/editor/legacy-panel.ts`); `editor/editor-ui.ts` is now a one-panel host with no tabs | Each panel is ported |
-| **Train Monitor window** | Kept: Look-ahead shows its graph, and the rest (raw speed, next-stop distance, the speed-limit line, the raw look-ahead JSON) is reachable only in this window, which today's train panel opens on the Editor screen (§13.10) | Those parts get a home in the Operate train panel |
+| **Train Monitor window** | Kept: Operate's Look-ahead section shows its graph and Upcoming list, and today's train panel still opens the window on the Editor screen. Its other readings (raw speed, next-stop distance, the speed-limit line, the raw look-ahead JSON) are in the Logs screen's Diagnostics tab | The monitor is ported |
 | **Virtual Bench window** | Kept for Place on canvas, which the step-4 copy leaves out (§13.10); nothing opens it | Place on canvas gets a home |
 
 ---
@@ -415,6 +438,9 @@ passes:
    profiles and calibration. Inventory management is to be decided and will
    live there.
 5. **Server push later** (phase 9), after the new layout is the default.
+6. **Logs is a screen** (2026-11-01): the bottom Logs panel became the fifth
+   screen, with the canvas beside the tabs, so the debug information has one
+   place of its own (§8).
 
 ---
 
@@ -436,11 +462,11 @@ in the new layout yet: its code is kept, and it is listed in §13.10.
 | New, Save, Load (3 buttons) | Top bar Layout menu: New, Open…, Save…. They open the same Save and Load dialogs. |
 | Hide tools panel (`#btn-toggle-tools`) | Gone (§3). The Editor tool bar shows only on the Editor screen; Operate's left list folds itself. |
 | Hide secondary panel (`#btn-toggle-secondary`) | Gone (§3). Each screen's right panel has its own Close; Operate's hides when nothing is selected. |
-| Diagnostics | Logs panel → Diagnostics tab. |
-| Raw occupancy | Logs panel → Detectors tab. |
+| Diagnostics | Logs screen → Diagnostics tab. |
+| Raw occupancy | Logs screen → Detectors tab. |
 | Occupancy Bench | Hardware Setup step 4. |
 | Virtual Bench | Hardware Setup step 4 (Virtual Hardware only). "Place on canvas" is not there: **No home** (§13.10). |
-| Event Log | Logs panel → Event log tab. |
+| Event Log | Logs screen → Event log tab. |
 | Display (themes) | Top bar View menu: Editor theme, Layout theme, Show grid. |
 | Hardware | Top bar Hardware Setup tab; clicking the status chip opens it at step 1. |
 | Settings | Top bar Settings menu → Settings…, the same dialog. |
@@ -482,9 +508,9 @@ label.
 | The inspector, floated | The right panel's pop-out window. |
 | Windows split off the inspector | Gone (§12 decision 2). |
 | Train Monitor | Operate train panel → Look-ahead: the graph, the view distance buttons and the Upcoming list. The rest of the window is **No home** (§13.10). |
-| Diagnostics | Logs panel → Diagnostics tab. |
-| Raw Occupancy | Logs panel → Detectors tab. |
-| Event Log | Logs panel → Event log tab. |
+| Diagnostics | Logs screen → Diagnostics tab. |
+| Raw Occupancy | Logs screen → Detectors tab. |
+| Event Log | Logs screen → Event log tab. |
 | Occupancy Bench | Hardware Setup step 4. |
 | Virtual Bench | Hardware Setup step 4, without Place on canvas (**No home**, §13.10). |
 
@@ -539,8 +565,5 @@ work as before.
 - **Virtual Bench → Place on canvas.** The step-4 copy leaves it out
   because Hardware Setup covers the canvas. The floating Virtual Bench that
   has it is kept (`panels/virtual-bench.ts`), though nothing opens it.
-- **Train Monitor:** raw speed in cm/s, next-stop distance, the speed-limit
-  reason line, and the raw look-ahead JSON button. The monitor's code and
-  markup are kept, because Look-ahead shows its graph.
 - **Number keys on Operate.** The controls are reachable by mouse; there is
   no shortcut for them.

@@ -1,5 +1,5 @@
 /**
- * The pure parts of the Logs panel's Diagnostics tab: the shape of
+ * The pure parts of the Logs screen's Diagnostics tab: the shape of
  * `GET /api/inspector/entity/train/<id>`, value formatting, sorting, and the
  * keys that name each row and each folded part of a value.
  *
