@@ -153,7 +153,14 @@ UNIDENTIFIED_GAP_HOLD_S: float = 5.0
 # measures the speed the locomotive reaches at each, filling
 # SpeedProfile.power_speed_curve. The 0% point needs no measurement: 0% power
 # is lighting_voltage, so (0%, 0 km/h) is the curve's origin by definition.
-CALIBRATION_POWER_STEP_PERCENT: int = 10
+CALIBRATION_POWER_STEP_PERCENT: int = 20
+
+# A step that measures faster than the step above it by no more than this
+# fraction of that step's speed is the same speed: the step records the step
+# above's speed, so the curve runs flat there. A light motor often reaches its
+# top speed well below 100% power, and on that flat stretch a few hundredths of
+# a second of detector timing decide which step reads faster.
+CALIBRATION_SAME_SPEED_FRACTION: float = 0.10
 
 # Each step runs this many round trips across the measured block, so it
 # collects twice this many crossings, half in each direction, and takes their

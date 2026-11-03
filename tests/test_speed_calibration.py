@@ -193,24 +193,65 @@ def test_one_mistimed_crossing_does_not_move_the_step():
 
 
 def test_the_rig_run_of_2026_10_31_measures_on():
-    """The crossing times the rig recorded measuring Up. The locomotive ran at
-    nearly the same speed at 100%, 90% and 80%, and one mistimed crossing at 90%
-    (3.71 s) made a mean of 80% read faster than 90%, so the pass re-measured
-    80% and failed. The median keeps the three steps in order."""
+    """The crossing times the rig recorded measuring Up, then at 100%, 90% and
+    80%. The locomotive ran at nearly the same speed at all three, and one
+    mistimed crossing at 90% (3.71 s) made a mean of 80% read faster than 90%,
+    so the pass re-measured 80% and failed. The median keeps the three steps in
+    order."""
     cal, run, _profile = _open_run()
     clock = 0.0
     for times in (
-        (2.62, 1.99, 1.92, 1.89),  # 100%
-        (3.71, 1.94, 2.01, 1.91),  # 90%
-        (2.13, 2.01, 2.02, 1.88),  # 80%
+        (2.62, 1.99, 1.92, 1.89),
+        (3.71, 1.94, 2.01, 1.91),
+        (2.13, 2.01, 2.02, 1.88),
     ):
         for seconds in times:
             clock = _crossing(cal, run, clock, seconds=seconds)
     assert run.phase != PHASE_FAILED, run.failure_reason
     assert run.step_remeasured is False
-    assert [s.power_percent for s in run.samples] == [100.0, 90.0, 80.0]
+    assert [s.power_percent for s in run.samples] == run.power_steps[:3]
     speeds = [s.speed_kmh for s in run.samples]
     assert speeds == sorted(speeds, reverse=True)
+
+
+def test_the_rig_run_of_2026_11_02_records_the_flat_top():
+    """design_new.md "Speed calibration", A step that measures close to the
+    step above it records the same speed. The rig ran Up at about 150 km/h from
+    80% to 100%; the second step's median came out about 2% faster than the
+    first's, and every pass ended on it. Inside
+    `CALIBRATION_SAME_SPEED_FRACTION` that is the same speed, so the step
+    records the first step's speed and the sweep goes on."""
+    cal, run, _profile = _open_run()
+    clock = 0.0
+    for times in (
+        (2.01, 1.99, 2.00, 1.87),
+        (2.23, 1.40, 3.73, 1.74),
+    ):
+        for seconds in times:
+            clock = _crossing(cal, run, clock, seconds=seconds)
+    assert run.phase != PHASE_FAILED, run.failure_reason
+    assert run.step_remeasured is False
+    assert run.step_index == 2
+    assert run.samples[1].speed_kmh == run.samples[0].speed_kmh
+    assert _outcomes(run)[4:8] == [(run.power_steps[1], 1, "used")] * 4
+
+
+def test_a_clearly_faster_step_measured_close_the_second_time_records_the_same_speed():
+    """design_new.md "Speed calibration", A step that measures clearly faster
+    than the step above it is measured once more: a re-measure close to the step
+    above records that step's speed."""
+    cal, run, _profile = _open_run()
+    clock = 0.0
+    for _ in range(run.crossings_target):
+        clock = _crossing(cal, run, clock, seconds=9.0)
+    for _ in range(run.crossings_target):
+        clock = _crossing(cal, run, clock, seconds=1.0)  # clearly faster
+    assert run.step_remeasured is True
+    for _ in range(run.crossings_target):
+        clock = _crossing(cal, run, clock, seconds=8.6)  # under 5% faster
+    assert run.phase != PHASE_FAILED, run.failure_reason
+    assert run.step_index == 2
+    assert run.samples[1].speed_kmh == run.samples[0].speed_kmh
 
 
 def test_a_step_collects_two_crossings_per_round_trip():
@@ -246,7 +287,7 @@ def test_a_step_that_does_not_move_the_train_ends_the_sweep():
     being commanded, and the pass is finished."""
     cal, run, _profile = _open_run()
     clock = _measure_top_step(cal, run)
-    cal.advance(run, CalibrationObservation(now=clock))  # arm the 90% leg
+    cal.advance(run, CalibrationObservation(now=clock))  # arm the second step's leg
     # The leg's authority appears, starting the step clock (design_new.md "Speed
     # calibration": the timeout does not run until the path exists).
     cal.advance(run, CalibrationObservation(now=clock, path_present=True))
@@ -265,7 +306,7 @@ def test_a_step_that_does_not_move_the_train_ends_the_sweep():
     assert command.arm_leg_to is None
     # No step below the stall is commanded: the pass no longer drives.
     assert cal.get_propulsion_override("T1") is None
-    assert "did not move at 90% and below" in cal._measured_reason(run)
+    assert f"did not move at {run.power_steps[1]:.0f}% and below" in cal._measured_reason(run)
 
 
 def test_a_crossing_that_stops_inside_the_stretch_ends_the_sweep():
@@ -274,7 +315,7 @@ def test_a_crossing_that_stops_inside_the_stretch_ends_the_sweep():
     did not carry the train across B is the top edge of the stall band."""
     cal, run, _profile = _open_run()
     clock = _measure_top_step(cal, run)
-    cal.advance(run, CalibrationObservation(now=clock))  # arm the 90% leg
+    cal.advance(run, CalibrationObservation(now=clock))  # arm the second step's leg
     _observe(cal, run, clock + 1.0, ("B",), path_present=True)
     entered_b = clock + 1.0
     # Still inside the window: the pass keeps waiting for the far block.
@@ -293,14 +334,14 @@ def test_a_stall_drops_the_crossings_its_step_already_measured():
     records 0 km/h, whatever crossings it already measured."""
     cal, run, _profile = _open_run()
     clock = _measure_top_step(cal, run)
-    clock = _crossing(cal, run, clock, seconds=2.0)  # one clean 90% crossing
+    clock = _crossing(cal, run, clock, seconds=2.0)  # one clean crossing of the second step
     assert len(run.crossings) == 1
     cal.advance(run, CalibrationObservation(now=clock))  # arm the leg back
     cal.advance(run, CalibrationObservation(now=clock, path_present=True))
     cal.advance(run, CalibrationObservation(
         now=clock + CALIBRATION_STEP_TIMEOUT_S + 1.0, path_present=True))
     assert run.phase == PHASE_MEASURED
-    assert run.samples[1].power_percent == 90.0
+    assert run.samples[1].power_percent == run.power_steps[1]
     assert run.samples[1].speed_kmh == 0.0
 
 
@@ -429,7 +470,7 @@ def test_a_failed_pass_leaves_no_open_run_to_block_a_restart():
 
 def test_a_step_faster_than_the_step_above_it_is_measured_once_more_then_fails():
     cal, run, _profile = _open_run()
-    # 100% slow, then 90% fast twice: the re-measure tells a noisy crossing
+    # 100% slow, then the second step fast twice: the re-measure tells a noisy crossing
     # apart from a locomotive that really does run faster at less power
     # (design_new.md "Speed calibration", A step that measures faster than the
     # step above it is measured once more).
@@ -860,24 +901,26 @@ def test_a_measured_again_step_lists_both_attempts():
     for _ in range(run.crossings_target):
         clock = _crossing(cal, run, clock, seconds=9.0)  # 100% slow
     for _ in range(run.crossings_target):
-        clock = _crossing(cal, run, clock, seconds=1.0)  # 90% fast: measured again
+        clock = _crossing(cal, run, clock, seconds=1.0)  # second step fast: measured again
     for _ in range(run.crossings_target):
-        clock = _crossing(cal, run, clock, seconds=9.0)  # 90% again, now slower
+        clock = _crossing(cal, run, clock, seconds=9.0)  # second step again, now slower
+    second = run.power_steps[1]
     outcomes = _outcomes(run)
-    assert outcomes[4:8] == [(90.0, 1, "replaced")] * 4
-    assert outcomes[8:12] == [(90.0, 2, "used")] * 4
+    assert outcomes[4:8] == [(second, 1, "replaced")] * 4
+    assert outcomes[8:12] == [(second, 2, "used")] * 4
 
 
 def test_a_stall_lists_the_crossing_that_ended_the_sweep():
     cal, run, _profile = _open_run()
     clock = _measure_top_step(cal, run)
-    clock = _crossing(cal, run, clock, seconds=2.0)  # one clean 90% crossing
+    clock = _crossing(cal, run, clock, seconds=2.0)  # one clean crossing of the second step
     cal.advance(run, CalibrationObservation(now=clock))  # arm the leg back
     cal.advance(run, CalibrationObservation(now=clock, path_present=True))
     cal.advance(run, CalibrationObservation(
         now=clock + CALIBRATION_STEP_TIMEOUT_S + 1.0, path_present=True))
     outcomes = _outcomes(run)
-    assert outcomes[-2:] == [(90.0, 1, "dropped"), (90.0, 1, "ended_sweep")]
+    second = run.power_steps[1]
+    assert outcomes[-2:] == [(second, 1, "dropped"), (second, 1, "ended_sweep")]
     assert run.crossing_log[-1].seconds is None
 
 

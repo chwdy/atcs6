@@ -53,6 +53,7 @@ from constants import (
     CALIBRATION_MOVE_POWER_PERCENT,
     CALIBRATION_POWER_STEP_PERCENT,
     CALIBRATION_ROUND_TRIPS,
+    CALIBRATION_SAME_SPEED_FRACTION,
     CALIBRATION_STEP_TIMEOUT_S,
     LIGHTING_VOLTAGE_STEP_V,
 )
@@ -1043,18 +1044,27 @@ class SpeedCalibration:
         previous = run.samples[-1].speed_kmh if run.samples else None
         run.crossings = []
 
+        # `power_speed_curve` must stay invertible, so samples have to rise with
+        # power. The sweep runs down, so the step measured just before this one
+        # had more power. A step faster than it by no more than
+        # `CALIBRATION_SAME_SPEED_FRACTION` is the same speed and records that
+        # speed (design_new.md "Speed calibration", A step that measures close
+        # to the step above it records the same speed).
+        if (
+            previous is not None
+            and previous < step_speed <= previous * (1.0 + CALIBRATION_SAME_SPEED_FRACTION)
+        ):
+            step_speed = previous
         if previous is not None and step_speed > previous + _MONOTONIC_EPSILON_KMH:
-            # `power_speed_curve` must stay invertible, so samples have to rise
-            # with power. The sweep runs down, so the step measured just before
-            # this one had more power (design_new.md "Speed calibration", A step
-            # that measures faster than the step above it is measured once
+            # Clearly faster (design_new.md "Speed calibration", A step that
+            # measures clearly faster than the step above it is measured once
             # more). One re-measure tells a noisy crossing apart from a
             # locomotive that really does run faster at less power.
             if run.step_remeasured:
                 return self.fail(
                     run,
-                    f"{run.current_power:.0f}% measured faster than the step "
-                    "above it twice",
+                    f"{run.current_power:.0f}% measured clearly faster than "
+                    "the step above it twice",
                 )
             run.step_remeasured = True
             self._mark_step_crossings(run, CROSSING_REPLACED)
