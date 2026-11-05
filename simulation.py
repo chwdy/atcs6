@@ -349,7 +349,6 @@ class SimulationController(SwitchOutputOwner):
             controllers=self.controllers,
             operating_clock=lambda: self.operating_clock(),
             notification_center=self.notification_center,
-            operation_mode=lambda: self.operation_mode,
             block_holder=lambda block_id: getattr(
                 self.network.blocks.get(block_id), "occupied_by", None
             ),
@@ -2598,7 +2597,7 @@ class SimulationController(SwitchOutputOwner):
         self, controller: TrainController, train: Train
     ) -> None:
         """Action-stage teardown for one train: consume the teardown latches in
-        canonical order, then re-evaluate the open lighting-voltage run.
+        canonical order, then re-evaluate the open calibration pass.
 
         The `pending_path_cancel_request` latch is consumed earlier, in the
         Action early slot before the control decision (step `7b40`, see
@@ -2621,8 +2620,7 @@ class SimulationController(SwitchOutputOwner):
         self._consume_pending_power_off(controller, train)
         self._consume_pending_route_deactivate(controller, train)
 
-        # 26f5. Re-evaluate this train's open calibration run — a speed pass or a
-        # lighting-voltage run. Ordered after the power-off / route-deactivate
+        # 26f5. Re-evaluate this train's open calibration pass. Ordered after the power-off / route-deactivate
         # consumption above so it observes this same pass's teardown before
         # deciding whether the run has ended (design_new.md "Speed calibration",
         # Where it runs): the run ends the same tick its condition is met, so an
@@ -2809,35 +2807,24 @@ class SimulationController(SwitchOutputOwner):
         controller.route_hooks.phase_latches.clear("route_deactivate")
 
     def _reevaluate_calibration_run(self, train: Train) -> None:
-        """Action step `26f5` — end an open calibration run whose conditions no
-        longer hold, for either run kind.
+        """Action step `26f5` — end an open calibration pass whose conditions
+        no longer hold.
 
         `SpeedCalibration.run_still_valid(train_id)` is the one validity predicate
-        for both an open speed pass and an open lighting-voltage run (design_new.md
-        "Speed calibration", Where it runs). When it is false the run ends this
-        same tick — a speed pass through `SpeedCalibration.abandon(...)`, a
-        lighting run through `SpeedCalibration.cancel_lighting(...)`. The speed
-        pass reports the condition that failed, from
+        (design_new.md "Speed calibration", Where it runs). When it is false the
+        pass ends this same tick through `SpeedCalibration.abandon(...)`, which
+        reports the condition that failed, from
         `SpeedCalibration.run_invalid_reason(...)`. It is a
         `SimulationController`-level step because the run registry lives at
         that level.
         """
         calibration = self.speed_calibration
         train_id = train.train_id
-        speed_open = calibration.runs.get(train_id) is not None
-        lighting_open = calibration.lighting_runs.get(train_id) is not None
-        if not speed_open and not lighting_open:
+        if calibration.runs.get(train_id) is None:
             return
         if calibration.run_still_valid(train_id):
             return
-        # The two run kinds are mutually exclusive by their opening
-        # preconditions; each is ended through its own teardown.
-        if speed_open:
-            calibration.abandon(
-                train_id, reason=calibration.run_invalid_reason(train_id)
-            )
-        if lighting_open:
-            calibration.cancel_lighting(train_id)
+        calibration.abandon(train_id, reason=calibration.run_invalid_reason(train_id))
 
     # =========================================================================
     # Persistent state sync (Train <- TrainController)

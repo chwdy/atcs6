@@ -1,15 +1,16 @@
 """C5 — Speed calibration: the shuttle pass, its state machine, and the commit.
 
-design_new.md "Speed calibration". A pass sweeps `power_percent` down from 100%
-in `CALIBRATION_POWER_STEP_PERCENT` steps, times the head across
-one operator-named measured block between two confirmed block entries, turns the
-train around at each end itself, and averages `CALIBRATION_ROUND_TRIPS` round
-trips per step — half the crossings in each direction, so the stretch's grade
-cancels.
+design_new.md "Speed calibration". A pass commands voltages — coarse steps
+from `max_voltage` down by `CALIBRATION_VOLTAGE_STEP_V`, then narrowing to the
+starting voltage, then filling where the speed changes fast — times the head
+across one operator-named measured block between two confirmed block entries,
+turns the train around at each end itself, and takes the median of
+`CALIBRATION_ROUND_TRIPS` round trips per step — half the crossings in each
+direction, so the stretch's grade cancels.
 
 These drive `advance(...)` with synthetic observations rather than a moving
 simulation: the state machine is the contract, and feeding it confirmations
-directly is what makes the stall band, the overrun, the re-measure, and the
+directly is what makes a failed step, the overrun, the re-measure, and the
 reversal each testable on their own.
 """
 
@@ -17,14 +18,16 @@ import pytest
 
 from constants import (
     CALIBRATION_CAP_RETRY_LIMIT,
+    CALIBRATION_FILL_SPEED_FRACTION,
     CALIBRATION_HALF_POWER_S,
     CALIBRATION_MIN_CROSSING_SPEED_KMH,
+    CALIBRATION_MIN_VOLTAGE_GAP_V,
     CALIBRATION_MOVE_VOLTAGE_V,
     CALIBRATION_OFF_B_WAIT_READS,
-    CALIBRATION_POWER_STEP_PERCENT,
     CALIBRATION_ROUND_TRIPS,
     CALIBRATION_RUNOFF_MARGIN_CM,
     CALIBRATION_STEP_TIMEOUT_S,
+    CALIBRATION_VOLTAGE_STEP_V,
     OCCUPANCY_OFF_THRESHOLD,
     OCCUPANCY_ON_THRESHOLD,
 )
@@ -34,9 +37,13 @@ from speed_calibration import (
     PHASE_LEG,
     PHASE_MEASURED,
     PHASE_MOVING,
+    PHASE_RESETTING,
+    STEP_COARSE,
+    STEP_FILLED,
+    STEP_NARROWING,
     CalibrationObservation,
     SpeedCalibration,
-    power_sweep,
+    coarse_voltages,
 )
 from speed_profile import make_default_speed_profile
 
@@ -93,39 +100,133 @@ def _crossing(cal, run, clock, *, seconds, overrun_block=None):
     return clock
 
 
-def _run_full_pass(cal, run, *, seconds_for_step=None):
-    """Measure every step. `seconds_for_step(power)` sets each crossing time;
-    by default a higher step crosses faster, as an ordinary locomotive does, so
-    the measured curve can be stored."""
+def _loco_kmh(voltage):
+    """A locomotive that does not move steadily below 3 V and runs 20 km/h
+    there, rising in a straight line to 100 km/h at 12 V."""
+    if voltage < 3.0 - 1e-9:
+        return 0.0
+    return 20.0 + (voltage - 3.0) * 80.0 / 9.0
+
+
+def _seconds_at(kmh):
+    return BLOCK_LENGTH_CM / kmh_to_cm_per_sec(kmh)
+
+
+def _fail_step(cal, run, clock):
+    """Run one leg of the current step that never reaches B: it times out, the
+    step fails, and the train — which never left its outer block — is found
+    standing there, so the next step starts. Returns the advanced clock."""
+    cal.advance(run, CalibrationObservation(now=clock))  # arm the leg
+    cal.advance(run, CalibrationObservation(now=clock, path_present=True))
+    clock += CALIBRATION_STEP_TIMEOUT_S + 1.0
+    cal.advance(run, CalibrationObservation(now=clock, path_present=True))
+    if run.phase == PHASE_RESETTING:
+        clock += 1.0
+        standing_in = 1 - run.heading_to
+        cal.advance(
+            run,
+            CalibrationObservation(
+                now=clock, is_stopped=True, outer_block_index=standing_in
+            ),
+        )
+    return clock
+
+
+def _run_full_pass(cal, run, *, loco=_loco_kmh):
+    """Run the pass to its end. `loco(voltage)` is the locomotive's speed at a
+    voltage, `0` where a step fails."""
     clock = 0.0
     guard = 0
     while run.is_measuring and guard < 5000:
         guard += 1
-        secs = (seconds_for_step or (lambda power: 200.0 / power))(run.current_power)
-        clock = _crossing(cal, run, clock, seconds=secs)
+        kmh = loco(run.current_voltage)
+        if kmh <= 0.0:
+            clock = _fail_step(cal, run, clock)
+        else:
+            clock = _crossing(cal, run, clock, seconds=_seconds_at(kmh))
     return clock
+
+
+def _voltages(run):
+    return [s.track_voltage for s in run.samples]
 
 
 # --- the sweep ---------------------------------------------------------------
 
 
-def test_the_sweep_runs_down_from_100():
-    steps = power_sweep()
-    assert steps[0] == 100.0
-    assert steps[-1] == float(CALIBRATION_POWER_STEP_PERCENT)
-    assert all(a - b == CALIBRATION_POWER_STEP_PERCENT for a, b in zip(steps, steps[1:]))
+def test_the_coarse_steps_run_down_from_max_voltage():
+    steps = coarse_voltages(12.0)
+    assert steps[0] == 12.0
+    assert steps == [12.0, 10.0, 8.0, 6.0, 4.0, 2.0]
+    assert all(a - b == CALIBRATION_VOLTAGE_STEP_V for a, b in zip(steps, steps[1:]))
 
 
-def test_the_curve_holds_one_point_per_step_at_the_voltage_it_drove():
-    """design_new.md "Speed calibration", A pass measures `voltage_speed_curve`:
-    each step that moved the train gives one point, at the voltage the step
-    drove; `0` is not measured."""
+def test_the_first_step_is_the_coarse_step_at_max_voltage():
+    _cal, run, profile = _open_run()
+    assert run.current_voltage == profile.max_voltage
+    assert run.current_step_kind == STEP_COARSE
+
+
+def test_a_full_pass_runs_coarse_then_narrows_then_fills():
+    """design_new.md "Speed calibration": coarse steps down to the first that
+    fails (2 V), narrowing between 4 V and 2 V to the starting voltage, then
+    filling halfway between coarse steps whose speeds are far apart."""
     cal, run, _profile = _open_run()
-    assert 0.0 not in run.power_steps
+    _run_full_pass(cal, run)
+    assert run.phase == PHASE_MEASURED, run.failure_reason
+    kinds = {round(s.track_voltage, 3): s.kind for s in run.samples}
+    assert [v for v, k in kinds.items() if k == STEP_COARSE] == [12.0, 10.0, 8.0, 6.0, 4.0]
+    # 2 V fails; 3 V passes; 2.5 V and 2.75 V fail.
+    assert sorted(run.failed_voltages) == [2.0, 2.5, 2.75]
+    assert [v for v, k in kinds.items() if k == STEP_NARROWING] == [3.0]
+    # Coarse steps 2 V apart differ by 17.8 km/h, more than 15% of 100 km/h.
+    assert sorted(v for v, k in kinds.items() if k == STEP_FILLED) == [5.0, 7.0, 9.0, 11.0]
+
+
+def test_the_starting_voltage_is_the_lowest_step_that_passed():
+    """design_new.md "Speed calibration", The starting voltage is the lowest
+    step that ran every crossing: it is the curve's first point."""
+    cal, run, _profile = _open_run()
     _run_full_pass(cal, run)
     curve = cal.measured_curve(run)
-    assert [v for v, _s in curve] == sorted(run.step_voltage(p) for p in run.power_steps)
-    assert all(speed > 0.0 for _v, speed in curve)
+    assert curve[0][0] == 3.0
+    assert curve[0][1] == pytest.approx(20.0, rel=1e-6)
+    # The narrowing stopped once the gap to the failed step below was no more
+    # than CALIBRATION_MIN_VOLTAGE_GAP_V.
+    assert curve[0][0] - max(run.failed_voltages) <= CALIBRATION_MIN_VOLTAGE_GAP_V + 1e-9
+
+
+def test_the_narrowing_runs_down_to_zero_when_every_coarse_step_passes():
+    """When even the lowest coarse step passes, the lower bound is `0` V."""
+    cal, run, _profile = _open_run()
+    _run_full_pass(cal, run, loco=lambda v: 10.0 + 7.5 * v)
+    assert run.phase == PHASE_MEASURED, run.failure_reason
+    curve = cal.measured_curve(run)
+    assert curve[0][0] <= CALIBRATION_MIN_VOLTAGE_GAP_V + 1e-9
+
+
+def test_filling_needs_room_between_the_two_steps():
+    """A pair whose voltages are no more than twice
+    `CALIBRATION_MIN_VOLTAGE_GAP_V` apart is not split, however far apart its
+    speeds are."""
+    cal, run, _profile = _open_run()
+    # A locomotive that jumps from 20 to 90 km/h between 3 V and 3.4 V.
+    _run_full_pass(cal, run, loco=lambda v: 0.0 if v < 3.0 else (20.0 if v < 3.4 else 90.0 + v))
+    assert run.phase == PHASE_MEASURED, run.failure_reason
+    for low, high in zip(cal.measured_curve(run), cal.measured_curve(run)[1:]):
+        if high[1] - low[1] > CALIBRATION_FILL_SPEED_FRACTION * cal.measured_curve(run)[-1][1]:
+            assert high[0] - low[0] <= 2 * CALIBRATION_MIN_VOLTAGE_GAP_V + 1e-9
+
+
+def test_the_curve_holds_one_point_per_passed_step_at_the_voltage_it_drove():
+    """design_new.md "Speed calibration", A pass measures `voltage_speed_curve`:
+    each step that passed gives one point, at the voltage the step drove; a
+    failed step gives none."""
+    cal, run, _profile = _open_run()
+    _run_full_pass(cal, run)
+    curve = cal.measured_curve(run)
+    assert [v for v, _s in curve] == sorted(_voltages(run))
+    assert not set(run.failed_voltages) & {v for v, _s in curve}
     assert curve[-1][0] == run.max_voltage
 
 
@@ -185,7 +286,7 @@ def test_a_step_takes_the_median_of_both_directions():
     clock = 0.0
     for seconds in (3.0, 1.0) * CALIBRATION_ROUND_TRIPS:
         clock = _crossing(cal, run, clock, seconds=seconds)
-    assert run.step_index == 1
+    assert len(run.samples) == 1
     slow = cm_per_sec_to_kmh(BLOCK_LENGTH_CM / 3.0)
     fast = cm_per_sec_to_kmh(BLOCK_LENGTH_CM / 1.0)
     assert run.samples[0].speed_kmh == pytest.approx((slow + fast) / 2)
@@ -205,8 +306,8 @@ def test_one_mistimed_crossing_does_not_move_the_step():
 
 
 def test_the_rig_run_of_2026_10_31_measures_on():
-    """The crossing times the rig recorded measuring Up, then at 100%, 90% and
-    80%. The locomotive ran at nearly the same speed at all three, and one
+    """The crossing times the rig recorded measuring Up at its three highest
+    steps. The locomotive ran at nearly the same speed at all three, and one
     mistimed crossing at 90% (3.71 s) made a mean of 80% read faster than 90%,
     so the pass re-measured 80% and failed. The median keeps the three steps in
     order."""
@@ -221,15 +322,15 @@ def test_the_rig_run_of_2026_10_31_measures_on():
             clock = _crossing(cal, run, clock, seconds=seconds)
     assert run.phase != PHASE_FAILED, run.failure_reason
     assert run.step_remeasured is False
-    assert [s.power_percent for s in run.samples] == run.power_steps[:3]
+    assert _voltages(run) == coarse_voltages(run.max_voltage)[:3]
     speeds = [s.speed_kmh for s in run.samples]
     assert speeds == sorted(speeds, reverse=True)
 
 
 def test_the_rig_run_of_2026_11_02_records_the_flat_top():
     """design_new.md "Speed calibration", A step that measures close to the
-    step above it records the same speed. The rig ran Up at about 150 km/h from
-    80% to 100%; the second step's median came out about 2% faster than the
+    step above it records the same speed. The rig ran Up at about 150 km/h at
+    its two highest steps; the second step's median came out about 2% faster than the
     first's, and every pass ended on it. Inside
     `CALIBRATION_SAME_SPEED_FRACTION` that is the same speed, so the step
     records the first step's speed and the sweep goes on."""
@@ -243,9 +344,9 @@ def test_the_rig_run_of_2026_11_02_records_the_flat_top():
             clock = _crossing(cal, run, clock, seconds=seconds)
     assert run.phase != PHASE_FAILED, run.failure_reason
     assert run.step_remeasured is False
-    assert run.step_index == 2
+    assert len(run.samples) == 2
     assert run.samples[1].speed_kmh == run.samples[0].speed_kmh
-    assert _outcomes(run)[4:8] == [(run.power_steps[1], 1, "used")] * 4
+    assert _outcomes(run)[4:8] == [(coarse_voltages(run.max_voltage)[1], 1, "used")] * 4
 
 
 def test_a_clearly_faster_step_measured_close_the_second_time_records_the_same_speed():
@@ -262,7 +363,7 @@ def test_a_clearly_faster_step_measured_close_the_second_time_records_the_same_s
     for _ in range(run.crossings_target):
         clock = _crossing(cal, run, clock, seconds=8.6)  # under 5% faster
     assert run.phase != PHASE_FAILED, run.failure_reason
-    assert run.step_index == 2
+    assert len(run.samples) == 2
     assert run.samples[1].speed_kmh == run.samples[0].speed_kmh
 
 
@@ -272,20 +373,21 @@ def test_a_step_collects_two_crossings_per_round_trip():
     clock = 0.0
     for _ in range(run.crossings_target - 1):
         clock = _crossing(cal, run, clock, seconds=2.0)
-    assert run.step_index == 0  # still on the first step
+    assert run.samples == []  # still on the first step
     _crossing(cal, run, clock, seconds=2.0)
-    assert run.step_index == 1
+    assert len(run.samples) == 1
 
 
-# --- stall band, overrun, monotonicity ---------------------------------------
+# --- failed steps, overrun, monotonicity ---------------------------------------
 
 
 def _measure_top_step(cal, run, *, seconds=2.0):
-    """Measure the 100% step cleanly; return the clock with the next step due."""
+    """Measure the `max_voltage` step cleanly; return the clock with the next
+    coarse step due."""
     clock = 0.0
     for _ in range(run.crossings_target):
         clock = _crossing(cal, run, clock, seconds=seconds)
-    assert run.current_power == 100.0 - CALIBRATION_POWER_STEP_PERCENT
+    assert run.current_voltage == run.max_voltage - CALIBRATION_VOLTAGE_STEP_V
     return clock
 
 
@@ -293,15 +395,13 @@ def _window_s():
     return BLOCK_LENGTH_CM / kmh_to_cm_per_sec(CALIBRATION_MIN_CROSSING_SPEED_KMH)
 
 
-def test_a_step_that_does_not_move_the_train_ends_the_sweep():
+def test_a_step_that_does_not_move_the_train_fails_and_the_pass_narrows():
     """design_new.md "Speed calibration", A step that does not move the train
-    records `0 km/h`: that step and every step below it record 0 km/h without
-    being commanded, and the pass is finished."""
+    fails: it gives no point, its leg route is torn down, and the pass goes on
+    to the narrowing step halfway down to the failed voltage."""
     cal, run, _profile = _open_run()
     clock = _measure_top_step(cal, run)
     cal.advance(run, CalibrationObservation(now=clock))  # arm the second step's leg
-    # The leg's authority appears, starting the step clock (design_new.md "Speed
-    # calibration": the timeout does not run until the path exists).
     cal.advance(run, CalibrationObservation(now=clock, path_present=True))
     command = cal.advance(
         run,
@@ -309,22 +409,49 @@ def test_a_step_that_does_not_move_the_train_ends_the_sweep():
             now=clock + CALIBRATION_STEP_TIMEOUT_S + 1.0, path_present=True
         ),
     )
-    assert run.phase == PHASE_MEASURED
-    assert [s.power_percent for s in run.samples] == run.power_steps
-    assert run.samples[0].speed_kmh > 0.0
-    assert all(s.speed_kmh == 0.0 for s in run.samples[1:])
-    # The stalled leg never reached the far block, so its route is torn down.
+    assert run.phase == PHASE_RESETTING
     assert command.deactivate_route is True
     assert command.arm_leg_to is None
-    # No step below the stall is commanded: the pass no longer drives.
-    assert cal.get_propulsion_override("T1") is None
-    assert f"did not move at {run.power_steps[1]:.0f}% and below" in cal._measured_reason(run)
+    assert run.failed_voltages == [10.0]
+    assert _voltages(run) == [12.0]
+    # The pass drives nothing while the train stands between steps ...
+    assert cal.get_propulsion_override("T1").track_voltage == 0.0
+    # ... and the next step is the narrowing step halfway to the failure.
+    assert run.current_voltage == 11.0
+    assert run.current_step_kind == STEP_NARROWING
 
 
-def test_a_crossing_that_stops_inside_the_stretch_ends_the_sweep():
+def test_after_a_failed_step_a_train_standing_in_an_outer_block_starts_the_next_leg():
+    cal, run, _profile = _open_run()
+    clock = _measure_top_step(cal, run)
+    clock = _fail_step(cal, run, clock)
+    assert run.phase == PHASE_LEG
+    assert run.leg_armed is True
+    assert run.current_voltage == 11.0
+
+
+def test_after_a_failed_step_a_train_left_on_b_is_moved_into_an_outer_block():
+    """design_new.md "Speed calibration", A step passes or fails: a failed step
+    that left the train on B moves it into the nearer outer block first."""
+    cal, run, _profile = _open_run()
+    clock = _measure_top_step(cal, run)
+    cal.advance(run, CalibrationObservation(now=clock))  # arm
+    _observe(cal, run, clock + 1.0, ("B",), path_present=True)
+    cal.advance(run, CalibrationObservation(now=clock + 1.0 + _window_s() + 1.0, path_present=True))
+    assert run.phase == PHASE_RESETTING
+    command = cal.advance(
+        run,
+        CalibrationObservation(
+            now=clock + _window_s() + 5.0, is_stopped=True, measured_block_held=True
+        ),
+    )
+    assert run.phase == PHASE_MOVING
+    assert command.move_into_place is True
+
+
+def test_a_crossing_that_stops_inside_the_stretch_fails_the_step():
     """design_new.md "Speed calibration", A crossing that stops inside the
-    stretch ends the sweep: a part-crossing is no measurement, and the power that
-    did not carry the train across B is the top edge of the stall band."""
+    stretch fails the step: a part-crossing is no measurement."""
     cal, run, _profile = _open_run()
     clock = _measure_top_step(cal, run)
     cal.advance(run, CalibrationObservation(now=clock))  # arm the second step's leg
@@ -332,37 +459,32 @@ def test_a_crossing_that_stops_inside_the_stretch_ends_the_sweep():
     entered_b = clock + 1.0
     # Still inside the window: the pass keeps waiting for the far block.
     cal.advance(run, CalibrationObservation(now=entered_b + _window_s() - 1.0, path_present=True))
-    assert run.is_measuring
+    assert run.phase == PHASE_LEG
     command = cal.advance(
         run, CalibrationObservation(now=entered_b + _window_s() + 1.0, path_present=True)
     )
-    assert run.phase == PHASE_MEASURED
-    assert [s.speed_kmh for s in run.samples[1:]] == [0.0] * (len(run.power_steps) - 1)
+    assert run.phase == PHASE_RESETTING
+    assert run.failed_voltages == [10.0]
     assert command.deactivate_route is True
 
 
-def test_a_stall_drops_the_crossings_its_step_already_measured():
-    """A step whose power moved the train on one crossing but not on the next
-    records 0 km/h, whatever crossings it already measured."""
+def test_a_failed_step_drops_the_crossings_it_already_measured():
+    """A step whose voltage moved the train on one crossing but not on the next
+    fails, whatever crossings it already measured."""
     cal, run, _profile = _open_run()
     clock = _measure_top_step(cal, run)
     clock = _crossing(cal, run, clock, seconds=2.0)  # one clean crossing of the second step
     assert len(run.crossings) == 1
-    cal.advance(run, CalibrationObservation(now=clock))  # arm the leg back
-    cal.advance(run, CalibrationObservation(now=clock, path_present=True))
-    cal.advance(run, CalibrationObservation(
-        now=clock + CALIBRATION_STEP_TIMEOUT_S + 1.0, path_present=True))
-    assert run.phase == PHASE_MEASURED
-    assert run.samples[1].power_percent == run.power_steps[1]
-    assert run.samples[1].speed_kmh == 0.0
+    clock = _fail_step(cal, run, clock)
+    assert run.crossings == []
+    assert run.failed_voltages == [10.0]
+    assert _voltages(run) == [12.0]
 
 
 @pytest.mark.parametrize("enters_b", [False, True])
-def test_a_sweep_in_which_every_step_records_zero_fails(enters_b):
-    """design_new.md "Speed calibration", A sweep in which every step records
-    `0 km/h` fails the pass: all-zero is a stretch the pass could not measure on,
-    and storing it would say the loco stands still at 100%. The 100% step
-    stalling settles every step below it, so the pass fails at once."""
+def test_a_pass_whose_top_step_fails_fails(enters_b):
+    """design_new.md "Speed calibration", A pass whose top step fails fails the
+    pass: a locomotive that does not cross B at full voltage gives no curve."""
     cal, run, profile = _open_run()
     cal.advance(run, CalibrationObservation(now=0.0))  # arm
     if enters_b:
@@ -373,9 +495,37 @@ def test_a_sweep_in_which_every_step_records_zero_fails(enters_b):
         timed_out = CALIBRATION_STEP_TIMEOUT_S + 1.0
     command = cal.advance(run, CalibrationObservation(now=timed_out, path_present=True))
     assert run.phase == PHASE_FAILED
-    assert "every step recorded 0 km/h" in run.failure_reason
+    assert "max_voltage" in run.failure_reason
     assert command.deactivate_route is True
     assert profile.calibrated_at is None
+
+
+def test_a_filled_step_that_fails_is_measured_once_more_then_fails_the_pass():
+    """design_new.md "Speed calibration", A filled step that fails is measured
+    once more: a lower voltage already ran every crossing, so a failure there is
+    a dirty rail or a bad contact."""
+    cal, run, _profile = _open_run()
+
+    def loco(v):
+        if run.current_step_kind == STEP_FILLED:
+            return 0.0
+        return _loco_kmh(v)
+
+    _run_full_pass(cal, run, loco=loco)
+    assert run.phase == PHASE_FAILED
+    assert "dirty rail" in run.failure_reason
+    filled_attempts = [c.attempt for c in run.crossing_log if c.outcome == "failed_step"]
+    assert filled_attempts[-2:] == [1, 2]
+
+
+def test_a_finished_curve_the_commit_would_refuse_fails_the_pass():
+    """design_new.md "Speed calibration", A finished curve the commit would
+    refuse fails the pass: when only the `max_voltage` step passes, the curve
+    has one point."""
+    cal, run, _profile = _open_run()
+    _run_full_pass(cal, run, loco=lambda v: 90.0 if v >= 12.0 else 0.0)
+    assert run.phase == PHASE_FAILED
+    assert "at least two points" in run.failure_reason
 
 
 def test_time_standing_short_of_the_reservation_is_not_counted():
@@ -395,7 +545,7 @@ def test_time_standing_short_of_the_reservation_is_not_counted():
     assert run.is_measuring
     cal.advance(run, CalibrationObservation(
         now=held + CALIBRATION_STEP_TIMEOUT_S + 1.0, path_present=True))
-    assert run.phase == PHASE_FAILED  # the 100% step: every step records 0
+    assert run.phase == PHASE_FAILED  # the max_voltage step failed
 
 
 def test_a_crossing_held_short_is_not_taken_for_a_stall():
@@ -482,22 +632,22 @@ def test_a_failed_pass_leaves_no_open_run_to_block_a_restart():
 
 def test_a_step_faster_than_the_step_above_it_is_measured_once_more_then_fails():
     cal, run, _profile = _open_run()
-    # 100% slow, then the second step fast twice: the re-measure tells a noisy crossing
+    # The top step slow, then the second step fast twice: the re-measure tells a noisy crossing
     # apart from a locomotive that really does run faster at less power
     # (design_new.md "Speed calibration", A step that measures faster than the
     # step above it is measured once more).
     clock = 0.0
     for _ in range(run.crossings_target):
         clock = _crossing(cal, run, clock, seconds=9.0)
-    assert run.step_index == 1
+    assert len(run.samples) == 1
     for _ in range(run.crossings_target):
         clock = _crossing(cal, run, clock, seconds=1.0)
     assert run.step_remeasured is True
-    assert run.step_index == 1  # repeated, not banked
+    assert len(run.samples) == 1  # repeated, not banked
     for _ in range(run.crossings_target):
         clock = _crossing(cal, run, clock, seconds=1.0)
     assert run.phase == PHASE_FAILED
-    assert "faster" in run.failure_reason
+    assert "clearly outside" in run.failure_reason
 
 
 def test_ending_open_runs_drops_an_open_pass():
@@ -518,14 +668,6 @@ def test_ending_open_runs_keeps_a_held_result():
     assert run.phase == PHASE_MEASURED
     cal.end_open_runs("session stopped")
     assert cal.runs.get("T1") is run
-
-
-def test_ending_open_runs_closes_a_lighting_run():
-    cal = SpeedCalibration()
-    profile = make_default_speed_profile("T1", 100.0)
-    cal.start_lighting(_StubTrain(), profile)
-    cal.end_open_runs("session stopped")
-    assert cal.lighting_runs.get("T1") is None
 
 
 def test_discarding_all_drops_a_held_result_too():
@@ -580,30 +722,31 @@ def test_commit_is_all_or_nothing():
 def test_the_committed_curve_is_non_decreasing_so_it_reads_backwards():
     cal, run, profile = _open_run()
     # Faster at every higher step, which is what an ordinary locomotive does.
-    _run_full_pass(cal, run, seconds_for_step=lambda power: 100.0 / power)
+    _run_full_pass(cal, run)
     curve = cal.commit("T1", profile)
-    speeds = [s for _p, s in curve]
+    speeds = [s for _v, s in curve]
     assert speeds == sorted(speeds)
     # And physics can read it back: every measured speed maps to its voltage.
     for voltage, speed in curve:
         assert profile.speed_to_voltage(speed) == pytest.approx(voltage, abs=1e-6)
 
 
-def test_the_committed_curve_runs_in_order_of_power():
-    # The sweep measures 100% first; the curve still reads from 0% up.
+def test_the_committed_curve_runs_in_order_of_voltage():
+    # The sweep measures max_voltage first; the curve still reads from the
+    # starting voltage up.
     cal, run, profile = _open_run()
-    _run_full_pass(cal, run, seconds_for_step=lambda power: 100.0 / power)
+    _run_full_pass(cal, run)
     curve = cal.commit("T1", profile)
     voltages = [v for v, _s in curve]
     assert voltages == sorted(voltages)
     assert voltages[-1] == profile.max_voltage
 
 
-def test_commit_rejects_a_curve_that_falls_with_power():
+def test_commit_rejects_a_curve_that_falls_with_voltage():
     cal, run, profile = _open_run()
     _run_full_pass(cal, run)
-    assert run.samples[0].power_percent == 100.0
-    run.samples[0] = type(run.samples[0])(power_percent=100.0, speed_kmh=0.0)
+    assert run.samples[0].track_voltage == 12.0
+    run.samples[0] = type(run.samples[0])(track_voltage=12.0, speed_kmh=1.0)
     with pytest.raises(ValueError):
         cal.commit("T1", profile)
 
@@ -619,7 +762,7 @@ def test_pass_drives_a_zero_override_while_acquiring():
     cal, run, _profile = _open_run()
     assert run.is_measuring
     override = cal.get_propulsion_override("T1")
-    assert override is not None and override.kind == "drive_voltage"
+    assert override is not None and override.track_voltage == 0.0
 
 
 # --- capped-crossing discard (design_new.md:3047, "A capped crossing is discarded") ---
@@ -741,19 +884,19 @@ def test_the_run_off_is_timed_from_the_measured_speed():
     speed_cm_s = BLOCK_LENGTH_CM / 2.0
     runoff_s = (20.0 + CALIBRATION_RUNOFF_MARGIN_CM) / speed_cm_s
     assert run.phase == "clearing"
-    assert cal.get_propulsion_override("T1").value == run.current_voltage
+    assert cal.get_propulsion_override("T1").track_voltage == run.current_voltage
     cal.advance(run, CalibrationObservation(
         now=clock + runoff_s - 0.05, path_present=True, measured_block_held=True))
-    assert cal.get_propulsion_override("T1").value == run.current_voltage
+    assert cal.get_propulsion_override("T1").track_voltage == run.current_voltage
     # B still reads occupied, but the run-off is over: the stop begins.
     end = clock + runoff_s + 0.05
     cal.advance(run, CalibrationObservation(
         now=end, path_present=True, measured_block_held=True))
     assert run.phase == "stopping"
-    assert cal.get_propulsion_override("T1").value == run.current_voltage / 2
+    assert cal.get_propulsion_override("T1").track_voltage == run.current_voltage / 2
     cal.advance(run, CalibrationObservation(
         now=end + CALIBRATION_HALF_POWER_S + 0.1, measured_block_held=True))
-    assert cal.get_propulsion_override("T1").value == 0.0
+    assert cal.get_propulsion_override("T1").track_voltage == 0.0
 
 
 def test_the_run_off_ends_at_once_when_b_reads_clear():
@@ -762,9 +905,9 @@ def test_the_run_off_ends_at_once_when_b_reads_clear():
     cal.advance(run, CalibrationObservation(
         now=clock + 0.1, path_present=True, measured_block_held=False))
     assert run.phase == "stopping"
-    assert cal.get_propulsion_override("T1").value == run.current_voltage / 2
+    assert cal.get_propulsion_override("T1").track_voltage == run.current_voltage / 2
     cal.advance(run, CalibrationObservation(now=clock + CALIBRATION_HALF_POWER_S + 0.2))
-    assert cal.get_propulsion_override("T1").value == 0.0
+    assert cal.get_propulsion_override("T1").track_voltage == 0.0
 
 
 def test_a_train_already_off_the_measured_block_starts_its_stop_at_once():
@@ -772,7 +915,7 @@ def test_a_train_already_off_the_measured_block_starts_its_stop_at_once():
     _cross_into_far_block(cal, run, measured_block_held=False)
     assert len(run.crossings) == 1
     assert run.phase == "stopping"
-    assert cal.get_propulsion_override("T1").value == run.current_voltage / 2
+    assert cal.get_propulsion_override("T1").track_voltage == run.current_voltage / 2
 
 
 def test_the_standing_train_waits_for_b_to_read_clear():
@@ -870,13 +1013,13 @@ def test_a_leg_starts_at_half_power():
     cal, run, _profile = _open_run()
     cal.advance(run, CalibrationObservation(now=0.0))  # arm the leg
     cal.advance(run, CalibrationObservation(now=1.0, path_present=True))  # authority
-    assert cal.get_propulsion_override("T1").value == run.current_voltage / 2
+    assert cal.get_propulsion_override("T1").track_voltage == run.current_voltage / 2
     cal.advance(run, CalibrationObservation(
         now=1.0 + CALIBRATION_HALF_POWER_S - 0.1, path_present=True))
-    assert cal.get_propulsion_override("T1").value == run.current_voltage / 2
+    assert cal.get_propulsion_override("T1").track_voltage == run.current_voltage / 2
     cal.advance(run, CalibrationObservation(
         now=1.0 + CALIBRATION_HALF_POWER_S + 0.1, path_present=True))
-    assert cal.get_propulsion_override("T1").value == run.current_voltage
+    assert cal.get_propulsion_override("T1").track_voltage == run.current_voltage
 
 
 def test_the_turnaround_waits_for_the_half_power_stop():
@@ -918,7 +1061,7 @@ def test_the_crossing_window_is_set_by_the_measured_block_length():
 
 
 def _outcomes(run):
-    return [(c.power_percent, c.attempt, c.outcome) for c in run.crossing_log]
+    return [(c.track_voltage, c.attempt, c.outcome) for c in run.crossing_log]
 
 
 def test_every_crossing_is_listed_with_its_time_speed_and_direction():
@@ -933,7 +1076,7 @@ def test_every_crossing_is_listed_with_its_time_speed_and_direction():
     assert log[0].speed_kmh == pytest.approx(cm_per_sec_to_kmh(BLOCK_LENGTH_CM / 2.0))
     listed = run.to_dict()["crossings"]
     assert listed[1] == {
-        "power_percent": 100.0, "attempt": 1, "toward_block_id": "A",
+        "track_voltage": 12.0, "attempt": 1, "toward_block_id": "A",
         "seconds": 3.0, "speed_kmh": pytest.approx(cm_per_sec_to_kmh(BLOCK_LENGTH_CM / 3.0)),
         "outcome": "used",
     }
@@ -945,35 +1088,32 @@ def test_a_capped_crossing_is_listed_as_discarded():
     _observe(cal, run, 1.0, ("B",))
     cal.taint_current_crossing("T1", "CAUTION restriction during a measured crossing")
     _observe(cal, run, 3.0, ("C",))
-    assert _outcomes(run) == [(100.0, 1, "discarded")]
+    assert _outcomes(run) == [(12.0, 1, "discarded")]
 
 
 def test_a_measured_again_step_lists_both_attempts():
     cal, run, _profile = _open_run()
     clock = 0.0
     for _ in range(run.crossings_target):
-        clock = _crossing(cal, run, clock, seconds=9.0)  # 100% slow
+        clock = _crossing(cal, run, clock, seconds=9.0)  # top step slow
     for _ in range(run.crossings_target):
         clock = _crossing(cal, run, clock, seconds=1.0)  # second step fast: measured again
     for _ in range(run.crossings_target):
         clock = _crossing(cal, run, clock, seconds=9.0)  # second step again, now slower
-    second = run.power_steps[1]
+    second = coarse_voltages(run.max_voltage)[1]
     outcomes = _outcomes(run)
     assert outcomes[4:8] == [(second, 1, "replaced")] * 4
     assert outcomes[8:12] == [(second, 2, "used")] * 4
 
 
-def test_a_stall_lists_the_crossing_that_ended_the_sweep():
+def test_a_failed_step_lists_the_crossing_that_failed_it():
     cal, run, _profile = _open_run()
     clock = _measure_top_step(cal, run)
     clock = _crossing(cal, run, clock, seconds=2.0)  # one clean crossing of the second step
-    cal.advance(run, CalibrationObservation(now=clock))  # arm the leg back
-    cal.advance(run, CalibrationObservation(now=clock, path_present=True))
-    cal.advance(run, CalibrationObservation(
-        now=clock + CALIBRATION_STEP_TIMEOUT_S + 1.0, path_present=True))
+    _fail_step(cal, run, clock)
     outcomes = _outcomes(run)
-    second = run.power_steps[1]
-    assert outcomes[-2:] == [(second, 1, "dropped"), (second, 1, "ended_sweep")]
+    second = coarse_voltages(run.max_voltage)[1]
+    assert outcomes[-2:] == [(second, 1, "dropped"), (second, 1, "failed_step")]
     assert run.crossing_log[-1].seconds is None
 
 
@@ -1002,13 +1142,13 @@ def test_the_move_drives_half_its_power_first_then_its_power():
 
     cal.advance(run, CalibrationObservation(now=1.0, path_present=True))
     assert run.half_power is True
-    assert cal.get_propulsion_override("T1").value == CALIBRATION_MOVE_VOLTAGE_V * 0.5
+    assert cal.get_propulsion_override("T1").track_voltage == CALIBRATION_MOVE_VOLTAGE_V * 0.5
 
     cal.advance(
         run,
         CalibrationObservation(now=1.0 + CALIBRATION_HALF_POWER_S, path_present=True),
     )
-    assert cal.get_propulsion_override("T1").value == CALIBRATION_MOVE_VOLTAGE_V
+    assert cal.get_propulsion_override("T1").track_voltage == CALIBRATION_MOVE_VOLTAGE_V
 
 
 def test_the_move_stops_on_the_detector():
@@ -1018,7 +1158,7 @@ def test_the_move_stops_on_the_detector():
     cal, run, _ = _open_run(heading_to=None)
     cal.advance(run, CalibrationObservation(now=0.0))
     run.move_target_block_id = "A"  # written by RouteExecutor with the route
-    power = lambda: cal.get_propulsion_override("T1").value  # noqa: E731
+    power = lambda: cal.get_propulsion_override("T1").track_voltage  # noqa: E731
 
     cal.advance(run, CalibrationObservation(
         now=5.0, path_present=True, head_block="X", span_blocks=("X",)))
@@ -1069,7 +1209,7 @@ def test_after_the_move_the_opening_leg_runs_toward_the_other_outer_block():
     assert run.phase == PHASE_LEG
     assert command.arm_leg_to == "C"
     assert command.reverse_cab is False
-    assert command.drive_voltage == run.step_voltage(run.power_steps[0])
+    assert command.drive_voltage == run.max_voltage
 
 
 def test_a_move_that_ends_outside_the_outer_blocks_fails_the_pass():
@@ -1146,7 +1286,7 @@ def test_every_crossing_and_every_step_is_reported():
     steps = [n for n in events if n.operation == "calibration_step"]
     assert len(crossings) == run.crossings_target
     first = crossings[0].payload
-    assert first["power_percent"] == run.power_steps[0]
+    assert first["track_voltage"] == run.max_voltage
     assert first["seconds"] == pytest.approx(2.0)
     assert first["speed_kmh"] == pytest.approx(cm_per_sec_to_kmh(BLOCK_LENGTH_CM / 2.0))
     assert first["outcome"] == "used"
@@ -1171,4 +1311,4 @@ def test_a_step_measured_again_is_reported_without_a_recorded_speed():
 
     steps = [n.payload for n in nc.peek_recent(100) if n.operation == "calibration_step"]
     assert [s["recorded_kmh"] is None for s in steps] == [False, True]
-    assert steps[1]["power_percent"] == run.power_steps[1]
+    assert steps[1]["track_voltage"] == coarse_voltages(run.max_voltage)[1]

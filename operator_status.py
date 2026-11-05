@@ -131,8 +131,8 @@ def hold_reason_for(
     if status == TrainStatus.CALIBRATING:
         calibration = getattr(sim_controller, "speed_calibration", None)
         run = calibration.runs.get(train_id) if calibration is not None else None
-        kind = "speed" if run is not None and run.is_measuring else "lighting"
-        return _hold("calibrating", 2, kind)
+        measured_block = run.measured_block_id if run is not None else ""
+        return _hold("calibrating", 2, measured_block)
     if (
         status == TrainStatus.ATO
         and not controller.commands.engaged

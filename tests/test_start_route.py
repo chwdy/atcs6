@@ -147,7 +147,7 @@ def test_start_route_is_refused_while_moving(state):
 def test_start_route_is_refused_while_calibrating(state, monkeypatch):
     train_id, controller = _controller(state)
     assert controller.commands.set_mode("manual").success
-    override = CalibrationPropulsionOverride(kind="power_percent", value=0.0)
+    override = CalibrationPropulsionOverride(track_voltage=0.0)
     monkeypatch.setattr(
         controller,
         "_speed_calibration",

@@ -69,7 +69,8 @@ def calibrated(state):
     cal = state.sim_controller.speed_calibration
     run = cal.start(train, inst1, measured_block_id="B", outer_block_ids=("A", "C"))
     run.samples = [
-        CalibrationSample(power_percent=p, speed_kmh=p * 0.8) for p in run.power_steps
+        CalibrationSample(track_voltage=v, speed_kmh=v / 12.0 * 80.0)
+        for v in (3.0, 6.0, 9.0, 12.0)
     ]
     run.phase = PHASE_MEASURED
     return state, train, model, inst1, inst2, entry, run

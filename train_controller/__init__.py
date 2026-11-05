@@ -1056,23 +1056,6 @@ class TrainController:
                 handle=HandlePosition.N,
                 voltage_source_speed_kmh=0.0,
             )
-        # design_new.md "Lighting-voltage calibration", What the run drives: an
-        # open lighting-voltage run substitutes an exact track-voltage magnitude
-        # for the ordinary manual-notch / manual-power / ATO traction request,
-        # read through the shared `SpeedCalibration.get_propulsion_override`
-        # accessor's `track_voltage` variant. It is reached only after pending
-        # power-off and EB (both returned above), so those outrank it. The
-        # candidate does not feed the speed solution — the command carries no
-        # motion (handle N), only the magnitude physics will emit — so it never
-        # moves the modelled train by itself.
-        lighting_track_voltage = self._lighting_track_voltage_override()
-        if lighting_track_voltage is not None:
-            return PhysicsCommand(
-                kind=PHYSICS_KIND_HANDLE,
-                handle=HandlePosition.N,
-                voltage_source_speed_kmh=0.0,
-                voltage_source_track_voltage=lighting_track_voltage,
-            )
         # design_new.md "Speed calibration", Controller owns calibration output,
         # and the driving-source selection order: an open speed-calibration pass
         # supplies a drive voltage through get_propulsion_override and is the
@@ -1228,39 +1211,16 @@ class TrainController:
         design_new.md "Speed calibration", Controller owns calibration output: a
         calibration pass drives through `SpeedCalibration.get_propulsion_override`
         rather than through operator commands, read through the injected
-        SpeedCalibration. Returns None off-pass, when none is wired (unit-test
-        controllers), or for a lighting run's `track_voltage` variant, which
-        drives through its own physics read.
+        SpeedCalibration. Returns None off-pass, and when none is wired
+        (unit-test controllers).
         """
         calibration = self._speed_calibration
         if calibration is None:
             return None
         override = calibration.get_propulsion_override(self.train_id)
-        if override is None or getattr(override, "kind", None) != "drive_voltage":
+        if override is None:
             return None
-        return float(getattr(override, "value", 0.0))
-
-    def _lighting_track_voltage_override(self) -> Optional[float]:
-        """The exact track-voltage magnitude an open lighting-voltage run drives
-        this tick, or None.
-
-        design_new.md "Lighting-voltage calibration", Where it lives: a lighting
-        run drives through the shared `SpeedCalibration.get_propulsion_override`
-        accessor's `track_voltage` variant, so neither the controller nor
-        `TrainPhysics` reaches into the run registry. Read through the same
-        injected SpeedCalibration as the speed-calibration override above.
-        Returns None off-run, when none is wired
-        (unit-test controllers), or for the union's `drive_voltage` variant (a
-        speed pass, handled in its own branch), so the ordinary voltage source
-        drives in every one of those cases.
-        """
-        calibration = self._speed_calibration
-        if calibration is None:
-            return None
-        override = calibration.get_propulsion_override(self.train_id)
-        if override is None or getattr(override, "kind", None) != "track_voltage":
-            return None
-        return float(getattr(override, "value", 0.0))
+        return float(override.track_voltage)
 
     # -------------------------------------------------------------------------
     # ATC (Automatic Train Control) Logic

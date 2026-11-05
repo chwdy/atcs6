@@ -139,11 +139,9 @@ class PhysicsCommand:
 
     `voltage_source_track_voltage` is the exact voltage magnitude the emitter
     must put on the rails this tick, in place of a voltage derived from a speed.
-    It is set under an emergency cut-out (`0`), while an open lighting-voltage
-    run drives (with handle `N`, because the candidate never feeds the speed
-    solution), and while a speed-calibration step drives a voltage no ceiling
-    lowered (design_new.md "Speed calibration", Controller owns calibration
-    output).
+    It is set under an emergency cut-out (`0`), and while a speed-calibration
+    step drives a voltage no ceiling lowered (design_new.md "Speed
+    calibration", Controller owns calibration output).
     """
 
     kind: str

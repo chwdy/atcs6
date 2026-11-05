@@ -373,7 +373,7 @@ def test_the_runtime_tick_arms_the_pass_as_a_one_off_route(state):
     run = train_service.calibrate_train(state, train_id, measured_block_id=block_id)
     assert run.leg_armed is False
     assert run.active_leg_route_id is None
-    assert run.current_power == 100.0
+    assert run.current_voltage == run.max_voltage
 
     # Which outer block this opening leg runs toward — the one the train is not
     # standing in — is the far end the leg route's stop task targets.
@@ -406,8 +406,8 @@ def test_the_runtime_tick_arms_the_pass_as_a_one_off_route(state):
     # train back through get_propulsion_override, not a zero no-authority cap.
     assert sim.path_dispatcher.active_path_id_by_train(train_id) is not None
     override = sim.speed_calibration.get_propulsion_override(train_id)
-    assert override is not None and override.kind == "drive_voltage"
-    assert override.value == run.current_voltage
+    assert override is not None
+    assert override.track_voltage == run.current_voltage
 
     sim.update(0.1)
     assert run.phase != PHASE_FAILED or "authority" in run.failure_reason

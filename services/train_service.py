@@ -847,16 +847,14 @@ def calibration_readiness(
     state: AppState,
     train_id: str,
     *,
-    kind: str = "speed",
     measured_block_id: str = "",
 ) -> List[str]:
     """Every opening condition the train does not yet meet, empty when a run
     may open (design_new.md "Speed calibration", Opening a run takes control of
     the train).
 
-    `kind` is ``"speed"`` for a speed pass or ``"lighting"`` for a
-    lighting-voltage run. For a speed pass with a `measured_block_id`, the
-    train must also stand in one of that block's two outer blocks. The panel's
+    With a `measured_block_id`, the train must also stand in one of that
+    block's two outer blocks, or a walk must take it into one. The panel's
     readiness line shows the whole list, so the operator reads every unmet
     condition together rather than one at a time.
     """
@@ -884,7 +882,7 @@ def calibration_readiness(
     held = set(getattr(span, "occupied_blocks", []) or [])
     if not held:
         unmet.append("Place the train on the layout")
-    elif kind == "speed" and measured_block_id:
+    elif measured_block_id:
         try:
             outer, _length_cm = resolve_calibration_stretch(state, measured_block_id)
         except (NotFoundError, ValidationError) as exc:
@@ -930,8 +928,6 @@ def calibration_readiness(
         )
 
     calibration = sim.speed_calibration
-    if calibration.lighting_runs.get(train_id) is not None:
-        unmet.append("A lighting-voltage run is already open for this train")
     run = calibration.runs.get(train_id)
     if run is not None:
         if run.is_measured:
@@ -945,11 +941,11 @@ def calibration_readiness(
 
 
 def _require_calibration_ready(
-    state: AppState, train_id: str, *, kind: str, measured_block_id: str = ""
+    state: AppState, train_id: str, *, measured_block_id: str = ""
 ) -> None:
     """Raise `ConflictError` naming every unmet opening condition."""
     unmet = calibration_readiness(
-        state, train_id, kind=kind, measured_block_id=measured_block_id
+        state, train_id, measured_block_id=measured_block_id
     )
     if unmet:
         raise ConflictError("; ".join(unmet))
@@ -989,7 +985,7 @@ def calibrate_train(
         raise ValidationError("measured_block_id is required")
     with _runtime_lock(state):
         _require_calibration_ready(
-            state, train_id, kind="speed", measured_block_id=measured_block_id
+            state, train_id, measured_block_id=measured_block_id
         )
         train, profile, sim = _calibration_profile(state, train_id)
         outer, length_cm = resolve_calibration_stretch(state, measured_block_id)
@@ -1156,74 +1152,3 @@ def calibrate_commit(
     return target_profile
 
 
-# ------------------------------------------- lighting-voltage calibration ----
-
-
-def start_lighting_calibration(state: AppState, train_id: str):
-    """Open a lighting-voltage run (design_new.md "Lighting-voltage calibration").
-
-    Opens under the same rule as a speed pass (design_new.md "Speed
-    calibration", Opening a run takes control of the train): between ticks
-    under the lock, every opening condition checked, then power-up when OFF and
-    manual mode before the run opens. From here the candidate voltage is on the
-    rails: the operator steps it up until the locomotive creeps, steps back
-    down one, and saves.
-    """
-    with _runtime_lock(state):
-        _require_calibration_ready(state, train_id, kind="lighting")
-        train, profile, sim = _calibration_profile(state, train_id)
-        _take_control_for_calibration(_controller(state, train))
-        # Seed the candidate and ceiling from the resolved profile (the model's
-        # values fill in where the instance carries none), while the run's write
-        # target stays the instance profile the train names.
-        resolved = state.network.speed_profiles.resolve(profile.profile_id)
-        return sim.speed_calibration.start_lighting(train, resolved or profile)
-
-
-def step_lighting_calibration(state: AppState, train_id: str, direction: int):
-    """Move the open run's candidate one step up (`direction >= 0`) or down."""
-    sim = _require_open_lighting_run(state, train_id)
-    return sim.speed_calibration.step_lighting(train_id, direction)
-
-
-def save_lighting_calibration(state: AppState, train_id: str) -> float:
-    """Write the candidate to the profile's `lighting_voltage` and close the run."""
-    sim = _require_open_lighting_run(state, train_id)
-    _train, profile, _sim = _calibration_profile(state, train_id)
-    return sim.speed_calibration.commit_lighting(train_id, profile)
-
-
-def lighting_calibration_status(state: AppState, train_id: str):
-    """The open lighting run for this train, or None when none is open.
-
-    The panel reads it when the operator names a train, so a run left open
-    (for example by a page reload) shows on its row and can be saved or
-    reverted rather than blocking a new run with nothing on screen to end it.
-    """
-    sim = getattr(state, "sim_controller", None)
-    if sim is None:
-        return None
-    return sim.speed_calibration.lighting_runs.get(train_id)
-
-
-def cancel_lighting_calibration(state: AppState, train_id: str) -> None:
-    """Close the run without writing; the candidate is discarded."""
-    sim = getattr(state, "sim_controller", None)
-    if sim is not None:
-        sim.speed_calibration.cancel_lighting(train_id)
-
-
-def _require_open_lighting_run(state: AppState, train_id: str):
-    """Return the runtime holding an open lighting run for this train.
-
-    Step and save act on a run the operator already opened, so they check that
-    the run exists rather than re-running the opening gates: a state change
-    mid-run is reported by the missing run, not by a second gate message.
-    """
-    require_train(state, train_id)
-    sim = getattr(state, "sim_controller", None)
-    if sim is None:
-        raise ValidationError("Calibration requires a runtime")
-    if sim.speed_calibration.lighting_runs.get(train_id) is None:
-        raise ConflictError("No lighting-voltage run is open for this train")
-    return sim

@@ -58,8 +58,7 @@ def _make_controller(override=None):
     return controller
 
 
-_SPEED_PASS = CalibrationPropulsionOverride(kind="drive_voltage", value=4.8)
-_LIGHTING_RUN = CalibrationPropulsionOverride(kind="track_voltage", value=3.0)
+_SPEED_PASS = CalibrationPropulsionOverride(track_voltage=4.8)
 
 
 def test_no_open_run_reads_the_control_mode():
@@ -73,8 +72,9 @@ def test_an_open_speed_pass_reads_calibrating():
     assert controller.ops.train_status == TrainStatus.CALIBRATING
 
 
-def test_an_open_lighting_run_reads_calibrating():
-    controller = _make_controller(_LIGHTING_RUN)
+def test_a_pass_driving_zero_still_reads_calibrating():
+    """A pass between legs drives `0`, and still owns the train."""
+    controller = _make_controller(CalibrationPropulsionOverride(track_voltage=0.0))
     assert controller.ops.train_status == TrainStatus.CALIBRATING
 
 

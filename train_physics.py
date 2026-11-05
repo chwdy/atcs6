@@ -796,8 +796,7 @@ class TrainPhysics:
         controller publishes the voltage source on its `PhysicsCommand`, so
         physics never inspects mode fields directly:
           - `voltage_source_track_voltage` — an exact magnitude: `0` under an
-            emergency cut-out, a lighting-voltage run's candidate, or a speed
-            calibration step's voltage;
+            emergency cut-out, or a speed calibration step's voltage;
           - `voltage_source_speed_kmh` — every other case, ATO and manual
             `power_percent` included, mapped through `voltage_speed_curve`.
 
@@ -823,15 +822,13 @@ class TrainPhysics:
         command = self._read_physics_command(controller)
 
         # An exact magnitude wins. The emergency cut-out publishes `0` here
-        # (design_new.md "Emergency cut-out"). An open lighting-voltage run
-        # publishes its candidate in place of the lit value, so each press of the
-        # panel's step control is answered by the locomotive itself
-        # (design_new.md "Lighting-voltage calibration", What the run drives).
-        # Nothing else about emission changes: the value is still a magnitude
-        # reaching this train's ordinary energized set, signed per block. The
-        # controller reads the validated accessor and hands the magnitude down;
-        # physics never reaches into the run registry (design_new.md
-        # "Lighting-voltage calibration", Where it lives).
+        # (design_new.md "Emergency cut-out"). A speed-calibration step no
+        # ceiling lowered publishes its own voltage here (design_new.md "Speed
+        # calibration", Controller owns calibration output). Nothing else about
+        # emission changes: the value is still a magnitude reaching this train's
+        # ordinary energized set, signed per block. The controller reads the
+        # calibration accessor and hands the magnitude down; physics never
+        # reaches into the run registry.
         #
         # An overrun is handled by the emergency cut-out, not here:
         # `compute_track_voltage` has no overrun test of its own (design_new.md

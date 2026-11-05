@@ -229,15 +229,15 @@ def test_any_cap_that_lowers_the_drive_discards_the_crossing():
     assert len(tainted) == 1
 
 
-def _run_pass(state, run, *, until_step, ticks=9000):
+def _run_pass(state, run, *, until_samples, ticks=9000):
     sim = state.sim_controller
     for _ in range(ticks):
         sim.update(0.1)
-        if not run.is_measuring or run.step_index >= until_step:
+        if not run.is_measuring or len(run.samples) >= until_samples:
             return
 
 
-def test_every_step_is_timed_in_both_directions(state):
+def test_every_step_is_timed_in_both_directions(state, monkeypatch):
     """design_new.md "Speed calibration", The pass turns the train around at each
     end: the train drives on until it is off the measured block before it stops,
     so the leg back enters that block afresh and is timed too. A 10 cm train
@@ -260,16 +260,19 @@ def test_every_step_is_timed_in_both_directions(state):
     state.sim_controller.speed_calibration.record_detected_entries = record
     # This stretch is too short for the top steps (see
     # test_a_stretch_too_short_for_the_top_step_fails_at_once), so time three
-    # low steps, all above the seeded starting voltage (1.5 V).
-    run.power_steps = [30.0, 25.0, 20.0]
-    _run_pass(state, run, until_step=3)
+    # low coarse steps, all above the seeded starting voltage (1.5 V).
+    import speed_calibration
+
+    monkeypatch.setattr(speed_calibration, "CALIBRATION_VOLTAGE_STEP_V", 0.6)
+    run.current_step_voltage = 3.6
+    _run_pass(state, run, until_samples=3)
 
     assert run.phase != PHASE_FAILED, run.failure_reason
-    assert [s.power_percent for s in run.samples] == [30.0, 25.0, 20.0]
+    assert [round(s.track_voltage, 3) for s in run.samples] == [3.6, 3.0, 2.4]
     # The seeded curve lies on the straight line from 0 V to 100 km/h at
-    # 12 V, so a step at p% of max_voltage reads p km/h.
+    # 12 V, so a step at v volts reads v / 12 * 100 km/h.
     for sample in run.samples:
-        assert sample.speed_kmh == pytest.approx(sample.power_percent, rel=0.05)
+        assert sample.speed_kmh == pytest.approx(sample.track_voltage / 12.0 * 100.0, rel=0.05)
     # Every crossing of every step was timed, half each way.
     assert len(headings) == 3 * 2 * CALIBRATION_ROUND_TRIPS
     assert headings.count(LEFT) == headings.count(RIGHT)
@@ -277,20 +280,20 @@ def test_every_step_is_timed_in_both_directions(state):
 
 
 def test_a_stretch_too_short_for_the_top_step_fails_at_once(state):
-    """design_new.md "Speed calibration", The sweep runs down from `100%` in
-    `CALIBRATION_POWER_STEP_PERCENT` steps: a stretch too short for the top step
-    fails the pass at its first step. Outer blocks of 50 cm are too short to
-    stop from the default profile's 100% speed, so every 100% crossing is capped
-    and the pass fails before measuring anything."""
+    """design_new.md "Speed calibration", The sweep runs down from
+    `max_voltage` in `CALIBRATION_VOLTAGE_STEP_V` steps: a stretch too short for
+    the top step fails the pass at its first step. Outer blocks of 50 cm are too
+    short to stop from the default profile's top speed, so every crossing at
+    `max_voltage` is capped and the pass fails before measuring anything."""
     for block_id in (LEFT, RIGHT):
         (segment_id,) = state.network.blocks[block_id].segment_ids
         segment_service.update_segment(state, segment_id, data={"length_cm": 50.0})
     _place(state, (9, 13), "WEST")
     run = train_service.calibrate_train(state, TRAIN, measured_block_id=UP)
-    _run_pass(state, run, until_step=1)
+    _run_pass(state, run, until_samples=1)
 
     assert run.phase == PHASE_FAILED
-    assert "too short to measure 100%" in run.failure_reason
+    assert "too short to measure 12 V" in run.failure_reason
     assert run.samples == []
 
 

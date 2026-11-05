@@ -148,11 +148,22 @@ LIGHTING_CLEAR_HOLD_READS: int = 30
 # keeps its `train_id`.
 UNIDENTIFIED_GAP_HOLD_S: float = 5.0
 
-# Speed calibration (design_new.md "Speed calibration"). A pass sweeps its
-# steps down from max_voltage, each a share of max_voltage
-# CALIBRATION_POWER_STEP_PERCENT apart, and measures the speed the locomotive
-# reaches at each, filling SpeedProfile.voltage_speed_curve.
-CALIBRATION_POWER_STEP_PERCENT: int = 20
+# Speed calibration (design_new.md "Speed calibration"). A pass commands
+# voltages and measures the speed the locomotive reaches at each, filling
+# SpeedProfile.voltage_speed_curve. Its coarse steps run down from max_voltage
+# CALIBRATION_VOLTAGE_STEP_V apart until one fails.
+CALIBRATION_VOLTAGE_STEP_V: float = 2.0
+
+# The narrowing halves the gap between the lowest step that passed and the step
+# that failed below it until the gap is no more than this; the lowest step that
+# passed is then the starting voltage. A filled step needs its two neighbours
+# more than twice this apart.
+CALIBRATION_MIN_VOLTAGE_GAP_V: float = 0.25
+
+# The pass measures the voltage halfway between two neighbouring passed steps
+# whose speeds differ by more than this fraction of the top step's speed, so the
+# curve has its points where the speed changes fast.
+CALIBRATION_FILL_SPEED_FRACTION: float = 0.15
 
 # A step that measures faster than the step above it by no more than this
 # fraction of that step's speed is the same speed: the step records the step
@@ -216,13 +227,6 @@ CALIBRATION_MOVE_VOLTAGE_V: float = 6.0
 # than shuttling forever (design_new.md "Speed calibration", A capped crossing
 # is discarded).
 CALIBRATION_CAP_RETRY_LIMIT: int = 4
-
-# Lighting-voltage calibration (design_new.md "Lighting-voltage calibration").
-# One press of the panel's step control moves the candidate voltage by this
-# much and puts the new value on the rails at once, so the operator sees the
-# locomotive answer every press. It is small because the whole point of the
-# pass is finding the last step before a creep starts.
-LIGHTING_VOLTAGE_STEP_V: float = 0.1
 
 # Seeded model-profile defaults (design_new.md "SpeedProfile", the `max_voltage`
 # and `voltage_speed_curve` field descriptions). A model `SpeedProfile` created

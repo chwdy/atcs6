@@ -272,9 +272,12 @@ def test_the_span_follows_an_overrun_that_raises_no_cut_out():
     must still be corrected onto the overrun block, must not be pinned there,
     and must end on the same blocks the detector holds for the train."""
     network, sim, controller, detector = _make_fixture()
+    from speed_calibration import CalibrationPropulsionOverride
+
     real_override = sim.speed_calibration.get_propulsion_override
+    pass_drive = CalibrationPropulsionOverride(track_voltage=6.0)
     sim.speed_calibration.get_propulsion_override = (
-        lambda train_id: 50.0 if train_id == "FAST" else real_override(train_id)
+        lambda train_id: pass_drive if train_id == "FAST" else real_override(train_id)
     )
 
     log: List[dict] = []
