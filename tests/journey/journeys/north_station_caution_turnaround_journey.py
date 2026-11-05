@@ -10,11 +10,12 @@ End-state contract (design_new.md _reevaluate_caution_blocks() section):
 
   * The station block at (3,2) is OCCUPIED by DEMO_TRAIN, cab=B,
     travel_direction=S.
-  * BLOCK_BRANCH_2 (3,3) is CAUTION with exit_edge=S. The forward
-    chain from BRANCH_2 in direction S leads to the station block,
-    whose train's travel_direction is also S (same as protection
-    direction) — the train is still moving away from BRANCH_2's
-    protection chain, so CAUTION is preserved.
+  * BLOCK_BRANCH_2 (3,3) is still OCCUPIED by the train's rear. The train
+    stops at the dead end at its starting speed with its rear in the
+    station, so after the cab flip its head already stands in the station
+    block, and the return stop completes there without moving (Stop-arrival
+    check, condition 4b). BRANCH_2 is therefore not vacated, and carries no
+    CAUTION margin to check.
   * BLOCK_BRANCH_1 (3,1) stays CAUTION with exit_edge=N. Its CAUTION was
     set when the train first passed through going north. After the cab flip
     the forward chain from BRANCH_1 in direction N still lands on the
@@ -52,22 +53,17 @@ def _assert_block_state(block_id: str, expected: BlockState):
     return check
 
 
-def _assert_branch_2_caution_south():
-    """BRANCH_2 must be CAUTION with exit_edge=S. The forward chain check
-    is a precondition: the station block ahead in direction S must be
-    OCCUPIED by the same train whose travel_direction is also S — that's
-    the case where CAUTION is correctly preserved (train still moving away
-    from the protection chain in the same direction)."""
+def _assert_branch_2_still_held():
+    """BRANCH_2 still holds the train's rear: the return stop completed in
+    place (Stop-arrival check, condition 4b), so the block was never vacated
+    and no CAUTION margin was set on it."""
 
     def check(s):
         block = s.network.blocks.get(_BRANCH_2)
         assert block is not None
-        assert block.caution is not None, (
-            f"{_BRANCH_2} expected CAUTION at route completion but caution=None"
-        )
-        assert block.caution.exit_edge == "S", (
-            f"{_BRANCH_2} caution.exit_edge={block.caution.exit_edge!r}, "
-            f"expected 'S'"
+        assert block.state == BlockState.OCCUPIED, (
+            f"{_BRANCH_2} state={block.state.value}, expected occupied by the "
+            f"train's rear"
         )
 
     return check
@@ -112,7 +108,7 @@ def build_north_station_caution_turnaround_journey(
                 assertions=[
                     assert_state(TrainState.READY),
                     assert_cab("B"),
-                    _assert_branch_2_caution_south(),
+                    _assert_branch_2_still_held(),
                     _assert_branch_1_caution_preserved(),
                 ],
             ),

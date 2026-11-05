@@ -643,6 +643,54 @@ class TrainPhysics:
         previous_speed: float,
         delta: float,
     ) -> float:
+        """Compute the next-tick speed: the speed solution for the command kind,
+        then the starting-speed floor (design_new.md "TrainPhysics", A moving
+        train never runs below its starting speed)."""
+        speed = self._solve_speed(command, profile, previous_speed, delta)
+        return self._apply_starting_speed_floor(command, profile, speed)
+
+    @staticmethod
+    def _drives_forward(command: PhysicsCommand) -> bool:
+        """Whether the tick's effective operating point drives the train
+        forward: a positive commanded speed, or, in manual `simulation`
+        submode, a power notch under a positive ATC limit.
+
+        A `PHYSICS_KIND_TARGET_SPEED` command carries the capped commanded
+        speed. An ATO handle command (`atc_limit_kmh is None`) carries the ATO
+        output's commanded speed in `target_speed_kmh`. A manual `simulation`
+        handle command carries the driver's notch and the live ATC limit.
+        """
+        if command.kind == PHYSICS_KIND_EMERGENCY_BRAKE:
+            return False
+        if command.kind == PHYSICS_KIND_TARGET_SPEED:
+            return float(command.target_speed_kmh) > 0.0
+        if command.atc_limit_kmh is None:
+            return float(command.target_speed_kmh) > 0.0
+        return (
+            command.handle in POWER_MULTIPLIERS
+            and float(command.atc_limit_kmh) > 0.0
+        )
+
+    def _apply_starting_speed_floor(
+        self, command: PhysicsCommand, profile: "SpeedProfile", speed: float
+    ) -> float:
+        """design_new.md "TrainPhysics", A moving train never runs below its
+        starting speed: a speed above 0 and below the starting speed becomes the
+        starting speed when the tick drives the train forward, and 0 otherwise.
+        Below its starting voltage a locomotive does not move steadily, so a
+        calculated speed there would describe motion it does not make."""
+        starting = float(getattr(profile, "starting_speed_kmh", 0.0) or 0.0)
+        if speed <= 0.0 or speed >= starting:
+            return speed
+        return starting if self._drives_forward(command) else 0.0
+
+    def _solve_speed(
+        self,
+        command: PhysicsCommand,
+        profile: "SpeedProfile",
+        previous_speed: float,
+        delta: float,
+    ) -> float:
         """Compute the next-tick speed by dispatching on the command kind.
 
         - PHYSICS_KIND_EMERGENCY_BRAKE: decelerate at `emergency_brake_rate`.

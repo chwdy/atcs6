@@ -118,6 +118,10 @@ class PhysicsCommand:
         brake rate when it is already over, rather than snapping the speed down
         (design_new.md, Driver/operator inputs). ATO leaves it `None` — its
         handle already aims at an ATC-aware target, so it needs no physics cap.
+        For ATO, `target_speed_kmh` carries the ATO output's commanded speed,
+        which physics reads to tell a train ATO drives from one it stops
+        (design_new.md "TrainPhysics", A moving train never runs below its
+        starting speed).
       - PHYSICS_KIND_TARGET_SPEED: speed snaps directly to
         `target_speed_kmh` (used for the manual `power_percent` submode).
         The controller has already clamped this against the live ATC limit

@@ -24,7 +24,11 @@ flows into the curve, exactly as it did before this code moved.
 import math
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
-from constants import CAUTION_SPEED_LIMIT_KMH, TRACK_END_SAFETY_MARGIN_CM
+from constants import (
+    CAUTION_SPEED_LIMIT_KMH,
+    RESERVATION_STOP_ARRIVAL_TOLERANCE_CM,
+    TRACK_END_SAFETY_MARGIN_CM,
+)
 from enums import AtcLimitReasonCode, BlockState
 from model_scale import get_speed_conversion_factor
 
@@ -351,6 +355,24 @@ class SpeedCurveCalculator:
         # are applied through the block's speed_limit_kmh property, not the station's
         # top_speed_kmh which is for visualization/informational purposes only.
 
+        # design_new.md "A speed curve does not fall below the starting speed
+        # ahead of a stop": every sample's limit is 0 or at least the train's
+        # starting speed. A braking curve toward a zero-speed point holds the
+        # starting speed until the sample is within
+        # RESERVATION_STOP_ARRIVAL_TOLERANCE_CM of that point, and a posted or
+        # caution limit below the starting speed reads as the starting speed,
+        # keeping its own reason code. Each zero-speed restriction stops at its
+        # distance less its safety margin.
+        starting_speed = min(
+            float(getattr(profile, "starting_speed_kmh", 0.0) or 0.0),
+            float(max_speed),
+        )
+        stop_points = [
+            dist - safety
+            for dist, speed, safety, _code, _detail in restrictions
+            if speed <= 0
+        ]
+
         curves = []
 
         # Use 5cm resolution for smooth curves
@@ -480,6 +502,19 @@ class SpeedCurveCalculator:
             operational_limit = min(
                 operational_limit, max(0.0, atc_limit - ATO_SPEED_MARGIN_KMH)
             )
+
+            # The starting-speed floor (see `starting_speed` above).
+            if starting_speed > 0.0:
+                in_stop_window = any(
+                    sample_distance >= stop - RESERVATION_STOP_ARRIVAL_TOLERANCE_CM
+                    for stop in stop_points
+                )
+                if in_stop_window:
+                    atc_limit = 0.0
+                    operational_limit = 0.0
+                else:
+                    atc_limit = max(atc_limit, starting_speed)
+                    operational_limit = max(operational_limit, starting_speed)
 
             point: Dict[str, Any] = {
                 "distance_cm": sample_distance,

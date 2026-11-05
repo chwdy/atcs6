@@ -7,8 +7,8 @@ only through the ordinary tail-vacate cascade, on clean entry, or by the
 completion-time exception — not on the cab flip itself, and not when a path
 reserves the block the other way (that train is simply not capped). So at the end
 of the turnaround BLOCK_BRANCH_1's northbound CAUTION is preserved, while
-BLOCK_BRANCH_2's southbound CAUTION is preserved for the ordinary reason (an
-OCCUPIED forward block).
+BLOCK_BRANCH_2 still holds the train's rear: the return stop completes in place,
+because the train stops at the dead end with its head already in the station.
 
 Parametrized over three playback speeds (dt = 0.1 / 0.2 / 0.3).
 """

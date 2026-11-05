@@ -67,7 +67,10 @@ def test_clamped_giant_delta_does_not_spike_speed_past_max():
             default=0.0,
         )
 
-    max_train_speed = 40.0  # demo_6 stock
+    # The fastest train's configured max_speed. A train starts at its starting
+    # speed (design_new.md "TrainPhysics", A moving train never runs below its
+    # starting speed), so the cruise is read against the real ceiling.
+    max_train_speed = max(float(t.max_speed) for t in net_b.trains.values())
     for _ in range(50):
         sim_a.update(0.2)
         sim_b.update(0.2)

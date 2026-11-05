@@ -817,7 +817,21 @@ class TrainController:
         self._report_atc_reason_change()
 
         # ===== 4. ATC ACTION =====
-        overspeed = self.physics_sync.current_speed_kmh - self.atc.speed_limit
+        # The overspeed reference is the distance-0 limit, raised to the train's
+        # starting speed when that limit is 0 for a stop (`reservation_stop`) or
+        # a caution zone: a train reaches a stop at its starting speed and is
+        # cut on that tick (design_new.md step `914f`, and "A speed curve does
+        # not fall below the starting speed ahead of a stop").
+        overspeed_reference = float(self.atc.speed_limit)
+        if overspeed_reference <= 0.0 and self.atc._last_limit_reason_code in (
+            AtcLimitReasonCode.RESERVATION_STOP,
+            AtcLimitReasonCode.CAUTION,
+        ):
+            profile = self._get_speed_profile()
+            overspeed_reference = float(
+                getattr(profile, "starting_speed_kmh", 0.0) or 0.0
+            )
+        overspeed = self.physics_sync.current_speed_kmh - overspeed_reference
 
         # Per design_new.md step `914f` / `826a`: a rolling train whose
         # authority can no longer be used has nothing to brake against, so EB —
@@ -1131,13 +1145,22 @@ class TrainController:
         # is not engaged it commands 0 — so driving the rails from it would run
         # the locomotive ahead of a calculated span that is standing still.
         voltage_speed = float(self.physics_sync.current_speed_kmh or 0.0)
+        # The ATO output's commanded speed rides on `target_speed_kmh`, so
+        # physics can tell a train ATO is driving from one it is stopping
+        # (design_new.md "TrainPhysics", A moving train never runs below its
+        # starting speed): the distance-0 operational limit while engaged, and
+        # 0 otherwise (the **ATO driving rule**).
+        commanded_kmh = 0.0
         if self.commands.control_mode == "ato":
             atc_limit_kmh = None
+            if self.commands.engaged:
+                commanded_kmh = max(0.0, float(self.target_speed or 0.0))
         else:
             atc_limit_kmh = float(self.atc.speed_limit)
         return PhysicsCommand(
             kind=PHYSICS_KIND_HANDLE,
             handle=self.ops.handle_position,
+            target_speed_kmh=commanded_kmh,
             voltage_source_speed_kmh=voltage_speed,
             atc_limit_kmh=atc_limit_kmh,
         )
