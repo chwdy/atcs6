@@ -18,9 +18,9 @@
  * a function of that level, so it is the variable of the experiment. It opens at
  * 40% (4.8 V, the `driven` zone) because that is what a wiring check wants, but
  * the band worth the most is the one BELOW the current-sense floor — the
- * `lighting` zone, where a stopped-but-lit locomotive actually sits and both
- * detectors are at their weakest. That is the band where `threshold_ma` and
- * `SpeedProfile.lighting_voltage` get calibrated, and it cannot be reached from
+ * `lighting` zone, where a locomotive standing at its lighting voltage or driven
+ * slowly actually sits and both detectors are at their weakest. That is the band
+ * where `threshold_ma` and `SpeedProfile.lighting_voltage` get set, and it cannot be reached from
  * a fixed 40%. The footer names the zone each level lands in, so choosing one is
  * deliberate rather than discovered afterwards.
  *
@@ -307,7 +307,7 @@ export function parsePercent(raw: string): number | null {
  * Which detector regime a commanded level lands in, named as `OccupancyDriver`
  * names them. This is the whole reason the drive control is worth having: the
  * three zones are the difference between testing the '165, testing the INA, and
- * testing the band where a stopped-but-lit locomotive actually sits and neither
+ * testing the band where a lit standing or slow locomotive sits and neither
  * detector is reliable.
  *
  * Null when the bounds are unknown (no bench open), so the caller can leave the
@@ -329,7 +329,7 @@ export function driveZone(
 export const ZONE_HELP: Record<'idle' | 'lighting' | 'driven', string> = {
     idle: "rails quiet — the '165 decides and the current channel reads its noise floor",
     lighting:
-        "the band a stopped-but-lit loco sits in — the '165 flickers under PWM and the " +
+        "the band a lit standing or slow loco sits in — the '165 flickers under PWM and the " +
         'current channel is at its weakest, so no single read clears a block here',
     driven: "the current channel decides and the '165 is swamped",
 };

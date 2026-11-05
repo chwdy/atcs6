@@ -21,10 +21,10 @@ from typing import Any, Callable, Dict, Optional, Set, TYPE_CHECKING
 logger = logging.getLogger(__name__)
 
 MAX_TRACK_VOLTAGE = 12.0
-# Lighting voltage is a per-train property: it lives on the train's
-# `SpeedProfile.lighting_voltage` and is emitted by `TrainPhysics.
-#`compute_track_voltage` for READY. The block power
-# controller does not hold its own lighting-voltage default.
+# A standing train's voltage is a per-train property: its
+# `SpeedProfile.lighting_voltage`, or 0 V when the profile sets none, emitted by
+# `TrainPhysics.compute_track_voltage`. The block power controller does not hold
+# its own lighting-voltage default.
 
 if TYPE_CHECKING:
     from network import RailwayNetwork

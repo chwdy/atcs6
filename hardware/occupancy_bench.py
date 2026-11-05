@@ -71,10 +71,10 @@ IDLE_TIMEOUT_S = 120.0
 #
 # The operator can drive any level from here. Choosing one BELOW the floor is a
 # supported measurement, not a mistake: the `lighting` band between the idle
-# deadband and this floor is where a stopped-but-lit locomotive actually sits,
-# and it is the band where both detectors are at their weakest — so it is
-# precisely the one an operator calibrating `threshold_ma` or `lighting_voltage`
-# needs to park in and read. The panel names the zone each level lands in so
+# deadband and this floor is where a locomotive standing at its lighting
+# voltage, or driven slowly, actually sits, and it is the band where both
+# detectors are at their weakest — so it is precisely the one an operator
+# setting `threshold_ma` or `lighting_voltage` needs to park in and read. The panel names the zone each level lands in so
 # that choice is deliberate rather than discovered afterwards.
 DEFAULT_DRIVE_PERCENT = 40.0
 

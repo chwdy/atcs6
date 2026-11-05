@@ -347,7 +347,7 @@ export function occupancyResultHtml(res: any): string {
         + `(baseline ${fmt(current.baseline_ma)}, trips at ±${fmt(current.threshold_ma)}) · `
         + `${current.occupied ? 'occupied' : 'clear'}`;
 
-  // The lighting zone is the stopped-but-lit band between the idle deadband and
+  // The lighting zone is the band between the idle deadband and
   // the current-sense floor. The same detector decides there as when driving —
   // the '165's rail is the one being pulsed, so its bit reports the duty cycle
   // rather than the train — but a CLEAR takes a run of reads rather than one, so

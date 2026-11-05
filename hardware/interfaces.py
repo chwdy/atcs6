@@ -58,9 +58,9 @@ CurrentBindingMap = Dict[str, Tuple[str, int, float, float]]
 _IDLE_DEADBAND_V = 0.25
 # Direct-call fallback for the drive level at or above which the current-sense
 # channel is trusted to decide occupancy; below it a drive is too weak to put a
-# readable load on the sensor (see `OccupancyDriver`). It sits above the default
-# `SpeedProfile.lighting_voltage`, because a lit-but-stationary train must land
-# in the lighting zone rather than be judged as driven.
+# readable load on the sensor (see `OccupancyDriver`). It sits above any set
+# `SpeedProfile.lighting_voltage`, because a train standing at its lighting
+# voltage must land in the lighting zone rather than be judged as driven.
 _CURRENT_SENSE_MIN_DRIVE_V = 4.0
 
 
@@ -78,8 +78,9 @@ class DriveZone(Enum):
       - IDLE (|V| <= `idle_deadband_v`): nothing drives the rails. `TrackDriver`
         holds both H-bridge inputs low, which a DRV8871 answers by letting both
         outputs float, so the rails are undriven and the '165 detector decides.
-      - LIGHTING (between the two levels): a stopped-but-lit locomotive. The
-        current channel decides, and a clear is held for a run of reads.
+      - LIGHTING (between the two levels): a locomotive standing at its
+        `lighting_voltage`, or one driven slowly. The current channel decides,
+        and a clear is held for a run of reads.
       - DRIVEN (|V| >= `current_sense_min_drive_v`): the current channel decides.
     """
 
@@ -491,8 +492,8 @@ class OccupancyDriver(OccupancyInput):
       - **driven** (|V| >= `current_sense_min_drive_v`): the rail voltage swamps
         the '165's comparator, but a motor under real drive draws a current the
         sense channel reads cleanly, so the current channel decides.
-      - **lighting** (between the two): a stopped-but-lit locomotive. The
-        current channel decides, exactly as in the driven zone, but **no single
+      - **lighting** (between the two): a locomotive standing at its
+        `lighting_voltage`, or one driven slowly. The current channel decides, exactly as in the driven zone, but **no single
         read may clear a block here**: a clear is reported only after the
         current channel has read clear for `LIGHTING_CLEAR_HOLD_READS`
         consecutive reads, and until then the last reported value holds.
@@ -525,8 +526,9 @@ class OccupancyDriver(OccupancyInput):
     locomotive: one drawing under `threshold_ma` at standby reads the same as an
     empty block. Holding the last value for a run of reads keeps the release
     slow and fail-safe, and keeps a marginal loco from cycling the block at a
-    few hertz. Raising the profile's `lighting_voltage`, or lowering
-    `threshold_ma`, is what keeps a real lit loco above the floor; the window
+    few hertz. Raising the profile's `lighting_voltage` (below its starting
+    voltage), or lowering `threshold_ma`, is what keeps a real lit loco above
+    the floor; the window
     only decides how long a genuinely silent block waits.
 
     The window holds only an ESTABLISHED presence: one the deciding source has

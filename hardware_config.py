@@ -62,16 +62,17 @@ DEFAULT_IDLE_DEADBAND_V = 0.25
 # The drive level at or above which the current channel decides occupancy on a
 # single read. Between this and the idle deadband sits the lighting zone, where
 # the current channel still decides — the '165 watches a rail the drive is
-# pulsing — but a stopped-but-lit train may draw too little for it to read, so
+# pulsing — but a train standing at its lighting voltage may draw too little
+# for it to read, so
 # no single read may CLEAR a block there (see
 # `hardware.interfaces.OccupancyDriver`). Tunable because where a locomotive
 # starts drawing a readable current depends on the locomotive.
 #
-# It must stay ABOVE the profile's `lighting_voltage` (default 1.5 V): a
-# stopped-but-lit train is by definition not being driven, and putting its
-# standby level at or above this bound would hand its block to the current
-# channel alone — the one source a lit, motionless locomotive is least likely
-# to register on.
+# It must stay ABOVE any set `lighting_voltage` (a seeded profile sets none, and
+# its standing train sits at 0 V in the idle zone): a train standing at its
+# lighting voltage is by definition not being driven, and putting that level at
+# or above this bound would hand its block to the current channel alone — the
+# one source a lit, motionless locomotive is least likely to register on.
 DEFAULT_CURRENT_SENSE_MIN_DRIVE_V = 4.0
 
 
@@ -1119,13 +1120,13 @@ def activation_report(
     if stale_switches:
         issue("stale_switch_binding", "Bindings name switches not in the loaded layout", stale_switches)
 
-    # Every placed train's resolved lighting_voltage must sit below the setup's
-    # current_sense_min_drive_v, so a lit but motionless train lands in the
-    # middle zone rather than reading as driven (design_new.md "Power",
-    # current_sense_min_drive_v must sit above lighting_voltage). Checked here at
-    # activation the same way a missing binding is, whatever set the value
-    # (calibration, an imported roster entry, an adoption default, a Simulation
-    # save that never evaluated this bound).
+    # Every placed train's resolved lighting_voltage, when it is set, must sit
+    # below the setup's current_sense_min_drive_v, so a train standing at it
+    # lands in the middle zone rather than reading as driven (design_new.md
+    # "Power", `current_sense_min_drive_v` must sit above `lighting_voltage`).
+    # Checked here at activation the same way a missing binding is, whatever set
+    # the value (a hand edit, an imported roster entry, a Simulation save that
+    # never evaluated this bound).
     over_floor = sorted(
         train_id
         for train_id, lighting_voltage in (lighting_voltages or {}).items()
