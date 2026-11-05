@@ -2338,8 +2338,13 @@ class TrainPhysics:
                 if self._block_of_tile(next_tile) not in vacated:
                     to_seam = travelled
                     break
-            if to_seam is None or to_seam <= _SEAM_HOLD_EPSILON_CM:
+            if to_seam is None:
                 return False
+            # The tail cap parks a tail `_SEAM_HOLD_EPSILON_CM` short of the
+            # seam while the block still reads occupied. That is the tail at
+            # the seam, and the vacate has to carry it across, or a standing
+            # train keeps the vacated block in its span for good.
+            to_seam = max(to_seam, 2 * _SEAM_HOLD_EPSILON_CM)
 
             own = {
                 block_id

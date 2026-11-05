@@ -17,13 +17,16 @@ import pytest
 
 from constants import (
     CALIBRATION_CAP_RETRY_LIMIT,
-    CALIBRATION_HALF_POWER_ABOVE_KMH,
     CALIBRATION_HALF_POWER_S,
     CALIBRATION_MIN_CROSSING_SPEED_KMH,
     CALIBRATION_MOVE_POWER_PERCENT,
+    CALIBRATION_OFF_B_WAIT_READS,
     CALIBRATION_POWER_STEP_PERCENT,
     CALIBRATION_ROUND_TRIPS,
+    CALIBRATION_RUNOFF_MARGIN_CM,
     CALIBRATION_STEP_TIMEOUT_S,
+    OCCUPANCY_OFF_THRESHOLD,
+    OCCUPANCY_ON_THRESHOLD,
 )
 from model_scale import cm_per_sec_to_kmh, kmh_to_cm_per_sec
 from speed_calibration import (
@@ -43,12 +46,15 @@ BLOCK_LENGTH_CM = 100.0
 class _StubTrain:
     train_id = "T1"
 
+    def __init__(self, length_cm=0.0):
+        self.length_cm = length_cm
 
-def _open_run(cal=None, **kwargs):
+
+def _open_run(cal=None, train=None, **kwargs):
     profile = make_default_speed_profile("T1", 100.0)
     cal = cal or SpeedCalibration()
     run = cal.start(
-        _StubTrain(),
+        train or _StubTrain(),
         profile,
         measured_block_id="B",
         outer_block_ids=("A", "C"),
@@ -719,62 +725,39 @@ def _cross_into_far_block(cal, run, *, measured_block_held):
     return 3.0
 
 
-def test_after_a_fast_crossing_the_train_runs_off_b_at_half_power():
-    """design_new.md "Speed calibration", The pass starts and stops the train at
-    half power first: after a crossing faster than
-    CALIBRATION_HALF_POWER_ABOVE_KMH the train runs on at half the step's power
-    until B's detector lets go, so it does not overrun the far outer block while
-    B takes its time to read clear."""
-    cal, run, _profile = _open_run()
-    clock = _cross_into_far_block(cal, run, measured_block_held=True)  # 2 s: fast
-    assert run.crossings[0] > CALIBRATION_HALF_POWER_ABOVE_KMH
-    assert run.phase == "clearing"
-    assert cal.get_propulsion_override("T1").value == run.current_power / 2
-    cal.advance(run, CalibrationObservation(
-        now=clock + 1.5, path_present=True, measured_block_held=True))
-    assert cal.get_propulsion_override("T1").value == run.current_power / 2
-
-    # Off B, past the half-power stage's minimum: the power is cut, and,
-    # stopped, the pass turns the train.
-    off_b = clock + 2.0
-    cal.advance(run, CalibrationObservation(
-        now=off_b, path_present=True, measured_block_held=False))
-    assert cal.get_propulsion_override("T1").value == 0.0
-    heading = run.heading_to
-    cal.advance(run, CalibrationObservation(now=off_b + 0.1, is_stopped=True))
-    assert run.heading_to == 1 - heading
-    assert run.needs_reverse is True
-
-
-def test_after_a_slow_crossing_the_step_power_stays_until_the_train_is_off_b():
-    """Half power may not move a slow train at the bottom of the sweep, and a
-    train that stops with its tail on B ends its leg there: after a slow crossing
-    the step's power stays on until the train is off B, then half power for
-    CALIBRATION_HALF_POWER_S."""
-    cal, run, _profile = _open_run()
-    cal.advance(run, CalibrationObservation(now=0.0))  # arm the leg
-    far = run.heading_toward_block_id
-    _observe(cal, run, 1.0, ("B",), path_present=True)
-    _observe(cal, run, 21.0, (far,), path_present=True, measured_block_held=True)
-    assert run.crossings[0] < CALIBRATION_HALF_POWER_ABOVE_KMH
+def test_the_run_off_is_timed_from_the_measured_speed():
+    """design_new.md "Speed calibration", The run-off is timed from the measured
+    speed: after the far outer block confirms, the step's power stays on for the
+    time the train's length plus CALIBRATION_RUNOFF_MARGIN_CM takes at the speed
+    just measured, whatever B's detector says, then half power, then 0."""
+    cal, run, _profile = _open_run(train=_StubTrain(length_cm=20.0))
+    clock = _cross_into_far_block(cal, run, measured_block_held=True)
+    speed_cm_s = BLOCK_LENGTH_CM / 2.0
+    runoff_s = (20.0 + CALIBRATION_RUNOFF_MARGIN_CM) / speed_cm_s
     assert run.phase == "clearing"
     assert cal.get_propulsion_override("T1").value == run.current_power
-    off_b = 23.0
     cal.advance(run, CalibrationObservation(
-        now=off_b, path_present=True, measured_block_held=False))
+        now=clock + runoff_s - 0.05, path_present=True, measured_block_held=True))
+    assert cal.get_propulsion_override("T1").value == run.current_power
+    # B still reads occupied, but the run-off is over: the stop begins.
+    end = clock + runoff_s + 0.05
+    cal.advance(run, CalibrationObservation(
+        now=end, path_present=True, measured_block_held=True))
+    assert run.phase == "stopping"
     assert cal.get_propulsion_override("T1").value == run.current_power / 2
-    cal.advance(run, CalibrationObservation(now=off_b + CALIBRATION_HALF_POWER_S + 0.1))
+    cal.advance(run, CalibrationObservation(
+        now=end + CALIBRATION_HALF_POWER_S + 0.1, measured_block_held=True))
     assert cal.get_propulsion_override("T1").value == 0.0
 
 
-def test_half_power_holds_for_its_minimum_when_the_train_clears_b_at_once():
-    cal, run, _profile = _open_run()
+def test_the_run_off_ends_at_once_when_b_reads_clear():
+    cal, run, _profile = _open_run(train=_StubTrain(length_cm=20.0))
     clock = _cross_into_far_block(cal, run, measured_block_held=True)
     cal.advance(run, CalibrationObservation(
         now=clock + 0.1, path_present=True, measured_block_held=False))
     assert run.phase == "stopping"
     assert cal.get_propulsion_override("T1").value == run.current_power / 2
-    cal.advance(run, CalibrationObservation(now=clock + CALIBRATION_HALF_POWER_S + 0.1))
+    cal.advance(run, CalibrationObservation(now=clock + CALIBRATION_HALF_POWER_S + 0.2))
     assert cal.get_propulsion_override("T1").value == 0.0
 
 
@@ -784,6 +767,92 @@ def test_a_train_already_off_the_measured_block_starts_its_stop_at_once():
     assert len(run.crossings) == 1
     assert run.phase == "stopping"
     assert cal.get_propulsion_override("T1").value == run.current_power / 2
+
+
+def test_the_standing_train_waits_for_b_to_read_clear():
+    """design_new.md "Speed calibration", The pass turns the train around at
+    each end: the stopped train waits until it is off B in both views before the
+    next leg, because B holds its presence through the lighting zone."""
+    cal, run, _profile = _open_run()
+    clock = _cross_into_far_block(cal, run, measured_block_held=True)
+    heading = run.heading_to
+    stopped = clock + 2.0
+    for read in range(5):
+        cal.advance(run, CalibrationObservation(
+            now=stopped + 0.1 * read, is_stopped=True, measured_block_held=True))
+    assert run.heading_to == heading
+    assert run.phase == "stopping"
+    cal.advance(run, CalibrationObservation(now=stopped + 1.0, is_stopped=True))
+    assert run.heading_to == 1 - heading
+
+
+def test_a_train_that_stops_with_its_tail_on_b_fails():
+    """design_new.md "Speed calibration", A train that cannot get off B fails the
+    pass: still on B after CALIBRATION_OFF_B_WAIT_READS standing reads."""
+    cal, run, _profile = _open_run()
+    clock = _cross_into_far_block(cal, run, measured_block_held=True) + 2.0
+    # The run-off ends and the half-power stop runs its course first.
+    cal.advance(run, CalibrationObservation(now=clock, measured_block_held=True))
+    clock += CALIBRATION_HALF_POWER_S
+    for _ in range(CALIBRATION_OFF_B_WAIT_READS):
+        clock += 0.1
+        cal.advance(run, CalibrationObservation(
+            now=clock, is_stopped=True, measured_block_held=True))
+    assert run.is_measuring
+    cal.advance(run, CalibrationObservation(
+        now=clock + 0.1, is_stopped=True, measured_block_held=True))
+    assert run.phase == PHASE_FAILED
+    assert "tail still on B" in run.failure_reason
+
+
+# --- the pass measures the train's length -------------------------------------
+# design_new.md "Speed calibration", The pass measures the train's length.
+
+
+def _release_b_after(cal, run, clock, reads, *, read_s=0.1):
+    """Advance `reads` detector reads after the far block's confirmation, with
+    the block list letting go of B on the last one."""
+    for read in range(1, reads + 1):
+        cal.advance(run, CalibrationObservation(
+            now=clock + read * read_s,
+            measured_block_held=read < reads,
+            measured_block_listed=read < reads,
+        ))
+    return clock + reads * read_s
+
+
+def test_the_pass_measures_the_train_length_from_b_clearing():
+    cal, run, _profile = _open_run(train=_StubTrain(length_cm=100.0))
+    clock = _cross_into_far_block(cal, run, measured_block_held=True)
+    lag = OCCUPANCY_OFF_THRESHOLD - OCCUPANCY_ON_THRESHOLD
+    _release_b_after(cal, run, clock, lag + 4)
+    # 4 reads of 0.1 s at 50 cm/s between head into C and tail off B.
+    assert run.measured_length_cm == pytest.approx(20.0)
+    assert run.runoff_length_cm() == pytest.approx(20.0 + CALIBRATION_RUNOFF_MARGIN_CM)
+
+
+def test_the_pass_keeps_the_shortest_length_it_measures():
+    cal, run, _profile = _open_run()
+    lag = OCCUPANCY_OFF_THRESHOLD - OCCUPANCY_ON_THRESHOLD
+    clock = _cross_into_far_block(cal, run, measured_block_held=True)
+    clock = _release_b_after(cal, run, clock, lag + 4)
+    cal.advance(run, CalibrationObservation(now=clock + 1.0, is_stopped=True))
+    assert run.measured_length_cm == pytest.approx(20.0)
+    # The leg back: B held through a lighting-zone hold reads clear late, which
+    # measures long and leaves the shorter length in place.
+    cal.advance(run, CalibrationObservation(now=10.0))  # arm the leg back
+    far = run.heading_toward_block_id
+    _observe(cal, run, 11.0, ("B",), path_present=True)
+    _observe(cal, run, 13.0, (far,), path_present=True, measured_block_held=True)
+    _release_b_after(cal, run, 13.0, lag + 30)
+    assert run.measured_length_cm == pytest.approx(20.0)
+
+
+def test_a_clear_within_the_detector_lag_gives_no_length():
+    cal, run, _profile = _open_run()
+    clock = _cross_into_far_block(cal, run, measured_block_held=True)
+    _release_b_after(cal, run, clock, OCCUPANCY_OFF_THRESHOLD - OCCUPANCY_ON_THRESHOLD)
+    assert run.measured_length_cm is None
 
 
 # --- half power at each end of a leg ------------------------------------------
@@ -816,28 +885,6 @@ def test_the_turnaround_waits_for_the_half_power_stop():
     cal.advance(run, CalibrationObservation(
         now=clock + CALIBRATION_HALF_POWER_S + 0.1, is_stopped=True))
     assert run.heading_to == 1 - heading
-
-
-def test_a_leg_that_ends_with_the_train_still_on_the_measured_block_fails():
-    """The far outer block is too short to hold the train past B: its leg ends
-    at the far block's far seam with the calculated span still on B, so the leg
-    back could never be timed."""
-    cal, run, _profile = _open_run()
-    clock = _cross_into_far_block(cal, run, measured_block_held=True)
-    cal.advance(run, CalibrationObservation(
-        now=clock + 1.0, path_present=False, measured_block_held=True))
-    assert run.phase == PHASE_FAILED
-    assert "too short" in run.failure_reason
-
-
-def test_a_train_that_never_clears_the_measured_block_fails():
-    cal, run, _profile = _open_run()
-    clock = _cross_into_far_block(cal, run, measured_block_held=True)
-    cal.advance(run, CalibrationObservation(
-        now=clock + CALIBRATION_STEP_TIMEOUT_S + 1.0,
-        path_present=True, measured_block_held=True))
-    assert run.phase == PHASE_FAILED
-    assert "never cleared" in run.failure_reason
 
 
 def test_the_crossing_window_is_set_by_the_measured_block_length():
@@ -1071,3 +1118,51 @@ def test_the_move_records_no_crossing_and_no_overrun():
 
     assert run.overrun_seen is False
     assert run.crossing_started_at is None
+
+
+# --- the measurement is reported on the event stream --------------------------
+# design_new.md "Speed calibration", Every crossing and every step is reported.
+
+
+def test_every_crossing_and_every_step_is_reported():
+    from notification_center import NotificationCenter
+
+    nc = NotificationCenter()
+    cal = SpeedCalibration()
+    cal.wire_dependencies(notification_center=nc)
+    cal, run, _profile = _open_run(cal)
+    clock = 0.0
+    for _ in range(run.crossings_target):
+        clock = _crossing(cal, run, clock, seconds=2.0)
+
+    events = nc.peek_recent(100)
+    crossings = [n for n in events if n.operation == "calibration_crossing"]
+    steps = [n for n in events if n.operation == "calibration_step"]
+    assert len(crossings) == run.crossings_target
+    first = crossings[0].payload
+    assert first["power_percent"] == run.power_steps[0]
+    assert first["seconds"] == pytest.approx(2.0)
+    assert first["speed_kmh"] == pytest.approx(cm_per_sec_to_kmh(BLOCK_LENGTH_CM / 2.0))
+    assert first["outcome"] == "used"
+    assert {c.payload["toward_block_id"] for c in crossings} == {"A", "C"}
+    (step,) = steps
+    assert step.payload["recorded_kmh"] == pytest.approx(first["speed_kmh"])
+    assert step.payload["crossing_count"] == run.crossings_target
+
+
+def test_a_step_measured_again_is_reported_without_a_recorded_speed():
+    from notification_center import NotificationCenter
+
+    nc = NotificationCenter()
+    cal = SpeedCalibration()
+    cal.wire_dependencies(notification_center=nc)
+    cal, run, _profile = _open_run(cal)
+    clock = 0.0
+    for _ in range(run.crossings_target):
+        clock = _crossing(cal, run, clock, seconds=9.0)
+    for _ in range(run.crossings_target):
+        clock = _crossing(cal, run, clock, seconds=1.0)  # clearly faster
+
+    steps = [n.payload for n in nc.peek_recent(100) if n.operation == "calibration_step"]
+    assert [s["recorded_kmh"] is None for s in steps] == [False, True]
+    assert steps[1]["power_percent"] == run.power_steps[1]

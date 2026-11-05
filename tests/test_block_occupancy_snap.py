@@ -14,6 +14,8 @@ real/early sensor would.
 
 from typing import Dict, Set
 
+import pytest
+
 from block import Block
 from block_occupancy import OccupancyInput
 from enums import Direction
@@ -113,6 +115,34 @@ def test_a_vacate_does_not_move_a_span_whose_head_has_no_room():
     assert moved is False
     assert controller.physics_sync.current_span is span
     assert "BLK_0" in controller.physics_sync.current_span.occupied_blocks
+
+
+def test_a_vacate_carries_a_tail_parked_at_the_seam_off_the_block():
+    """The tail cap parks a tail just short of the rearmost block's exit seam
+    while that block still reads occupied (design_new.md "Power", The calculated
+    span never runs ahead of the detector). When the block then confirms clear,
+    the vacate carries the tail across, even for a standing train: the 2026-11-02
+    rig run left a stopped train's span on the measured block for good, and the
+    calibration pass could never turn it round."""
+    from train_span import SpanEndLocator, TrainSpan
+
+    network = build_line(6)
+    sim, train, controller, physics = place(network, "T", head_x=1, length_cm=40.0)
+    controller.physics_sync.current_span = TrainSpan(
+        end_a=SpanEndLocator(tile=(1, 0), distance_cm=40.0 - 1e-6, entry_edge="W"),
+        end_b=SpanEndLocator(tile=(0, 0), distance_cm=100.0 - 1e-6, entry_edge="W"),
+        occupied_tiles=[(1, 0), (0, 0)],
+        occupied_blocks=["BLK_1", "BLK_0"],
+    )
+    network.blocks["BLK_1"].occupy("T")
+
+    controller.physics_sync.pending_detected_vacated_blocks = {"BLK_0"}
+    moved = physics.reconcile_to_detected_occupancy(train, controller)
+
+    assert moved is True
+    span = controller.physics_sync.current_span
+    assert span.occupied_blocks == ["BLK_1"]
+    assert span.end_a.distance_cm == pytest.approx(40.0)
 
 
 def test_snap_stops_at_a_detected_block_that_reads_clear():

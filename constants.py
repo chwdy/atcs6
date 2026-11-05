@@ -188,11 +188,19 @@ CALIBRATION_MIN_CROSSING_SPEED_KMH: float = 2.0
 # and stops the train at half power first).
 CALIBRATION_HALF_POWER_S: float = 0.5
 
-# After a crossing faster than this (scale km/h) the pass drives on at half the
-# step's power until the measured block reads clear, so the train does not
-# overrun the far outer block while the detector takes about a second to clear.
-# After a slower crossing it keeps the step's power, which is sure to move it.
-CALIBRATION_HALF_POWER_ABOVE_KMH: float = 40.0
+# After each crossing the pass drives on at the step's power for the time the
+# train's length plus this many centimetres takes at the speed just measured,
+# then stops it (design_new.md "Speed calibration", The run-off is timed from
+# the measured speed). The margin covers the detector's lag on the far block's
+# entry and a length measured a little short.
+CALIBRATION_RUNOFF_MARGIN_CM: float = 5.0
+
+# How many detector reads a standing train is given for the measured block to
+# read clear before the pass decides the train stopped with its tail still on
+# it. Below `current_sense_min_drive_v` a block holds its presence for
+# LIGHTING_CLEAR_HOLD_READS clear reads, then takes OCCUPANCY_OFF_THRESHOLD more
+# to confirm clear; ten reads more absorb a lone noisy read pausing the count.
+CALIBRATION_OFF_B_WAIT_READS: int = LIGHTING_CLEAR_HOLD_READS + OCCUPANCY_OFF_THRESHOLD + 10
 
 # When a pass opens with the train not standing in an outer block, it first
 # drives the train at this power into the nearer one (design_new.md "Speed

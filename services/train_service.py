@@ -296,7 +296,7 @@ def update_train(
             new_length = float(length_cm)
             if new_length > 0:
                 if train.consist:
-                    train.consist[0].length = new_length
+                    train.consist[0].length_cm = new_length
                 else:
                     train.consist.append(
                         TrainCar(

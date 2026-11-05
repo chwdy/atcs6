@@ -638,6 +638,10 @@ class TestTrainService:
         assert train.max_speed == 55.0
         assert train.car_number == "C9"
 
+    def test_update_train_length_changes_the_train_length(self, state_with_train):
+        train = train_service.update_train(state_with_train, "TRAIN_A", length_cm=14)
+        assert train.length_cm == 14.0
+
     def test_update_train_bad_value_raises_validation(self, state_with_train):
         with pytest.raises(ValidationError, match="max_speed"):
             train_service.update_train(

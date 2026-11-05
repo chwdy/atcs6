@@ -24,7 +24,7 @@ import pytest
 
 from app_state import AppState
 from bootstrap import bootstrap_runtime
-from services import train_service
+from services import segment_service, train_service
 from speed_calibration import PHASE_FAILED
 
 pytestmark = pytest.mark.scene("demo7_1")
@@ -55,11 +55,11 @@ def state():
     )
 
 
-def _place(state, tile, direction):
+def _place(state, tile, direction, length_cm=10.0):
     train_service.create_train(
         state,
         train_id=TRAIN,
-        length_cm=10.0,
+        length_cm=length_cm,
         position={"x": tile[0], "y": tile[1]},
         direction=direction,
     )
@@ -278,9 +278,12 @@ def test_every_step_is_timed_in_both_directions(state):
 def test_a_stretch_too_short_for_the_top_step_fails_at_once(state):
     """design_new.md "Speed calibration", The sweep runs down from `100%` in
     `CALIBRATION_POWER_STEP_PERCENT` steps: a stretch too short for the top step
-    fails the pass at its first step. Every outer block here is 50 cm, too
-    short to stop from the default profile's 100% speed, so every 100% crossing
-    is capped and the pass fails before measuring anything."""
+    fails the pass at its first step. Outer blocks of 50 cm are too short to
+    stop from the default profile's 100% speed, so every 100% crossing is capped
+    and the pass fails before measuring anything."""
+    for block_id in (LEFT, RIGHT):
+        (segment_id,) = state.network.blocks[block_id].segment_ids
+        segment_service.update_segment(state, segment_id, data={"length_cm": 50.0})
     _place(state, (9, 13), "WEST")
     run = train_service.calibrate_train(state, TRAIN, measured_block_id=UP)
     _run_pass(state, run, until_step=1)
@@ -334,7 +337,7 @@ def test_a_train_on_the_measured_block_is_moved_off_it_first(state):
     from speed_calibration import PHASE_LEG, PHASE_MOVING
 
     # Head in Right, body trailing back onto Up: the span covers both.
-    _place(state, (9, 13), "EAST")
+    _place(state, (9, 13), "EAST", length_cm=20.0)
     span = state.sim_controller.get_or_create_controller(TRAIN).get_current_span()
     assert {RIGHT, UP} <= set(span.occupied_blocks)
 

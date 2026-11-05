@@ -47,15 +47,18 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from constants import (
     CALIBRATION_CAP_RETRY_LIMIT,
-    CALIBRATION_HALF_POWER_ABOVE_KMH,
     CALIBRATION_HALF_POWER_S,
     CALIBRATION_MIN_CROSSING_SPEED_KMH,
     CALIBRATION_MOVE_POWER_PERCENT,
+    CALIBRATION_OFF_B_WAIT_READS,
     CALIBRATION_POWER_STEP_PERCENT,
     CALIBRATION_ROUND_TRIPS,
+    CALIBRATION_RUNOFF_MARGIN_CM,
     CALIBRATION_SAME_SPEED_FRACTION,
     CALIBRATION_STEP_TIMEOUT_S,
     LIGHTING_VOLTAGE_STEP_V,
+    OCCUPANCY_OFF_THRESHOLD,
+    OCCUPANCY_ON_THRESHOLD,
 )
 from model_scale import cm_per_sec_to_kmh, kmh_to_cm_per_sec
 
@@ -173,9 +176,15 @@ class CalibrationObservation:
     occupancy (design_new.md "Power", Two views of occupancy): its calculated
     span covers it, or its block list still holds it (`Block.occupied_by` names
     the train). The list lets go of a block only once its detector has read it
-    clear, a moment after the span has moved off. After a crossing the pass
-    drives on until this is false, so the next leg's entry into the measured
-    block is a fresh one."""
+    clear, a moment after the span has moved off. The next leg starts only once
+    this is false, so its entry into the measured block is a fresh one."""
+
+    measured_block_listed: bool = False
+    """Whether the train's block list still holds the measured block
+    (`Block.occupied_by` names the train). It turns false on the read B's
+    detector confirms clear, which is what the pass times the train's length
+    from (design_new.md "Speed calibration", The pass measures the train's
+    length)."""
 
 
 @dataclass(frozen=True)
@@ -254,6 +263,13 @@ class CalibrationRun:
     outer_block_ids: Tuple[str, str] = ("", "")
     block_length_cm: float = 0.0
     heading_to: int = 1
+    train_length_cm: float = 0.0
+    """The train's entered length (`Train.length_cm`) when the pass opened. The
+    run-off uses it until the pass has measured the length."""
+    measured_length_cm: Optional[float] = None
+    """The shortest train length the pass has measured, or `None` before the
+    first measurement (design_new.md "Speed calibration", The pass measures the
+    train's length)."""
 
     phase: str = PHASE_LEG
     """`PHASE_MOVING` while the pass moves the train into an outer block before
@@ -294,10 +310,6 @@ class CalibrationRun:
     attempt: int = 1
     """How many times the current step has been measured: 2 once it is being
     measured again."""
-    slow_clearing: bool = False
-    """Whether the crossing just timed was faster than
-    `CALIBRATION_HALF_POWER_ABOVE_KMH`, so the pass drives half the step's power
-    until the train is off the measured block. Reset when a leg arms."""
 
     leg_started_at: Optional[float] = None
     """When this leg's step timeout started counting — the tick its authority
@@ -316,9 +328,8 @@ class CalibrationRun:
     the leg's authority first appears."""
     half_power_until: Optional[float] = None
     """The operating time until which the pass drives half the step's power: set
-    for `CALIBRATION_HALF_POWER_S` when a leg's authority first appears, when
-    the far outer block confirms after a fast crossing, and when the train gets
-    off the measured block after a slow one (design_new.md "Speed calibration",
+    for `CALIBRATION_HALF_POWER_S` when a leg's authority first appears and
+    when the run-off after a crossing ends (design_new.md "Speed calibration",
     The pass starts and stops the train at half power first). `None` when
     neither stage is running."""
     half_power: bool = False
@@ -334,10 +345,23 @@ class CalibrationRun:
     """When the current crossing's clock stopped — the moment the far outer
     block was confirmed occupied after B — or `None` until then. Written in
     Observe, read by Plan step `c9e1`, reset by each new leg."""
-    clearing_started_at: Optional[float] = None
-    """When the pass began driving the train off the measured block after a
-    crossing, or `None` outside that part of the leg. The clearing timeout
-    counts from it."""
+    runoff_until: Optional[float] = None
+    """When the run-off after this leg's crossing ends: the far outer block's
+    confirmation plus the time `runoff_length_cm()` takes at the crossing's
+    speed (design_new.md "Speed calibration", The run-off is timed from the
+    measured speed). `None` outside the run-off."""
+    runoff_started_at: Optional[float] = None
+    """When this leg's crossing ended — the far outer block's confirmation — or
+    `None` once the length measurement for this leg is taken or given up."""
+    runoff_speed_cm_s: float = 0.0
+    """This leg's crossing speed, which the run-off and the length measurement
+    both use."""
+    runoff_reads: int = 0
+    """Plan passes since the far outer block confirmed, one per detector read,
+    counted until the train's block list lets go of the measured block."""
+    standing_reads: int = 0
+    """Plan passes the stopped train has waited for the measured block to read
+    clear, against `CALIBRATION_OFF_B_WAIT_READS`."""
     overrun_seen: bool = False
     """Set in Observe when a block past the stretch was confirmed and credited
     to the calibration train on this leg, whether the train was still crossing
@@ -380,6 +404,19 @@ class CalibrationRun:
         if slowest_cm_s <= 0.0:
             return float("inf")
         return self.block_length_cm / slowest_cm_s
+
+    def runoff_length_cm(self) -> float:
+        """How far the run-off carries the train past the far outer block's
+        confirmation: the train's length — the measured one once there is one,
+        the entered one before — plus `CALIBRATION_RUNOFF_MARGIN_CM`
+        (design_new.md "Speed calibration", The run-off is timed from the
+        measured speed)."""
+        length = (
+            self.measured_length_cm
+            if self.measured_length_cm is not None
+            else self.train_length_cm
+        )
+        return max(0.0, length) + CALIBRATION_RUNOFF_MARGIN_CM
 
     @property
     def current_power(self) -> float:
@@ -546,6 +583,7 @@ class SpeedCalibration:
             outer_block_ids=(outer[0], outer[1]),
             block_length_cm=float(block_length_cm or 0.0),
             heading_to=1 if heading_to else 0,
+            train_length_cm=float(getattr(train, "length_cm", 0.0) or 0.0),
             phase=PHASE_MOVING if heading_to is None else PHASE_LEG,
         )
         self.runs[train.train_id] = run
@@ -673,8 +711,10 @@ class SpeedCalibration:
         elif run.phase == PHASE_LEG:
             command = self._advance_leg(run, obs)
         elif run.phase == PHASE_CLEARING:
+            self._measure_length(run, obs)
             command = self._advance_clearing(run, obs)
         else:
+            self._measure_length(run, obs)
             command = self._advance_stopping(run, obs)
         run.half_power = (
             run.half_power_until is not None and obs.now < run.half_power_until
@@ -793,10 +833,12 @@ class SpeedCalibration:
             run.crossing_counted_s = 0.0
             run.counted_until = None
             run.half_power_until = None
-            run.slow_clearing = False
             run.crossing_started_at = None
             run.crossing_finished_at = None
-            run.clearing_started_at = None
+            run.runoff_until = None
+            run.runoff_started_at = None
+            run.runoff_reads = 0
+            run.standing_reads = 0
             run.overrun_seen = False
             # A fresh crossing begins clean: any taint from the last one is spent
             # (design_new.md, "A capped crossing is discarded").
@@ -919,69 +961,80 @@ class SpeedCalibration:
         obs: CalibrationObservation,
         crossing_kmh: Optional[float],
     ) -> Optional[CalibrationCommand]:
-        """End the crossing: drive on until the train is off B — at half the
-        step's power after a crossing faster than
-        `CALIBRATION_HALF_POWER_ABOVE_KMH` — then stop (design_new.md "Speed
-        calibration", The pass turns the train around at each end; The pass
-        starts and stops the train at half power first).
+        """End the crossing: drive on at the step's power for the run-off time,
+        then stop (design_new.md "Speed calibration", The run-off is timed from
+        the measured speed; The pass turns the train around at each end).
 
-        The next leg is timed from a fresh confirmed entry into B. A train that
-        stopped with its tail still on B would start that leg already holding B,
-        so no entry would ever come and the leg back would go untimed. B reads
-        clear about a second after the tail leaves it; after a fast crossing the
-        train would run far enough in that second to overrun the far outer
-        block, so it runs it at half power. After a slow crossing half power
-        might not move it at all, so it keeps the step's power."""
-        run.slow_clearing = (
-            crossing_kmh is not None and crossing_kmh > CALIBRATION_HALF_POWER_ABOVE_KMH
+        The run-off is not ended by B reading clear. Below
+        `current_sense_min_drive_v` B holds its presence for
+        `LIGHTING_CLEAR_HOLD_READS` clear reads before its clear count even
+        starts — several seconds, in which the train would run off the stopping
+        room. The crossing just timed gives the train's speed at this power, so
+        the time its own length takes is known without the detector. A B that
+        already reads clear in both views ends the run-off early."""
+        speed_cm_s = kmh_to_cm_per_sec(crossing_kmh) if crossing_kmh else 0.0
+        run.runoff_speed_cm_s = speed_cm_s
+        run.runoff_started_at = obs.now
+        run.runoff_reads = 0
+        run.standing_reads = 0
+        run.runoff_until = (
+            obs.now + run.runoff_length_cm() / speed_cm_s if speed_cm_s > 0.0 else obs.now
         )
-        run.half_power_until = (
-            obs.now + CALIBRATION_HALF_POWER_S if run.slow_clearing else None
-        )
-        if obs.measured_block_held:
+        run.half_power_until = None
+        if obs.measured_block_held and obs.now < run.runoff_until:
             run.phase = PHASE_CLEARING
-            run.clearing_started_at = obs.now
             return None
         return self._begin_stop(run, obs)
 
     @staticmethod
     def _begin_stop(run: CalibrationRun, obs: CalibrationObservation) -> CalibrationCommand:
-        """Stop the train once it is off B: half the step's power until
-        `CALIBRATION_HALF_POWER_S` after the half-power stage began — at the far
-        outer block's confirmation after a fast crossing, now after a slow one —
-        then `0` (design_new.md "Speed calibration", The pass starts and stops
-        the train at half power first)."""
+        """Stop the train at the end of the run-off: half the step's power for
+        `CALIBRATION_HALF_POWER_S`, then `0` (design_new.md "Speed calibration",
+        The pass starts and stops the train at half power first)."""
         run.phase = PHASE_STOPPING
-        run.clearing_started_at = None
-        if run.half_power_until is None:
-            run.half_power_until = obs.now + CALIBRATION_HALF_POWER_S
+        run.runoff_until = None
+        run.half_power_until = obs.now + CALIBRATION_HALF_POWER_S
         return CalibrationCommand(power_percent=0.0)
 
     def _advance_clearing(
         self, run: CalibrationRun, obs: CalibrationObservation
     ) -> Optional[CalibrationCommand]:
-        far_block = run.heading_toward_block_id
         if run.overrun_seen:
             return self._fail_overrun(run)
-        if not obs.measured_block_held:
+        until = run.runoff_until
+        if not obs.measured_block_held or until is None or obs.now >= until:
             return self._begin_stop(run, obs)
-        if not obs.path_present:
-            # The leg ran out its authority at the far block's far seam and
-            # completed with the train still on B.
-            return self.fail(
-                run,
-                f"train stopped in {far_block} before clearing "
-                f"{run.measured_block_id} — {far_block} is too short to hold the "
-                "train past the measured block",
-            )
-        started = run.clearing_started_at
-        if started is not None and obs.now - started >= CALIBRATION_STEP_TIMEOUT_S:
-            return self.fail(
-                run,
-                f"train never cleared {run.measured_block_id} after reaching "
-                f"{far_block}",
-            )
         return None
+
+    @staticmethod
+    def _measure_length(run: CalibrationRun, obs: CalibrationObservation) -> None:
+        """Take this leg's length measurement on the read the train's block list
+        lets go of B (design_new.md "Speed calibration", The pass measures the
+        train's length).
+
+        The far outer block confirmed `OCCUPANCY_ON_THRESHOLD` reads after the
+        head crossed into it, and B confirms clear `OCCUPANCY_OFF_THRESHOLD`
+        reads after the tail left it. So the tail left B
+        `reads - (OCCUPANCY_OFF_THRESHOLD - OCCUPANCY_ON_THRESHOLD)` reads after
+        the head reached the far block, and at the crossing's speed that is the
+        train's length. A clear B held through the lighting zone, or a lone
+        present read pausing its clear count, only adds reads, so the pass
+        keeps the shortest length it measures."""
+        started = run.runoff_started_at
+        if started is None:
+            return
+        run.runoff_reads += 1
+        if obs.measured_block_listed:
+            return
+        run.runoff_started_at = None
+        lag_reads = OCCUPANCY_OFF_THRESHOLD - OCCUPANCY_ON_THRESHOLD
+        reads = run.runoff_reads
+        if reads <= lag_reads or run.runoff_speed_cm_s <= 0.0:
+            return
+        seconds_per_read = (obs.now - started) / reads
+        length = run.runoff_speed_cm_s * seconds_per_read * (reads - lag_reads)
+        if run.measured_length_cm is None or length < run.measured_length_cm:
+            run.measured_length_cm = length
 
     def _fail_overrun(self, run: CalibrationRun) -> CalibrationCommand:
         """Fail the pass for an overrun Observe recorded on this leg."""
@@ -1018,6 +1071,21 @@ class SpeedCalibration:
             return None
         if not obs.is_stopped:
             return None
+        if obs.measured_block_held:
+            # The next leg is timed from a fresh entry into B, so it waits until
+            # the standing train is off B in both views. A standing train is
+            # lit, not driven, so B takes its lighting-zone hold and its clear
+            # count to read clear (design_new.md "Speed calibration", A train
+            # that cannot get off B fails the pass).
+            run.standing_reads += 1
+            if run.standing_reads > CALIBRATION_OFF_B_WAIT_READS:
+                return self.fail(
+                    run,
+                    f"train stopped with its tail still on {run.measured_block_id} "
+                    f"in {run.heading_toward_block_id} — check the train's length, "
+                    f"or {run.heading_toward_block_id} is too short to hold it",
+                )
+            return None
         if len(run.crossings) >= run.crossings_target:
             outcome = self._close_step(run)
             if outcome is not None:
@@ -1040,8 +1108,10 @@ class SpeedCalibration:
         Returns a command when the pass is finished or failed, None when the
         caller should carry on to the next leg.
         """
-        step_speed = median(run.crossings)
+        measured = median(run.crossings)
+        step_speed = measured
         previous = run.samples[-1].speed_kmh if run.samples else None
+        crossing_count = len(run.crossings)
         run.crossings = []
 
         # `power_speed_curve` must stay invertible, so samples have to rise with
@@ -1060,6 +1130,7 @@ class SpeedCalibration:
             # measures clearly faster than the step above it is measured once
             # more). One re-measure tells a noisy crossing apart from a
             # locomotive that really does run faster at less power.
+            self._report_step(run, measured, previous, None, crossing_count)
             if run.step_remeasured:
                 return self.fail(
                     run,
@@ -1071,6 +1142,7 @@ class SpeedCalibration:
             run.attempt += 1
             return None
 
+        self._report_step(run, measured, previous, step_speed, crossing_count)
         run.samples.append(
             CalibrationSample(power_percent=run.current_power, speed_kmh=step_speed)
         )
@@ -1082,23 +1154,84 @@ class SpeedCalibration:
             return self._finish_sweep(run)
         return None
 
-    @staticmethod
     def _log_crossing(
+        self,
         run: CalibrationRun,
         seconds: Optional[float],
         speed_kmh: Optional[float],
         outcome: str,
     ) -> None:
-        """Add one crossing of the current step to the panel's list."""
-        run.crossing_log.append(
-            CalibrationCrossing(
-                power_percent=run.current_power,
-                attempt=run.attempt,
-                toward_block_id=run.heading_toward_block_id,
-                seconds=seconds,
-                speed_kmh=speed_kmh,
-                outcome=outcome,
-            )
+        """Add one crossing of the current step to the panel's list, and report
+        it on the event stream (design_new.md "Speed calibration", Every
+        crossing and every step is reported)."""
+        crossing = CalibrationCrossing(
+            power_percent=run.current_power,
+            attempt=run.attempt,
+            toward_block_id=run.heading_toward_block_id,
+            seconds=seconds,
+            speed_kmh=speed_kmh,
+            outcome=outcome,
+        )
+        run.crossing_log.append(crossing)
+        timing = (
+            f"{seconds:.2f} s, {speed_kmh:.1f} km/h"
+            if seconds is not None and speed_kmh is not None
+            else "not timed"
+        )
+        self._emit_info(
+            run.train_id,
+            operation="calibration_crossing",
+            message=(
+                f"{run.current_power:.0f}% toward {run.heading_toward_block_id}: "
+                f"{timing}, {outcome}"
+            ),
+            payload={
+                "power_percent": run.current_power,
+                "attempt": run.attempt,
+                "measured_block_id": run.measured_block_id,
+                "toward_block_id": run.heading_toward_block_id,
+                "block_length_cm": run.block_length_cm,
+                "seconds": seconds,
+                "speed_kmh": speed_kmh,
+                "outcome": outcome,
+                "measured_length_cm": run.measured_length_cm,
+            },
+        )
+
+    def _report_step(
+        self,
+        run: CalibrationRun,
+        measured_kmh: float,
+        previous_kmh: Optional[float],
+        recorded_kmh: Optional[float],
+        crossing_count: int,
+    ) -> None:
+        """Report how a step closed: the median of its crossings, the step
+        above's sample, and the speed it recorded — or `None` when it is to be
+        measured again or ends the pass (design_new.md "Speed calibration",
+        Every crossing and every step is reported)."""
+        if recorded_kmh is None:
+            result = "clearly faster than the step above"
+        elif recorded_kmh != measured_kmh:
+            result = "recorded at the step above's speed"
+        else:
+            result = "recorded"
+        self._emit_info(
+            run.train_id,
+            operation="calibration_step",
+            message=(
+                f"{run.current_power:.0f}% (attempt {run.attempt}): median "
+                f"{measured_kmh:.1f} km/h of {crossing_count} crossings, {result}"
+            ),
+            payload={
+                "power_percent": run.current_power,
+                "attempt": run.attempt,
+                "median_kmh": measured_kmh,
+                "step_above_kmh": previous_kmh,
+                "recorded_kmh": recorded_kmh,
+                "crossing_count": crossing_count,
+                "result": result,
+            },
         )
 
     @staticmethod
@@ -1303,6 +1436,8 @@ class SpeedCalibration:
             and self._last_reserved_block(plan) != run.heading_toward_block_id,
             outer_block_index=self._outer_block_index(run, controller),
             measured_block_held=self._on_measured_block(run, controller),
+            measured_block_listed=holder is not None
+            and holder(run.measured_block_id) == train_id,
         )
         return self.advance(run, obs)
 
@@ -1435,9 +1570,9 @@ class SpeedCalibration:
             if driving and not self._leg_authority_present(train_id):
                 driving = False
             if driving and run.phase == PHASE_CLEARING:
-                # Off B at half power after a fast crossing, at the step's
-                # power after a slow one.
-                value = run.current_power * (0.5 if run.slow_clearing else 1.0)
+                # The run-off runs at the step's power, the power whose speed
+                # timed it.
+                value = run.current_power
             elif driving:
                 value = run.current_power * (0.5 if run.half_power else 1.0)
             elif run.phase == PHASE_STOPPING and run.half_power:
@@ -1759,6 +1894,28 @@ class SpeedCalibration:
         return [(anchor, 0.0)] + sorted(kept)
 
     # -- reporting --------------------------------------------------------
+
+    def _emit_info(
+        self, train_id: str, *, operation: str, message: str, payload: dict
+    ) -> None:
+        """One informational event about an open pass, on the same stream as
+        the command results."""
+        nc = self._notification_center
+        if nc is None:
+            return
+        try:
+            from notification_center import Kind, train_ref
+
+            nc.emit(
+                source="SpeedCalibration",
+                operation=operation,
+                kind=Kind.INFO,
+                message=message,
+                entities=[train_ref(train_id)],
+                payload={"train_id": train_id, **payload},
+            )
+        except Exception:
+            pass
 
     def _emit_command_result(
         self, train_id: str, *, operation: str, success: bool, reason: str
