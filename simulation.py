@@ -3090,10 +3090,10 @@ class SimulationController(SwitchOutputOwner):
                     train.speed_profile_id = roster_entry.speed_profile_id
 
         # Seed the train's default SpeedProfile pair so `power_percent` manual
-        # mode has a defined power->speed mapping anchored to THIS train's
+        # mode has a defined voltage/speed mapping reaching THIS train's
         # max_speed (design_new.md "SpeedProfile"): a model profile whose default
-        # `power_speed_curve` runs 0% -> 0 km/h to 100% -> the train's configured
-        # max_speed, plus an empty instance deriving from it, and the train names
+        # `voltage_speed_curve` reaches the train's configured max_speed at
+        # max_voltage, plus an empty instance deriving from it, and the train names
         # the instance. Without this the train would share the module-global
         # DEFAULT_SPEED_PROFILE whose curve hardcodes 100% -> 100 km/h; naming an
         # instance also keeps calibration off any other train's record.

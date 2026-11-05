@@ -318,40 +318,103 @@ class TestSpeedProfileService:
                 state, "P1", data={"profile_id": "OTHER", "name": "x"}
             )
 
-    def test_update_keeps_the_calibration_owned_fields(self, state):
-        """The panel's save cannot move `lighting_voltage` (read-only, moved
-        only by Lighting-voltage calibration) or `calibrated_at` (written only
-        by a speed commit), and the curve stays anchored at the stored lighting
-        voltage (design_new.md "Lighting-voltage calibration", The panel; "What
-        commit writes")."""
+    def test_update_keeps_calibrated_at(self, state):
+        """The panel's save cannot move `calibrated_at`, which only a speed
+        commit writes (design_new.md "SpeedProfile", Editing a profile by
+        hand)."""
         speed_profile_service.create_profile(
             state,
             data={
                 "profile_id": "P1",
                 "name": "Profile 1",
-                "lighting_voltage": 2.0,
                 "calibrated_at": "2026-10-18T10:00:00+00:00",
-                "voltage_power_curve": [[2.0, 0.0], [6.0, 50.0], [12.0, 100.0]],
             },
         )
 
         updated = speed_profile_service.update_profile(
             state,
             "P1",
-            data={
-                "name": "Profile 1",
-                "lighting_voltage": 1.5,
-                "calibrated_at": None,
-                "acceleration_rate": 7.0,
-                "voltage_power_curve": [[1.5, 0.0], [7.0, 50.0], [12.0, 100.0]],
-            },
+            data={"calibrated_at": None, "acceleration_rate": 7.0},
         )
 
-        assert updated.lighting_voltage == 2.0
         assert updated.calibrated_at == "2026-10-18T10:00:00+00:00"
         assert updated.acceleration_rate == 7.0
-        assert updated.voltage_power_curve[0] == (2.0, 0.0)
-        assert (7.0, 50.0) in updated.voltage_power_curve
+
+    def test_update_sets_a_lighting_voltage_below_the_starting_voltage(self, state):
+        """The lighting voltage is set by hand (design_new.md "SpeedProfile",
+        `lighting_voltage`)."""
+        speed_profile_service.create_profile(
+            state,
+            data={
+                "profile_id": "P1",
+                "name": "Profile 1",
+                "voltage_speed_curve": [[3.0, 20.0], [12.0, 100.0]],
+            },
+        )
+        updated = speed_profile_service.update_profile(
+            state, "P1", data={"lighting_voltage": 1.9}
+        )
+        assert updated.lighting_voltage == 1.9
+        cleared = speed_profile_service.update_profile(
+            state, "P1", data={"lighting_voltage": None}
+        )
+        assert cleared.lighting_voltage is None
+
+    def test_update_refuses_a_lighting_voltage_at_or_above_the_starting_voltage(self, state):
+        """design_new.md "A lighting voltage stays below the starting voltage":
+        a train standing at its lighting voltage must not move."""
+        speed_profile_service.create_profile(
+            state,
+            data={
+                "profile_id": "P1",
+                "name": "Profile 1",
+                "voltage_speed_curve": [[3.0, 20.0], [12.0, 100.0]],
+            },
+        )
+        with pytest.raises(ValidationError, match="starting voltage"):
+            speed_profile_service.update_profile(
+                state, "P1", data={"lighting_voltage": 3.0}
+            )
+        with pytest.raises(ValidationError):
+            speed_profile_service.update_profile(
+                state, "P1", data={"lighting_voltage": -0.5}
+            )
+        assert speed_profile_service.require_profile(state, "P1").lighting_voltage is None
+
+    def test_a_model_curve_edit_is_refused_when_it_breaks_an_instance_lighting(self, state):
+        """An edit reaches every instance that reads the model's curve, so a
+        model curve whose starting voltage is at or below an instance's
+        lighting voltage is refused."""
+        speed_profile_service.create_profile(
+            state,
+            data={
+                "profile_id": "MODEL",
+                "name": "Model",
+                "voltage_speed_curve": [[3.0, 20.0], [12.0, 100.0]],
+            },
+        )
+        speed_profile_service.create_profile(
+            state,
+            data={
+                "profile_id": "INST",
+                "name": "Loco 7",
+                "derived_from": "MODEL",
+                "lighting_voltage": 2.0,
+            },
+        )
+        with pytest.raises(ValidationError, match="INST"):
+            speed_profile_service.update_profile(
+                state, "MODEL", data={"voltage_speed_curve": [[1.8, 10.0], [12.0, 100.0]]}
+            )
+
+    def test_update_refuses_a_max_voltage_the_curve_does_not_end_at(self, state):
+        speed_profile_service.create_profile(
+            state, data={"profile_id": "P1", "name": "Profile 1"}
+        )
+        with pytest.raises(ValidationError, match="max_voltage"):
+            speed_profile_service.update_profile(
+                state, "P1", data={"max_voltage": 14.0}
+            )
 
     def test_update_keeps_an_instance_an_instance(self, state):
         """A body that omits `derived_from` does not turn an instance profile
@@ -371,34 +434,34 @@ class TestSpeedProfileService:
         assert updated.derived_from == "MODEL"
         assert updated.lighting_voltage is None
 
-    def test_update_refuses_a_curve_whose_speed_falls_as_power_rises(self, state):
+    def test_update_refuses_a_curve_whose_speed_falls_as_voltage_rises(self, state):
         """design_new.md "SpeedProfile", A hand-edited curve must stay
         invertible: physics reads the curve both ways, so the stored curve is
         left unchanged."""
         speed_profile_service.create_profile(
             state, data={"profile_id": "P1", "name": "Profile 1"}
         )
-        before = speed_profile_service.require_profile(state, "P1").power_speed_curve
+        before = speed_profile_service.require_profile(state, "P1").voltage_speed_curve
 
         with pytest.raises(ValidationError):
             speed_profile_service.update_profile(
                 state,
                 "P1",
-                data={"power_speed_curve": [[0, 0], [40, 50], [70, 30], [100, 80]]},
+                data={"voltage_speed_curve": [[3, 20], [6, 50], [9, 30], [12, 80]]},
             )
 
-        assert speed_profile_service.require_profile(state, "P1").power_speed_curve == before
+        assert speed_profile_service.require_profile(state, "P1").voltage_speed_curve == before
 
-    def test_update_accepts_a_curve_that_rises_with_power(self, state):
+    def test_update_accepts_a_curve_that_rises_with_voltage(self, state):
         speed_profile_service.create_profile(
             state, data={"profile_id": "P1", "name": "Profile 1"}
         )
         updated = speed_profile_service.update_profile(
             state,
             "P1",
-            data={"power_speed_curve": [[100, 80], [0, 0], [40, 50], [70, 50]]},
+            data={"voltage_speed_curve": [[12, 80], [3, 20], [6, 50], [9, 50]]},
         )
-        assert updated.power_speed_curve == [(0, 0), (40, 50), (70, 50), (100, 80)]
+        assert updated.voltage_speed_curve == [(3, 20), (6, 50), (9, 50), (12, 80)]
 
     def test_update_keeps_the_fields_the_body_leaves_out(self, state):
         """A save sends only the fields the operator changed; every other
@@ -430,15 +493,15 @@ class TestSpeedProfileService:
         )
 
         updated = speed_profile_service.update_profile(
-            state, "INST", data={"power_speed_curve": [[0, 0], [100, 60]]}
+            state, "INST", data={"voltage_speed_curve": [[3, 20], [12, 60]]}
         )
 
-        assert updated.power_speed_curve == [(0.0, 0.0), (100.0, 60.0)]
+        assert updated.voltage_speed_curve == [(3.0, 20.0), (12.0, 60.0)]
         assert updated.lighting_voltage is None
         assert updated.calibrated_at is None
         resolved = state.speed_profile_registry.resolve("INST")
         assert resolved.acceleration_rate == 6.0
-        assert resolved.power_percent_to_speed(50) == pytest.approx(30.0)
+        assert resolved.power_percent_to_speed(50) == pytest.approx(40.0)
 
     def test_update_refuses_a_model_field_on_an_instance(self, state):
         """A model-profile field is edited on the model profile, never on an
@@ -455,7 +518,7 @@ class TestSpeedProfileService:
             speed_profile_service.update_profile(
                 state, "INST", data={"acceleration_rate": 5.0}
             )
-        assert state.speed_profile_registry.get("INST").power_speed_curve is None
+        assert state.speed_profile_registry.get("INST").voltage_speed_curve is None
 
     def test_update_refuses_a_curve_with_fewer_than_two_points(self, state):
         speed_profile_service.create_profile(
@@ -463,7 +526,7 @@ class TestSpeedProfileService:
         )
         with pytest.raises(ValidationError):
             speed_profile_service.update_profile(
-                state, "P1", data={"power_speed_curve": []}
+                state, "P1", data={"voltage_speed_curve": []}
             )
 
     def test_resolved_view_shows_what_the_locomotive_runs_on(self, state):
@@ -474,7 +537,7 @@ class TestSpeedProfileService:
             data={
                 "profile_id": "MODEL",
                 "name": "Model",
-                "power_speed_curve": [[0, 0], [100, 80]],
+                "voltage_speed_curve": [[3, 20], [12, 80]],
             },
         )
         speed_profile_service.create_profile(
@@ -491,7 +554,7 @@ class TestSpeedProfileService:
 
         assert view["profile_id"] == "INST"
         assert view["derived_from"] == "MODEL"
-        assert view["power_speed_curve"] == [[0.0, 0.0], [100.0, 80.0]]
+        assert view["voltage_speed_curve"] == [[3.0, 20.0], [12.0, 80.0]]
         assert view["lighting_voltage"] == 2.0
         assert view["own_fields"] == ["lighting_voltage"]
         assert speed_profile_service.resolved_view(state, "MODEL")["own_fields"] == []

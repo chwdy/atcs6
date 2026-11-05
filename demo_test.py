@@ -315,9 +315,7 @@ def setup_demo_train(network, path_dispatcher=None, sim_controller=None):
     profile = SpeedProfile(
         profile_id="demo_test_profile",
         name="Demo Test Profile",
-        power_speed_curve=list(DEFAULT_SPEED_PROFILE.power_speed_curve),
-        voltage_power_curve=list(DEFAULT_SPEED_PROFILE.voltage_power_curve),
-        lighting_voltage=DEFAULT_SPEED_PROFILE.lighting_voltage,
+        voltage_speed_curve=list(DEFAULT_SPEED_PROFILE.voltage_speed_curve),
         acceleration_rate=3.0,
         deceleration_rate=4.2,
         emergency_brake_rate=5,

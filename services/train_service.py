@@ -1128,6 +1128,25 @@ def calibrate_commit(
                 target_profile, clear_profile = profile, None
         else:
             raise ValidationError("target must be 'locomotive' or 'model'")
+        # design_new.md "A commit keeps every lighting voltage below the
+        # starting voltage": check every profile that will run on the curve
+        # before anything is written.
+        from dataclasses import replace as _replace
+        from services.speed_profile_service import resolution_problems
+
+        curve = sim.speed_calibration.measured_curve(run)
+        replacements = {
+            target_profile.profile_id: _replace(
+                target_profile, voltage_speed_curve=list(curve)
+            )
+        }
+        if clear_profile is not None and clear_profile is not target_profile:
+            replacements[clear_profile.profile_id] = _replace(
+                clear_profile, voltage_speed_curve=None, calibrated_at=None
+            )
+        problems = resolution_problems(state.speed_profile_registry, replacements)
+        if problems:
+            raise ConflictError("; ".join(problems))
         try:
             sim.speed_calibration.commit(
                 train_id, target_profile, clear_profile=clear_profile

@@ -956,20 +956,23 @@ class TrainController:
           - not power_on           → handle N (OFF; train coasts)
           - eb active              → emergency brake / zero target speed
           - pending power-off      → handle N
-          - manual power_percent   → clamp(power_speed_curve(pct), [0, atc])
+          - calibration step       → clamp(curve speed at the step voltage, [0, atc])
+          - manual power_percent   → clamp(speed for pct, [0, atc])
           - ATO / manual simulation→ the handle; physics caps it at the live
                                      distance-0 atc_limit
 
         `voltage_source_speed_kmh` is the speed the voltage emitter maps to
         the per-tick voltage (design_new.md "TrainPhysics", Voltage behavior):
-          - power_percent          → calibrated target speed
+          - power_percent          → the percent's speed (straight line from
+                                     the starting speed to the top speed)
           - ATO / manual simulation→ integrated current speed, so the
                                      locomotive runs at the speed its calculated
                                      span moves at
           - everything else        → 0.0
-        A speed of 0 maps to `lighting_voltage`: a powered train that nothing
-        drives is lit. OFF (physics checks `powered`) and the emergency cut-out
-        (`voltage_source_track_voltage = 0`) are the only 0 V outputs.
+        A speed of 0 maps to `lighting_voltage`, or 0 V when the profile sets
+        none. OFF (physics checks `powered`) and the emergency cut-out
+        (`voltage_source_track_voltage = 0`) are the only 0 V outputs whatever
+        the profile holds.
         """
         if not self.power_on:
             # Per design_new.md "Power/mode command contracts": clear manual_power_percent on
@@ -993,8 +996,8 @@ class TrainController:
                 # applies THIS tick in EVERY submode — not the
                 # `emergency_brake_rate` deceleration a plain EB uses — and the
                 # emitted `track_voltage` is driven to `0` (fully de-energized),
-                # not the stopped-but-lit `lighting_voltage` a plain zero ceiling
-                # otherwise emits. Removing the traction power stops the
+                # not the `lighting_voltage` a plain zero ceiling otherwise
+                # emits. Removing the traction power stops the
                 # locomotive in the shortest distance; the block then sits in the
                 # idle zone where its detector still reads it, so a cut-out train
                 # stays attributed rather than being ghosted.
@@ -1058,64 +1061,59 @@ class TrainController:
             )
         # design_new.md "Speed calibration", Controller owns calibration output,
         # and the driving-source selection order: an open speed-calibration pass
-        # supplies the commanded percent through get_propulsion_override and is
-        # the selected source ahead of every ordinary branch, whatever the manual
-        # submode. It is reached below EB and pending power-off (both returned
-        # earlier), stays below the ATC cap applied just below, and is never
-        # copied into manual.manual_power_percent.
-        calibration_pct = self._calibration_power_percent_override()
-        if calibration_pct is not None or (
-            self.commands.control_mode == "manual"
-            and self.manual.manual_mode_type == "power_percent"
-        ):
+        # supplies a drive voltage through get_propulsion_override and is the
+        # selected source ahead of every ordinary branch, whatever the manual
+        # submode. Its commanded speed is that voltage read forward through the
+        # curve; it stays below the ATC cap applied here and is never copied
+        # into manual.manual_power_percent. A drive of 0 is no drive: the train
+        # outputs what a powered train that nothing drives outputs.
+        calibration_voltage = self._calibration_drive_voltage_override()
+        if calibration_voltage is not None:
             profile = self._get_speed_profile()
-            driven_by_calibration = calibration_pct is not None
-            pct = (
-                float(calibration_pct)
-                if driven_by_calibration
-                else float(self.manual.manual_power_percent or 0.0)
-            )
-            target = profile.power_percent_to_speed(pct) if profile else 0.0
-            # Propulsion cap step, ATC ceiling (design_new.md "Propulsion cap
-            # step"): the commanded speed is lowered under `atc.speed_limit`
-            # (already zero when no cab, wrong-direction cab, or no/at-end
-            # authority set it to 0 earlier this tick; EB and power-off returned
-            # above as their own zero ceilings).
+            drive = max(0.0, float(calibration_voltage))
+            target = profile.voltage_to_speed(drive) if profile else 0.0
+            exact_voltage: Optional[float] = drive if drive > 0.0 else None
             cap = float(self.atc.speed_limit or 0.0)
-            # The commanded percent is the authoritative operating point for
-            # this tick, so physics maps it straight to track_voltage through
-            # voltage_power_curve (design_new.md, "Voltage behavior"). A zero
-            # percent is the curve's 0%-power point, `lighting_voltage`.
-            voltage_pct: Optional[float] = pct
             if target > cap:
-                # Per design_new.md: when the cap intervenes, the controller
-                # clamps the target to it. For an ordinary manual command it also
-                # resets manual_power_percent for this tick (set-and-forget); a
-                # calibration override is not a stored manual command — it is
-                # re-supplied each tick and never written into that field — so
-                # the field is left untouched when the pass drives. A zero cap
-                # therefore holds the train at rest instead of letting the
-                # stored percent command motion.
+                # design_new.md, "A capped crossing is discarded": the cap
+                # lowered the calibration drive, so the crossing being timed is
+                # discarded and re-measured. The capped speed is this tick's
+                # operating point, and the voltage derives from it.
                 target = cap
-                if not driven_by_calibration:
-                    self.manual.reset_power_percent_for_safety()
-                else:
-                    # design_new.md, "A capped crossing is discarded": the cap
-                    # lowered the calibration drive, so the crossing being timed
-                    # is tainted, discarded and re-measured rather than banked.
-                    # EB and power-off end the whole pass separately, through
-                    # run_still_valid at step `26f5`.
-                    self._taint_calibration_crossing_on_cap()
-                # The cap outranks the commanded percent, so the capped speed —
-                # not the discarded percent — is this tick's authoritative
-                # operating point, and voltage derives from it.
-                voltage_pct = None
+                exact_voltage = None
+                self._taint_calibration_crossing_on_cap()
             target = max(0.0, target)
             return PhysicsCommand(
                 kind=PHYSICS_KIND_TARGET_SPEED,
                 target_speed_kmh=target,
                 voltage_source_speed_kmh=target,
-                voltage_source_power_percent=voltage_pct,
+                voltage_source_track_voltage=exact_voltage,
+            )
+        # Manual `power_percent` submode: the percent maps to a speed by its
+        # definition (design_new.md "SpeedProfile", Power percent is a share of
+        # the speed range), and physics maps that speed to track_voltage through
+        # voltage_speed_curve. A zero percent is stopped.
+        if (
+            self.commands.control_mode == "manual"
+            and self.manual.manual_mode_type == "power_percent"
+        ):
+            profile = self._get_speed_profile()
+            pct = float(self.manual.manual_power_percent or 0.0)
+            target = profile.power_percent_to_speed(pct) if profile else 0.0
+            # Propulsion cap step, ATC ceiling (design_new.md "Propulsion cap
+            # step"): the commanded speed is lowered under `atc.speed_limit`.
+            # When the cap intervenes it also resets manual_power_percent
+            # (set-and-forget), so a zero cap holds the train at rest instead of
+            # letting the stored percent command motion.
+            cap = float(self.atc.speed_limit or 0.0)
+            if target > cap:
+                target = cap
+                self.manual.reset_power_percent_for_safety()
+            target = max(0.0, target)
+            return PhysicsCommand(
+                kind=PHYSICS_KIND_TARGET_SPEED,
+                target_speed_kmh=target,
+                voltage_source_speed_kmh=target,
             )
         # ATO and manual `simulation` submode: handle integration.
         #
@@ -1169,8 +1167,8 @@ class TrainController:
         calibration = self._speed_calibration
         if calibration is None:
             return
-        driving_pct = self._calibration_power_percent_override()
-        if driving_pct is None or driving_pct <= 0.0:
+        driving_voltage = self._calibration_drive_voltage_override()
+        if driving_voltage is None or driving_voltage <= 0.0:
             return
         # Any cap that lowered the calibration drive discards the crossing
         # (design_new.md "A capped crossing is discarded"); the reason code only
@@ -1201,23 +1199,21 @@ class TrainController:
             return False
         return calibration.get_propulsion_override(self.train_id) is not None
 
-    def _calibration_power_percent_override(self) -> Optional[float]:
-        """The percent an open speed-calibration pass commands this tick, or None.
+    def _calibration_drive_voltage_override(self) -> Optional[float]:
+        """The voltage an open speed-calibration pass drives this tick, or None.
 
         design_new.md "Speed calibration", Controller owns calibration output: a
         calibration pass drives through `SpeedCalibration.get_propulsion_override`
         rather than through operator commands, read through the injected
-        SpeedCalibration. Returns
-        None off-pass, when none is wired (unit-test controllers), or for
-        the union's `track_voltage` variant (a lighting run, which still drives
-        through its own physics read), so the ordinary manual source drives in
-        every one of those cases.
+        SpeedCalibration. Returns None off-pass, when none is wired (unit-test
+        controllers), or for a lighting run's `track_voltage` variant, which
+        drives through its own physics read.
         """
         calibration = self._speed_calibration
         if calibration is None:
             return None
         override = calibration.get_propulsion_override(self.train_id)
-        if override is None or getattr(override, "kind", None) != "power_percent":
+        if override is None or getattr(override, "kind", None) != "drive_voltage":
             return None
         return float(getattr(override, "value", 0.0))
 
@@ -1231,8 +1227,8 @@ class TrainController:
         `TrainPhysics` reaches into the run registry. Read through the same
         injected SpeedCalibration as the speed-calibration override above.
         Returns None off-run, when none is wired
-        (unit-test controllers), or for the union's `power_percent` variant (a
-        speed pass, handled in the manual branch), so the ordinary voltage source
+        (unit-test controllers), or for the union's `drive_voltage` variant (a
+        speed pass, handled in its own branch), so the ordinary voltage source
         drives in every one of those cases.
         """
         calibration = self._speed_calibration

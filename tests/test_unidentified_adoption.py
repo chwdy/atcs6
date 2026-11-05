@@ -557,10 +557,10 @@ def test_adoption_gives_the_train_its_own_profile_and_retires_the_unidentified_t
     assert instance is not None and instance.derived_from == "default_T1"
     model = network.speed_profiles.get("default_T1")
     assert model is not None
-    assert model.power_speed_curve[-1] == (100.0, 80.0)
+    assert model.voltage_speed_curve[-1] == (12.0, 80.0)
     # The profile the train drives on resolves to that curve.
     resolved = network.speed_profiles.resolve(train.speed_profile_id)
-    assert resolved.power_speed_curve[-1] == (100.0, 80.0)
+    assert resolved.voltage_speed_curve[-1] == (12.0, 80.0)
     # The unidentified train's seeded pair is retired.
     assert network.speed_profiles.get(unidentified_profile_id) is None
 

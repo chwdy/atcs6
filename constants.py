@@ -148,11 +148,10 @@ LIGHTING_CLEAR_HOLD_READS: int = 30
 # keeps its `train_id`.
 UNIDENTIFIED_GAP_HOLD_S: float = 5.0
 
-# Speed calibration (design_new.md "Speed calibration"). A pass sweeps
-# power_percent down from 100% in CALIBRATION_POWER_STEP_PERCENT steps and
-# measures the speed the locomotive reaches at each, filling
-# SpeedProfile.power_speed_curve. The 0% point needs no measurement: 0% power
-# is lighting_voltage, so (0%, 0 km/h) is the curve's origin by definition.
+# Speed calibration (design_new.md "Speed calibration"). A pass sweeps its
+# steps down from max_voltage, each a share of max_voltage
+# CALIBRATION_POWER_STEP_PERCENT apart, and measures the speed the locomotive
+# reaches at each, filling SpeedProfile.voltage_speed_curve.
 CALIBRATION_POWER_STEP_PERCENT: int = 20
 
 # A step that measures faster than the step above it by no more than this
@@ -203,10 +202,11 @@ CALIBRATION_RUNOFF_MARGIN_CM: float = 5.0
 CALIBRATION_OFF_B_WAIT_READS: int = LIGHTING_CLEAR_HOLD_READS + OCCUPANCY_OFF_THRESHOLD + 10
 
 # When a pass opens with the train not standing in an outer block, it first
-# drives the train at this power into the nearer one (design_new.md "Speed
-# calibration", The pass first moves the train into an outer block). A fixed
-# power, because the speed profile is what the pass is about to measure.
-CALIBRATION_MOVE_POWER_PERCENT: float = 50.0
+# drives the train at this voltage into the nearer one (design_new.md "Speed
+# calibration", The move runs at `CALIBRATION_MOVE_VOLTAGE_V`). A fixed voltage,
+# because a target speed and a power percent are both read through the curve
+# the pass is about to measure.
+CALIBRATION_MOVE_VOLTAGE_V: float = 6.0
 
 # When a measured crossing is capped by the leg's own reservation end (the
 # stretch is too short for this step's speed even at the zero reservation-end
@@ -225,16 +225,15 @@ CALIBRATION_CAP_RETRY_LIMIT: int = 4
 LIGHTING_VOLTAGE_STEP_V: float = 0.1
 
 # Seeded model-profile defaults (design_new.md "SpeedProfile", the `max_voltage`
-# and `lighting_voltage` field descriptions). A model `SpeedProfile` created at
-# train creation gets these two voltages until calibration or an imported roster
-# entry replaces them. `DEFAULT_SEEDED_MAX_VOLTAGE_V` is the top of the usable
-# `track_voltage` range for the first mapping stage; `DEFAULT_SEEDED_LIGHTING_
-# VOLTAGE_V` is the lit-but-stationary voltage and the 0%-power anchor, chosen
-# below the Hardware Setup default `current_sense_min_drive_v` (4.0 V) so a
-# freshly placed train satisfies "Occupancy source follows drive state" without
-# immediate recalibration.
+# and `voltage_speed_curve` field descriptions). A model `SpeedProfile` created
+# at train creation gets these until calibration, a hand edit, or an imported
+# roster entry replaces them. `DEFAULT_SEEDED_MAX_VOLTAGE_V` is the top of the
+# usable `track_voltage` range. `DEFAULT_SEEDED_STARTING_VOLTAGE_V` is the first
+# point of the seeded curve, the straight line from 0 V -> 0 km/h to
+# `max_voltage` -> the train's `max_speed`; a seeded profile sets no
+# `lighting_voltage`.
 DEFAULT_SEEDED_MAX_VOLTAGE_V: float = 12.0
-DEFAULT_SEEDED_LIGHTING_VOLTAGE_V: float = 1.5
+DEFAULT_SEEDED_STARTING_VOLTAGE_V: float = 1.5
 
 
 # Commissioning session bounds (design_new.md "Hardware REST payload schemas").

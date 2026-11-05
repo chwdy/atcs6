@@ -1,7 +1,8 @@
 """Per-train default SpeedProfile seeding (design_new.md "SpeedProfile").
 
-Every train must have a default `SpeedProfile` whose `power_speed_curve` maps
-100% -> the OWNING train's configured `max_speed`, seeded when the train's
+Every train must have a default `SpeedProfile` whose `voltage_speed_curve`
+reaches the OWNING train's configured `max_speed` at `max_voltage` (so 100%
+power is that speed), seeded when the train's
 default profile is created. `SimulationController.add_train(...)` is the
 canonical runtime entry point for adding a train; before this change it left
 `speed_profile_id = None`, so profile-less trains shared the module-global
@@ -10,6 +11,7 @@ train's max_speed — wrong manual `power_percent` behaviour for any train whose
 `max_speed != 100`.
 """
 
+import pytest
 from network import RailwayNetwork
 from track import Tile, TRACK_EW
 from path_dispatcher import PathDispatcher
@@ -56,7 +58,7 @@ def test_add_train_seeds_profile_anchored_at_max_speed():
     # stays linear. (Consumers read a train's calibration through resolve.)
     profile = net.speed_profiles.resolve(train.speed_profile_id)
     assert profile.power_percent_to_speed(100.0) == 60.0
-    assert profile.power_percent_to_speed(50.0) == 30.0
+    assert profile.power_percent_to_speed(50.0) == pytest.approx(7.5 + (60.0 - 7.5) / 2)
     assert profile.power_percent_to_speed(0.0) == 0.0
 
     # The physics resolver (`TrainPhysics._get_speed_profile`) returns it.
@@ -109,7 +111,7 @@ def test_profile_less_train_resolves_to_max_speed_anchored_default():
 
     resolved = TrainPhysics(train.train_id, net)._get_speed_profile()
     assert resolved.power_percent_to_speed(100.0) == 75.0
-    assert resolved.power_percent_to_speed(50.0) == 37.5
+    assert resolved.power_percent_to_speed(50.0) == pytest.approx(9.375 + (75.0 - 9.375) / 2)
     assert resolved.power_percent_to_speed(0.0) == 0.0
     # Distinct from the shared module-global default (which would map 100 -> 100).
     assert resolved.profile_id != "default"

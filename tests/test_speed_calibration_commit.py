@@ -6,7 +6,7 @@ calibrated train names, so that one locomotive runs on the new curve and no
 other changes. **Promote to model** writes them onto the model profile the
 instance derives from and clears them from the instance, so every locomotive of
 that model whose instance leaves them unset runs on the new curve. Commit writes
-`power_speed_curve` and `calibrated_at` only — never `model`, and never
+`voltage_speed_curve` and `calibrated_at` only — never `model`, and never
 `voltage_power_curve`.
 """
 
@@ -82,11 +82,11 @@ def test_save_to_locomotive_writes_the_instance_and_leaves_siblings_alone(calibr
     # The calibrated train's own instance carries the measured curve ...
     assert written is inst1
     assert inst1.calibrated_at is not None
-    assert inst1.power_speed_curve[-1] == (100.0, 80.0)
+    assert inst1.voltage_speed_curve[-1] == (12.0, 80.0)
     # ... while the model and the sibling instance are untouched.
     assert model.calibrated_at is None
     assert inst2.calibrated_at is None
-    assert inst2.power_speed_curve is None
+    assert inst2.voltage_speed_curve is None
     # T2 still resolves to the model's default curve, not T1's measurement.
     resolved_t2 = state.network.speed_profiles.resolve("ef66_i2")
     assert resolved_t2.power_percent_to_speed(100.0) == 100.0
@@ -103,25 +103,25 @@ def test_promote_to_model_writes_the_model_and_clears_the_instance(calibrated):
     # The model profile carries the measured curve ...
     assert written is model
     assert model.calibrated_at is not None
-    assert model.power_speed_curve[-1] == (100.0, 80.0)
+    assert model.voltage_speed_curve[-1] == (12.0, 80.0)
     # ... and the calibrated train's instance is cleared, so it falls back to
     # following the model.
-    assert inst1.power_speed_curve is None
+    assert inst1.voltage_speed_curve is None
     assert inst1.calibrated_at is None
     # Every locomotive of the model now runs on the new curve — the sibling ...
-    assert state.network.speed_profiles.resolve("ef66_i2").power_speed_curve[-1] == (
-        100.0,
+    assert state.network.speed_profiles.resolve("ef66_i2").voltage_speed_curve[-1] == (
+        12.0,
         80.0,
     )
     # ... and the calibrated train itself, through its cleared instance.
-    assert state.network.speed_profiles.resolve("ef66_i1").power_speed_curve[-1] == (
-        100.0,
+    assert state.network.speed_profiles.resolve("ef66_i1").voltage_speed_curve[-1] == (
+        12.0,
         80.0,
     )
 
 
 def test_commit_never_writes_the_model_field_on_the_instance(calibrated):
-    # design_new.md "What commit writes": commit writes power_speed_curve and
+    # design_new.md "What commit writes": commit writes voltage_speed_curve and
     # calibrated_at only — `model` is edited on the model profile, never here.
     state, _train, _model, inst1, _inst2, _entry, _run = calibrated
     train_service.calibrate_commit(state, "T1", target="locomotive")

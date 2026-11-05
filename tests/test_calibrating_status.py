@@ -58,7 +58,7 @@ def _make_controller(override=None):
     return controller
 
 
-_SPEED_PASS = CalibrationPropulsionOverride(kind="power_percent", value=40.0)
+_SPEED_PASS = CalibrationPropulsionOverride(kind="drive_voltage", value=4.8)
 _LIGHTING_RUN = CalibrationPropulsionOverride(kind="track_voltage", value=3.0)
 
 
@@ -87,7 +87,7 @@ def test_off_and_eb_outrank_calibrating():
 
 
 def test_the_run_drives_outside_the_power_percent_submode():
-    """The run's percent is the drive source whatever the submode is: in the
+    """The run's voltage is the drive source whatever the submode is: in the
     `simulation` submode the controller would otherwise send the handle notch."""
     controller = _make_controller(_SPEED_PASS)
     controller.manual.manual_mode_type = "simulation"
@@ -96,7 +96,7 @@ def test_the_run_drives_outside_the_power_percent_submode():
     cmd = controller.produce_physics_command()
 
     assert cmd.kind == PHYSICS_KIND_TARGET_SPEED
-    # The run's percent is never copied into the stored manual percent.
+    # The run's drive is never copied into the stored manual percent.
     assert controller.manual.manual_power_percent == 0
 
 

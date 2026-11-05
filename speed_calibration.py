@@ -1,14 +1,14 @@
-"""Speed calibration — measure a locomotive's power/speed response and write it
-into a `SpeedProfile` (design_new.md "Speed calibration").
+"""Speed calibration — measure a locomotive's voltage/speed response and write
+it into a `SpeedProfile` as `voltage_speed_curve` (design_new.md "Speed
+calibration").
 
-A pass sweeps `power_percent` down from `100%` in `CALIBRATION_POWER_STEP_PERCENT`
-steps and measures the speed that comes back at each. The first step that does
-not carry the train across the measured block records `0 km/h` for itself and
-every step below it and ends the sweep: a power that cannot move the train
-cannot move it with less. It must work this way
-round: `power_speed_curve` is the curve that turns a wanted speed into a control
-value, and it is the very thing the pass is building, so the pass must not ask
-for a target speed while building it.
+A pass sweeps its steps down from `max_voltage` (each step is a share of
+`max_voltage`, `CALIBRATION_POWER_STEP_PERCENT` apart) and measures the speed
+that comes back at each. The first step that does not carry the train across
+the measured block ends the sweep, and gives no point. It must work this way
+round: `voltage_speed_curve` is the curve that turns a wanted speed into a
+voltage, and it is the very thing the pass is building, so the pass must not
+ask for a target speed while building it.
 
 **Auto profiling** times the head across one operator-named measured block, B,
 between two confirmed block entries — into B and into the block after it. Timing
@@ -33,9 +33,8 @@ only the committed result persists, through ordinary `SpeedProfile` persistence.
 
 This module also owns the second, smaller procedure (design_new.md
 "Lighting-voltage calibration"): finding the one voltage at which a locomotive
-is lit and still holds, and writing it to `lighting_voltage`. It comes first for
-a newly added locomotive, because a speed pass takes its bottom step from that
-anchor. It has no measurement step at all — the operator watching the locomotive
+is lit and still holds, and writing it to `lighting_voltage`, below the
+starting voltage. It has no measurement step at all — the operator watching the locomotive
 is the instrument — so `LightingCalibrationRun` carries a candidate voltage the
 operator steps up and down and nothing else.
 """
@@ -45,11 +44,12 @@ from statistics import median
 from datetime import datetime, timezone
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
+from speed_profile import curve_problems
 from constants import (
     CALIBRATION_CAP_RETRY_LIMIT,
     CALIBRATION_HALF_POWER_S,
     CALIBRATION_MIN_CROSSING_SPEED_KMH,
-    CALIBRATION_MOVE_POWER_PERCENT,
+    CALIBRATION_MOVE_VOLTAGE_V,
     CALIBRATION_OFF_B_WAIT_READS,
     CALIBRATION_POWER_STEP_PERCENT,
     CALIBRATION_ROUND_TRIPS,
@@ -191,7 +191,7 @@ class CalibrationObservation:
 class CalibrationCommand:
     """What the pass wants this tick, decided by `advance(...)`.
 
-    `power_percent` is the run state the controller reads back through
+    `drive_voltage` is the run state the controller reads back through
     `get_propulsion_override(...)` and drives with; the pass never sends it as a
     command. `reverse_cab` is applied through the ordinary stopped-only cab rule.
     `arm_leg_to` and `deactivate_route` are the two authority intents Plan step
@@ -203,7 +203,7 @@ class CalibrationCommand:
     same authority over the pass that they hold over any manual command.
     """
 
-    power_percent: Optional[float] = None
+    drive_voltage: Optional[float] = None
     reverse_cab: bool = False
     deactivate_route: bool = False
     """Tear the active leg route down. Set on every leg-end that did NOT reach
@@ -229,14 +229,15 @@ class CalibrationPropulsionOverride:
     controller during Action (design_new.md "Speed calibration", Controller owns
     calibration output). A closed two-variant union:
 
-    - `kind == "power_percent"`: the speed pass commands this `value` percent in
-      place of the ordinary manual power source. It maps through
-      `power_speed_curve` and stays under the same ATC / service-stop / EB /
-      pending-power-off / output-safe-state caps as any manual percent.
+    - `kind == "drive_voltage"`: the speed pass drives this `value` voltage in
+      place of the ordinary manual source. Its commanded speed is that voltage
+      read forward through `voltage_speed_curve`, and it stays under the same
+      ATC / service-stop / EB / pending-power-off / output-safe-state caps as
+      any driving source. A drive of `0` is no drive.
     - `kind == "track_voltage"`: a lighting-voltage run substitutes this exact
       voltage magnitude. The controller reads it here and hands it to physics on
       `PhysicsCommand.voltage_source_track_voltage`, in place of the ordinary
-      stopped-but-lit / speed-derived voltage; the speed pass never returns it.
+      standing / speed-derived voltage; the speed pass never returns it.
 
     The controller reads this through `SpeedCalibration.get_propulsion_override`.
     It is never copied into `manual.manual_power_percent` or `handle_position`, and
@@ -255,6 +256,11 @@ class CalibrationRun:
     profile_id: str
     power_steps: List[float]
     """The power steps, highest first (see `power_sweep()`)."""
+    # The profile's `max_voltage` when the pass opened. A step's percent is a
+    # share of it, so the step drives `power / 100 * max_voltage` volts and its
+    # measured point is stored at that voltage (design_new.md "Speed
+    # calibration", A pass measures `voltage_speed_curve`).
+    max_voltage: float = 12.0
 
     # The stretch. `outer_block_ids` is (A, C); `heading_to` indexes the one the
     # train is currently running toward, so it names the stopping room this leg
@@ -279,7 +285,7 @@ class CalibrationRun:
     """The outer block the move drives the train into, written by
     `RouteExecutor` when it builds the move's route; "" before then."""
     move_slowing: bool = False
-    """Whether the move drives half `CALIBRATION_MOVE_POWER_PERCENT` because
+    """Whether the move drives half `CALIBRATION_MOVE_VOLTAGE_V` because
     the head has reached the outer block (design_new.md "Speed calibration",
     The move stops on the detector)."""
     move_cut: bool = False
@@ -418,9 +424,19 @@ class CalibrationRun:
         )
         return max(0.0, length) + CALIBRATION_RUNOFF_MARGIN_CM
 
+    def step_voltage(self, power: float) -> float:
+        """The voltage a step of `power` percent drives: its share of
+        `max_voltage`."""
+        return float(power) / 100.0 * float(self.max_voltage)
+
+    @property
+    def current_voltage(self) -> float:
+        """The `track_voltage` this step drives."""
+        return self.step_voltage(self.current_power)
+
     @property
     def current_power(self) -> float:
-        """The `power_percent` this step commands."""
+        """The step's share of `max_voltage`, in percent."""
         if self.step_index >= len(self.power_steps):
             return 0.0
         return self.power_steps[self.step_index]
@@ -451,6 +467,8 @@ class CalibrationRun:
             "step_index": self.step_index,
             "step_count": len(self.power_steps),
             "current_power_percent": self.current_power,
+            "current_voltage": self.current_voltage,
+            "max_voltage": self.max_voltage,
             "crossings_done": len(self.crossings),
             "crossings_target": self.crossings_target,
             "samples": [
@@ -494,9 +512,8 @@ def power_sweep() -> List[float]:
     steps (design_new.md "Speed calibration", The sweep runs down from `100%` in
     `CALIBRATION_POWER_STEP_PERCENT` steps).
 
-    `0%` is not measured. `0%` power is `lighting_voltage`, the voltage at which
-    the train is lit and holds, so `(0%, 0 km/h)` is the curve's origin by
-    definition and the commit writes it as such.
+    Each step drives its share of `max_voltage` (see
+    `CalibrationRun.step_voltage`); `0` is not measured.
     """
     step = max(1, int(CALIBRATION_POWER_STEP_PERCENT))
     return [float(p) for p in range(100, 0, -step)]
@@ -579,6 +596,7 @@ class SpeedCalibration:
             train_id=train.train_id,
             profile_id=profile.profile_id,
             power_steps=power_sweep(),
+            max_voltage=float(getattr(profile, "max_voltage", 12.0) or 12.0),
             measured_block_id=measured_block_id,
             outer_block_ids=(outer[0], outer[1]),
             block_length_cm=float(block_length_cm or 0.0),
@@ -665,7 +683,7 @@ class SpeedCalibration:
             run.train_id, operation="speed_calibration", success=False, reason=reason
         )
         self.runs.pop(run.train_id, None)
-        return CalibrationCommand(power_percent=0.0, deactivate_route=True)
+        return CalibrationCommand(drive_voltage=0.0, deactivate_route=True)
 
     def taint_current_crossing(self, train_id: str, reason: str) -> bool:
         """Mark the crossing now being timed as capped, so it is discarded
@@ -763,7 +781,7 @@ class SpeedCalibration:
             run.move_cut = False
             run.move_blocks_behind = ()
             return CalibrationCommand(
-                power_percent=CALIBRATION_MOVE_POWER_PERCENT, move_into_place=True
+                drive_voltage=CALIBRATION_MOVE_VOLTAGE_V, move_into_place=True
             )
 
         if obs.path_present:
@@ -794,7 +812,7 @@ class SpeedCalibration:
                 run,
                 f"the train did not reach {target} within "
                 f"{CALIBRATION_STEP_TIMEOUT_S:.0f} s at "
-                f"{CALIBRATION_MOVE_POWER_PERCENT:.0f}% power",
+                f"{CALIBRATION_MOVE_VOLTAGE_V:.0f}% power",
             )
         return None
 
@@ -853,7 +871,7 @@ class SpeedCalibration:
             reverse_cab = run.needs_reverse
             run.needs_reverse = False
             return CalibrationCommand(
-                power_percent=run.current_power,
+                drive_voltage=run.current_voltage,
                 reverse_cab=reverse_cab,
                 arm_leg_to=far_block,
             )
@@ -994,7 +1012,7 @@ class SpeedCalibration:
         run.phase = PHASE_STOPPING
         run.runoff_until = None
         run.half_power_until = obs.now + CALIBRATION_HALF_POWER_S
-        return CalibrationCommand(power_percent=0.0)
+        return CalibrationCommand(drive_voltage=0.0)
 
     def _advance_clearing(
         self, run: CalibrationRun, obs: CalibrationObservation
@@ -1114,8 +1132,8 @@ class SpeedCalibration:
         crossing_count = len(run.crossings)
         run.crossings = []
 
-        # `power_speed_curve` must stay invertible, so samples have to rise with
-        # power. The sweep runs down, so the step measured just before this one
+        # `voltage_speed_curve` must stay invertible, so samples have to rise
+        # with voltage. The sweep runs down, so the step measured just before this one
         # had more power. A step faster than it by no more than
         # `CALIBRATION_SAME_SPEED_FRACTION` is the same speed and records that
         # speed (design_new.md "Speed calibration", A step that measures close
@@ -1284,7 +1302,7 @@ class SpeedCalibration:
         # stall kept authority), so that caller passes deactivate_route=True to
         # tear it down.
         return CalibrationCommand(
-            power_percent=0.0, deactivate_route=deactivate_route
+            drive_voltage=0.0, deactivate_route=deactivate_route
         )
 
     @staticmethod
@@ -1563,24 +1581,25 @@ class SpeedCalibration:
                 and self._leg_authority_present(train_id)
             ):
                 half = run.half_power or run.move_slowing
-                value = CALIBRATION_MOVE_POWER_PERCENT * (0.5 if half else 1.0)
-            return CalibrationPropulsionOverride(kind="power_percent", value=float(value))
+                value = CALIBRATION_MOVE_VOLTAGE_V * (0.5 if half else 1.0)
+            return CalibrationPropulsionOverride(kind="drive_voltage", value=float(value))
         if run is not None and run.is_measuring:
             driving = run.phase in (PHASE_LEG, PHASE_CLEARING) and run.leg_armed
             if driving and not self._leg_authority_present(train_id):
                 driving = False
+            step_v = run.current_voltage
             if driving and run.phase == PHASE_CLEARING:
-                # The run-off runs at the step's power, the power whose speed
-                # timed it.
-                value = run.current_power
+                # The run-off runs at the step's voltage, the voltage whose
+                # speed timed it.
+                value = step_v
             elif driving:
-                value = run.current_power * (0.5 if run.half_power else 1.0)
+                value = step_v * (0.5 if run.half_power else 1.0)
             elif run.phase == PHASE_STOPPING and run.half_power:
-                value = run.current_power * 0.5
+                value = step_v * 0.5
             else:
                 value = 0.0
             return CalibrationPropulsionOverride(
-                kind="power_percent", value=float(value)
+                kind="drive_voltage", value=float(value)
             )
         lighting = self.lighting_runs.get(train_id)
         if lighting is not None:
@@ -1612,23 +1631,25 @@ class SpeedCalibration:
     # -- commit -----------------------------------------------------------
 
     def measured_curve(self, run: CalibrationRun) -> List[Tuple[float, float]]:
-        """The `power_speed_curve` this pass measured, origin included, in
-        order of power. The sweep runs down, so the samples arrive highest
-        first."""
-        points = sorted((s.power_percent, s.speed_kmh) for s in run.samples)
-        return [(0.0, 0.0)] + points
+        """The `voltage_speed_curve` this pass measured: one point per step that
+        moved the train, at the voltage the step drove, in order of voltage
+        (design_new.md "Speed calibration", A pass measures
+        `voltage_speed_curve`). A step that recorded `0 km/h` gives no point."""
+        return sorted(
+            (run.step_voltage(s.power_percent), s.speed_kmh)
+            for s in run.samples
+            if s.speed_kmh > 0.0
+        )
 
     def commit(
         self, train_id: str, target_profile, *, clear_profile=None
     ) -> List[Tuple[float, float]]:
         """Write the measured curve onto `target_profile` and close the run.
 
-        Writes two fields and no others: `power_speed_curve` from the pass's
+        Writes two fields and no others: `voltage_speed_curve` from the pass's
         samples and `calibrated_at` from the wall clock (design_new.md "Speed
-        calibration", What commit writes). It must not write `voltage_power_curve`
-        — **Lighting-voltage calibration** is the one procedure that moves that
-        curve's anchor — and it must not write a motion rate, a notch table, or
-        `model`.
+        calibration", What commit writes). It must not write `lighting_voltage`,
+        a motion rate, a notch table, or `model`.
 
         Which records arrive here is the operator's commit-target choice,
         resolved by the caller. `target_profile` is the record the two fields are
@@ -1636,7 +1657,9 @@ class SpeedCalibration:
         locomotive**, or the model profile the instance derives from for
         **Promote to model**. On promote, `clear_profile` is that instance, whose
         two measured fields are cleared in the same commit so it falls back to
-        following the freshly-written model.
+        following the freshly-written model. The caller checks the lighting
+        voltages of the profiles that will run on the curve (design_new.md "A
+        commit keeps every lighting voltage below the starting voltage").
         """
         run = self.runs.get(train_id)
         if run is None:
@@ -1648,26 +1671,24 @@ class SpeedCalibration:
             raise ValueError("Calibration pass has not measured every step")
 
         curve = self.measured_curve(run)
-        speeds = [s for _p, s in curve]
-        if any(b + _MONOTONIC_EPSILON_KMH < a for a, b in zip(speeds, speeds[1:])):
-            raise ValueError(
-                "Measured curve falls with power and could not be read backwards"
-            )
+        problems = curve_problems(curve, run.max_voltage)
+        if problems:
+            raise ValueError("Measured curve cannot be stored: " + "; ".join(problems))
 
         stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
-        target_profile.power_speed_curve = curve
+        target_profile.voltage_speed_curve = curve
         target_profile.calibrated_at = stamp
         # Promote clears the instance's two measured fields so it goes back to
         # following the model curve just written.
         if clear_profile is not None and clear_profile is not target_profile:
-            clear_profile.power_speed_curve = None
+            clear_profile.voltage_speed_curve = None
             clear_profile.calibrated_at = None
         self.runs.pop(train_id, None)
         self._emit_command_result(
             train_id,
             operation="speed_calibration",
             success=True,
-            reason=f"wrote {len(run.samples)} measured points to {target_profile.profile_id}",
+            reason=f"wrote {len(curve)} measured points to {target_profile.profile_id}",
         )
         return curve
 
@@ -1688,7 +1709,7 @@ class SpeedCalibration:
             train_id=train.train_id,
             profile_id=profile.profile_id,
             candidate_voltage=_clamp(
-                float(getattr(profile, "lighting_voltage", 0.0)), 0.0, ceiling
+                float(getattr(profile, "lighting_voltage", None) or 0.0), 0.0, ceiling
             ),
             ceiling_voltage=ceiling,
         )
@@ -1795,21 +1816,14 @@ class SpeedCalibration:
 
         `profile` is the record the train names — its instance profile in the
         ordinary case (design_new.md "Lighting-voltage calibration", What Save
-        writes). `lighting_voltage` is also the 0%-power point of
-        `voltage_power_curve`, so the anchor of the curve this train resolves
-        moves with the new value. An instance profile stores no
-        `voltage_power_curve` of its own, so the move shows up only in the curve
-        it resolves and the model profile's stored curve is untouched; a model
-        profile, which does store the curve, has its bottom anchor moved here,
-        dropping any point at or below the new anchor.
+        writes). It moves no point of `voltage_speed_curve`: every point is
+        stored at the voltage it was measured at.
         """
         run = self.lighting_runs.get(train_id)
         if run is None:
             return None
         value = _clamp(run.candidate_voltage, 0.0, run.ceiling_voltage)
         profile.lighting_voltage = value
-        if getattr(profile, "derived_from", None) is None:
-            profile.voltage_power_curve = self._reanchored_curve(profile, value)
         self.lighting_runs.pop(train_id, None)
         self._emit_command_result(
             train_id,
@@ -1856,6 +1870,12 @@ class SpeedCalibration:
         then rather than over-capped at save time.
         """
         hi = float(getattr(profile, "max_voltage", 12.0))
+        # A standing train at its lighting voltage must not move, so the
+        # candidate also stays below the starting voltage (design_new.md
+        # "SpeedProfile", A lighting voltage stays below the starting voltage).
+        starting = getattr(profile, "starting_voltage", None)
+        if isinstance(starting, (int, float)) and starting > 0:
+            hi = min(hi, float(starting))
         if not is_simulation:
             try:
                 from hardware_config import get_hardware_config
@@ -1873,25 +1893,6 @@ class SpeedCalibration:
 
         get = self._operation_mode
         return get is not None and get() is OperationMode.SIMULATION
-
-    @staticmethod
-    def _reanchored_curve(profile, anchor: float) -> List[Tuple[float, float]]:
-        """`voltage_power_curve` with its 0%-power point moved to `anchor`.
-
-        A point is dropped when it sits at or below the new anchor (it names a
-        voltage that does not move this locomotive) and when it carries 0%
-        power (it is the old anchor). The second test is what keeps the curve
-        to exactly one 0% point when the anchor moves *down*: the old anchor is
-        above the new one, so the first test alone would leave it in place.
-        """
-        kept = [
-            (float(v), float(p))
-            for v, p in getattr(profile, "voltage_power_curve", []) or []
-            if float(v) > anchor and float(p) > 0.0
-        ]
-        if not kept:
-            kept = [(float(getattr(profile, "max_voltage", 12.0)), 100.0)]
-        return [(anchor, 0.0)] + sorted(kept)
 
     # -- reporting --------------------------------------------------------
 

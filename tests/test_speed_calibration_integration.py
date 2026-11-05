@@ -402,12 +402,12 @@ def test_the_runtime_tick_arms_the_pass_as_a_one_off_route(state):
     assert leg_route.tasks[0].task_location.block_id == block_id
     assert leg_route.tasks[1].task_location.block_id == far_block
 
-    # The leg has real authority (a path), and the step's power drives the train
-    # back through get_propulsion_override, not a zero no-authority cap.
+    # The leg has real authority (a path), and the step's voltage drives the
+    # train back through get_propulsion_override, not a zero no-authority cap.
     assert sim.path_dispatcher.active_path_id_by_train(train_id) is not None
     override = sim.speed_calibration.get_propulsion_override(train_id)
-    assert override is not None and override.kind == "power_percent"
-    assert override.value == run.current_power
+    assert override is not None and override.kind == "drive_voltage"
+    assert override.value == run.current_voltage
 
     sim.update(0.1)
     assert run.phase != PHASE_FAILED or "authority" in run.failure_reason
@@ -420,7 +420,7 @@ def test_a_pass_writes_nothing_until_it_is_committed(state):
     profile = state.network.speed_profiles.get(
         state.network.trains[train_id].speed_profile_id
     )
-    before = list(profile.power_speed_curve)
+    before = list(profile.voltage_speed_curve)
 
     _ready_manual_train(sim, state.network, train_id)
     sim.update(0.1)
@@ -428,7 +428,7 @@ def test_a_pass_writes_nothing_until_it_is_committed(state):
     for _ in range(20):
         sim.update(0.1)
 
-    assert profile.power_speed_curve == before
+    assert profile.voltage_speed_curve == before
     assert profile.calibrated_at is None
 
 
@@ -651,7 +651,7 @@ def test_a_calibration_leg_completes_through_ordinary_stop_completion(state):
     profile = state.network.speed_profiles.get(
         state.network.trains[train_id].speed_profile_id
     )
-    curve_before = list(profile.power_speed_curve)
+    curve_before = list(profile.voltage_speed_curve)
 
     _ready_manual_train(sim, state.network, train_id)
     sim.update(0.1)
@@ -677,7 +677,7 @@ def test_a_calibration_leg_completes_through_ordinary_stop_completion(state):
         "(Observe step `9d8b`), not a latch-cancel"
     )
     # The pass writes nothing to the profile until an operator commits.
-    assert profile.power_speed_curve == curve_before
+    assert profile.voltage_speed_curve == curve_before
     assert profile.calibrated_at is None
 
 

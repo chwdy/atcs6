@@ -64,22 +64,18 @@ def create_test_train_with_controller(
 
 
 class TestSpeedProfile:
-    """Tests for SpeedProfile class."""
+    """Tests for SpeedProfile class: the measured voltage/speed curve and the
+    defined power percent (design_new.md "SpeedProfile")."""
 
     @pytest.fixture
     def basic_profile(self) -> SpeedProfile:
-        """Create a basic speed profile for testing.
-
-        Uses the default two-stage calibration (power_speed_curve
-        [(0,0),(100,100)] + voltage_power_curve synthesized linear from
-        lighting_voltage (0%) to max_voltage (100%) per design_new.md
-        "SpeedProfile"). With lighting_voltage=2.0 / max_voltage=12.0 this is
-        [(2,0),(12,100)], which maps 30 -> 5 V, 60 -> 8 V, 120 -> 12 V.
-        """
+        """A measured curve with a dead band below 3 V, a steep rise to 6 V and
+        a flat top from 9 V (the shape a real locomotive gives)."""
         return SpeedProfile(
             profile_id="test_profile",
             name="Test Profile",
             lighting_voltage=2.0,
+            voltage_speed_curve=[(3.0, 30.0), (6.0, 90.0), (9.0, 120.0), (12.0, 120.0)],
             acceleration_rate=10.0,
             deceleration_rate=15.0,
             emergency_brake_rate=30.0,
@@ -94,34 +90,53 @@ class TestSpeedProfile:
         assert basic_profile.deceleration_rate == 15.0
         assert basic_profile.emergency_brake_rate == 30.0
 
-    def test_speed_to_voltage_at_calibration_points(self, basic_profile: SpeedProfile):
-        """Two-stage conversion returns exact values at calibration points."""
-        assert basic_profile.speed_to_voltage_two_stage(0.0) == 2.0
-        assert basic_profile.speed_to_voltage_two_stage(30.0) == 5.0
-        assert basic_profile.speed_to_voltage_two_stage(60.0) == 8.0
-        assert basic_profile.speed_to_voltage_two_stage(120.0) == 12.0
+    def test_starting_voltage_and_speed_are_the_first_point(self, basic_profile):
+        assert basic_profile.starting_voltage == 3.0
+        assert basic_profile.starting_speed_kmh == 30.0
+        assert basic_profile.top_speed_kmh == 120.0
 
-    def test_speed_to_voltage_interpolation(self, basic_profile: SpeedProfile):
-        """Two-stage conversion interpolates between points."""
-        # 45 km/h -> 45% -> 2 + 0.45*(12-2) = 6.5V
-        voltage_45 = basic_profile.speed_to_voltage_two_stage(45.0)
-        assert 6.4 < voltage_45 < 6.6
+    def test_voltage_to_speed_reads_the_curve_forward(self, basic_profile):
+        """Below the starting voltage the locomotive does not move steadily, so
+        it reads 0 km/h; above it the curve interpolates."""
+        assert basic_profile.voltage_to_speed(2.9) == 0.0
+        assert basic_profile.voltage_to_speed(3.0) == 30.0
+        assert basic_profile.voltage_to_speed(4.5) == pytest.approx(60.0)
+        assert basic_profile.voltage_to_speed(12.0) == 120.0
 
-        # 15 km/h -> 15% -> 2 + 0.15*(12-2) = 3.5V
-        voltage_15 = basic_profile.speed_to_voltage_two_stage(15.0)
-        assert 3.4 < voltage_15 < 3.6
+    def test_speed_to_voltage_reads_the_curve_backward(self, basic_profile):
+        assert basic_profile.speed_to_voltage(30.0) == 3.0
+        assert basic_profile.speed_to_voltage(60.0) == pytest.approx(4.5)
+        assert basic_profile.speed_to_voltage(90.0) == 6.0
 
-    def test_speed_to_voltage_clamps_max(self, basic_profile: SpeedProfile):
-        """Two-stage conversion clamps at maximum."""
-        assert basic_profile.speed_to_voltage_two_stage(150.0) == 12.0
-        assert basic_profile.speed_to_voltage_two_stage(200.0) == 12.0
+    def test_a_flat_stretch_maps_to_its_lowest_voltage(self, basic_profile):
+        """design_new.md "Speed to voltage reads the curve backward": where the
+        curve runs flat, a speed maps to the lowest voltage of that stretch."""
+        assert basic_profile.speed_to_voltage(120.0) == 9.0
 
-    def test_speed_to_voltage_zero_and_negative(self, basic_profile: SpeedProfile):
-        """A speed of zero or below is 0% power, which is `lighting_voltage`:
-        a powered train that nothing drives is lit (design_new.md
-        "TrainPhysics", A powered train is lit whenever it is not driven)."""
-        assert basic_profile.speed_to_voltage_two_stage(0.0) == basic_profile.lighting_voltage
-        assert basic_profile.speed_to_voltage_two_stage(-10.0) == basic_profile.lighting_voltage
+    def test_a_speed_above_the_top_speed_maps_to_max_voltage(self, basic_profile):
+        assert basic_profile.speed_to_voltage(150.0) == 12.0
+
+    def test_speed_zero_is_the_lighting_voltage(self, basic_profile):
+        """A speed of zero or below is what a powered train that nothing drives
+        outputs: its `lighting_voltage` (design_new.md "TrainPhysics")."""
+        assert basic_profile.speed_to_voltage(0.0) == 2.0
+        assert basic_profile.speed_to_voltage(-10.0) == 2.0
+
+    def test_power_percent_is_a_straight_line_in_speed(self, basic_profile):
+        """design_new.md "Power percent is a share of the speed range": 0% is
+        stopped, a percent just above 0 is the starting speed, 100% the top
+        speed, and every step adds the same speed."""
+        assert basic_profile.power_percent_to_speed(0.0) == 0.0
+        assert basic_profile.power_percent_to_speed(0.001) == pytest.approx(30.0, abs=0.01)
+        assert basic_profile.power_percent_to_speed(50.0) == pytest.approx(75.0)
+        assert basic_profile.power_percent_to_speed(100.0) == 120.0
+        assert basic_profile.speed_to_power_percent(75.0) == pytest.approx(50.0)
+        assert basic_profile.speed_to_power_percent(0.0) == 0.0
+
+    def test_power_percent_reaches_voltage_through_speed(self, basic_profile):
+        # 50% is 75 km/h, which the curve reads backward as 5.25 V.
+        assert basic_profile.power_percent_to_voltage(50.0) == pytest.approx(5.25)
+        assert basic_profile.power_percent_to_voltage(0.0) == 2.0
 
     def test_to_dict_from_dict_roundtrip(self, basic_profile: SpeedProfile):
         """Test serialization roundtrip."""
@@ -132,21 +147,17 @@ class TestSpeedProfile:
         assert restored.name == basic_profile.name
         assert restored.lighting_voltage == basic_profile.lighting_voltage
         assert restored.acceleration_rate == basic_profile.acceleration_rate
-        assert len(restored.power_speed_curve) == len(
-            basic_profile.power_speed_curve
-        )
-        assert len(restored.voltage_power_curve) == len(
-            basic_profile.voltage_power_curve
-        )
+        assert restored.voltage_speed_curve == basic_profile.voltage_speed_curve
 
     def test_default_speed_profile_exists(self):
-        """Test DEFAULT_SPEED_PROFILE is properly defined."""
+        """DEFAULT_SPEED_PROFILE carries the seeded straight-line curve and no
+        lighting voltage."""
         assert DEFAULT_SPEED_PROFILE is not None
         assert DEFAULT_SPEED_PROFILE.profile_id == "default"
-        assert len(DEFAULT_SPEED_PROFILE.power_speed_curve) > 0
-        assert len(DEFAULT_SPEED_PROFILE.voltage_power_curve) > 0
-        # Should convert speeds reasonably
-        assert DEFAULT_SPEED_PROFILE.speed_to_voltage_two_stage(60.0) > 0
+        assert DEFAULT_SPEED_PROFILE.lighting_voltage is None
+        assert DEFAULT_SPEED_PROFILE.top_speed_kmh == 100.0
+        assert DEFAULT_SPEED_PROFILE.voltage_speed_curve[-1][0] == 12.0
+        assert DEFAULT_SPEED_PROFILE.speed_to_voltage(60.0) > 0
 
 
 # =============================================================================

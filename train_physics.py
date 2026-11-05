@@ -748,15 +748,16 @@ class TrainPhysics:
         controller publishes the voltage source on its `PhysicsCommand`, so
         physics never inspects mode fields directly:
           - `voltage_source_track_voltage` — an exact magnitude: `0` under an
-            emergency cut-out, or a lighting-voltage run's candidate;
-          - `voltage_source_power_percent` — manual `power_percent`;
-          - `voltage_source_speed_kmh` — every other case, ATO included.
+            emergency cut-out, a lighting-voltage run's candidate, or a speed
+            calibration step's voltage;
+          - `voltage_source_speed_kmh` — every other case, ATO and manual
+            `power_percent` included, mapped through `voltage_speed_curve`.
 
-        A powered train is lit whenever it is not driven (design_new.md
-        "TrainPhysics", A powered train is lit whenever it is not driven): a
-        speed of 0 is 0% power, which is `lighting_voltage`, whether or not the
-        train holds a reservation and in either mode. Only an OFF train and an
-        emergency cut-out output 0 V.
+        A powered train that nothing drives outputs `lighting_voltage`, or 0 V
+        when the profile sets none (design_new.md "TrainPhysics"): a speed of 0
+        is 0% power, whether or not the train holds a reservation and in either
+        mode. Only an OFF train and an emergency cut-out output 0 V whatever the
+        profile holds.
 
         `BlockPowerController` consumes this scalar without making any
         manual-mode policy decisions itself.
@@ -795,17 +796,11 @@ class TrainPhysics:
 
         voltage_speed = float(command.voltage_source_speed_kmh)
         if speed_profile is not None:
-            source_percent = command.voltage_source_power_percent
-            if source_percent is not None:
-                # Manual power_percent mode: the percent is authoritative, so
-                # voltage comes off voltage_power_curve directly. Deriving it
-                # from the calibrated speed instead would invert
-                # power_speed_curve, which does not round-trip once that curve
-                # is calibrated and non-linear (design_new.md, "Voltage behavior").
-                return speed_profile.power_to_voltage(float(source_percent))
-            # A speed of 0 maps to `lighting_voltage`: standing, under a plain EB,
-            # under the power-off ceiling, or in ATO while not engaged.
-            return speed_profile.speed_to_voltage_two_stage(voltage_speed)
+            # Speed to voltage reads the curve backward (design_new.md
+            # "SpeedProfile"); a speed of 0 maps to `lighting_voltage`, or 0 V
+            # when it is unset: standing, under a plain EB, under the power-off
+            # ceiling, or in ATO while not engaged.
+            return speed_profile.speed_to_voltage(voltage_speed)
         return self._linear_speed_to_voltage(voltage_speed)
 
     @staticmethod

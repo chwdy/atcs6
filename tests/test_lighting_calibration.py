@@ -4,9 +4,9 @@ design_new.md "Lighting-voltage calibration": the pass puts a candidate voltage
 on the rails and the operator says whether the locomotive moved — there is no
 measurement step, because at this level the drive is too weak to load a current
 channel and first movement is a creep of a few millimetres. The candidate stays
-below the profile's `max_voltage` and below the Hardware Setup's
-`current_sense_min_drive_v`, and committing moves the 0%-power anchor of
-`voltage_power_curve` with it.
+below the profile's `max_voltage`, below its starting voltage, and below the
+Hardware Setup's `current_sense_min_drive_v`; committing moves no point of
+`voltage_speed_curve`.
 """
 
 import pytest
@@ -15,7 +15,7 @@ from constants import LIGHTING_VOLTAGE_STEP_V
 from enums import TrainStatus
 from hardware_config import DEFAULT_CURRENT_SENSE_MIN_DRIVE_V
 from speed_calibration import SpeedCalibration
-from speed_profile import make_default_speed_profile
+from speed_profile import SpeedProfile, make_default_speed_profile
 from train_controller_types import PHYSICS_KIND_HANDLE, PhysicsCommand
 from train_physics import TrainPhysics
 
@@ -24,8 +24,18 @@ class _StubTrain:
     train_id = "T1"
 
 
+def _profile():
+    """A locomotive that starts moving steadily at 5 V and is lit at 1.5 V."""
+    return SpeedProfile(
+        profile_id="T1",
+        name="T1",
+        lighting_voltage=1.5,
+        voltage_speed_curve=[(5.0, 20.0), (12.0, 100.0)],
+    )
+
+
 def _open_run(profile=None):
-    profile = profile or make_default_speed_profile("T1", 100.0)
+    profile = profile or _profile()
     cal = SpeedCalibration()
     run = cal.start_lighting(_StubTrain(), profile)
     return cal, profile, run
@@ -64,31 +74,41 @@ def test_ceiling_sits_below_the_current_sense_drive_level():
     """`current_sense_min_drive_v` must stay above `lighting_voltage`, so a lit
     but motionless train lands in the lighting zone rather than reading as
     driven (design_new.md "Power", Occupancy source follows drive state)."""
-    profile = make_default_speed_profile("T1", 100.0)
+    profile = _profile()
     ceiling = SpeedCalibration.lighting_ceiling(profile)
     assert ceiling < DEFAULT_CURRENT_SENSE_MIN_DRIVE_V
     assert ceiling < profile.max_voltage
 
 
 def test_ceiling_follows_max_voltage_when_it_is_the_lower_bound():
-    profile = make_default_speed_profile("T1", 100.0)
+    profile = _profile()
     profile.max_voltage = 2.0
     assert SpeedCalibration.lighting_ceiling(profile) == pytest.approx(
         2.0 - LIGHTING_VOLTAGE_STEP_V
     )
 
 
+def test_ceiling_stays_below_the_starting_voltage():
+    """design_new.md "A lighting voltage stays below the starting voltage": a
+    train standing at its lighting voltage must not move."""
+    profile = _profile()
+    profile.voltage_speed_curve = [(3.0, 20.0), (12.0, 100.0)]
+    assert SpeedCalibration.lighting_ceiling(profile, is_simulation=True) == pytest.approx(
+        3.0 - LIGHTING_VOLTAGE_STEP_V
+    )
+
+
 def test_ceiling_ignores_current_sense_bound_in_simulation():
     """In Simulation the current_sense_min_drive_v bound is not evaluated
     (design_new.md:3197, "Simulation is independent of Hardware Setup"); the
-    candidate is bounded only by max_voltage, so a Simulation ceiling is not
-    over-capped by a Hardware-Setup value."""
-    profile = make_default_speed_profile("T1", 100.0)
+    candidate is bounded by max_voltage and the starting voltage only, so a
+    Simulation ceiling is not over-capped by a Hardware-Setup value."""
+    profile = _profile()
     # The default profile's max_voltage sits above current_sense_min_drive_v, so
     # the hardware bound is normally the lower one.
     hw_ceiling = SpeedCalibration.lighting_ceiling(profile, is_simulation=False)
     sim_ceiling = SpeedCalibration.lighting_ceiling(profile, is_simulation=True)
-    assert sim_ceiling == pytest.approx(profile.max_voltage - LIGHTING_VOLTAGE_STEP_V)
+    assert sim_ceiling == pytest.approx(profile.starting_voltage - LIGHTING_VOLTAGE_STEP_V)
     assert sim_ceiling > hw_ceiling
 
 
@@ -110,40 +130,16 @@ def test_commit_writes_the_candidate_and_closes_the_run():
     assert cal.lighting_candidate_voltage("T1") is None
 
 
-def test_commit_moves_the_curves_zero_power_anchor_up():
-    """Points at or below the new anchor name voltages that do not move this
-    locomotive, so they are dropped."""
-    profile = make_default_speed_profile("T1", 100.0)
-    profile.voltage_power_curve = [(1.5, 0.0), (2.0, 20.0), (3.0, 50.0), (12.0, 100.0)]
-    cal, profile, _run = _open_run(profile)
-    for _ in range(10):  # 1.5 -> 2.5
-        cal.step_lighting("T1", 1)
-    anchor = cal.commit_lighting("T1", profile)
-    assert anchor == pytest.approx(2.5)
-    assert profile.voltage_power_curve == [(2.5, 0.0), (3.0, 50.0), (12.0, 100.0)]
-
-
-def test_commit_moving_the_anchor_down_leaves_exactly_one_zero_power_point():
-    """The old anchor sits above the new one, so dropping only points at or
-    below the anchor would leave the curve with two 0%-power points."""
-    profile = make_default_speed_profile("T1", 100.0)
-    profile.voltage_power_curve = [(1.5, 0.0), (2.0, 20.0), (12.0, 100.0)]
-    cal, profile, _run = _open_run(profile)
-    for _ in range(5):  # 1.5 -> 1.0
-        cal.step_lighting("T1", -1)
-    anchor = cal.commit_lighting("T1", profile)
-    zero_points = [pt for pt in profile.voltage_power_curve if pt[1] == 0.0]
-    assert zero_points == [(anchor, 0.0)]
-    assert profile.voltage_power_curve == [(1.0, 0.0), (2.0, 20.0), (12.0, 100.0)]
-
-
-def test_committed_curve_still_round_trips_both_anchors():
+def test_commit_moves_no_point_of_the_curve():
+    """Every point is stored at the voltage it was measured at, so saving a
+    lighting voltage changes what speed no voltage gives (design_new.md
+    "SpeedProfile", The curve and the lighting voltage resolve on their own)."""
     cal, profile, _run = _open_run()
-    for _ in range(6):
+    before = list(profile.voltage_speed_curve)
+    for _ in range(5):  # 1.5 -> 2.0
         cal.step_lighting("T1", 1)
-    anchor = cal.commit_lighting("T1", profile)
-    assert profile.voltage_to_power(anchor) == pytest.approx(0.0)
-    assert profile.voltage_to_power(profile.max_voltage) == pytest.approx(100.0)
+    assert cal.commit_lighting("T1", profile) == pytest.approx(2.0)
+    assert profile.voltage_speed_curve == before
 
 
 def test_cancel_discards_the_candidate():
@@ -227,7 +223,7 @@ def test_physics_emits_the_commands_track_voltage_in_place_of_the_lit_voltage():
     """When the command carries a `voltage_source_track_voltage`, physics emits
     exactly that magnitude in place of the stopped-but-lit value the READY state
     would otherwise output."""
-    profile = make_default_speed_profile("T1", 100.0)
+    profile = _profile()
     candidate = profile.lighting_voltage + 4 * LIGHTING_VOLTAGE_STEP_V
     assert candidate != pytest.approx(profile.lighting_voltage)
     physics = TrainPhysics(train_id="T1")
@@ -242,7 +238,7 @@ def test_physics_emits_the_commands_track_voltage_in_place_of_the_lit_voltage():
 def test_physics_returns_the_stored_lit_voltage_when_no_override_is_on_the_command():
     """With no track-voltage override on the command, a READY train emits its
     stored lighting voltage — the ordinary path is untouched by the migration."""
-    profile = make_default_speed_profile("T1", 100.0)
+    profile = _profile()
     physics = TrainPhysics(train_id="T1")
     controller = _StubController(PhysicsCommand(kind=PHYSICS_KIND_HANDLE))
     assert physics.compute_track_voltage(controller, profile) == pytest.approx(
@@ -253,7 +249,7 @@ def test_physics_returns_the_stored_lit_voltage_when_no_override_is_on_the_comma
 def test_a_powered_off_train_stays_dead_even_with_a_track_voltage_override():
     """OFF outputs 0 V before the command is even read, so a lingering override
     can never light a powered-off train."""
-    profile = make_default_speed_profile("T1", 100.0)
+    profile = _profile()
     physics = TrainPhysics(train_id="T1")
     controller = _StubController(
         PhysicsCommand(kind=PHYSICS_KIND_HANDLE, voltage_source_track_voltage=3.0)
@@ -314,7 +310,8 @@ def test_a_train_on_its_authorized_path_drives_normally():
     physics = TrainPhysics(train_id="T", network=network)
 
     normal = _OverrunController((1, 0), ["BLK_0", "BLK_1"])
-    assert physics.compute_track_voltage(normal, profile) > profile.lighting_voltage
+    assert physics.compute_track_voltage(normal, profile) == pytest.approx(profile.speed_to_voltage(20.0))
+    assert profile.speed_to_voltage(20.0) > profile.voltage_when_not_driven()
 
 
 # --------------------------------------------------- service-layer gates ----

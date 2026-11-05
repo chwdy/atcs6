@@ -19,7 +19,7 @@ from constants import (
     CALIBRATION_CAP_RETRY_LIMIT,
     CALIBRATION_HALF_POWER_S,
     CALIBRATION_MIN_CROSSING_SPEED_KMH,
-    CALIBRATION_MOVE_POWER_PERCENT,
+    CALIBRATION_MOVE_VOLTAGE_V,
     CALIBRATION_OFF_B_WAIT_READS,
     CALIBRATION_POWER_STEP_PERCENT,
     CALIBRATION_ROUND_TRIPS,
@@ -94,12 +94,14 @@ def _crossing(cal, run, clock, *, seconds, overrun_block=None):
 
 
 def _run_full_pass(cal, run, *, seconds_for_step=None):
-    """Measure every step. `seconds_for_step(power)` sets each crossing time."""
+    """Measure every step. `seconds_for_step(power)` sets each crossing time;
+    by default a higher step crosses faster, as an ordinary locomotive does, so
+    the measured curve can be stored."""
     clock = 0.0
     guard = 0
     while run.is_measuring and guard < 5000:
         guard += 1
-        secs = (seconds_for_step or (lambda power: 2.0))(run.current_power)
+        secs = (seconds_for_step or (lambda power: 200.0 / power))(run.current_power)
         clock = _crossing(cal, run, clock, seconds=secs)
     return clock
 
@@ -114,13 +116,17 @@ def test_the_sweep_runs_down_from_100():
     assert all(a - b == CALIBRATION_POWER_STEP_PERCENT for a, b in zip(steps, steps[1:]))
 
 
-def test_zero_percent_is_the_origin_and_is_not_measured():
-    # 0% power is lighting_voltage, where the train is lit and holds, so
-    # (0%, 0 km/h) is the curve's origin by definition.
+def test_the_curve_holds_one_point_per_step_at_the_voltage_it_drove():
+    """design_new.md "Speed calibration", A pass measures `voltage_speed_curve`:
+    each step that moved the train gives one point, at the voltage the step
+    drove; `0` is not measured."""
     cal, run, _profile = _open_run()
     assert 0.0 not in run.power_steps
     _run_full_pass(cal, run)
-    assert cal.measured_curve(run)[0] == (0.0, 0.0)
+    curve = cal.measured_curve(run)
+    assert [v for v, _s in curve] == sorted(run.step_voltage(p) for p in run.power_steps)
+    assert all(speed > 0.0 for _v, speed in curve)
+    assert curve[-1][0] == run.max_voltage
 
 
 # --- the timed crossing ------------------------------------------------------
@@ -165,11 +171,11 @@ def test_a_leg_arms_a_one_off_route_to_its_far_end_and_finishes_without_a_route_
     cal, run, _profile = _open_run()
     arm = cal.advance(run, CalibrationObservation(now=0.0))
     assert arm.arm_leg_to == "C"
-    assert arm.power_percent == run.current_power
+    assert arm.drive_voltage == run.current_voltage
     _observe(cal, run, 1.0, ("B",), path_present=True)
     stop = _observe(cal, run, 3.0, ("C",), path_present=True)
     assert stop.deactivate_route is False
-    assert stop.power_percent == 0.0
+    assert stop.drive_voltage == 0.0
 
 
 def test_a_step_takes_the_median_of_both_directions():
@@ -535,29 +541,29 @@ def test_discarding_all_drops_a_held_result_too():
 
 def test_measuring_every_step_does_not_commit():
     cal, run, profile = _open_run()
-    before = list(profile.power_speed_curve)
+    before = list(profile.voltage_speed_curve)
     _run_full_pass(cal, run)
     assert run.phase == PHASE_MEASURED
-    assert profile.power_speed_curve == before
+    assert profile.voltage_speed_curve == before
     assert profile.calibrated_at is None
 
 
 def test_commit_writes_the_curve_and_stamp_and_nothing_else():
     cal, run, profile = _open_run()
-    voltage_curve_before = list(profile.voltage_power_curve)
+    profile.lighting_voltage = 1.2
     accel_before = profile.acceleration_rate
     model_before = profile.model
     _run_full_pass(cal, run)
     curve = cal.commit("T1", profile)
 
-    assert profile.power_speed_curve == curve
+    assert profile.voltage_speed_curve == curve
     assert profile.calibrated_at is not None
-    # Commit writes power_speed_curve and calibrated_at only (design_new.md
+    # Commit writes voltage_speed_curve and calibrated_at only (design_new.md
     # "What commit writes"): `model` is edited on the model profile, not here;
-    # Lighting-voltage calibration is the one procedure that moves the first
-    # stage; and a motion rate describes behaviour rather than measured speed.
+    # the lighting voltage is set by hand; and a motion rate describes
+    # behaviour rather than measured speed.
     assert profile.model == model_before
-    assert profile.voltage_power_curve == voltage_curve_before
+    assert profile.lighting_voltage == 1.2
     assert profile.acceleration_rate == accel_before
     assert "T1" not in cal.runs
 
@@ -578,9 +584,9 @@ def test_the_committed_curve_is_non_decreasing_so_it_reads_backwards():
     curve = cal.commit("T1", profile)
     speeds = [s for _p, s in curve]
     assert speeds == sorted(speeds)
-    # And physics can read it back: every measured speed maps to a power.
-    for power, speed in curve:
-        assert profile._speed_to_power(speed) == pytest.approx(power, abs=1e-6)
+    # And physics can read it back: every measured speed maps to its voltage.
+    for voltage, speed in curve:
+        assert profile.speed_to_voltage(speed) == pytest.approx(voltage, abs=1e-6)
 
 
 def test_the_committed_curve_runs_in_order_of_power():
@@ -588,9 +594,9 @@ def test_the_committed_curve_runs_in_order_of_power():
     cal, run, profile = _open_run()
     _run_full_pass(cal, run, seconds_for_step=lambda power: 100.0 / power)
     curve = cal.commit("T1", profile)
-    powers = [p for p, _s in curve]
-    assert powers == sorted(powers)
-    assert powers[0] == 0.0 and powers[-1] == 100.0
+    voltages = [v for v, _s in curve]
+    assert voltages == sorted(voltages)
+    assert voltages[-1] == profile.max_voltage
 
 
 def test_commit_rejects_a_curve_that_falls_with_power():
@@ -613,7 +619,7 @@ def test_pass_drives_a_zero_override_while_acquiring():
     cal, run, _profile = _open_run()
     assert run.is_measuring
     override = cal.get_propulsion_override("T1")
-    assert override is not None and override.kind == "power_percent"
+    assert override is not None and override.kind == "drive_voltage"
 
 
 # --- capped-crossing discard (design_new.md:3047, "A capped crossing is discarded") ---
@@ -624,7 +630,7 @@ def test_a_capped_crossing_is_discarded_and_the_pass_goes_on():
     crossing is discarded rather than banked and the pass keeps going, leaving
     the profile's previous curve in place (design_new.md:3047)."""
     cal, run, profile = _open_run()
-    curve_before = list(profile.power_speed_curve)
+    curve_before = list(profile.voltage_speed_curve)
     # Arm the leg and enter the measured block so a crossing is being timed.
     cal.advance(run, CalibrationObservation(now=0.0))
     _observe(cal, run, 1.0, ("B",))
@@ -645,7 +651,7 @@ def test_a_capped_crossing_is_discarded_and_the_pass_goes_on():
     assert run.crossings == []
     assert run.current_crossing_tainted is False
     assert run.phase != PHASE_FAILED
-    assert profile.power_speed_curve == curve_before
+    assert profile.voltage_speed_curve == curve_before
 
 
 def test_a_stretch_that_caps_every_crossing_fails_the_pass():
@@ -654,7 +660,7 @@ def test_a_stretch_that_caps_every_crossing_fails_the_pass():
     reservation-end standoff — the pass fails and reports rather than shuttling
     forever (design_new.md, "A capped crossing is discarded")."""
     cal, run, profile = _open_run()
-    curve_before = list(profile.power_speed_curve)
+    curve_before = list(profile.voltage_speed_curve)
     clock = 0.0
     for i in range(CALIBRATION_CAP_RETRY_LIMIT):
         cal.advance(run, CalibrationObservation(now=clock))  # arm the leg
@@ -679,7 +685,7 @@ def test_a_stretch_that_caps_every_crossing_fails_the_pass():
     assert "too short" in run.failure_reason
     # Nothing was banked; the profile's curve is untouched.
     assert run.samples == []
-    assert profile.power_speed_curve == curve_before
+    assert profile.voltage_speed_curve == curve_before
 
 
 def test_a_cap_before_the_clock_starts_discards_nothing():
@@ -735,16 +741,16 @@ def test_the_run_off_is_timed_from_the_measured_speed():
     speed_cm_s = BLOCK_LENGTH_CM / 2.0
     runoff_s = (20.0 + CALIBRATION_RUNOFF_MARGIN_CM) / speed_cm_s
     assert run.phase == "clearing"
-    assert cal.get_propulsion_override("T1").value == run.current_power
+    assert cal.get_propulsion_override("T1").value == run.current_voltage
     cal.advance(run, CalibrationObservation(
         now=clock + runoff_s - 0.05, path_present=True, measured_block_held=True))
-    assert cal.get_propulsion_override("T1").value == run.current_power
+    assert cal.get_propulsion_override("T1").value == run.current_voltage
     # B still reads occupied, but the run-off is over: the stop begins.
     end = clock + runoff_s + 0.05
     cal.advance(run, CalibrationObservation(
         now=end, path_present=True, measured_block_held=True))
     assert run.phase == "stopping"
-    assert cal.get_propulsion_override("T1").value == run.current_power / 2
+    assert cal.get_propulsion_override("T1").value == run.current_voltage / 2
     cal.advance(run, CalibrationObservation(
         now=end + CALIBRATION_HALF_POWER_S + 0.1, measured_block_held=True))
     assert cal.get_propulsion_override("T1").value == 0.0
@@ -756,7 +762,7 @@ def test_the_run_off_ends_at_once_when_b_reads_clear():
     cal.advance(run, CalibrationObservation(
         now=clock + 0.1, path_present=True, measured_block_held=False))
     assert run.phase == "stopping"
-    assert cal.get_propulsion_override("T1").value == run.current_power / 2
+    assert cal.get_propulsion_override("T1").value == run.current_voltage / 2
     cal.advance(run, CalibrationObservation(now=clock + CALIBRATION_HALF_POWER_S + 0.2))
     assert cal.get_propulsion_override("T1").value == 0.0
 
@@ -766,7 +772,7 @@ def test_a_train_already_off_the_measured_block_starts_its_stop_at_once():
     _cross_into_far_block(cal, run, measured_block_held=False)
     assert len(run.crossings) == 1
     assert run.phase == "stopping"
-    assert cal.get_propulsion_override("T1").value == run.current_power / 2
+    assert cal.get_propulsion_override("T1").value == run.current_voltage / 2
 
 
 def test_the_standing_train_waits_for_b_to_read_clear():
@@ -864,13 +870,13 @@ def test_a_leg_starts_at_half_power():
     cal, run, _profile = _open_run()
     cal.advance(run, CalibrationObservation(now=0.0))  # arm the leg
     cal.advance(run, CalibrationObservation(now=1.0, path_present=True))  # authority
-    assert cal.get_propulsion_override("T1").value == run.current_power / 2
+    assert cal.get_propulsion_override("T1").value == run.current_voltage / 2
     cal.advance(run, CalibrationObservation(
         now=1.0 + CALIBRATION_HALF_POWER_S - 0.1, path_present=True))
-    assert cal.get_propulsion_override("T1").value == run.current_power / 2
+    assert cal.get_propulsion_override("T1").value == run.current_voltage / 2
     cal.advance(run, CalibrationObservation(
         now=1.0 + CALIBRATION_HALF_POWER_S + 0.1, path_present=True))
-    assert cal.get_propulsion_override("T1").value == run.current_power
+    assert cal.get_propulsion_override("T1").value == run.current_voltage
 
 
 def test_the_turnaround_waits_for_the_half_power_stop():
@@ -985,7 +991,7 @@ def test_a_pass_opened_outside_the_outer_blocks_moves_the_train_first():
 
     assert command.move_into_place is True
     assert command.arm_leg_to is None
-    assert command.power_percent == CALIBRATION_MOVE_POWER_PERCENT
+    assert command.drive_voltage == CALIBRATION_MOVE_VOLTAGE_V
 
 
 def test_the_move_drives_half_its_power_first_then_its_power():
@@ -996,13 +1002,13 @@ def test_the_move_drives_half_its_power_first_then_its_power():
 
     cal.advance(run, CalibrationObservation(now=1.0, path_present=True))
     assert run.half_power is True
-    assert cal.get_propulsion_override("T1").value == CALIBRATION_MOVE_POWER_PERCENT * 0.5
+    assert cal.get_propulsion_override("T1").value == CALIBRATION_MOVE_VOLTAGE_V * 0.5
 
     cal.advance(
         run,
         CalibrationObservation(now=1.0 + CALIBRATION_HALF_POWER_S, path_present=True),
     )
-    assert cal.get_propulsion_override("T1").value == CALIBRATION_MOVE_POWER_PERCENT
+    assert cal.get_propulsion_override("T1").value == CALIBRATION_MOVE_VOLTAGE_V
 
 
 def test_the_move_stops_on_the_detector():
@@ -1019,15 +1025,15 @@ def test_the_move_stops_on_the_detector():
     cal.advance(run, CalibrationObservation(
         now=5.0 + CALIBRATION_HALF_POWER_S, path_present=True,
         head_block="X", span_blocks=("X",)))
-    assert power() == CALIBRATION_MOVE_POWER_PERCENT
+    assert power() == CALIBRATION_MOVE_VOLTAGE_V
 
     # The detector put the head in A; the tail is still on the block behind.
     cal.advance(run, CalibrationObservation(
         now=7.0, path_present=True, head_block="A", span_blocks=("A", "X")))
-    assert power() == CALIBRATION_MOVE_POWER_PERCENT * 0.5
+    assert power() == CALIBRATION_MOVE_VOLTAGE_V * 0.5
     cal.advance(run, CalibrationObservation(
         now=8.0, path_present=True, head_block="A", span_blocks=("A", "X")))
-    assert power() == CALIBRATION_MOVE_POWER_PERCENT * 0.5
+    assert power() == CALIBRATION_MOVE_VOLTAGE_V * 0.5
 
     # The span has moved off X, but the block list still holds X until its
     # detector confirms it clear: still half power.
@@ -1035,7 +1041,7 @@ def test_the_move_stops_on_the_detector():
         now=8.2, path_present=True, head_block="A", span_blocks=("A",),
         listed_blocks=("A", "X")))
     assert run.move_blocks_behind == ("X",)
-    assert power() == CALIBRATION_MOVE_POWER_PERCENT * 0.5
+    assert power() == CALIBRATION_MOVE_VOLTAGE_V * 0.5
 
     # X confirmed clear: the train holds A alone, and the power stays cut.
     cal.advance(run, CalibrationObservation(
@@ -1063,7 +1069,7 @@ def test_after_the_move_the_opening_leg_runs_toward_the_other_outer_block():
     assert run.phase == PHASE_LEG
     assert command.arm_leg_to == "C"
     assert command.reverse_cab is False
-    assert command.power_percent == run.power_steps[0]
+    assert command.drive_voltage == run.step_voltage(run.power_steps[0])
 
 
 def test_a_move_that_ends_outside_the_outer_blocks_fails_the_pass():

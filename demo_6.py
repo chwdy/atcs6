@@ -1066,9 +1066,7 @@ def setup_demo_train(
     profile = SpeedProfile(
         profile_id="yard_profile",
         name="Yard Stock",
-        power_speed_curve=list(DEFAULT_SPEED_PROFILE.power_speed_curve),
-        voltage_power_curve=list(DEFAULT_SPEED_PROFILE.voltage_power_curve),
-        lighting_voltage=DEFAULT_SPEED_PROFILE.lighting_voltage,
+        voltage_speed_curve=list(DEFAULT_SPEED_PROFILE.voltage_speed_curve),
         acceleration_rate=3.0,
         deceleration_rate=4.2,
         emergency_brake_rate=5,

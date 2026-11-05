@@ -220,7 +220,7 @@ def test_any_cap_that_lowers_the_drive_discards_the_crossing():
         _speed_calibration=SimpleNamespace(
             taint_current_crossing=lambda train_id, reason: tainted.append(reason)
         ),
-        _calibration_power_percent_override=lambda: 40.0,
+        _calibration_drive_voltage_override=lambda: 4.8,
         atc=SimpleNamespace(_last_limit_reason_code=AtcLimitReasonCode.NO_RESERVATION),
     )
 
@@ -260,13 +260,14 @@ def test_every_step_is_timed_in_both_directions(state):
     state.sim_controller.speed_calibration.record_detected_entries = record
     # This stretch is too short for the top steps (see
     # test_a_stretch_too_short_for_the_top_step_fails_at_once), so time three
-    # low steps.
-    run.power_steps = [30.0, 20.0, 10.0]
+    # low steps, all above the seeded starting voltage (1.5 V).
+    run.power_steps = [30.0, 25.0, 20.0]
     _run_pass(state, run, until_step=3)
 
     assert run.phase != PHASE_FAILED, run.failure_reason
-    assert [s.power_percent for s in run.samples] == [30.0, 20.0, 10.0]
-    # The default profile's curve is linear, so each step reads its own percent.
+    assert [s.power_percent for s in run.samples] == [30.0, 25.0, 20.0]
+    # The seeded curve lies on the straight line from 0 V to 100 km/h at
+    # 12 V, so a step at p% of max_voltage reads p km/h.
     for sample in run.samples:
         assert sample.speed_kmh == pytest.approx(sample.power_percent, rel=0.05)
     # Every crossing of every step was timed, half each way.
@@ -355,7 +356,7 @@ def test_a_move_that_never_arrives_fails_the_pass(state, monkeypatch):
     import speed_calibration
     from constants import CALIBRATION_STEP_TIMEOUT_S
 
-    monkeypatch.setattr(speed_calibration, "CALIBRATION_MOVE_POWER_PERCENT", 0.0)
+    monkeypatch.setattr(speed_calibration, "CALIBRATION_MOVE_VOLTAGE_V", 0.0)
     _place(state, (10, 7), "WEST")
     run = train_service.calibrate_train(state, TRAIN, measured_block_id=UP)
     _run_until(state, run, lambda: False, ticks=int(CALIBRATION_STEP_TIMEOUT_S * 10) + 50)
