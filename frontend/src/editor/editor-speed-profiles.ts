@@ -1,11 +1,11 @@
 // editor-speed-profiles.ts — Speed Profile Editor Handler.
 //
 // A standalone manager for `SpeedProfile` records (speed_profile.py): a list
-// panel plus a per-profile curve editor. Each calibration curve is edited two
-// ways at once — a draggable canvas plot and a numeric point list — both routed
-// through one auto-saving commit path (DESIGN_LANGUAGE.md §4 "Two views of one
-// value"). A converter section does y=f(x) and x=f^-1(y) for all three
-// relations (voltage↔power, power↔speed, voltage↔speed).
+// panel plus a per-profile curve editor. The profile's one curve, voltage →
+// speed, is edited two ways at once — a draggable canvas plot and a numeric
+// point list — both routed through one auto-saving commit path
+// (DESIGN_LANGUAGE.md §4 "Two views of one value"). A converter section turns
+// a voltage into a speed and back, and a power percent into a speed and back.
 //
 // Owned by the Editor (`new SpeedProfileEditorHandler(this)`).
 
@@ -22,27 +22,27 @@ import {
   crossingRows,
   speedPassProgress,
   measuredCurve,
+  pointRows,
   readinessApplies,
-  readinessKind,
   speedPassEndedMessage,
   trainChoiceLabel,
   trainStoredValue,
-  viewForOpenRuns,
+  viewForOpenRun,
+  volts,
 } from '../lib/calibration-panel';
 import type { EditorHost } from './types';
 import {
   type Curve,
   type CurvePoint,
-  reanchorVoltagePowerCurve,
-  voltageToPower,
-  powerToVoltage,
+  lightingVoltageProblem,
   powerPercentToSpeed,
-  speedToPower,
-  voltageToSpeedTwoStage,
-  speedToVoltageTwoStage,
+  powerPercentToVoltage,
+  speedToPowerPercent,
+  speedToVoltage,
+  startingSpeed,
+  startingVoltage,
   topSpeed,
-  maxVoltage,
-  lightingVoltage,
+  voltageToSpeed,
 } from '../lib/speed-profile-curve';
 
 interface SpeedProfileData {
@@ -54,9 +54,13 @@ interface SpeedProfileData {
   // ISO stamp of the speed-calibration commit that wrote the curve this profile
   // runs on; null when none did (a seeded or hand-drawn curve).
   calibrated_at: string | null;
-  power_speed_curve: CurvePoint[];
-  voltage_power_curve: CurvePoint[];
-  lighting_voltage: number;
+  // [track_voltage, speed_kmh] points, voltage ascending. The first point is
+  // the starting voltage and starting speed; the last sits at max_voltage and
+  // carries the top speed.
+  voltage_speed_curve: CurvePoint[];
+  // The voltage a standing, powered train is held at so its lamps light; null
+  // when the locomotive has none (it then stands at 0 V).
+  lighting_voltage: number | null;
   max_voltage: number;
   acceleration_rate: number;
   deceleration_rate: number;
@@ -85,16 +89,22 @@ const BRAKE_NOTCHES: ReadonlyArray<[string, number]> = [
 const DEFAULT_POWER_MULT: Record<string, number> = Object.fromEntries(POWER_NOTCHES);
 const DEFAULT_BRAKE_MULT: Record<string, number> = Object.fromEntries(BRAKE_NOTCHES);
 
+/** A plot's axes: x is track voltage from 0 to `xMax`, y is speed. */
 interface PlotAxis {
+  xMax: number;
   yMin: number;
   yMax: number;
+}
+
+/** A voltage marked on a plot's voltage axis, with a short label. */
+interface VoltageMark {
+  x: number;
+  label: string;
 }
 
 interface CurvePlotOptions {
   canvas: HTMLCanvasElement;
   color: string;
-  /** Lock the left endpoint in Y too (plot-2 origin (0,0)). X of both endpoints is always locked. */
-  lockLeftY: boolean;
   onChange: (points: CurvePoint[], dragging: boolean) => void;
   /** Left-click on the line: insert a point in segment `segIndex` at plot-space (x, y). */
   onInsert: (segIndex: number, x: number, y: number) => void;
@@ -116,8 +126,6 @@ interface CalibrationGroupState {
   ready: boolean;
   unmet: string[] | null;
   readinessError: string | null;
-  /** The open lighting run's candidate and ceiling. */
-  lighting: { candidate: number; ceiling: number } | null;
   /** The open speed pass or held result, as the last poll returned it. */
   speedRun: any | null;
   measuredBlockId: string;
@@ -131,8 +139,6 @@ interface CalibrationGroupState {
   timer: number | null;
   /** A request is on its way; the refresh tick skips rather than piles up. */
   busy: boolean;
-  /** Step presses run one after another, so a quick double press counts twice. */
-  stepChain: Promise<void>;
   compare: CurveComparePlot | null;
   /** Bumped when another train is named, so a late reply for the old one is dropped. */
   generation: number;
@@ -147,9 +153,10 @@ export interface CalibrationGroupSummary {
   /** The last readiness check: `unmet` is null until the first reply. */
   ready: boolean;
   unmet: string[] | null;
-  /** A lighting run was saved, or a speed pass committed, for the named
-   *  train since the panel was opened on it. */
-  lightingSaved: boolean;
+  /** The named train runs on a lighting voltage. */
+  lightingVoltageSet: boolean;
+  /** A speed pass was committed for the named train since the panel was
+   *  opened on it. */
   speedCommitted: boolean;
 }
 
@@ -170,11 +177,11 @@ export interface SpeedProfilePanelHost {
   calibrationChanged(summary: CalibrationGroupSummary | null): void;
 }
 
-/** How often the calibration group re-reads the readiness check and the open run. */
+/** How often the calibration group re-reads the readiness check and the open pass. */
 const CALIBRATION_REFRESH_MS = 1000;
 
-const EPS_X = 0.5; // min power gap between adjacent points (keeps X strictly ascending)
-const EPS_Y = 0.02; // min gap to keep Y strictly ascending (invertibility)
+const EPS_X = 0.05; // min voltage gap between adjacent points (keeps voltage strictly rising)
+const EPS_Y = 0.02; // min speed gap between the starting speed and the top speed
 const HIT_R = 9; // px hit radius for grabbing a point handle
 const ADD_HIT_R = 6; // px distance from the line that still reads as "click the line to add a point"
 const PAD = { left: 40, right: 14, top: 14, bottom: 26 };
@@ -199,13 +206,24 @@ function fitCanvasToDevice(canvas: HTMLCanvasElement, ctx: CanvasRenderingContex
   return true;
 }
 
-/** The gridlines, tick labels and axes every power-axis plot shares. */
+/** The gap between voltage gridlines: 1, 2 or 5 V (times a power of ten),
+ *  so the axis carries at most about eight of them. */
+function voltageTickStep(xMax: number): number {
+  const raw = Math.max(xMax, 1) / 8;
+  const base = Math.pow(10, Math.floor(Math.log10(raw)));
+  for (const m of [1, 2, 5, 10]) if (base * m >= raw) return base * m;
+  return base * 10;
+}
+
+/** The gridlines, tick labels and axes every voltage/speed plot shares, and
+ *  the voltages marked on the voltage axis. */
 function drawPlotFrame(
   ctx: CanvasRenderingContext2D,
   rect: DOMRect,
   axis: PlotAxis,
   xToPx: (x: number) => number,
-  yToPx: (y: number) => number
+  yToPx: (y: number) => number,
+  marks: VoltageMark[] = []
 ): void {
   const css = getComputedStyle(document.documentElement);
   const border = css.getPropertyValue('--border-color').trim() || '#333';
@@ -221,8 +239,9 @@ function drawPlotFrame(
   ctx.fillStyle = textMuted;
   ctx.strokeStyle = border;
   ctx.lineWidth = 1;
-  // X gridlines (power 0..100 every 25)
-  for (let gx = 0; gx <= 100; gx += 25) {
+  // X gridlines (track voltage, 0..xMax)
+  const step = voltageTickStep(axis.xMax);
+  for (let gx = 0; gx <= axis.xMax + 1e-9; gx += step) {
     const px = xToPx(gx);
     ctx.globalAlpha = 0.4;
     ctx.setLineDash([2, 3]);
@@ -233,7 +252,7 @@ function drawPlotFrame(
     ctx.setLineDash([]);
     ctx.globalAlpha = 1;
     ctx.textAlign = 'center';
-    ctx.fillText(String(gx), px, y0 + 12);
+    ctx.fillText(fmt(gx, 1), px, y0 + 12);
   }
   // Y gridlines (axis range, 4 divisions)
   const { yMin, yMax } = axis;
@@ -258,29 +277,56 @@ function drawPlotFrame(
   ctx.lineTo(x0, y0);
   ctx.lineTo(x1, y0);
   ctx.stroke();
+
+  // Marked voltages: a dashed line up from the voltage axis, labelled at the
+  // top of the plot. The marks sit at low voltages, where the curve is near
+  // the bottom, so labels at the top stay clear of the curve's first point and
+  // of the tick labels below.
+  const accent = css.getPropertyValue('--warning-color').trim() || '#f5a524';
+  marks.forEach((m, i) => {
+    const px = xToPx(m.x);
+    ctx.strokeStyle = accent;
+    ctx.fillStyle = accent;
+    ctx.globalAlpha = 0.8;
+    ctx.setLineDash([3, 3]);
+    ctx.beginPath();
+    ctx.moveTo(px, y0);
+    ctx.lineTo(px, y1);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.globalAlpha = 1;
+    ctx.textAlign = 'left';
+    ctx.fillText(`${m.label} ${fmt(m.x)} V`, px + 3, y1 + 10 + i * 11);
+  });
+  ctx.strokeStyle = border;
 }
 
 /**
- * One editable piecewise-linear plot over a `<canvas>`. Axis-agnostic: it works
- * in plot space `[x, y]` (x = power 0..100 here) and reports edits back through
+ * The profile's voltage → speed curve as one editable plot over a `<canvas>`.
+ * It works in plot space `[voltage, speed]` and reports edits back through
  * `onChange` (drag a handle), `onInsert` (left-click the line to add a point),
- * and `onRemove` (right-click an interior point to delete it — the two endpoints
- * are locked). The handler owns translation to/from backend curve storage and the
- * commit. Both X and Y are kept strictly ascending so the curve stays invertible
- * (the backend's reverse lookups assume monotonicity).
+ * and `onRemove` (right-click a point between the two ends to delete it). The
+ * handler owns the commit.
+ *
+ * What a drag may do keeps the curve one a save accepts (design_new.md
+ * "SpeedProfile", `voltage_speed_curve`):
+ *   - voltage stays strictly rising from point to point; the first point (the
+ *     starting voltage) stays above 0 V, and the last point stays at
+ *     `max_voltage`;
+ *   - speed never falls as voltage rises (a flat stretch is allowed); the
+ *     first point's speed stays above 0, and the top speed stays above the
+ *     starting speed.
  */
 class CurvePlot {
   private canvas: HTMLCanvasElement;
   private ctx: CanvasRenderingContext2D;
   private color: string;
-  private lockLeftY: boolean;
   private onChange: (points: CurvePoint[], dragging: boolean) => void;
   private onInsert: (segIndex: number, x: number, y: number) => void;
   private onRemove: (index: number) => void;
   private points: CurvePoint[] = [];
-  private axis: PlotAxis = { yMin: 0, yMax: 1 };
-  private xMin = 0;
-  private xMax = 100;
+  private axis: PlotAxis = { xMax: 12, yMin: 0, yMax: 1 };
+  private marks: VoltageMark[] = [];
   private dragIndex: number | null = null;
   private hoverIndex: number | null = null;
   private editable = true;
@@ -295,7 +341,6 @@ class CurvePlot {
     this.canvas = opts.canvas;
     this.ctx = opts.canvas.getContext('2d')!;
     this.color = opts.color;
-    this.lockLeftY = opts.lockLeftY;
     this.onChange = opts.onChange;
     this.onInsert = opts.onInsert;
     this.onRemove = opts.onRemove;
@@ -318,15 +363,16 @@ class CurvePlot {
     this.ro.observe(this.canvas);
   }
 
-  /** Replace the plotted points and axis, then redraw at device resolution. */
-  setData(points: CurvePoint[], axis: PlotAxis): void {
+  /** Replace the plotted points, axis and marked voltages, then redraw at
+   *  device resolution. */
+  setData(points: CurvePoint[], axis: PlotAxis, marks: VoltageMark[] = []): void {
     this.points = points.map((p) => [p[0], p[1]] as CurvePoint);
     this.axis = axis;
+    this.marks = marks;
     this.resize();
   }
 
-  /** Turn editing off while the plot shows a preview rather than the stored
-   *  curve, so a drag cannot save the preview. */
+  /** Turn editing off, for a curve the profile on screen does not own. */
   setEditable(editable: boolean): void {
     this.editable = editable;
     this.dragIndex = null;
@@ -353,7 +399,7 @@ class CurvePlot {
     return rect.height - PAD.top - PAD.bottom;
   }
   private xToPx(x: number, rect: DOMRect): number {
-    return PAD.left + ((x - this.xMin) / (this.xMax - this.xMin)) * this.plotW(rect);
+    return PAD.left + (x / (this.axis.xMax || 1)) * this.plotW(rect);
   }
   private yToPx(y: number, rect: DOMRect): number {
     const { yMin, yMax } = this.axis;
@@ -361,7 +407,7 @@ class CurvePlot {
     return PAD.top + (1 - (y - yMin) / span) * this.plotH(rect);
   }
   private pxToX(px: number, rect: DOMRect): number {
-    return this.xMin + ((px - PAD.left) / this.plotW(rect)) * (this.xMax - this.xMin);
+    return ((px - PAD.left) / this.plotW(rect)) * this.axis.xMax;
   }
   private pxToY(py: number, rect: DOMRect): number {
     const { yMin, yMax } = this.axis;
@@ -389,7 +435,8 @@ class CurvePlot {
       rect,
       this.axis,
       (x) => this.xToPx(x, rect),
-      (y) => this.yToPx(y, rect)
+      (y) => this.yToPx(y, rect),
+      this.marks
     );
 
     if (this.points.length === 0) return;
@@ -516,29 +563,13 @@ class CurvePlot {
       return;
     }
     this.canvas.style.cursor = 'grabbing';
-    const i = this.dragIndex;
-    const last = this.points.length - 1;
-    const isLeft = i === 0;
-    const isRight = i === last;
-
-    // X: endpoints locked; interior strictly between neighbours.
-    let nx = this.points[i][0];
-    if (!isLeft && !isRight) {
-      const lo = this.points[i - 1][0] + EPS_X;
-      const hi = this.points[i + 1][0] - EPS_X;
-      nx = Math.min(hi, Math.max(lo, this.pxToX(px, rect)));
-    }
-
-    // Y: clamp to axis, then keep strictly ascending vs neighbours.
-    let ny = this.points[i][1];
-    if (!(isLeft && this.lockLeftY)) {
-      ny = Math.min(this.axis.yMax, Math.max(this.axis.yMin, this.pxToY(py, rect)));
-      const lo = isLeft ? this.axis.yMin : this.points[i - 1][1] + EPS_Y;
-      const hi = isRight ? this.axis.yMax : this.points[i + 1][1] - EPS_Y;
-      ny = Math.min(hi, Math.max(lo, ny));
-    }
-
-    this.points[i] = [nx, ny];
+    this.points[this.dragIndex] = clampCurvePoint(
+      this.points,
+      this.dragIndex,
+      this.pxToX(px, rect),
+      this.pxToY(py, rect),
+      this.axis.yMax
+    );
     this.draw();
     this.onChange(this.points, true);
   }
@@ -551,7 +582,7 @@ class CurvePlot {
     this.onChange(this.points, false);
   }
 
-  /** Right-click an interior handle to remove it; the two endpoints are locked. */
+  /** Right-click a point between the two ends to remove it; the two ends stay. */
   private handleContext(e: MouseEvent): void {
     e.preventDefault(); // keep the browser context menu off the plot
     if (!this.editable) return;
@@ -565,18 +596,48 @@ class CurvePlot {
 }
 
 /**
- * A read-only plot of the measured power/speed curve over the stored one, for
- * a speed pass in progress and for a held result (design_new.md "Speed
+ * Where point `i` of `points` may go when dragged toward (x, y): the rules in
+ * CurvePlot's comment. The last point's voltage stays where it is
+ * (`max_voltage`).
+ */
+function clampCurvePoint(
+  points: CurvePoint[],
+  i: number,
+  x: number,
+  y: number,
+  yMax: number
+): CurvePoint {
+  const last = points.length - 1;
+  let nx = points[i][0];
+  if (i !== last) {
+    const lo = i === 0 ? EPS_X : points[i - 1][0] + EPS_X;
+    const hi = points[i + 1][0] - EPS_X;
+    nx = Math.min(hi, Math.max(lo, x));
+  }
+  let lo = i === 0 ? EPS_Y : points[i - 1][1];
+  let hi = i === last ? yMax : points[i + 1][1];
+  // The top speed stays above the starting speed.
+  if (i === last) lo = Math.max(lo, points[0][1] + EPS_Y);
+  if (i === 0 && last > 0) hi = Math.min(hi, points[last][1] - EPS_Y);
+  const ny = Math.min(hi, Math.max(lo, y));
+  return [nx, ny];
+}
+
+/**
+ * A read-only plot of the measured voltage/speed points over the stored curve,
+ * for a speed pass in progress and for a held result (design_new.md "Speed
  * calibration", The panel). The stored curve is drawn dashed and dim and the
  * measured one solid with a dot per point, so the two read apart without
- * relying on colour.
+ * relying on colour. The starting voltage and the lighting voltage are marked
+ * on the voltage axis.
  */
 class CurveComparePlot {
   private canvas: HTMLCanvasElement;
   private ctx: CanvasRenderingContext2D;
   private stored: Curve = [];
   private measured: Curve = [];
-  private axis: PlotAxis = { yMin: 0, yMax: 1 };
+  private axis: PlotAxis = { xMax: 12, yMin: 0, yMax: 1 };
+  private marks: VoltageMark[] = [];
   private ro: ResizeObserver | null;
 
   constructor(canvas: HTMLCanvasElement) {
@@ -586,10 +647,11 @@ class CurveComparePlot {
     this.ro.observe(canvas);
   }
 
-  setData(stored: Curve, measured: Curve, axis: PlotAxis): void {
+  setData(stored: Curve, measured: Curve, axis: PlotAxis, marks: VoltageMark[] = []): void {
     this.stored = stored;
     this.measured = measured;
     this.axis = axis;
+    this.marks = marks;
     this.resize();
   }
 
@@ -615,9 +677,9 @@ class CurveComparePlot {
     const w = rect.width - PAD.left - PAD.right;
     const h = rect.height - PAD.top - PAD.bottom;
     const span = this.axis.yMax - this.axis.yMin || 1;
-    const xToPx = (x: number) => PAD.left + (x / 100) * w;
+    const xToPx = (x: number) => PAD.left + (x / (this.axis.xMax || 1)) * w;
     const yToPx = (y: number) => PAD.top + (1 - (y - this.axis.yMin) / span) * h;
-    drawPlotFrame(ctx, rect, this.axis, xToPx, yToPx);
+    drawPlotFrame(ctx, rect, this.axis, xToPx, yToPx, this.marks);
 
     const css = getComputedStyle(document.documentElement);
     const line = (points: Curve) => {
@@ -656,8 +718,7 @@ export class SpeedProfileEditorHandler {
    *  profile; and which instance fields the open instance carries itself. */
   private _derivedFrom: string | null = null;
   private _ownFields: string[] = [];
-  private _vpPlot: CurvePlot | null = null;
-  private _psPlot: CurvePlot | null = null;
+  private _plot: CurvePlot | null = null;
   private _saveTimer: ReturnType<typeof setTimeout> | null = null;
   private _host: SpeedProfilePanelHost | null = null;
 
@@ -715,9 +776,8 @@ export class SpeedProfileEditorHandler {
   private _renderProfileRow(p: any): string {
     const id = p.profile_id;
     const isDefault = id === 'default';
-    const top = topSpeed(p.power_speed_curve || []);
-    const pts =
-      (p.voltage_power_curve?.length || 0) + (p.power_speed_curve?.length || 0);
+    const top = topSpeed(p.voltage_speed_curve || []);
+    const pts = p.voltage_speed_curve?.length || 0;
     return `
             <div class="rr-card accent-info mb-8" data-profile-id="${id}">
                 <div class="rr-card-head">
@@ -807,7 +867,6 @@ export class SpeedProfileEditorHandler {
     this._teardownPlots();
     if ('trainId' in options && options.trainId !== this._calTrainId) {
       this._calTrainId = options.trainId ?? null;
-      this._lightingSavedFor = null;
       this._speedCommittedFor = null;
     }
     // A hosted panel is not one of the secondary sidebar's editors.
@@ -852,8 +911,9 @@ export class SpeedProfileEditorHandler {
     this._lastSaved = this._clone(this._profile);
   }
 
-  /** A locomotive's own profile: only its power/speed curve is edited here;
-   *  every other value belongs to its model profile. */
+  /** A locomotive's own profile: only its name, lighting voltage and
+   *  voltage/speed curve are edited here; every other value belongs to its
+   *  model profile. */
   private _isInstance(): boolean {
     return this._derivedFrom !== null;
   }
@@ -863,32 +923,32 @@ export class SpeedProfileEditorHandler {
   private _instanceNoteHtml(): string {
     if (!this._derivedFrom) return '';
     const model = escapeAttr(this._derivedFrom);
-    const curve = this._ownFields.includes('power_speed_curve')
-      ? 'This locomotive has its own power ↔ speed curve, so a change to the model curve does not reach it.'
-      : `Its power ↔ speed curve comes from <span class="font-mono">${model}</span>; editing it here gives this locomotive its own curve.`;
+    const curve = this._ownFields.includes('voltage_speed_curve')
+      ? 'This locomotive has its own voltage → speed curve, so a change to the model curve does not reach it.'
+      : `Its voltage → speed curve comes from <span class="font-mono">${model}</span>; editing it here gives this locomotive its own curve.`;
+    const lighting = this._ownFields.includes('lighting_voltage')
+      ? 'It has its own lighting voltage.'
+      : `Its lighting voltage comes from <span class="font-mono">${model}</span> until you set one here.`;
     return `
                 <div class="info-box text-xs mb-12 sp-instance-note">
-                    This is one locomotive's own profile. ${curve}
+                    This is one locomotive's own profile. ${curve} ${lighting}
                     Every other value comes from model profile <span class="font-mono">${model}</span> and is edited there.
                     <button type="button" class="rr-flat-btn" id="sp-open-model" data-profile-id="${model}">Edit ${model} →</button>
                 </div>`;
   }
 
   private _normalize(d: any): SpeedProfileData {
-    const vp: CurvePoint[] = (d.voltage_power_curve || []).map((p: number[]) => [p[0], p[1]] as CurvePoint);
-    const ps: CurvePoint[] = (d.power_speed_curve || []).map((p: number[]) => [p[0], p[1]] as CurvePoint);
+    const curve: CurvePoint[] = (d.voltage_speed_curve || []).map((p: number[]) => [p[0], p[1]] as CurvePoint);
+    curve.sort((a, b) => a[0] - b[0]);
     return {
       profile_id: d.profile_id,
       name: d.name || '',
       model: d.model || '',
       calibrated_at: d.calibrated_at || null,
-      voltage_power_curve: vp,
-      power_speed_curve: ps,
-      // max_voltage may be absent on older GETs — fall back to the curve top.
-      max_voltage: typeof d.max_voltage === 'number' ? d.max_voltage : maxVoltage(vp, 12),
-      // lighting_voltage mirrors the 0%-power point of the curve.
-      lighting_voltage:
-        typeof d.lighting_voltage === 'number' ? d.lighting_voltage : lightingVoltage(vp, 1.5),
+      voltage_speed_curve: curve,
+      max_voltage:
+        typeof d.max_voltage === 'number' ? d.max_voltage : curve.length ? curve[curve.length - 1][0] : 12,
+      lighting_voltage: typeof d.lighting_voltage === 'number' ? d.lighting_voltage : null,
       acceleration_rate: d.acceleration_rate ?? 10,
       deceleration_rate: d.deceleration_rate ?? 15,
       emergency_brake_rate: d.emergency_brake_rate ?? 30,
@@ -908,19 +968,28 @@ export class SpeedProfileEditorHandler {
     return JSON.parse(JSON.stringify(p));
   }
 
-  // Plot-space points (x = power 0..100). Plot-1 maps [v,p]→[p,v]; plot-2 uses [p,s].
-  private _vpPlotPoints(): CurvePoint[] {
-    return (this._profile!.voltage_power_curve || []).map((pt) => [pt[1], pt[0]] as CurvePoint);
+  /** The curve's points, copied so a plot edit never writes the profile directly. */
+  private _curvePoints(): CurvePoint[] {
+    return (this._profile!.voltage_speed_curve || []).map((pt) => [pt[0], pt[1]] as CurvePoint);
   }
-  private _psPlotPoints(): CurvePoint[] {
-    return (this._profile!.power_speed_curve || []).map((pt) => [pt[0], pt[1]] as CurvePoint);
+  private _axis(): PlotAxis {
+    const p = this._profile!;
+    const top = topSpeed(p.voltage_speed_curve || []);
+    return { xMax: p.max_voltage, yMin: 0, yMax: Math.max(30, Math.ceil(top * 1.25)) };
   }
-  private _vpAxis(): PlotAxis {
-    return { yMin: 0, yMax: Math.max(16, Math.ceil(this._profile!.max_voltage + 3)) };
+  /** The starting voltage and, when set, the lighting voltage, marked on the
+   *  voltage axis. */
+  private _marks(curve: Curve, lighting: number | null): VoltageMark[] {
+    const marks: VoltageMark[] = [];
+    if (curve.length) marks.push({ x: startingVoltage(curve), label: 'starting' });
+    if (lighting != null) marks.push({ x: lighting, label: 'lighting' });
+    return marks;
   }
-  private _psAxis(): PlotAxis {
-    const top = topSpeed(this._profile!.power_speed_curve || []);
-    return { yMin: 0, yMax: Math.max(30, Math.ceil(top * 1.25)) };
+  /** Redraw the plot from the profile on screen. */
+  private _redrawPlot(): void {
+    const p = this._profile;
+    if (!p) return;
+    this._plot?.setData(this._curvePoints(), this._axis(), this._marks(p.voltage_speed_curve, p.lighting_voltage));
   }
 
   /** One of the profile's own values, beside the label it belongs to. A value
@@ -961,30 +1030,28 @@ export class SpeedProfileEditorHandler {
                 </div>
 
                 <div class="control-section">
-                    <div class="control-section-header">Voltage ↔ Power</div>
-                    ${this._scalarRowHtml('sp-maxv', 'Max voltage (100% power)', fmt(p.max_voltage), {
+                    <div class="control-section-header">Voltage → speed curve</div>
+                    ${this._scalarRowHtml('sp-maxv', 'Max voltage', fmt(p.max_voltage), {
                       editable: !ro,
                       unit: 'V',
                       attrs: 'type="number" min="0" step="0.1"',
                     })}
-                    <div class="text-muted text-xs mb-8">X = power %, Y = track voltage. Click the line to add a point · drag to move · right-click a point to remove. The 0% point is the lighting voltage; its Calibrate in the calibration group is the one way to move it.</div>
-                    <div class="sp-plot-block">
-                        <div class="sp-point-list" id="sp-vp-list"></div>
-                        <canvas class="sp-canvas" id="sp-vp-canvas"></canvas>
+                    <div class="sp-scalar-row">
+                        <span class="input-small-label">Starting voltage</span>
+                        <span class="sp-scalar-value" id="sp-start-v"></span><span class="sp-scalar-unit">V</span>
                     </div>
-                </div>
-
-                <div class="control-section">
-                    <div class="control-section-header">Power ↔ Speed</div>
-                    ${this._scalarRowHtml('sp-topspeed', 'Top speed (100% power)', fmt(topSpeed(p.power_speed_curve)), {
-                      editable: true,
-                      unit: 'km/h',
-                      attrs: 'type="number" min="0" step="1"',
-                    })}
-                    <div class="text-muted text-xs mb-8">X = power %, Y = speed (km/h). Click the line to add a point · drag to move · right-click to remove. Left point is pinned at the origin.</div>
+                    <div class="sp-scalar-row">
+                        <span class="input-small-label">Starting speed</span>
+                        <span class="sp-scalar-value" id="sp-start-s"></span><span class="sp-scalar-unit">km/h</span>
+                    </div>
+                    <div class="sp-scalar-row">
+                        <span class="input-small-label">Top speed</span>
+                        <span class="sp-scalar-value" id="sp-top-s"></span><span class="sp-scalar-unit">km/h</span>
+                    </div>
+                    <div class="text-muted text-xs mb-8">X = track voltage, Y = speed (km/h). The first point is the starting voltage: the lowest voltage at which the locomotive moves steadily, and its speed there. The last point sits at the max voltage and gives the top speed. Click the line to add a point · drag to move · right-click a point to remove.</div>
                     <div class="sp-plot-block">
-                        <div class="sp-point-list" id="sp-ps-list"></div>
-                        <canvas class="sp-canvas" id="sp-ps-canvas"></canvas>
+                        <div class="sp-point-list" id="sp-curve-list"></div>
+                        <canvas class="sp-canvas" id="sp-curve-canvas"></canvas>
                     </div>
                 </div>
 
@@ -993,10 +1060,10 @@ export class SpeedProfileEditorHandler {
                     <div class="sp-converter">
                         <div class="sp-converter-row">
                             <label>Voltage</label>
-                            <input type="number" id="cv-vp-v" class="property-input" step="0.1">
+                            <input type="number" id="cv-vs-v" class="property-input" step="0.1">
                             <span class="sp-conv-sep">↔</span>
-                            <input type="number" id="cv-vp-p" class="property-input" step="1">
-                            <label>Power %</label>
+                            <input type="number" id="cv-vs-s" class="property-input" step="1">
+                            <label>Speed</label>
                         </div>
                         <div class="sp-converter-row">
                             <label>Power %</label>
@@ -1005,13 +1072,7 @@ export class SpeedProfileEditorHandler {
                             <input type="number" id="cv-ps-s" class="property-input" step="1">
                             <label>Speed</label>
                         </div>
-                        <div class="sp-converter-row">
-                            <label>Voltage</label>
-                            <input type="number" id="cv-vs-v" class="property-input" step="0.1">
-                            <span class="sp-conv-sep">↔</span>
-                            <input type="number" id="cv-vs-s" class="property-input" step="1">
-                            <label>Speed</label>
-                        </div>
+                        <div class="text-muted text-xs" id="cv-ps-v"></div>
                     </div>
                 </div>
 
@@ -1068,39 +1129,22 @@ ${this._calibrationGroupHtml(p)}
   private _initEditor(): void {
     if (!this._profile) return;
 
-    const vpCanvas = document.getElementById('sp-vp-canvas') as HTMLCanvasElement | null;
-    const psCanvas = document.getElementById('sp-ps-canvas') as HTMLCanvasElement | null;
-    if (vpCanvas) {
-      this._vpPlot = new CurvePlot({
-        canvas: vpCanvas,
-        color: getComputedStyle(document.documentElement).getPropertyValue('--info-color').trim() || '#4aa3ff',
-        // The 0% point is the lighting voltage. design_new.md "Lighting-voltage
-        // calibration", The panel: the field is read-only and its step controls
-        // are the one way to move it, so the plot does not drag it either.
-        lockLeftY: true,
-        onChange: (pts, dragging) => this._applyVpPlot(pts, dragging),
-        onInsert: (seg, x, y) => this._insertPlotPoint('vp', seg, x, y),
-        onRemove: (i) => this._removePoint('vp', i),
-      });
-      this._vpPlot.setData(this._vpPlotPoints(), this._vpAxis());
-      // An instance profile stores no voltage/power curve; it is its model's.
-      if (this._isInstance()) this._vpPlot.setEditable(false);
-    }
-    if (psCanvas) {
-      this._psPlot = new CurvePlot({
-        canvas: psCanvas,
+    const canvas = document.getElementById('sp-curve-canvas') as HTMLCanvasElement | null;
+    if (canvas) {
+      // Both a model profile and a locomotive's own profile may edit the curve.
+      this._plot = new CurvePlot({
+        canvas,
         color: getComputedStyle(document.documentElement).getPropertyValue('--success-color').trim() || '#4ade80',
-        lockLeftY: true,
-        onChange: (pts, dragging) => this._applyPsPlot(pts, dragging),
-        onInsert: (seg, x, y) => this._insertPlotPoint('ps', seg, x, y),
-        onRemove: (i) => this._removePoint('ps', i),
+        onChange: (pts, dragging) => this._applyPlot(pts, dragging),
+        onInsert: (seg, x, y) => this._insertPlotPoint(seg, x, y),
+        onRemove: (i) => this._removePoint(i),
       });
-      this._psPlot.setData(this._psPlotPoints(), this._psAxis());
+      this._redrawPlot();
     }
 
-    this._rebuildPointList('vp');
-    this._rebuildPointList('ps');
+    this._rebuildPointList();
     this._bindScalars();
+    this._bindLightingField();
     this._bindConverter();
     this._recomputeConverter();
 
@@ -1117,28 +1161,29 @@ ${this._calibrationGroupHtml(p)}
         this._commit();
       };
 
+    this._syncValues();
     void this._initCalibration();
   }
 
   // === Calibration group ===
   //
-  // design_new.md "Calibrating a locomotive", "Speed calibration" (The panel)
-  // and "Lighting-voltage calibration" (The panel). The group's locomotive row
-  // names the train both runs drive; neither run picks a train for itself. The
-  // readiness line under it names every opening condition the named train does
-  // not yet meet, read from the server's readiness check. Both runs open in
-  // place: the lighting run on the lighting-voltage row, the speed pass under
-  // its Calibrate speed control. A run the group shows ends when the operator
-  // names another train, leaves the profile, or closes the panel.
+  // design_new.md "Calibrating a locomotive" and "Speed calibration" (The
+  // panel). The group's locomotive row names the train the speed pass drives;
+  // the pass never picks a train for itself. The readiness line under it names
+  // every opening condition the named train does not yet meet, read from the
+  // server's readiness check. The lighting-voltage field sits in the group too:
+  // the operator types the value and the profile saves it like any other
+  // field. The speed pass opens in place under its Calibrate speed control. A
+  // pass the group shows ends when the operator names another train, leaves
+  // the profile, or closes the panel.
 
   /** The train the locomotive row names. Kept when the panel shows a profile
    *  again (after a Save, or coming back from the list) while the train is
    *  still listed; closing the panel forgets it. */
   private _calTrainId: string | null = null;
   private _cal: CalibrationGroupState | null = null;
-  /** The named train, once its lighting run was saved or its speed pass
-   *  committed; the host marks those steps done. */
-  private _lightingSavedFor: string | null = null;
+  /** The named train, once its speed pass was committed; the host marks that
+   *  step done. */
   private _speedCommittedFor: string | null = null;
 
   /** Tell the host what the group shows now. */
@@ -1155,7 +1200,7 @@ ${this._calibrationGroupHtml(p)}
             view: cal.view,
             ready: cal.ready,
             unmet: cal.unmet,
-            lightingSaved: !!trainId && this._lightingSavedFor === trainId,
+            lightingVoltageSet: !!trainId && this._trainLightingVoltage() != null,
             speedCommitted: !!trainId && this._speedCommittedFor === trainId,
           }
         : null
@@ -1168,10 +1213,17 @@ ${this._calibrationGroupHtml(p)}
                     <div class="control-section-header">Calibration</div>
                     <div class="input-small-row sp-cal-train-row">
                         <label class="input-small-label input-small-label-inline" for="sp-cal-train">Locomotive</label>
-                        <select id="sp-cal-train" class="input-small-field" title="The placed train both calibration runs drive. Naming another train ends a run that is open."></select>
+                        <select id="sp-cal-train" class="input-small-field" title="The placed train the speed pass drives. Naming another train ends a pass that is open."></select>
                     </div>
                     <div class="sp-cal-readiness" id="sp-cal-readiness"></div>
-                    <div id="sp-lighting-row"></div>
+                    <div id="sp-lighting-row">
+                        <div class="input-small-row sp-cal-run-head">
+                            <label class="input-small-label input-small-label-inline" for="sp-lighting">Lighting voltage</label>
+                            <input type="number" id="sp-lighting" class="input-small-field input-small-field-compact" min="0" step="0.05" value="${p.lighting_voltage == null ? '' : fmt(p.lighting_voltage)}" placeholder="none">
+                            <span class="sp-scalar-unit">V</span>
+                        </div>
+                        <div class="text-muted text-xs mb-8" id="sp-lighting-hint"></div>
+                    </div>
                     <div id="sp-speed-row"></div>
                 </div>`;
   }
@@ -1188,7 +1240,6 @@ ${this._calibrationGroupHtml(p)}
       ready: false,
       unmet: null,
       readinessError: null,
-      lighting: null,
       speedRun: null,
       measuredBlockId: '',
       stretchText: '',
@@ -1197,7 +1248,6 @@ ${this._calibrationGroupHtml(p)}
       messageWarn: false,
       timer: null,
       busy: false,
-      stepChain: Promise.resolve(),
       compare: null,
       generation: 0,
     };
@@ -1253,11 +1303,9 @@ ${this._calibrationGroupHtml(p)}
     if (!cal || trainId === this._calTrainId) return;
     void this._endShownRun(cal);
     this._calTrainId = trainId;
-    this._lightingSavedFor = null;
     this._speedCommittedFor = null;
     cal.generation += 1;
     cal.view = cal.view === 'speed-setup' ? 'speed-setup' : 'none';
-    cal.lighting = null;
     cal.speedRun = null;
     cal.ready = false;
     cal.unmet = null;
@@ -1270,47 +1318,33 @@ ${this._calibrationGroupHtml(p)}
   }
 
   /**
-   * A run already open for the named train — opened before a page reload,
+   * A pass already open for the named train — opened before a page reload,
    * say — or a finished pass waiting for a commit is shown so the operator
-   * can end it, rather than left to block a new run with nothing on screen.
+   * can end it, rather than left to block a new pass with nothing on screen.
    */
   private async _pickUpOpenRuns(cal: CalibrationGroupState, trainId: string): Promise<void> {
     const generation = cal.generation;
-    const [speedRun, lightingRun] = await Promise.all([
-      this.api.getCalibration(trainId).catch(() => null),
-      this.api.getLightingCalibration(trainId).catch(() => null),
-    ]);
+    const speedRun = await this.api.getCalibration(trainId).catch(() => null);
     if (this._cal !== cal || cal.generation !== generation) return;
-    const view = viewForOpenRuns(speedRun, lightingRun);
+    const view = viewForOpenRun(speedRun);
     if (view === 'none') return;
     cal.view = view;
-    if (view === 'lighting') {
-      cal.lighting = {
-        candidate: Number(lightingRun.candidate_voltage) || 0,
-        ceiling: Number(lightingRun.ceiling_voltage) || 0,
-      };
-    } else {
-      cal.speedRun = speedRun;
-      cal.measuredBlockId = String(speedRun.measured_block_id || '');
-      this._highlightStretch(cal.measuredBlockId, speedRun.outer_block_ids || []);
-    }
+    cal.speedRun = speedRun;
+    cal.measuredBlockId = String(speedRun.measured_block_id || '');
+    this._highlightStretch(cal.measuredBlockId, speedRun.outer_block_ids || []);
   }
 
-  /** End whatever run the group is showing, writing nothing. Resolves once
+  /** End whatever pass the group is showing, writing nothing. Resolves once
    *  the server has ended it. */
   private _endShownRun(cal: CalibrationGroupState): Promise<void> {
     const trainId = this._calTrainId;
     if (!trainId) return Promise.resolve();
     let ended: Promise<unknown> = Promise.resolve();
-    if (cal.view === 'lighting') {
-      ended = this.api.cancelLightingCalibration(trainId);
-      this._previewLightingAnchor(null);
-    } else if (cal.view === 'speed-running' || cal.view === 'speed-held') {
+    if (cal.view === 'speed-running' || cal.view === 'speed-held') {
       // One call ends an open pass and discards a held result alike.
       ended = this.api.cancelCalibration(trainId);
     }
     if (cal.view !== 'speed-setup') this._clearStretchHighlight();
-    cal.lighting = null;
     cal.speedRun = null;
     return ended.then(
       () => {},
@@ -1318,7 +1352,7 @@ ${this._calibrationGroupHtml(p)}
     );
   }
 
-  /** Leaving the profile or closing the panel ends the shown run. */
+  /** Leaving the profile or closing the panel ends the shown pass. */
   private _teardownCalibration(): void {
     const cal = this._cal;
     if (!cal) return;
@@ -1344,14 +1378,13 @@ ${this._calibrationGroupHtml(p)}
     this._refreshTrainPicker();
     if (!this._calTrainId || cal.busy) return;
     if (cal.view === 'speed-running') await this._pollSpeedPass(cal);
-    else if (cal.view === 'lighting') await this._pollLightingRun(cal);
     else await this._refreshReadiness();
   }
 
   private _renderCalibration(): void {
     this._refreshTrainPicker(true);
     this._renderReadiness();
-    this._renderLightingRow();
+    this._renderLightingHint();
     this._renderSpeedRow();
     this._notifyCalibration();
   }
@@ -1429,7 +1462,7 @@ ${this._calibrationGroupHtml(p)}
     cal.busy = true;
     try {
       const block = view === 'speed-setup' ? cal.measuredBlockId : '';
-      const r = await this.api.getCalibrationReadiness(trainId, readinessKind(view), block);
+      const r = await this.api.getCalibrationReadiness(trainId, block);
       if (this._cal !== cal || cal.generation !== generation || cal.view !== view) return;
       cal.ready = !!r.ready;
       cal.unmet = r.unmet || [];
@@ -1438,7 +1471,7 @@ ${this._calibrationGroupHtml(p)}
       if (this._cal !== cal || cal.generation !== generation) return;
       if (err.status === 404) {
         // The train is gone (deleted, or the layout was cleared or replaced).
-        // Its runs went with it, so there is nothing to end: stop naming it.
+        // Its pass went with it, so there is nothing to end: stop naming it.
         this._forgetNamedTrain(cal);
         return;
       }
@@ -1454,11 +1487,9 @@ ${this._calibrationGroupHtml(p)}
   }
 
   private _forgetNamedTrain(cal: CalibrationGroupState): void {
-    if (cal.view === 'lighting') this._previewLightingAnchor(null);
     this._calTrainId = null;
     cal.generation += 1;
     cal.view = cal.view === 'speed-setup' ? 'speed-setup' : 'none';
-    cal.lighting = null;
     cal.speedRun = null;
     cal.ready = false;
     cal.unmet = null;
@@ -1473,7 +1504,7 @@ ${this._calibrationGroupHtml(p)}
     el.classList.remove('is-warn');
     if (!this._calTrainId) {
       el.textContent = this._calChoices().length
-        ? 'Choose the locomotive both runs drive.'
+        ? 'Choose the locomotive the speed pass drives.'
         : 'Place a train that uses this profile — calibration drives the locomotive.';
       return;
     }
@@ -1489,7 +1520,7 @@ ${this._calibrationGroupHtml(p)}
     if (cal.unmet === null) return; // first check still on its way
     if (cal.ready) {
       el.textContent =
-        'Ready. Opening a run powers the train on if it is off and selects manual.';
+        'Ready. Start powers the train on if it is off and selects manual.';
       return;
     }
     el.classList.add('is-warn');
@@ -1516,234 +1547,76 @@ ${this._calibrationGroupHtml(p)}
       const btn = cal.root.querySelector(sel) as HTMLButtonElement | null;
       if (btn) btn.disabled = !enabled;
     };
-    set('#sp-lighting-calibrate', c.lightingCalibrate);
     set('#sp-speed-calibrate', c.speedCalibrate);
     set('#sp-cal-start', c.speedStart);
   }
 
-  // --- lighting-voltage row ---
+  // --- lighting-voltage field ---
   //
-  // design_new.md "Lighting-voltage calibration", The panel. The row is the
-  // run's panel: Calibrate opens it in place, and the row then holds the
-  // candidate, a step down and a step up, Save and Revert. Nothing on the rig
-  // can tell whether the locomotive moved, so the operator's eye is the
-  // measurement: step up until it creeps, step back down one, and save. The
-  // voltage/power curve above follows the candidate, so the operator sees what
-  // Save will write before writing it.
+  // design_new.md "Calibrating a locomotive", step 2, and "SpeedProfile",
+  // `lighting_voltage`. The operator types the voltage a standing, powered
+  // train is held at so its lamps light; an empty field means the locomotive
+  // has none and stands at 0 V. It edits the profile on screen and saves like
+  // any other field. A save refuses a value below 0 V or at or above the
+  // starting voltage, so the field says that before sending.
 
-  private _renderLightingRow(): void {
+  /** The lighting voltage the named train runs on: its own profile's when it
+   *  carries one, the profile on screen's otherwise. */
+  private _trainLightingVoltage(): number | null {
     const cal = this._cal;
-    const row = cal?.root.querySelector('#sp-lighting-row') as HTMLElement | null;
-    if (!cal || !row || !this._profile) return;
-    const train = this._namedTrain();
-    // The field is read-only: it shows the value the named train runs on,
-    // and the step controls are the one way to move it.
-    const stored = Number(
-      trainStoredValue(train, cal.profiles, this._profile, 'lighting_voltage')
-    );
-    const head = `
-            <div class="input-small-row sp-cal-run-head">
-                <label class="input-small-label input-small-label-inline">Lighting voltage (0% power)</label>
-                <span class="sp-cal-value" id="sp-lighting" title="Read-only: moved by Calibrate">${fmt(stored)}<small>V</small></span>
-                ${
-                  cal.view === 'lighting'
-                    ? ''
-                    : `<button id="sp-lighting-calibrate" class="btn btn-outline btn-sm" title="Put a test voltage on the rails under this locomotive and step it until the locomotive just creeps">Calibrate</button>`
-                }
-            </div>`;
-    if (cal.view !== 'lighting' || !cal.lighting) {
-      row.innerHTML = head;
-      const open = row.querySelector('#sp-lighting-calibrate') as HTMLButtonElement | null;
-      if (open) open.onclick = () => void this._openLightingRun();
-      this._updateCalibrationControls();
-      return;
-    }
-    row.innerHTML = `${head}
-            <div class="sp-cal-run-body" id="sp-lighting-run" tabindex="-1">
-                <div class="sp-lighting-stepper">
-                    <button class="btn btn-outline sp-lighting-step" data-dir="-1" aria-label="Step down" title="Step down (↓)">−</button>
-                    <div class="sp-lighting-readout"><span id="sp-lighting-value"></span><small>V</small></div>
-                    <button class="btn btn-outline sp-lighting-step" data-dir="1" aria-label="Step up" title="Step up (↑)">+</button>
-                </div>
-                <div class="text-muted text-xs mb-8">Step up until the locomotive just creeps, then step back down one and save.</div>
-                <div class="sp-cal-actions">
-                    <button id="sp-lighting-revert" class="btn btn-outline btn-sm" title="End the run and keep the stored value (Esc)">Revert</button>
-                    <button id="sp-lighting-save" class="btn btn-accent btn-sm" title="Write the candidate to this locomotive's lighting voltage">Save</button>
-                </div>
-            </div>`;
-    const body = row.querySelector('#sp-lighting-run') as HTMLElement;
-    row.querySelectorAll<HTMLButtonElement>('.sp-lighting-step').forEach((btn) => {
-      btn.onclick = () => void this._stepLightingRun(Number(btn.dataset.dir));
-    });
-    (row.querySelector('#sp-lighting-revert') as HTMLButtonElement).onclick = () =>
-      void this._revertLightingRun();
-    (row.querySelector('#sp-lighting-save') as HTMLButtonElement).onclick = () =>
-      void this._saveLightingRun();
-    // The arrow keys step while the row has focus; Esc reverts.
-    body.addEventListener('keydown', (e: KeyboardEvent) => {
-      const action =
-        e.key === 'ArrowUp' ? () => this._stepLightingRun(1)
-        : e.key === 'ArrowDown' ? () => this._stepLightingRun(-1)
-        : e.key === 'Escape' ? () => this._revertLightingRun()
-        : null;
-      if (!action) return;
-      e.preventDefault();
-      e.stopPropagation();
-      void action();
-    });
-    this._paintLightingRun();
+    if (!cal || !this._profile) return null;
+    const v = trainStoredValue(this._namedTrain(), cal.profiles, this._profile, 'lighting_voltage');
+    return v == null ? null : Number(v);
   }
 
-  private _paintLightingRun(): void {
-    const cal = this._cal;
-    if (!cal?.lighting) return;
-    const { candidate, ceiling } = cal.lighting;
-    const value = cal.root.querySelector('#sp-lighting-value');
-    if (value) value.textContent = candidate.toFixed(2);
-    // The step controls stop at 0 and at the ceiling, so the row never shows
-    // a value Save would refuse.
-    const [down, up] = Array.from(
-      cal.root.querySelectorAll<HTMLButtonElement>('.sp-lighting-step')
-    );
-    if (down) down.disabled = candidate <= 0;
-    if (up) up.disabled = candidate >= ceiling;
-    this._previewLightingAnchor(candidate);
-  }
-
-  /** Draw the voltage/power curve with its 0% point at the candidate, or put
-   *  the stored curve back (`null`). The stored profile is not touched. */
-  private _previewLightingAnchor(candidate: number | null): void {
-    if (!this._profile || !this._vpPlot) return;
-    const vp = this._profile.voltage_power_curve;
-    const curve =
-      candidate === null || !vp.length
-        ? vp
-        : reanchorVoltagePowerCurve(vp, candidate, this._profile.max_voltage);
-    const plotPts = curve.map((pt) => [pt[1], pt[0]] as CurvePoint);
-    this._vpPlot.setData(plotPts, this._vpAxis());
-    // While they show the candidate, both views of plot 1 are a preview: a
-    // drag or a typed point would save the candidate as the curve, so both
-    // lock until the run ends.
-    const previewing = candidate !== null;
-    this._vpPlot.setEditable(!previewing && !this._isInstance());
-    this._rebuildPointList('vp', previewing ? plotPts : undefined);
-    if (previewing) {
-      document
-        .querySelectorAll<HTMLInputElement | HTMLButtonElement>('#sp-vp-list input, #sp-vp-list button')
-        .forEach((el) => (el.disabled = true));
-    }
-  }
-
-  private async _openLightingRun(): Promise<void> {
-    const cal = this._cal;
-    const trainId = this._calTrainId;
-    if (!cal || !trainId) return;
-    const generation = cal.generation;
-    let run: any;
-    try {
-      run = await this.api.startLightingCalibration(trainId);
-    } catch (err: any) {
-      showToast(err.message || 'Cannot start lighting calibration', 'error', 6000);
-      void this._refreshReadiness();
-      return;
-    }
-    if (this._cal !== cal || cal.generation !== generation) {
-      void this.api.cancelLightingCalibration(trainId).catch(() => {});
-      return;
-    }
-    cal.view = 'lighting';
-    cal.message = '';
-    cal.lighting = {
-      candidate: Number(run.candidate_voltage) || 0,
-      ceiling: Number(run.ceiling_voltage) || 0,
+  private _bindLightingField(): void {
+    const el = document.getElementById('sp-lighting') as HTMLInputElement | null;
+    if (!el) return;
+    el.onchange = () => {
+      if (!this._profile) return;
+      const text = el.value.trim();
+      const value = text === '' ? null : Number(text);
+      const problem = lightingVoltageProblem(value, this._profile.voltage_speed_curve);
+      if (problem) {
+        this._renderLightingHint(problem);
+        return;
+      }
+      this._profile.lighting_voltage = value;
+      this._renderLightingHint();
+      this._redrawPlot();
+      this._commitDebounced(0);
     };
-    this._renderCalibration();
-    (cal.root.querySelector('#sp-lighting-run') as HTMLElement | null)?.focus();
+    this._renderLightingHint();
   }
 
-  private _stepLightingRun(dir: number): Promise<void> {
-    const cal = this._cal;
-    if (!cal || cal.view !== 'lighting') return Promise.resolve();
-    cal.stepChain = cal.stepChain.then(() => this._sendLightingStep(cal, dir));
-    return cal.stepChain;
-  }
-
-  private async _sendLightingStep(cal: CalibrationGroupState, dir: number): Promise<void> {
-    const trainId = this._calTrainId;
-    if (this._cal !== cal || !trainId || cal.view !== 'lighting') return;
-    try {
-      const next = await this.api.stepLightingCalibration(trainId, dir);
-      if (this._cal !== cal || !cal.lighting) return;
-      cal.lighting = {
-        candidate: Number(next.candidate_voltage),
-        ceiling: Number(next.ceiling_voltage),
-      };
-      this._paintLightingRun();
-    } catch (err: any) {
-      showToast(err.message || 'Step failed', 'error', 5000);
-    }
-  }
-
-  private async _revertLightingRun(): Promise<void> {
-    const cal = this._cal;
-    if (!cal || cal.view !== 'lighting') return;
-    // A step still on its way would otherwise reach a run that has ended.
-    await cal.stepChain;
-    if (this._cal !== cal || cal.view !== 'lighting') return;
-    const ended = this._endShownRun(cal);
-    cal.view = 'none';
-    this._renderCalibration();
-    await ended;
-    void this._refreshReadiness();
-  }
-
-  private async _saveLightingRun(): Promise<void> {
-    const cal = this._cal;
-    const trainId = this._calTrainId;
-    if (!cal || !trainId || cal.view !== 'lighting') return;
-    // Save writes the candidate the operator last saw, so let every step
-    // pressed before it land first.
-    await cal.stepChain;
-    if (this._cal !== cal || cal.view !== 'lighting') return;
-    let result: any;
-    try {
-      result = await this.api.saveLightingCalibration(trainId);
-    } catch (err: any) {
-      showToast(err.message || 'Failed to save lighting voltage', 'error', 5000);
+  /** The line under the lighting-voltage field: why a typed value cannot be
+   *  saved, or what the field means, and the value the named train runs on
+   *  when its own profile sets a different one. */
+  private _renderLightingHint(typed?: string): void {
+    const hint = document.getElementById('sp-lighting-hint');
+    if (!hint || !this._profile) return;
+    // A curve edit can move the starting voltage down to the stored lighting
+    // voltage, which a save refuses too.
+    const problem =
+      typed ?? lightingVoltageProblem(this._profile.lighting_voltage, this._profile.voltage_speed_curve);
+    hint.classList.toggle('text-warning', !!problem);
+    hint.classList.toggle('text-muted', !problem);
+    if (problem) {
+      hint.textContent = typed ? `Not saved: ${problem}.` : `A save is refused while ${problem}.`;
       return;
     }
-    if (this._cal !== cal) return;
-    // The run ended with the Save, so there is nothing left to end.
-    cal.view = 'none';
-    cal.lighting = null;
-    this._lightingSavedFor = trainId;
-    const written = this._namedTrain()?.speed_profile_id || this._profile!.profile_id;
-    showToast(
-      `Lighting voltage saved at ${Number(result.lighting_voltage).toFixed(2)} V on ${written}`,
-      'success',
-      3000
-    );
-    // The commit moved the 0%-power anchor of the curve this train runs on,
-    // so reload rather than patch the field.
-    await this.showProfileEditor(this._profile!.profile_id);
-  }
-
-  /** A lighting run can end without the operator (EB, a power-off, the
-   *  session leaving Live); drop the stepper when it has. */
-  private async _pollLightingRun(cal: CalibrationGroupState): Promise<void> {
-    const trainId = this._calTrainId!;
-    const generation = cal.generation;
-    cal.busy = true;
-    const run = await this.api.getLightingCalibration(trainId).catch(() => null);
-    cal.busy = false;
-    if (!run || this._cal !== cal || cal.generation !== generation) return;
-    if (cal.view !== 'lighting' || run.open) return;
-    this._previewLightingAnchor(null);
-    cal.view = 'none';
-    cal.lighting = null;
-    showToast('The lighting run ended. Nothing was written.', 'info', 4000);
-    this._renderCalibration();
-    void this._refreshReadiness();
+    const start = startingVoltage(this._profile.voltage_speed_curve);
+    const empty = this._isInstance()
+      ? 'Empty reads the model profile’s value.'
+      : 'Empty means none: a standing, powered train gets 0 V.';
+    let text =
+      `For a locomotive whose lamps light before it moves. It must stay below the starting voltage (${fmt(start)} V). ${empty}`;
+    const train = this._namedTrain();
+    const own = this._trainLightingVoltage();
+    if (train && own !== this._profile.lighting_voltage) {
+      text += ` ${trainChoiceLabel(train, null)} runs on ${own == null ? 'none' : `${fmt(own)} V`}, set on its own profile.`;
+    }
+    hint.textContent = text;
   }
 
   // --- speed pass ---
@@ -1769,10 +1642,10 @@ ${this._calibrationGroupHtml(p)}
       : '<span class="sp-cal-stamp" title="No speed calibration has written this curve.">Not measured</span>';
     const head = `
             <div class="input-small-row sp-cal-run-head">
-                <label class="input-small-label input-small-label-inline">Power → speed curve</label>
+                <label class="input-small-label input-small-label-inline">Voltage → speed curve</label>
                 ${stamp}
                 ${
-                  cal.view === 'none' || cal.view === 'lighting'
+                  cal.view === 'none'
                     ? `<button id="sp-speed-calibrate" class="btn btn-outline btn-sm" title="Measure this locomotive by running it back and forth across a block">Calibrate speed</button>`
                     : ''
                 }
@@ -1886,26 +1759,33 @@ ${this._calibrationGroupHtml(p)}
     const measured = measuredCurve(run.samples || []);
     const list = cal.root.querySelector('#sp-cal-points');
     if (list) {
+      // Every finished step by voltage: a step that failed gave no point, and
+      // the lowest step that passed is the starting voltage.
       list.innerHTML =
-        `<div class="sp-point-head sp-point-head-readonly"><span>P%</span><span>km/h</span></div>` +
-        measured
-          .slice(1)
-          .map(
-            ([pw, s]) =>
-              `<div class="sp-point-readonly"><span>${fmt(pw, 0)}</span><span>${fmt(s, 1)}</span></div>`
-          )
+        `<div class="sp-point-head sp-point-head-readonly"><span>V</span><span>km/h</span></div>` +
+        pointRows(run)
+          .map((r) => {
+            const speed = r.speed == null ? 'failed' : fmt(r.speed, 1);
+            const cls = r.speed == null ? ' sp-point-failed' : r.starting ? ' sp-point-starting' : '';
+            const title = r.speed == null
+              ? 'This step failed and gave no point'
+              : r.starting
+                ? 'The starting voltage: the lowest step that passed'
+                : '';
+            return `<div class="sp-point-readonly${cls}"${title ? ` title="${title}"` : ''}><span>${volts(r.voltage)}</span><span>${speed}</span></div>`;
+          })
           .join('');
     }
     const crossings = cal.root.querySelector('#sp-cal-crossings');
     if (crossings) {
       const rows = crossingRows(run);
       crossings.innerHTML = rows.length
-        ? `<div class="sp-crossing-head"><span>P%</span><span>Toward</span><span>s</span><span>km/h</span></div>` +
+        ? `<div class="sp-crossing-head"><span>V</span><span>Toward</span><span>s</span><span>km/h</span></div>` +
           rows
             .map(
               (r) =>
                 `<div class="sp-crossing-row${r.used ? '' : ' sp-crossing-unused'}${r.firstOfStep ? ' sp-crossing-step' : ''}">` +
-                `<span>${r.firstOfStep ? fmt(r.power, 0) : ''}</span>` +
+                `<span>${r.firstOfStep ? volts(r.voltage) : ''}</span>` +
                 `<span>${escapeAttr(r.toward)}</span>` +
                 `<span>${r.seconds}</span><span>${r.speed}</span>` +
                 (r.note ? `<span class="sp-crossing-note">${escapeAttr(r.note)}</span>` : '') +
@@ -1915,9 +1795,15 @@ ${this._calibrationGroupHtml(p)}
         : '';
     }
     const stored: Curve =
-      trainStoredValue(this._namedTrain(), cal.profiles, this._profile, 'power_speed_curve') ||
+      trainStoredValue(this._namedTrain(), cal.profiles, this._profile, 'voltage_speed_curve') ||
       [];
-    cal.compare?.setData(stored, measured, { yMin: 0, yMax: compareAxisTop(stored, measured) });
+    const xMax = Number(run.max_voltage) || this._profile.max_voltage;
+    cal.compare?.setData(
+      stored,
+      measured,
+      { xMax, yMin: 0, yMax: compareAxisTop(stored, measured) },
+      this._marks(measured, this._trainLightingVoltage())
+    );
   }
 
   private _openSpeedSetup(): void {
@@ -2062,8 +1948,8 @@ ${this._calibrationGroupHtml(p)}
     this._paintSpeedPass();
   }
 
-  // Stop ends the pass through `SpeedCalibration.abandon(...)`: it commands 0%
-  // power, tears the leg route down, and writes nothing.
+  // Stop ends the pass through `SpeedCalibration.abandon(...)`: it cuts the
+  // drive, tears the leg route down, and writes nothing.
   private async _stopSpeedPass(): Promise<void> {
     const cal = this._cal;
     if (!cal || cal.view !== 'speed-running') return;
@@ -2191,75 +2077,53 @@ ${this._calibrationGroupHtml(p)}
   }
 
   // --- plot edits → working profile ---
-  private _applyVpPlot(plotPts: CurvePoint[], dragging: boolean): void {
-    // plot space [power, voltage] → storage [voltage, power], voltage-ascending.
-    const storage = plotPts
-      .map((pt) => [pt[1], pt[0]] as CurvePoint)
+  private _applyPlot(plotPts: CurvePoint[], dragging: boolean): void {
+    this._profile!.voltage_speed_curve = plotPts
+      .map((pt) => [pt[0], pt[1]] as CurvePoint)
       .sort((a, b) => a[0] - b[0]);
-    this._profile!.voltage_power_curve = storage;
-    // The 0%-power point is the read-only lighting voltage: the plot locks it
-    // and the server keeps the stored value, so the plot never writes it
-    // (design_new.md "Lighting-voltage calibration", The panel).
-    this._profile!.max_voltage = storage[storage.length - 1][0];
     this._syncValues();
-    if (!dragging) this._commitDebounced(0);
-  }
-
-  private _applyPsPlot(plotPts: CurvePoint[], dragging: boolean): void {
-    const storage = plotPts.map((pt) => [pt[0], pt[1]] as CurvePoint).sort((a, b) => a[0] - b[0]);
-    this._profile!.power_speed_curve = storage;
-    this._syncValues();
-    if (!dragging) this._commitDebounced(0);
+    if (!dragging) {
+      this._redrawPlot();
+      this._commitDebounced(0);
+    }
   }
 
   // --- numeric point list ---
-  /** `preview` draws points that are not the stored curve (the lighting
-   *  run's candidate anchor); the caller locks the list while it does. */
-  private _rebuildPointList(which: 'vp' | 'ps', preview?: CurvePoint[]): void {
-    const container = document.getElementById(which === 'vp' ? 'sp-vp-list' : 'sp-ps-list');
+  private _rebuildPointList(): void {
+    const container = document.getElementById('sp-curve-list');
     if (!container || !this._profile) return;
-    const isVp = which === 'vp';
-    const plotPts = preview ?? (isVp ? this._vpPlotPoints() : this._psPlotPoints());
-    const yLabel = isVp ? 'V' : 'km/h';
-    let html = `<div class="sp-point-head"><span>P%</span><span>${yLabel}</span><span></span></div>`;
-    plotPts.forEach((pt, i) => {
-      const isEnd = i === 0 || i === plotPts.length - 1;
-      const lockX = isEnd; // endpoints' power is fixed at 0 / 100
-      // Plot 1: the 0%-power voltage is the read-only lighting voltage.
-      // Plot 2: the origin is pinned at (0, 0).
-      const lockY = i === 0;
+    const pts = this._curvePoints();
+    let html = `<div class="sp-point-head"><span>V</span><span>km/h</span><span></span></div>`;
+    pts.forEach((pt, i) => {
+      const isEnd = i === 0 || i === pts.length - 1;
+      // The last point's voltage is max_voltage, set in its own field.
+      const lockX = i === pts.length - 1;
       html += `
                 <div class="sp-point-row" data-i="${i}">
-                    <input type="number" class="property-input sp-px" data-which="${which}" data-i="${i}" value="${fmt(pt[0])}" step="1" ${lockX ? 'disabled' : ''}>
-                    <input type="number" class="property-input sp-py" data-which="${which}" data-i="${i}" value="${fmt(pt[1])}" step="${isVp ? '0.1' : '1'}" ${lockY ? 'disabled' : ''}>
-                    <button class="rr-flat-btn sp-pt-del" data-which="${which}" data-i="${i}" ${isEnd ? 'disabled title="Endpoints cannot be removed"' : ''}>✕</button>
+                    <input type="number" class="property-input sp-px" data-i="${i}" value="${fmt(pt[0])}" step="0.1" ${lockX ? 'disabled title="The max voltage"' : ''}>
+                    <input type="number" class="property-input sp-py" data-i="${i}" value="${fmt(pt[1], 1)}" step="1">
+                    <button class="rr-flat-btn sp-pt-del" data-i="${i}" ${isEnd ? 'disabled title="The first and last points cannot be removed"' : ''}>✕</button>
                 </div>`;
     });
-    html += `<button class="rr-flat-btn sp-pt-add" data-which="${which}">+ add point</button>`;
+    html += `<button class="rr-flat-btn sp-pt-add">+ add point</button>`;
     container.innerHTML = html;
-    // An instance profile's voltage/power curve is its model's: read-only here.
-    if (isVp && this._isInstance()) {
-      container.querySelectorAll<HTMLInputElement | HTMLButtonElement>('input, button').forEach((el) => {
-        el.disabled = true;
-      });
-      return;
-    }
 
     container.querySelectorAll<HTMLInputElement>('.sp-px, .sp-py').forEach((el) => {
-      el.oninput = () => this._onPointInput(which);
+      el.oninput = () => this._onPointInput();
     });
     container.querySelectorAll<HTMLButtonElement>('.sp-pt-del').forEach((btn) => {
       if (btn.disabled) return;
-      btn.onclick = () => this._removePoint(which, Number(btn.dataset.i));
+      btn.onclick = () => this._removePoint(Number(btn.dataset.i));
     });
     const addBtn = container.querySelector<HTMLButtonElement>('.sp-pt-add');
-    if (addBtn) addBtn.onclick = () => this._addPoint(which);
+    if (addBtn) addBtn.onclick = () => this._addPoint();
   }
 
-  private _onPointInput(which: 'vp' | 'ps'): void {
-    const container = document.getElementById(which === 'vp' ? 'sp-vp-list' : 'sp-ps-list');
+  /** A typed point. The save refuses a curve whose voltages do not rise or
+   *  whose speed falls, and puts the last saved curve back. */
+  private _onPointInput(): void {
+    const container = document.getElementById('sp-curve-list');
     if (!container || !this._profile) return;
-    const isVp = which === 'vp';
     const count = container.querySelectorAll('.sp-point-row').length;
     const plotPts: CurvePoint[] = [];
     for (let i = 0; i < count; i++) {
@@ -2270,20 +2134,13 @@ ${this._calibrationGroupHtml(p)}
       if (!Number.isFinite(x) || !Number.isFinite(y)) return; // wait for valid input
       plotPts.push([x, y]);
     }
-    if (isVp) this._applyVpPlot(plotPts, false);
-    else this._applyPsPlot(plotPts, false);
-    // redraw the plot to match the typed values
-    (isVp ? this._vpPlot : this._psPlot)?.setData(
-      isVp ? this._vpPlotPoints() : this._psPlotPoints(),
-      isVp ? this._vpAxis() : this._psAxis(),
-    );
+    this._applyPlot(plotPts, false);
   }
 
-  private _addPoint(which: 'vp' | 'ps'): void {
+  private _addPoint(): void {
     if (!this._profile) return;
-    const isVp = which === 'vp';
-    const pts = isVp ? this._vpPlotPoints() : this._psPlotPoints();
-    // Insert at the midpoint of the widest power gap, y on the line between.
+    const pts = this._curvePoints();
+    // Insert at the midpoint of the widest voltage gap, speed on the line between.
     let gapAt = 0;
     let gap = -1;
     for (let i = 0; i < pts.length - 1; i++) {
@@ -2299,72 +2156,56 @@ ${this._calibrationGroupHtml(p)}
     }
     const a = pts[gapAt];
     const b = pts[gapAt + 1];
-    const nx = (a[0] + b[0]) / 2;
-    const ny = (a[1] + b[1]) / 2;
-    pts.splice(gapAt + 1, 0, [nx, ny]);
-    if (isVp) this._applyVpPlot(pts, false);
-    else this._applyPsPlot(pts, false);
-    this._rebuildPointList(which);
-    (isVp ? this._vpPlot : this._psPlot)?.setData(pts, isVp ? this._vpAxis() : this._psAxis());
+    pts.splice(gapAt + 1, 0, [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]);
+    this._applyPlot(pts, false);
+    this._rebuildPointList();
   }
 
   /** Insert a point from a click on the plot line: segment `segIndex`, at plot-space (x, y). */
-  private _insertPlotPoint(which: 'vp' | 'ps', segIndex: number, x: number, y: number): void {
+  private _insertPlotPoint(segIndex: number, x: number, y: number): void {
     if (!this._profile) return;
-    const isVp = which === 'vp';
-    const pts = isVp ? this._vpPlotPoints() : this._psPlotPoints();
+    const pts = this._curvePoints();
     const a = pts[segIndex];
     const b = pts[segIndex + 1];
     if (!a || !b) return;
-    // Keep the new point strictly inside the segment so X and Y stay ascending.
+    // Keep the new point strictly inside the segment's voltages, and its speed
+    // between the two ends', so voltage rises and speed never falls.
     const loX = a[0] + EPS_X;
     const hiX = b[0] - EPS_X;
-    const loY = a[1] + EPS_Y;
-    const hiY = b[1] - EPS_Y;
-    if (hiX <= loX || hiY <= loY) {
+    if (hiX <= loX) {
       showToast('No room to add another point here', 'warning', 2500);
       return;
     }
     const nx = Math.min(hiX, Math.max(loX, x));
-    const ny = Math.min(hiY, Math.max(loY, y));
+    const ny = Math.min(b[1], Math.max(a[1], y));
     pts.splice(segIndex + 1, 0, [nx, ny]);
-    if (isVp) this._applyVpPlot(pts, false);
-    else this._applyPsPlot(pts, false);
-    this._rebuildPointList(which);
-    (isVp ? this._vpPlot : this._psPlot)?.setData(pts, isVp ? this._vpAxis() : this._psAxis());
+    this._applyPlot(pts, false);
+    this._rebuildPointList();
   }
 
-  private _removePoint(which: 'vp' | 'ps', index: number): void {
+  private _removePoint(index: number): void {
     if (!this._profile) return;
-    const isVp = which === 'vp';
-    const pts = isVp ? this._vpPlotPoints() : this._psPlotPoints();
-    if (index <= 0 || index >= pts.length - 1) return; // never the endpoints
+    const pts = this._curvePoints();
+    if (index <= 0 || index >= pts.length - 1) return; // never the first or last point
     pts.splice(index, 1);
-    if (isVp) this._applyVpPlot(pts, false);
-    else this._applyPsPlot(pts, false);
-    this._rebuildPointList(which);
-    (isVp ? this._vpPlot : this._psPlot)?.setData(pts, isVp ? this._vpAxis() : this._psAxis());
+    this._applyPlot(pts, false);
+    this._rebuildPointList();
   }
 
   // --- scalar fields ---
   private _bindScalars(): void {
     const maxv = document.getElementById('sp-maxv') as HTMLInputElement | null;
-    const top = document.getElementById('sp-topspeed') as HTMLInputElement | null;
 
+    // The curve's last point sits at max_voltage, so moving max_voltage moves
+    // that point with it; both go in one save.
     if (maxv)
       maxv.oninput = () => this._onScalar(maxv, (v) => {
-        const vp = this._profile!.voltage_power_curve;
-        if (v <= vp[0][0]) return; // keep above lighting_voltage
-        vp[vp.length - 1][0] = v;
+        const curve = this._profile!.voltage_speed_curve;
+        if (curve.length >= 2 && v <= curve[curve.length - 2][0]) return; // above the point before it
+        if (curve.length) curve[curve.length - 1][0] = v;
         this._profile!.max_voltage = v;
-        this._vpPlot?.setData(this._vpPlotPoints(), this._vpAxis());
-      });
-    if (top)
-      top.oninput = () => this._onScalar(top, (v) => {
-        const ps = this._profile!.power_speed_curve;
-        if (ps.length >= 2 && v <= ps[ps.length - 2][1]) return; // above previous point
-        ps[ps.length - 1][1] = v;
-        this._psPlot?.setData(this._psPlotPoints(), this._psAxis());
+        this._redrawPlot();
+        this._rebuildPointList();
       });
 
     const rates: Array<[string, keyof SpeedProfileData]> = [
@@ -2396,11 +2237,16 @@ ${this._calibrationGroupHtml(p)}
     const v = parseFloat(el.value);
     if (!Number.isFinite(v)) return;
     apply(v);
-    this._recomputeConverter();
+    this._syncValues();
     this._commitDebounced(250);
   }
 
   // --- converter ---
+  //
+  // design_new.md "SpeedProfile": voltage and speed are read off the curve;
+  // power percent is a straight line in speed from the starting speed (just
+  // above 0%) to the top speed (100%), and 0% is stopped. A power percent's
+  // voltage goes through its speed.
   private _bindConverter(): void {
     const bind = (id: string, compute: (val: number) => void) => {
       const el = document.getElementById(id) as HTMLInputElement | null;
@@ -2410,57 +2256,80 @@ ${this._calibrationGroupHtml(p)}
           if (Number.isFinite(v)) compute(v);
         };
     };
-    const vp = () => this._profile!.voltage_power_curve;
-    const ps = () => this._profile!.power_speed_curve;
+    const curve = () => this._profile!.voltage_speed_curve;
     const set = (id: string, val: number, digits = 2) => {
       const el = document.getElementById(id) as HTMLInputElement | null;
       if (el && document.activeElement !== el) el.value = fmt(val, digits);
     };
-    bind('cv-vp-v', (v) => set('cv-vp-p', voltageToPower(vp(), v), 1));
-    bind('cv-vp-p', (p) => set('cv-vp-v', powerToVoltage(vp(), p), 2));
-    bind('cv-ps-p', (p) => set('cv-ps-s', powerPercentToSpeed(ps(), p), 1));
-    bind('cv-ps-s', (s) => set('cv-ps-p', speedToPower(ps(), s), 1));
-    bind('cv-vs-v', (v) => set('cv-vs-s', voltageToSpeedTwoStage(vp(), ps(), v), 1));
-    bind('cv-vs-s', (s) => set('cv-vs-v', speedToVoltageTwoStage(vp(), ps(), s), 2));
+    bind('cv-vs-v', (v) => set('cv-vs-s', voltageToSpeed(curve(), v), 1));
+    bind('cv-vs-s', (s) =>
+      set('cv-vs-v', speedToVoltage(curve(), s, this._profile!.max_voltage, this._profile!.lighting_voltage), 2)
+    );
+    bind('cv-ps-p', (pct) => {
+      set('cv-ps-s', powerPercentToSpeed(curve(), pct), 1);
+      this._showPowerVoltage(pct);
+    });
+    bind('cv-ps-s', (s) => {
+      const pct = speedToPowerPercent(curve(), s);
+      set('cv-ps-p', pct, 1);
+      this._showPowerVoltage(pct);
+    });
+  }
+
+  /** The line under the power row: the voltage a power percent drives. */
+  private _showPowerVoltage(pct: number): void {
+    const el = document.getElementById('cv-ps-v');
+    const p = this._profile;
+    if (!el || !p) return;
+    const v = powerPercentToVoltage(p.voltage_speed_curve, pct, p.max_voltage, p.lighting_voltage);
+    el.textContent = `${fmt(pct, 1)}% drives ${fmt(v)} V on the rails.`;
   }
 
   /** Seed the converter with a representative operating point (50% power). */
   private _recomputeConverter(): void {
-    if (!this._profile) return;
-    const vp = this._profile.voltage_power_curve;
-    const ps = this._profile.power_speed_curve;
-    const setIfBlank = (id: string, val: number, digits = 2) => {
+    const p = this._profile;
+    if (!p) return;
+    const curve = p.voltage_speed_curve;
+    const set = (id: string, val: number, digits = 2) => {
       const el = document.getElementById(id) as HTMLInputElement | null;
       if (el && document.activeElement !== el) el.value = fmt(val, digits);
     };
-    setIfBlank('cv-vp-v', powerToVoltage(vp, 50), 2);
-    setIfBlank('cv-vp-p', 50, 0);
-    setIfBlank('cv-ps-p', 50, 0);
-    setIfBlank('cv-ps-s', powerPercentToSpeed(ps, 50), 1);
-    setIfBlank('cv-vs-v', powerToVoltage(vp, 50), 2);
-    setIfBlank('cv-vs-s', voltageToSpeedTwoStage(vp, ps, powerToVoltage(vp, 50)), 1);
+    const halfV = powerPercentToVoltage(curve, 50, p.max_voltage, p.lighting_voltage);
+    set('cv-vs-v', halfV, 2);
+    set('cv-vs-s', voltageToSpeed(curve, halfV), 1);
+    set('cv-ps-p', 50, 0);
+    set('cv-ps-s', powerPercentToSpeed(curve, 50), 1);
+    this._showPowerVoltage(50);
   }
 
-  /** Refresh point-list inputs + scalar inputs + converter from the working
-   *  profile without rebuilding DOM. Skips whatever input has focus. */
+  /** Refresh point-list inputs, the curve's read-only values, the
+   *  lighting-voltage field and the converter from the working profile
+   *  without rebuilding DOM. Skips whatever input has focus. */
   private _syncValues(): void {
-    if (!this._profile) return;
+    const p = this._profile;
+    if (!p) return;
     const setVal = (el: Element | null, val: string) => {
       const input = el as HTMLInputElement | null;
       if (input && document.activeElement !== input) input.value = val;
     };
-    const refill = (which: 'vp' | 'ps', plotPts: CurvePoint[], yDigits: number) => {
-      const c = document.getElementById(which === 'vp' ? 'sp-vp-list' : 'sp-ps-list');
-      if (!c) return;
-      plotPts.forEach((pt, i) => {
-        setVal(c.querySelector(`.sp-px[data-i="${i}"]`), fmt(pt[0]));
-        setVal(c.querySelector(`.sp-py[data-i="${i}"]`), fmt(pt[1], yDigits));
+    const list = document.getElementById('sp-curve-list');
+    if (list) {
+      p.voltage_speed_curve.forEach((pt, i) => {
+        setVal(list.querySelector(`.sp-px[data-i="${i}"]`), fmt(pt[0]));
+        setVal(list.querySelector(`.sp-py[data-i="${i}"]`), fmt(pt[1], 1));
       });
+    }
+    setVal(document.getElementById('sp-maxv'), fmt(p.max_voltage));
+    setVal(document.getElementById('sp-lighting'), p.lighting_voltage == null ? '' : fmt(p.lighting_voltage));
+    const text = (id: string, val: string) => {
+      const el = document.getElementById(id);
+      if (el) el.textContent = val;
     };
-    refill('vp', this._vpPlotPoints(), 2);
-    refill('ps', this._psPlotPoints(), 1);
-    setVal(document.getElementById('sp-maxv'), fmt(this._profile.max_voltage));
-    setVal(document.getElementById('sp-topspeed'), fmt(topSpeed(this._profile.power_speed_curve)));
+    const curve = p.voltage_speed_curve;
+    text('sp-start-v', fmt(startingVoltage(curve)));
+    text('sp-start-s', fmt(startingSpeed(curve), 1));
+    text('sp-top-s', fmt(topSpeed(curve), 1));
+    this._renderLightingHint();
     this._recomputeConverter();
   }
 
@@ -2484,30 +2353,27 @@ ${this._calibrationGroupHtml(p)}
     try {
       await this.api.updateSpeedProfile(this._profile.profile_id, edits);
       const view = await this.api.getSpeedProfile(this._profile.profile_id, { resolved: true });
-      const hadOwnCurve = this._ownFields.includes('power_speed_curve');
+      const hadOwn = this._ownFields.join(',');
       this._applyView(view);
-      // The first hand edit of an instance's curve changes what the note says.
-      if (this._isInstance() && hadOwnCurve !== this._ownFields.includes('power_speed_curve')) {
+      // The first hand edit of an instance's curve or lighting voltage changes
+      // what the note says.
+      if (this._isInstance() && hadOwn !== this._ownFields.join(',')) {
         const note = document.querySelector('.sp-instance-note');
         if (note) note.outerHTML = this._instanceNoteHtml();
         const openModel = document.getElementById('sp-open-model') as HTMLButtonElement | null;
         if (openModel) openModel.onclick = () => void this.showProfileEditor(openModel.dataset.profileId || '');
       }
-      this._vpPlot?.setData(this._vpPlotPoints(), this._vpAxis());
-      this._psPlot?.setData(this._psPlotPoints(), this._psAxis());
+      this._redrawPlot();
       this._syncValues();
-      if (this._cal?.lighting) this._paintLightingRun();
+      this._notifyCalibration();
     } catch (err: any) {
       console.error('[SpeedProfileEditorHandler] save failed:', err);
       showToast('Failed to save profile: ' + (err.message || err), 'error', 5000);
       // Revert optimistic edits to the last server-confirmed state.
       if (this._lastSaved) this._profile = this._clone(this._lastSaved);
-      this._rebuildPointList('vp');
-      this._rebuildPointList('ps');
-      this._vpPlot?.setData(this._vpPlotPoints(), this._vpAxis());
-      this._psPlot?.setData(this._psPlotPoints(), this._psAxis());
+      this._rebuildPointList();
+      this._redrawPlot();
       this._syncValues();
-      if (this._cal?.lighting) this._paintLightingRun();
     }
   }
 
@@ -2516,10 +2382,8 @@ ${this._calibrationGroupHtml(p)}
       clearTimeout(this._saveTimer);
       this._saveTimer = null;
     }
-    this._vpPlot?.destroy();
-    this._psPlot?.destroy();
-    this._vpPlot = null;
-    this._psPlot = null;
+    this._plot?.destroy();
+    this._plot = null;
   }
 
   /** The secondary sidebar calls this when it closes or swaps the panel out.
@@ -2529,12 +2393,11 @@ ${this._calibrationGroupHtml(p)}
     this.close();
   }
 
-  /** Closing the panel ends the run the calibration group shows, and
+  /** Closing the panel ends the pass the calibration group shows, and
    *  forgets the named train. */
   close(): void {
     this._teardownCalibration();
     this._calTrainId = null;
-    this._lightingSavedFor = null;
     this._speedCommittedFor = null;
     this._teardownPlots();
     this._profile = null;

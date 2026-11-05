@@ -50,7 +50,7 @@ const summary = (over: Partial<CalibrationGroupSummary> = {}): CalibrationGroupS
   view: 'none',
   ready: true,
   unmet: [],
-  lightingSaved: false,
+  lightingVoltageSet: false,
   speedCommitted: false,
   ...over,
 });
@@ -144,11 +144,10 @@ describe('calibrationSteps', () => {
     expect(calibrationSteps(summary({ trainId: null }))).toEqual(['current', 'todo', 'todo', 'todo', 'todo']);
   });
 
-  it('marks the step the open run belongs to', () => {
+  it('marks the step the open pass belongs to', () => {
     expect(calibrationSteps(summary())).toEqual(['done', 'current', 'todo', 'todo', 'todo']);
-    expect(calibrationSteps(summary({ view: 'lighting' }))).toEqual(['done', 'current', 'todo', 'todo', 'todo']);
     expect(calibrationSteps(summary({ view: 'speed-setup' }))).toEqual(['done', 'todo', 'current', 'todo', 'todo']);
-    expect(calibrationSteps(summary({ view: 'speed-running', lightingSaved: true }))).toEqual([
+    expect(calibrationSteps(summary({ view: 'speed-running', lightingVoltageSet: true }))).toEqual([
       'done',
       'done',
       'done',
@@ -158,16 +157,16 @@ describe('calibrationSteps', () => {
     expect(calibrationSteps(summary({ view: 'speed-held' }))).toEqual(['done', 'todo', 'done', 'done', 'current']);
   });
 
-  it('moves on to the speed pass once the lighting run is saved, and ends done after a commit', () => {
-    expect(calibrationSteps(summary({ lightingSaved: true }))).toEqual(['done', 'done', 'current', 'todo', 'todo']);
+  it('moves on to the speed pass once the train runs on a lighting voltage, and ends done after a commit', () => {
+    expect(calibrationSteps(summary({ lightingVoltageSet: true }))).toEqual(['done', 'done', 'current', 'todo', 'todo']);
     expect(calibrationSteps(summary({ speedCommitted: true }))).toEqual(['done', 'done', 'done', 'done', 'done']);
   });
 
   it('shows the canvas only while a run is open or being set up', () => {
     expect(calibrationRunShown(summary())).toBe(false);
     expect(calibrationRunShown(summary({ view: 'speed-setup' }))).toBe(true);
-    expect(calibrationRunShown(summary({ view: 'lighting' }))).toBe(true);
-    expect(calibrationRunShown(summary({ view: 'lighting', trainId: null }))).toBe(false);
+    expect(calibrationRunShown(summary({ view: 'speed-running' }))).toBe(true);
+    expect(calibrationRunShown(summary({ view: 'speed-running', trainId: null }))).toBe(false);
   });
 });
 

@@ -1,21 +1,21 @@
 /**
  * The decisions behind the Speed Profile panel's calibration group, kept free
  * of the DOM so they can be tested on their own (design_new.md "Speed
- * calibration", The panel, and "Lighting-voltage calibration", The panel).
+ * calibration", The panel, and "Calibrating a locomotive").
  *
- * The group names one locomotive in its locomotive row, and both runs drive
- * that train; neither run picks a train for itself. These helpers answer which
- * trains the row lists, which of the group's controls may be pressed, and what
- * the train's own stored values are when the profile on screen is the model
- * profile its instance derives from.
+ * The group names one locomotive in its locomotive row, and the speed pass
+ * drives that train; the pass never picks a train for itself. These helpers
+ * answer which trains the row lists, which of the group's controls may be
+ * pressed, what the train's own stored values are when the profile on screen
+ * is the model profile its instance derives from, and what the pass's progress,
+ * points and crossings read as.
  */
 
 import type { Curve, CurvePoint } from './speed-profile-curve';
 
 /** What the calibration group is showing for the named train. */
 export type CalibrationRunView =
-  | 'none' // no run open: the two Calibrate controls
-  | 'lighting' // a lighting run is open on its row
+  | 'none' // no pass open: the Calibrate speed control
   | 'speed-setup' // the speed pass is being set up: measured block, outer blocks, Start
   | 'speed-running' // the speed pass is open and measuring
   | 'speed-held'; // the pass measured every step and waits for a commit
@@ -71,8 +71,6 @@ export function trainStoredValue(
 
 /** Which of the group's controls may be pressed. */
 export interface CalibrationControls {
-  /** Calibrate on the lighting-voltage row. */
-  lightingCalibrate: boolean;
   /** Calibrate speed, which opens the pass setup. */
   speedCalibrate: boolean;
   /** Start in the pass setup. */
@@ -87,7 +85,6 @@ export function calibrationControls(input: {
 }): CalibrationControls {
   const { trainNamed, ready, view, stretchResolved } = input;
   return {
-    lightingCalibrate: trainNamed && view === 'none' && ready,
     // Opening the setup only names the measured block; whether the pass may
     // open depends on that block, so the readiness check gates Start instead.
     speedCalibrate: trainNamed && view === 'none',
@@ -95,51 +92,68 @@ export function calibrationControls(input: {
   };
 }
 
-/**
- * Which readiness check the line asks for. While the pass setup is open it is
- * the speed check, which adds the condition that the train stands in one of
- * the measured block's two outer blocks; otherwise it is the conditions both
- * runs share.
- */
-export function readinessKind(view: CalibrationRunView): 'speed' | 'lighting' {
-  return view === 'speed-setup' ? 'speed' : 'lighting';
-}
-
-/** Whether the readiness line should be asked for at all: only while no run is open. */
+/** Whether the readiness line should be asked for at all: only while no pass is open. */
 export function readinessApplies(view: CalibrationRunView): boolean {
   return view === 'none' || view === 'speed-setup';
 }
 
 /**
- * What the group shows for a train it has just been told about, from the two
- * run reads: an open lighting run, an open speed pass, or a finished pass
- * waiting for a commit. A run left open by a page reload is shown so it can be
- * ended, rather than left to block a new run with nothing on screen.
+ * What the group shows for a train it has just been told about, from the
+ * pass read: an open speed pass, or a finished pass waiting for a commit. A
+ * pass left open by a page reload is shown so it can be ended, rather than
+ * left to block a new pass with nothing on screen.
  */
-export function viewForOpenRuns(speedRun: any, lightingRun: any): CalibrationRunView {
-  if (lightingRun?.open) return 'lighting';
+export function viewForOpenRun(speedRun: any): CalibrationRunView {
   if (speedRun?.open && speedRun.phase === 'measured') return 'speed-held';
   if (speedRun?.open) return 'speed-running';
   return 'none';
 }
 
+/** A voltage as the panel shows it: at most two decimals, no trailing zeros. */
+export function volts(v: number): string {
+  return String(Number(Number(v).toFixed(2)));
+}
+
 /**
- * The measured power/speed points as a curve: the `(0%, 0 km/h)` origin, which
- * the pass never measures because `0%` power is the lighting voltage, then
- * each measured step in power order.
+ * The measured points as a curve: each step that passed, at the voltage it
+ * drove, in voltage order. The first point is the starting voltage and the
+ * starting speed. A step that failed gives no point.
  */
 export function measuredCurve(samples: any[]): Curve {
   const points: CurvePoint[] = (samples || []).map(
-    (s: any) => [Number(s.power_percent), Number(s.speed_kmh)] as CurvePoint
+    (s: any) => [Number(s.track_voltage), Number(s.speed_kmh)] as CurvePoint
   );
   points.sort((a, b) => a[0] - b[0]);
-  return [[0, 0], ...points];
+  return points;
+}
+
+/** One line of the pass's point list: a step that passed, or one that failed. */
+export interface PointRow {
+  voltage: number;
+  /** The step's speed; null for a step that failed and gave no point. */
+  speed: number | null;
+  /** The lowest step that passed: the starting voltage. */
+  starting: boolean;
+}
+
+/**
+ * Every step the pass has finished, passed or failed, in voltage order, so
+ * the operator sees where the search for the starting voltage narrowed.
+ */
+export function pointRows(run: any): PointRow[] {
+  const measured = measuredCurve(run?.samples || []);
+  const rows: PointRow[] = measured.map(([voltage, speed], i) => ({ voltage, speed, starting: i === 0 }));
+  for (const v of run?.failed_voltages || []) {
+    rows.push({ voltage: Number(v), speed: null, starting: false });
+  }
+  return rows.sort((a, b) => a.voltage - b.voltage);
 }
 
 /** One line of the speed pass's crossing list (design_new.md "Speed
  *  calibration", The panel lists every crossing). */
 export interface CrossingRow {
-  power: number;
+  /** The voltage of the step the crossing belongs to. */
+  voltage: number;
   toward: string;
   seconds: string;
   speed: string;
@@ -155,8 +169,8 @@ const CROSSING_NOTES: Record<string, string> = {
   used: '',
   discarded: 'discarded — the ATC limit lowered the drive',
   replaced: 'replaced — the step was measured again',
-  dropped: 'dropped — a later crossing of this step stalled',
-  ended_sweep: 'stalled — this and every lower step read 0 km/h',
+  dropped: 'dropped — its step failed',
+  failed_step: 'failed its step — the train did not cross the measured block in time',
 };
 
 /**
@@ -168,12 +182,12 @@ export function crossingRows(run: any): CrossingRow[] {
   const names: Record<string, string> = run?.block_names || {};
   let lastKey = '';
   return (run?.crossings || []).map((c: any) => {
-    const key = `${c.power_percent}/${c.attempt}`;
+    const key = `${c.track_voltage}/${c.attempt}`;
     const firstOfStep = key !== lastKey;
     lastKey = key;
     const toward = String(c.toward_block_id || '');
     return {
-      power: Number(c.power_percent),
+      voltage: Number(c.track_voltage),
       toward: names[toward] || toward,
       seconds: c.seconds == null ? '—' : Number(c.seconds).toFixed(2),
       speed: c.speed_kmh == null ? '—' : Number(c.speed_kmh).toFixed(1),
@@ -184,26 +198,42 @@ export function crossingRows(run: any): CrossingRow[] {
   });
 }
 
+/** Plain words for which part of the sweep a step belongs to. */
+const STEP_KIND_WORDS: Record<string, string> = {
+  coarse: 'coarse step',
+  narrowing: 'narrowing in on the starting voltage',
+  filled: 'in-between step, where the speed jumps',
+};
+
 /**
  * The pass's progress line: the outer block it is moving the train into before
  * the first crossing (design_new.md "Speed calibration", The pass first moves
- * the train into an outer block), the step being measured, or, once held, how
- * many points it measured. Blocks are named by name when the run carries one.
+ * the train into an outer block), that it is getting the train ready again
+ * after a failed step, the step being measured, or, once held, how many points
+ * it measured and the starting voltage. Blocks are named by name when the run
+ * carries one.
  */
 export function speedPassProgress(run: any, held: boolean): string {
   const names: Record<string, string> = run?.block_names || {};
   const named = (id: string) => names[id] || id;
   if (held) {
-    return `Measured every step: ${run.samples.length} points across ${named(run.measured_block_id)}.`;
+    const curve = measuredCurve(run.samples || []);
+    const start = curve.length
+      ? ` Starting voltage ${volts(curve[0][0])} V, at ${curve[0][1].toFixed(1)} km/h.`
+      : '';
+    return `Measured ${curve.length} points across ${named(run.measured_block_id)}.${start}`;
   }
   if (run.phase === 'moving') {
     return run.move_target_block_id
       ? `Moving the train into ${named(run.move_target_block_id)} before the first crossing`
       : 'Finding the way into the nearer outer block';
   }
+  if (run.phase === 'resetting') {
+    return 'A step failed — getting the train ready for the next step';
+  }
+  const kind = STEP_KIND_WORDS[run.current_step_kind] || `${run.current_step_kind} step`;
   return (
-    `Measuring ${run.current_power_percent}% — step ${run.step_index + 1} of ` +
-    `${run.step_count}, crossing ` +
+    `Measuring ${volts(run.current_voltage)} V (${kind}), attempt ${run.attempt} — crossing ` +
     `${Math.min(run.crossings_done + 1, run.crossings_target)} of ${run.crossings_target}`
   );
 }

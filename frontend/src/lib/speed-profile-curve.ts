@@ -1,15 +1,16 @@
 /**
- * Pure piecewise-linear speed-profile math — a 1:1 port of the conversion
- * methods on `SpeedProfile` (speed_profile.py). No DOM, no imports. Used by the
- * speed-profile editor's converter and live plot previews so they stay
- * byte-consistent with the server's interpolation.
+ * Pure speed-profile math — a 1:1 port of the conversion methods on
+ * `SpeedProfile` (speed_profile.py). No DOM, no imports. The Speed Profile
+ * panel's converter and curve chart use it, so what they show matches the
+ * server's arithmetic.
  *
- * Curve conventions (matching the backend):
- *   - voltage_power_curve: [track_voltage, power_percent] pairs, voltage ascending.
- *   - power_speed_curve:   [power_percent, speed_kmh]      pairs, power ascending.
- * Every lookup clamps at the curve endpoints, exactly like the Python methods,
- * and reproduces their guard order (e.g. powerPercentToSpeed returns 0 for a
- * non-positive percent before the lower-endpoint check).
+ * A profile stores one curve, `voltage_speed_curve`: [track_voltage, speed_kmh]
+ * points, voltage ascending. Its first point is the starting voltage (the
+ * lowest voltage at which the locomotive moves steadily) and the starting
+ * speed (its speed there). Its last point sits at `max_voltage` and its speed
+ * is the top speed. Power percent is not stored: 0% is stopped, and any
+ * percent above 0 is a straight line in speed from the starting speed to the
+ * top speed (design_new.md "SpeedProfile").
  */
 
 export type CurvePoint = [number, number];
@@ -28,121 +29,131 @@ export function interpolate(
   return y1 + t * (y2 - y1);
 }
 
-/** track_voltage -> power_percent (stage 1). Mirrors SpeedProfile.voltage_to_power. */
-export function voltageToPower(vpCurve: Curve, voltage: number): number {
-  const curve = vpCurve;
+/** The lowest voltage at which the locomotive moves steadily: the curve's first point. */
+export function startingVoltage(curve: Curve): number {
+  return curve.length ? curve[0][0] : 0;
+}
+
+/** The locomotive's speed at its starting voltage: the curve's first point. */
+export function startingSpeed(curve: Curve): number {
+  return curve.length ? curve[0][1] : 0;
+}
+
+/** The speed of the curve's last point, at `max_voltage`. */
+export function topSpeed(curve: Curve): number {
+  return curve.length ? curve[curve.length - 1][1] : 0;
+}
+
+/** Read the curve forward. Mirrors SpeedProfile.voltage_to_speed: below the
+ *  starting voltage is 0 km/h; between points interpolates; at or above the
+ *  last point reads the top speed. */
+export function voltageToSpeed(curve: Curve, voltage: number): number {
   if (!curve.length) return 0;
-  if (voltage <= curve[0][0]) return curve[0][1];
+  if (voltage < curve[0][0]) return 0;
   if (voltage >= curve[curve.length - 1][0]) return curve[curve.length - 1][1];
   for (let i = 0; i < curve.length - 1; i++) {
-    const [v1, p1] = curve[i];
-    const [v2, p2] = curve[i + 1];
-    if (v1 <= voltage && voltage <= v2) return interpolate(v1, p1, v2, p2, voltage);
+    const [v1, s1] = curve[i];
+    const [v2, s2] = curve[i + 1];
+    if (v1 <= voltage && voltage <= v2) return interpolate(v1, s1, v2, s2, voltage);
   }
   return curve[curve.length - 1][1];
 }
 
-/** power_percent -> track_voltage (stage 1, inverted). Mirrors SpeedProfile.power_to_voltage. */
-export function powerToVoltage(vpCurve: Curve, powerPercent: number): number {
-  const curve = vpCurve;
+/**
+ * Read the curve backward. Mirrors SpeedProfile.speed_to_voltage: a speed of 0
+ * is the lighting voltage (0 V when there is none); a speed up to the starting
+ * speed is the starting voltage; a speed above the top speed is `maxVoltage`;
+ * otherwise it interpolates, taking the lowest voltage of a flat stretch.
+ */
+export function speedToVoltage(
+  curve: Curve,
+  speedKmh: number,
+  maxVoltage: number,
+  lightingVoltage: number | null,
+): number {
+  if (speedKmh <= 0) return lightingVoltage ?? 0;
   if (!curve.length) return 0;
-  if (powerPercent <= curve[0][1]) return curve[0][0];
-  if (powerPercent >= curve[curve.length - 1][1]) return curve[curve.length - 1][0];
+  if (speedKmh <= curve[0][1]) return curve[0][0];
+  if (speedKmh > curve[curve.length - 1][1]) return maxVoltage;
   for (let i = 0; i < curve.length - 1; i++) {
-    const [v1, p1] = curve[i];
-    const [v2, p2] = curve[i + 1];
-    if (p1 <= powerPercent && powerPercent <= p2) {
-      return interpolate(p1, v1, p2, v2, powerPercent);
+    const [v1, s1] = curve[i];
+    const [v2, s2] = curve[i + 1];
+    if (s1 <= speedKmh && speedKmh <= s2) {
+      if (s2 === s1) return v1;
+      return interpolate(s1, v1, s2, v2, speedKmh);
     }
   }
   return curve[curve.length - 1][0];
 }
 
-/** power_percent -> speed_kmh (stage 2). Mirrors SpeedProfile.power_percent_to_speed. */
-export function powerPercentToSpeed(psCurve: Curve, percent: number): number {
-  const curve = psCurve;
-  if (!curve.length) return 0;
+/** Power percent to speed. Mirrors SpeedProfile.power_percent_to_speed: 0% is
+ *  0 km/h; above 0 it runs straight from the starting speed to the top speed. */
+export function powerPercentToSpeed(curve: Curve, percent: number): number {
   if (percent <= 0) return 0;
-  if (percent <= curve[0][0]) return curve[0][1];
-  if (percent >= curve[curve.length - 1][0]) return curve[curve.length - 1][1];
-  for (let i = 0; i < curve.length - 1; i++) {
-    const [p1, s1] = curve[i];
-    const [p2, s2] = curve[i + 1];
-    if (p1 <= percent && percent <= p2) return interpolate(p1, s1, p2, s2, percent);
-  }
-  return curve[curve.length - 1][1];
+  const p = Math.min(percent, 100);
+  const start = startingSpeed(curve);
+  return start + (topSpeed(curve) - start) * p / 100;
 }
 
-/** speed_kmh -> power_percent (stage 2, inverted). Mirrors SpeedProfile._speed_to_power. */
-export function speedToPower(psCurve: Curve, speedKmh: number): number {
-  const curve = psCurve;
-  if (!curve.length) return 0;
+/** Speed to power percent. Mirrors SpeedProfile.speed_to_power_percent. */
+export function speedToPowerPercent(curve: Curve, speedKmh: number): number {
   if (speedKmh <= 0) return 0;
-  if (speedKmh <= curve[0][1]) return curve[0][0];
-  if (speedKmh >= curve[curve.length - 1][1]) return curve[curve.length - 1][0];
-  for (let i = 0; i < curve.length - 1; i++) {
-    const [p1, s1] = curve[i];
-    const [p2, s2] = curve[i + 1];
-    if (s1 <= speedKmh && speedKmh <= s2) return interpolate(s1, p1, s2, p2, speedKmh);
-  }
-  return curve[curve.length - 1][0];
+  const start = startingSpeed(curve);
+  const span = topSpeed(curve) - start;
+  if (span <= 0) return 100;
+  return Math.max(0, Math.min(100, 100 * (speedKmh - start) / span));
 }
 
-/** speed_kmh -> track_voltage via both stages. Mirrors SpeedProfile.speed_to_voltage_two_stage. */
-export function speedToVoltageTwoStage(
-  vpCurve: Curve,
-  psCurve: Curve,
-  speedKmh: number,
+/** Power percent to voltage, through speed. Mirrors SpeedProfile.power_percent_to_voltage. */
+export function powerPercentToVoltage(
+  curve: Curve,
+  percent: number,
+  maxVoltage: number,
+  lightingVoltage: number | null,
 ): number {
-  if (speedKmh <= 0) return 0;
-  const power = speedToPower(psCurve, speedKmh);
-  return powerToVoltage(vpCurve, power);
-}
-
-/** track_voltage -> speed_kmh via both stages. Mirrors SpeedProfile.voltage_to_speed_two_stage. */
-export function voltageToSpeedTwoStage(
-  vpCurve: Curve,
-  psCurve: Curve,
-  voltage: number,
-): number {
-  const power = voltageToPower(vpCurve, voltage);
-  return powerPercentToSpeed(psCurve, power);
-}
-
-/** Calibrated speed at 100% power = the top of power_speed_curve. */
-export function topSpeed(psCurve: Curve): number {
-  if (!psCurve.length) return 0;
-  return psCurve[psCurve.length - 1][1];
-}
-
-/** Top of the usable voltage range (100%-power point) = the top of voltage_power_curve. */
-export function maxVoltage(vpCurve: Curve, fallback: number): number {
-  if (!vpCurve.length) return fallback;
-  return vpCurve[vpCurve.length - 1][0];
-}
-
-/** Lighting voltage = 0%-power point = the bottom of voltage_power_curve. */
-export function lightingVoltage(vpCurve: Curve, fallback: number): number {
-  if (!vpCurve.length) return fallback;
-  return vpCurve[0][0];
+  return speedToVoltage(curve, powerPercentToSpeed(curve, percent), maxVoltage, lightingVoltage);
 }
 
 /**
- * A voltage_power_curve with its 0%-power point moved to `anchor`. Mirrors
- * speed_profile.reanchor_voltage_power_curve: every point at or below the new
- * anchor is dropped, and so is the old 0%-power point, then `(anchor, 0%)` is
- * prepended. The lighting-voltage row draws its candidate through this, so the
- * curve on screen shows what Save would write.
+ * Every condition the curve breaks, as plain reasons; empty when it is valid.
+ * Mirrors speed_profile.curve_problems, so the panel can say why a save would
+ * be refused before sending it.
  */
-export function reanchorVoltagePowerCurve(
-  vpCurve: Curve,
-  anchor: number,
-  maxVoltageFallback: number,
-): Curve {
-  const kept = vpCurve
-    .filter(([v, p]) => v > anchor && p > 0)
-    .map(([v, p]) => [v, p] as CurvePoint);
-  if (!kept.length) kept.push([maxVoltageFallback, 100]);
-  kept.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
-  return [[anchor, 0], ...kept];
+export function curveProblems(curve: Curve | null | undefined, maxVoltage: number): string[] {
+  if (!curve || curve.length < 2) return ['the curve needs at least two points'];
+  const problems: string[] = [];
+  const voltages = curve.map(([v]) => v);
+  const speeds = curve.map(([, s]) => s);
+  if (voltages.some((v, i) => i > 0 && v <= voltages[i - 1])) {
+    problems.push('the points must be in order of rising voltage');
+  }
+  const [firstV, firstS] = curve[0];
+  if (firstV <= 0 || firstS <= 0) {
+    problems.push('the first point (the starting voltage and speed) must be above 0');
+  }
+  if (Math.abs(voltages[voltages.length - 1] - maxVoltage) > 1e-6) {
+    problems.push(`the last point must be at max_voltage (${maxVoltage} V)`);
+  }
+  if (speeds.some((s, i) => i > 0 && s < speeds[i - 1])) {
+    problems.push('speed must not fall as voltage rises');
+  }
+  if (speeds[speeds.length - 1] <= firstS) {
+    problems.push('the top speed must be above the starting speed');
+  }
+  return problems;
+}
+
+/** Why a lighting voltage would be refused, or null when it is fine. `null`
+ *  (no lighting voltage) is always fine. */
+export function lightingVoltageProblem(
+  lightingVoltage: number | null,
+  curve: Curve,
+): string | null {
+  if (lightingVoltage == null) return null;
+  if (!Number.isFinite(lightingVoltage)) return 'the lighting voltage must be a number';
+  if (lightingVoltage < 0) return 'the lighting voltage must not be below 0 V';
+  if (curve.length && lightingVoltage >= startingVoltage(curve)) {
+    return `the lighting voltage must be below the starting voltage (${startingVoltage(curve)} V)`;
+  }
+  return null;
 }

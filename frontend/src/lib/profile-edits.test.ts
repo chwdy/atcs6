@@ -7,9 +7,9 @@ const saved = {
   name: 'Loco 7',
   lighting_voltage: 1.5,
   calibrated_at: null,
-  power_speed_curve: [
-    [0, 0],
-    [100, 80],
+  voltage_speed_curve: [
+    [2, 10],
+    [12, 80],
   ],
   acceleration_rate: 10,
 };
@@ -24,26 +24,35 @@ describe('changedProfileFields', () => {
     expect(changedProfileFields(saved, { ...saved }, false)).toEqual({});
   });
 
-  it('never sends the fields calibration owns', () => {
-    const current = { ...saved, lighting_voltage: 2.0, calibrated_at: '2026-10-22T10:00:00Z' };
+  it('never sends calibrated_at, which only a calibration commit writes', () => {
+    const current = { ...saved, calibrated_at: '2026-10-22T10:00:00Z' };
     expect(changedProfileFields(saved, current, false)).toEqual({});
   });
 
-  it('sends only the curve from a locomotive own profile', () => {
+  it('sends a changed lighting voltage, and a cleared one as null', () => {
+    expect(changedProfileFields(saved, { ...saved, lighting_voltage: 2.0 }, false)).toEqual({ lighting_voltage: 2.0 });
+    expect(changedProfileFields(saved, { ...saved, lighting_voltage: null }, true)).toEqual({ lighting_voltage: null });
+  });
+
+  it('sends only the name, lighting voltage and curve from a locomotive own profile', () => {
     const curve = [
-      [0, 0],
-      [100, 60],
+      [3, 12],
+      [12, 60],
     ];
-    const current = { ...saved, power_speed_curve: curve, acceleration_rate: 12 };
-    expect(changedProfileFields(saved, current, true)).toEqual({ power_speed_curve: curve });
+    const current = { ...saved, voltage_speed_curve: curve, lighting_voltage: 1.0, acceleration_rate: 12 };
+    expect(changedProfileFields(saved, current, true)).toEqual({ voltage_speed_curve: curve, lighting_voltage: 1.0 });
   });
 });
 
 describe('handEditable', () => {
   it('keeps model fields off an instance profile', () => {
-    expect(handEditable('power_speed_curve', true)).toBe(true);
+    expect(handEditable('voltage_speed_curve', true)).toBe(true);
+    expect(handEditable('lighting_voltage', true)).toBe(true);
+    expect(handEditable('name', true)).toBe(true);
     expect(handEditable('max_voltage', true)).toBe(false);
     expect(handEditable('max_voltage', false)).toBe(true);
-    expect(handEditable('lighting_voltage', false)).toBe(false);
+    expect(handEditable('lighting_voltage', false)).toBe(true);
+    expect(handEditable('calibrated_at', false)).toBe(false);
+    expect(handEditable('derived_from', false)).toBe(false);
   });
 });

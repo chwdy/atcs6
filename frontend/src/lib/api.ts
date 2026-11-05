@@ -203,7 +203,7 @@ export class API implements LayoutDataClient, SimClient {
 
   // === Speed calibration (design_new.md "Speed calibration") ===
   //
-  // A pass measures a locomotive's power/speed response by timing it across an
+  // A pass measures a locomotive's voltage/speed response by timing it across an
   // operator-named measured block, turning it around at each end. It writes
   // nothing until `commitCalibration` — the operator picks whether the result
   // writes onto this locomotive alone (its instance profile) or is promoted to
@@ -227,16 +227,14 @@ export class API implements LayoutDataClient, SimClient {
     );
   }
 
-  /** Progress of the open pass; `{open: false}` when there is none. */
   /** Every opening condition the train does not yet meet, for the panel's
    *  readiness line: `{ready, unmet}` (design_new.md "Speed calibration",
    *  Opening a run takes control of the train). */
   async getCalibrationReadiness(
     trainId: string,
-    kind: 'speed' | 'lighting',
     measuredBlockId = ''
   ): Promise<{ ready: boolean; unmet: string[] }> {
-    const query = new URLSearchParams({ kind });
+    const query = new URLSearchParams();
     if (measuredBlockId) query.set('measured_block_id', measuredBlockId);
     return this._request(
       `/trains/${trainId}/calibrate/readiness?${query.toString()}`,
@@ -245,6 +243,7 @@ export class API implements LayoutDataClient, SimClient {
     );
   }
 
+  /** Progress of the open pass; `{open: false}` when there is none. */
   async getCalibration(trainId: string): Promise<any> {
     return this._request(`/trains/${trainId}/calibrate`, {}, 'getCalibration');
   }
@@ -268,49 +267,6 @@ export class API implements LayoutDataClient, SimClient {
       `/trains/${trainId}/calibrate/commit`,
       { method: 'POST', body: { target } },
       'commitCalibration'
-    );
-  }
-
-  // === Lighting-voltage calibration ===
-
-  async startLightingCalibration(trainId: string): Promise<any> {
-    return this._request(
-      `/trains/${trainId}/calibrate/lighting`,
-      { method: 'POST' },
-      'startLightingCalibration'
-    );
-  }
-
-  /** The open lighting run for the train; `{open: false}` when there is none. */
-  async getLightingCalibration(trainId: string): Promise<any> {
-    return this._request(
-      `/trains/${trainId}/calibrate/lighting`,
-      {},
-      'getLightingCalibration'
-    );
-  }
-
-  async stepLightingCalibration(trainId: string, direction: number): Promise<any> {
-    return this._request(
-      `/trains/${trainId}/calibrate/lighting/step`,
-      { method: 'POST', body: { direction } },
-      'stepLightingCalibration'
-    );
-  }
-
-  async saveLightingCalibration(trainId: string): Promise<any> {
-    return this._request(
-      `/trains/${trainId}/calibrate/lighting/save`,
-      { method: 'POST' },
-      'saveLightingCalibration'
-    );
-  }
-
-  async cancelLightingCalibration(trainId: string): Promise<any> {
-    return this._request(
-      `/trains/${trainId}/calibrate/lighting`,
-      { method: 'DELETE' },
-      'cancelLightingCalibration'
     );
   }
 

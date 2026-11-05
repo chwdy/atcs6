@@ -114,10 +114,11 @@
 }
 
 /* ---- the profile's own values ----
-   Model, and each curve's 100% point (Max voltage, Top speed) in its curve's
-   section. The value sits right beside its label (Proximity) and carries its
-   unit. A value a locomotive's own profile reads from its model profile is
-   plain text, not a disabled input. */
+   Model, and in the curve's section the max voltage and the values read off
+   the curve (starting voltage, starting speed, top speed). The value sits
+   right beside its label (Proximity) and carries its unit. A value a
+   locomotive's own profile reads from its model profile, or that is read off
+   the curve, is plain text, not a disabled input. */
 .sp-scalar-row {
     display: flex;
     align-items: center;
@@ -154,12 +155,12 @@
 }
 
 /* ---- calibration group ----
-   design_new.md "Speed calibration", The panel, and "Lighting-voltage
-   calibration", The panel. The locomotive row names the train both runs
-   drive, and the readiness line under it names every opening condition that
-   train does not yet meet. Each run opens in place under its own row: the row
-   keeps its label line, and the run's controls sit in a body below it that
-   ends in a right-aligned actions line. */
+   design_new.md "Speed calibration", The panel, and "Calibrating a
+   locomotive". The locomotive row names the train the speed pass drives, and
+   the readiness line under it names every opening condition that train does
+   not yet meet. The lighting-voltage field is a plain input. The speed pass
+   opens in place under its row: the row keeps its label line, and the pass's
+   controls sit in a body below it that ends in a right-aligned actions line. */
 .sp-cal-train-row {
     margin-bottom: 4px;
 }
@@ -198,22 +199,6 @@
 .sp-cal-message {
     margin-bottom: 8px;
 }
-/* Read-only inline numeric (DESIGN_LANGUAGE.md §9): the lighting voltage the
-   named train runs on. Its Calibrate is the one way to move it. */
-.sp-cal-value {
-    font-family: var(--font-mono);
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--text-primary);
-    font-variant-numeric: tabular-nums;
-}
-.sp-cal-value small {
-    margin-left: 2px;
-    font-family: var(--font-main);
-    font-size: 10px;
-    font-weight: 400;
-    color: var(--text-secondary);
-}
 .sp-cal-run-body {
     margin-bottom: 12px;
     padding-top: 8px;
@@ -224,42 +209,6 @@
     display: flex;
     justify-content: flex-end;
     gap: 6px;
-}
-
-/* The lighting run: the candidate is the thing the operator reads off while
-   looking away at the locomotive, so it is a hero number (§9), in the info hue
-   of the voltage/power curve whose 0% point it moves. */
-.sp-lighting-stepper {
-    display: grid;
-    grid-template-columns: 44px 1fr 44px;
-    gap: 12px;
-    align-items: center;
-    margin-bottom: 8px;
-}
-.sp-lighting-stepper .sp-lighting-step {
-    height: 40px;
-    font-size: 20px;
-    line-height: 1;
-    padding: 0;
-}
-.sp-lighting-readout {
-    display: flex;
-    align-items: baseline;
-    justify-content: center;
-    gap: 4px;
-    font-family: var(--font-mono);
-    font-size: 28px;
-    font-weight: 700;
-    line-height: 1;
-    letter-spacing: -0.01em;
-    color: var(--info-color);
-    font-variant-numeric: tabular-nums;
-}
-.sp-lighting-readout small {
-    font-family: var(--font-main);
-    font-size: 11px;
-    font-weight: 400;
-    color: var(--text-secondary);
 }
 
 /* The speed pass: the measured points beside the measured curve drawn over
@@ -280,6 +229,14 @@
     font-size: 11px;
     text-align: center;
     color: var(--text-primary);
+}
+/* The lowest step that passed: the starting voltage. */
+.sp-point-readonly.sp-point-starting {
+    font-weight: 700;
+}
+/* A step that failed and gave no point. */
+.sp-point-readonly.sp-point-failed {
+    color: var(--text-tertiary);
 }
 /* The speed pass's crossing list: every crossing of the measured block, its
    time and speed, grouped by step. A crossing that does not count in its

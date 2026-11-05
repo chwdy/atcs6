@@ -205,27 +205,28 @@ export function selectionForProfile(profileId: string, roster: RosterEntry[], tr
  *  locomotive", in order. */
 export const CALIBRATION_STEPS: ReadonlyArray<{ title: string; hint: string }> = [
   { title: 'Name the locomotive', hint: 'Pick the train in the Locomotive row.' },
-  { title: 'Find the lighting voltage', hint: 'Press Calibrate on the lighting-voltage row, step up until the locomotive creeps, step back down one, and save.' },
+  { title: 'Set the lighting voltage, when the lamps light before it moves', hint: 'Type the voltage into the Lighting voltage field; it must stay below the starting voltage. Leave it empty for a locomotive whose lamps light only once it moves. It can be set before or after the speed pass.' },
   { title: 'Name the measured block and start the speed pass', hint: 'Press Calibrate speed, pick a block on the map or in the list, then Start.' },
-  { title: 'Let the pass run', hint: 'The train runs back and forth across the measured block at each power step. Stop ends it and writes nothing.' },
+  { title: 'Let the pass run', hint: 'The train runs back and forth across the measured block at each voltage step. Stop ends it and writes nothing.' },
   { title: 'Commit the result', hint: 'Save to this locomotive, or Promote to model. Nothing is written until you pick one.' },
 ];
 
 export type StepState = 'done' | 'current' | 'todo';
 
 /**
- * Where the operator is in the five steps. The step the open run belongs to
- * is the current one. With no run open, the next step is the lighting run
- * until one was saved, then the speed pass; once a pass is committed every
- * step is done.
+ * Where the operator is in the five steps. The step the open pass belongs to
+ * is the current one. With no pass open, the next step is the lighting
+ * voltage until the named train runs on one, then the speed pass; once a pass
+ * is committed every step is done. The lighting voltage is a field, not a
+ * run, and a locomotive whose lamps light only once it moves leaves it empty,
+ * so opening the speed pass moves on past it either way.
  */
 export function calibrationSteps(summary: CalibrationGroupSummary | null): StepState[] {
   const states: StepState[] = ['current', 'todo', 'todo', 'todo', 'todo'];
   if (!summary?.trainId) return states;
   states[0] = 'done';
-  if (summary.lightingSaved) states[1] = 'done';
+  if (summary.lightingVoltageSet) states[1] = 'done';
   const runStep: Partial<Record<CalibrationGroupSummary['view'], number>> = {
-    lighting: 1,
     'speed-setup': 2,
     'speed-running': 3,
     'speed-held': 4,
@@ -237,7 +238,7 @@ export function calibrationSteps(summary: CalibrationGroupSummary | null): StepS
     return states;
   }
   if (summary.speedCommitted) return states.map(() => 'done');
-  states[summary.lightingSaved ? 2 : 1] = 'current';
+  states[summary.lightingVoltageSet ? 2 : 1] = 'current';
   return states;
 }
 
@@ -263,7 +264,7 @@ export const REFUSED_WHILE_CALIBRATING: ReadonlyArray<string> = [
 
 /** The reason shown on each refused command. */
 export function refusedReason(trainName: string): string {
-  return `Refused while ${trainName} reads CALIBRATING. End the run first: Stop, Revert, or a commit.`;
+  return `Refused while ${trainName} reads CALIBRATING. End the pass first with Stop.`;
 }
 
 // === Roster entry form ===

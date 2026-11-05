@@ -1,8 +1,8 @@
 /**
  * The calibration group's decisions (design_new.md "Speed calibration", The
- * panel, and "Lighting-voltage calibration", The panel): which trains the
- * locomotive row lists, which controls may be pressed, and what the panel
- * shows for a train that already has a run open.
+ * panel): which trains the locomotive row lists, which controls may be
+ * pressed, what the panel shows for a train that already has a pass open, and
+ * how the pass's progress, points and crossings read.
  */
 import { describe, it, expect } from 'vitest';
 import {
@@ -12,19 +12,20 @@ import {
   crossingRows,
   speedPassProgress,
   measuredCurve,
+  pointRows,
   readinessApplies,
-  readinessKind,
   speedPassEndedMessage,
   trainChoiceLabel,
   trainStoredValue,
-  viewForOpenRuns,
+  viewForOpenRun,
+  volts,
 } from './calibration-panel';
 
 const PROFILES = [
-  { profile_id: 'EF66', derived_from: null, lighting_voltage: 1.5, power_speed_curve: [[0, 0], [100, 90]] },
-  { profile_id: 'EF66__a', derived_from: 'EF66', lighting_voltage: 1.8, power_speed_curve: null },
-  { profile_id: 'EF66__b', derived_from: 'EF66', lighting_voltage: null, power_speed_curve: [[0, 0], [100, 70]] },
-  { profile_id: 'DD51', derived_from: null, lighting_voltage: 2.0, power_speed_curve: [[0, 0], [100, 60]] },
+  { profile_id: 'EF66', derived_from: null, lighting_voltage: 1.5, voltage_speed_curve: [[2, 10], [12, 90]] },
+  { profile_id: 'EF66__a', derived_from: 'EF66', lighting_voltage: 1.8, voltage_speed_curve: null },
+  { profile_id: 'EF66__b', derived_from: 'EF66', lighting_voltage: null, voltage_speed_curve: [[3, 8], [12, 70]] },
+  { profile_id: 'DD51', derived_from: null, lighting_voltage: 2.0, voltage_speed_curve: [[2.5, 6], [12, 60]] },
 ];
 
 const TRAINS = [
@@ -65,12 +66,12 @@ describe("the train's own stored values", () => {
 
   it("reads the instance profile's value when it carries one", () => {
     expect(trainStoredValue(TRAINS[1], PROFILES, model, 'lighting_voltage')).toBe(1.8);
-    expect(trainStoredValue(TRAINS[0], PROFILES, model, 'power_speed_curve')).toEqual([[0, 0], [100, 70]]);
+    expect(trainStoredValue(TRAINS[0], PROFILES, model, 'voltage_speed_curve')).toEqual([[3, 8], [12, 70]]);
   });
 
   it('reads the profile on screen when the instance leaves the field unset', () => {
     expect(trainStoredValue(TRAINS[0], PROFILES, model, 'lighting_voltage')).toBe(1.5);
-    expect(trainStoredValue(TRAINS[1], PROFILES, model, 'power_speed_curve')).toEqual([[0, 0], [100, 90]]);
+    expect(trainStoredValue(TRAINS[1], PROFILES, model, 'voltage_speed_curve')).toEqual([[2, 10], [12, 90]]);
   });
 
   it('reads the profile on screen for a train naming it directly, or for no train', () => {
@@ -84,16 +85,13 @@ describe('which controls may be pressed', () => {
 
   it('offers nothing until a train is named', () => {
     expect(calibrationControls({ ...base, trainNamed: false })).toEqual({
-      lightingCalibrate: false,
       speedCalibrate: false,
       speedStart: false,
     });
   });
 
-  it('gates the lighting Calibrate on readiness, but not the speed setup', () => {
-    const c = calibrationControls({ ...base, ready: false });
-    expect(c.lightingCalibrate).toBe(false);
-    expect(c.speedCalibrate).toBe(true);
+  it('does not gate the speed setup on readiness', () => {
+    expect(calibrationControls({ ...base, ready: false }).speedCalibrate).toBe(true);
   });
 
   it('offers Start only in the setup, once the stretch resolved and the train is ready', () => {
@@ -101,65 +99,78 @@ describe('which controls may be pressed', () => {
     expect(calibrationControls({ ...setup, stretchResolved: false }).speedStart).toBe(false);
     expect(calibrationControls({ ...setup, stretchResolved: true, ready: false }).speedStart).toBe(false);
     expect(calibrationControls({ ...setup, stretchResolved: true }).speedStart).toBe(true);
-    expect(calibrationControls({ ...setup, stretchResolved: true }).lightingCalibrate).toBe(false);
+    expect(calibrationControls({ ...setup, stretchResolved: true }).speedCalibrate).toBe(false);
   });
 
-  it('offers neither Calibrate control while a run is open or a result is held', () => {
-    for (const view of ['lighting', 'speed-running', 'speed-held'] as const) {
+  it('offers neither control while a pass is open or a result is held', () => {
+    for (const view of ['speed-running', 'speed-held'] as const) {
       const c = calibrationControls({ ...base, view });
-      expect(c.lightingCalibrate || c.speedCalibrate || c.speedStart).toBe(false);
+      expect(c.speedCalibrate || c.speedStart).toBe(false);
     }
   });
 });
 
 describe('the readiness line', () => {
-  it('asks for the speed check only while the pass is being set up', () => {
-    expect(readinessKind('speed-setup')).toBe('speed');
-    expect(readinessKind('none')).toBe('lighting');
-  });
-
-  it('is asked for only while no run is open', () => {
+  it('is asked for only while no pass is open', () => {
     expect(readinessApplies('none')).toBe(true);
     expect(readinessApplies('speed-setup')).toBe(true);
-    expect(readinessApplies('lighting')).toBe(false);
     expect(readinessApplies('speed-running')).toBe(false);
     expect(readinessApplies('speed-held')).toBe(false);
   });
 });
 
-describe('a run already open for the named train is shown, not hidden', () => {
-  it('shows an open lighting run', () => {
-    expect(viewForOpenRuns({ open: false }, { open: true })).toBe('lighting');
-  });
-
+describe('a pass already open for the named train is shown, not hidden', () => {
   it('shows a held result and an open pass', () => {
-    expect(viewForOpenRuns({ open: true, phase: 'measured' }, { open: false })).toBe('speed-held');
-    expect(viewForOpenRuns({ open: true, phase: 'measuring' }, { open: false })).toBe('speed-running');
+    expect(viewForOpenRun({ open: true, phase: 'measured' })).toBe('speed-held');
+    expect(viewForOpenRun({ open: true, phase: 'leg' })).toBe('speed-running');
+    expect(viewForOpenRun({ open: true, phase: 'resetting' })).toBe('speed-running');
   });
 
-  it('shows nothing when no run is open', () => {
-    expect(viewForOpenRuns({ open: false }, { open: false })).toBe('none');
-    expect(viewForOpenRuns(null, null)).toBe('none');
+  it('shows nothing when no pass is open', () => {
+    expect(viewForOpenRun({ open: false })).toBe('none');
+    expect(viewForOpenRun(null)).toBe('none');
   });
 });
 
 describe('the measured curve', () => {
-  it('starts at the origin and runs in power order', () => {
+  it('runs in voltage order and starts at the starting voltage, with no origin point', () => {
     expect(
       measuredCurve([
-        { power_percent: 20, speed_kmh: 14 },
-        { power_percent: 10, speed_kmh: 0 },
+        { track_voltage: 8, speed_kmh: 50, kind: 'coarse' },
+        { track_voltage: 3.5, speed_kmh: 12, kind: 'narrowing' },
       ])
     ).toEqual([
-      [0, 0],
-      [10, 0],
-      [20, 14],
+      [3.5, 12],
+      [8, 50],
     ]);
   });
 
+  it('lists the failed steps among the passed ones and marks the starting voltage', () => {
+    const rows = pointRows({
+      samples: [
+        { track_voltage: 4, speed_kmh: 15 },
+        { track_voltage: 12, speed_kmh: 90 },
+      ],
+      failed_voltages: [2, 3],
+    });
+    expect(rows).toEqual([
+      { voltage: 2, speed: null, starting: false },
+      { voltage: 3, speed: null, starting: false },
+      { voltage: 4, speed: 15, starting: true },
+      { voltage: 12, speed: 90, starting: false },
+    ]);
+    expect(pointRows({})).toEqual([]);
+  });
+
   it('sizes the speed axis to hold both curves', () => {
-    expect(compareAxisTop([[0, 0], [100, 90]], [[0, 0], [100, 120]])).toBe(138);
-    expect(compareAxisTop([], [[0, 0]])).toBe(30);
+    expect(compareAxisTop([[2, 10], [12, 90]], [[3, 12], [12, 120]])).toBe(138);
+    expect(compareAxisTop([], [])).toBe(30);
+  });
+
+  it('shows a voltage with at most two decimals', () => {
+    expect(volts(3.5)).toBe('3.5');
+    expect(volts(2.125)).toBe('2.13');
+    expect(volts(12)).toBe('12');
   });
 });
 
@@ -183,25 +194,27 @@ describe('crossingRows', () => {
   const run = {
     block_names: { BLK_L: 'Left', BLK_R: 'Right' },
     crossings: [
-      { power_percent: 100, attempt: 1, toward_block_id: 'BLK_L', seconds: 2.62, speed_kmh: 110.4, outcome: 'used' },
-      { power_percent: 100, attempt: 1, toward_block_id: 'BLK_R', seconds: 1.99, speed_kmh: 144.7, outcome: 'discarded' },
-      { power_percent: 90, attempt: 1, toward_block_id: 'BLK_L', seconds: null, speed_kmh: null, outcome: 'ended_sweep' },
+      { track_voltage: 12, attempt: 1, toward_block_id: 'BLK_L', seconds: 2.62, speed_kmh: 110.4, outcome: 'used' },
+      { track_voltage: 12, attempt: 1, toward_block_id: 'BLK_R', seconds: 1.99, speed_kmh: 144.7, outcome: 'discarded' },
+      { track_voltage: 2, attempt: 1, toward_block_id: 'BLK_L', seconds: 3.1, speed_kmh: 5.2, outcome: 'dropped' },
+      { track_voltage: 2, attempt: 1, toward_block_id: 'BLK_R', seconds: null, speed_kmh: null, outcome: 'failed_step' },
     ],
   };
 
   it('names the block each crossing ran toward and formats its time and speed', () => {
     const rows = crossingRows(run);
-    expect(rows.map((r) => r.toward)).toEqual(['Left', 'Right', 'Left']);
-    expect(rows[0]).toMatchObject({ power: 100, seconds: '2.62', speed: '110.4', used: true, note: '' });
+    expect(rows.map((r) => r.toward)).toEqual(['Left', 'Right', 'Left', 'Right']);
+    expect(rows[0]).toMatchObject({ voltage: 12, seconds: '2.62', speed: '110.4', used: true, note: '' });
   });
 
   it('marks the first crossing of each step and says why a crossing does not count', () => {
     const rows = crossingRows(run);
-    expect(rows.map((r) => r.firstOfStep)).toEqual([true, false, true]);
+    expect(rows.map((r) => r.firstOfStep)).toEqual([true, false, true, false]);
     expect(rows[1].used).toBe(false);
     expect(rows[1].note).toContain('discarded');
-    expect(rows[2]).toMatchObject({ seconds: '—', speed: '—', used: false });
-    expect(rows[2].note).toContain('stalled');
+    expect(rows[2].note).toContain('dropped');
+    expect(rows[3]).toMatchObject({ voltage: 2, seconds: '—', speed: '—', used: false });
+    expect(rows[3].note).toContain('failed its step');
   });
 
   it('falls back to the block id when the run carries no name', () => {
@@ -227,20 +240,42 @@ describe('speedPassProgress', () => {
     );
   });
 
-  it('shows the step and crossing while measuring', () => {
+  it('shows the step voltage, its part of the sweep, the attempt and the crossing while measuring', () => {
     const run = {
       phase: 'leg',
-      current_power_percent: 90,
-      step_index: 1,
-      step_count: 10,
-      crossings_done: 2,
+      current_voltage: 8,
+      current_step_kind: 'coarse',
+      attempt: 1,
+      crossings_done: 1,
       crossings_target: 4,
     };
-    expect(speedPassProgress(run, false)).toBe('Measuring 90% — step 2 of 10, crossing 3 of 4');
+    expect(speedPassProgress(run, false)).toBe('Measuring 8 V (coarse step), attempt 1 — crossing 2 of 4');
+    expect(
+      speedPassProgress({ ...run, current_voltage: 3.25, current_step_kind: 'narrowing', attempt: 2 }, false)
+    ).toBe('Measuring 3.25 V (narrowing in on the starting voltage), attempt 2 — crossing 2 of 4');
+    expect(speedPassProgress({ ...run, current_step_kind: 'filled', crossings_done: 4 }, false)).toBe(
+      'Measuring 8 V (in-between step, where the speed jumps), attempt 1 — crossing 4 of 4'
+    );
   });
 
-  it('names the measured block once the result is held', () => {
-    const run = { samples: [1, 2, 3], measured_block_id: 'BLK_U', block_names: names };
-    expect(speedPassProgress(run, true)).toBe('Measured every step: 3 points across Up.');
+  it('says the train is being got ready after a failed step', () => {
+    expect(speedPassProgress({ phase: 'resetting' }, false)).toBe(
+      'A step failed — getting the train ready for the next step'
+    );
+  });
+
+  it('names the measured block and the starting voltage once the result is held', () => {
+    const run = {
+      samples: [
+        { track_voltage: 12, speed_kmh: 90 },
+        { track_voltage: 3.5, speed_kmh: 11.04 },
+        { track_voltage: 8, speed_kmh: 50 },
+      ],
+      measured_block_id: 'BLK_U',
+      block_names: names,
+    };
+    expect(speedPassProgress(run, true)).toBe(
+      'Measured 3 points across Up. Starting voltage 3.5 V, at 11.0 km/h.'
+    );
   });
 });

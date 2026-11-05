@@ -75,7 +75,7 @@ const summary = (over: Partial<CalibrationGroupSummary> = {}): CalibrationGroupS
   view: 'none',
   ready: true,
   unmet: [],
-  lightingSaved: false,
+  lightingVoltageSet: false,
   speedCommitted: false,
   ...over,
 });
@@ -142,7 +142,7 @@ describe('Locomotives screen', () => {
     const steps = [...group.querySelectorAll('.nloco-step-title')].map((s) => s.textContent);
     expect(steps).toEqual([
       'Name the locomotive',
-      'Find the lighting voltage',
+      'Set the lighting voltage, when the lamps light before it moves',
       'Name the measured block and start the speed pass',
       'Let the pass run',
       'Commit the result',
@@ -160,7 +160,7 @@ describe('Locomotives screen', () => {
     const stepOf = (sel: string) => group.querySelector(sel)!.closest('.nloco-step')!.querySelector('.nloco-step-title')!.textContent;
     expect(stepOf('#sp-cal-train')).toBe('Name the locomotive');
     expect(stepOf('#sp-cal-readiness')).toBe('Name the locomotive');
-    expect(stepOf('#sp-lighting-row')).toBe('Find the lighting voltage');
+    expect(stepOf('#sp-lighting-row')).toBe('Set the lighting voltage, when the lamps light before it moves');
     expect(stepOf('#sp-speed-row')).toBe('Name the measured block and start the speed pass');
 
     act(() => panel.host().calibrationChanged(summary({ view: 'speed-running' })));
@@ -171,11 +171,11 @@ describe('Locomotives screen', () => {
     expect(stepOf('#sp-speed-row')).toBe('Name the measured block and start the speed pass');
   });
 
-  it('shows the current step’s hint only while no run is open', () => {
+  it('shows the current step’s hint only while no pass is open', () => {
     act(() => rowNamed('Class 47 #2').click());
     act(() => panel.host().calibrationChanged(summary()));
     expect(document.querySelector('[aria-current="step"] .nloco-step-hint')).not.toBeNull();
-    act(() => panel.host().calibrationChanged(summary({ view: 'lighting' })));
+    act(() => panel.host().calibrationChanged(summary({ view: 'speed-running' })));
     expect(document.querySelector('[aria-current="step"] .nloco-step-hint')).toBeNull();
   });
 
@@ -199,7 +199,7 @@ describe('Locomotives screen', () => {
 
   it('lists the refused commands, disabled with the reason, while the train reads CALIBRATING', () => {
     act(() => rowNamed('Class 47 #2').click());
-    act(() => panel.host().calibrationChanged(summary({ view: 'lighting' })));
+    act(() => panel.host().calibrationChanged(summary({ view: 'speed-running' })));
     expect(document.querySelector('.nloco-refused')).toBeNull();
 
     act(() => updateFromNetwork(network({ status: 'calibrating' })));
