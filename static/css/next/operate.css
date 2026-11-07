@@ -415,6 +415,14 @@ html[data-screen="operate"] #train-monitor-bar {
 
 /* ---- Train, block and switch panels ---- */
 
+/* These panels sit in .secondary-sidebar-content, whose button rule
+   (shell.css) sets min-height: 0 and makes a .btn-sm 22px tall. Panel
+   buttons are 28px (DESIGN_LANGUAGE.md §3). */
+.op-native-panel .btn:not(.btn-icon-only):not(.btn-size-lg) {
+    min-height: var(--control-height-xs);
+    padding: 0 12px;
+}
+
 .op-train-folds {
     gap: var(--space-4);
 }
@@ -433,7 +441,10 @@ html[data-screen="operate"] #train-monitor-bar {
     color: var(--text-tertiary);
 }
 
+/* .tc-btn grows with flex: 1, which in this column section starts the
+   button at 0 height and drops it to its text height. Keep the 28px. */
 .op-calibrate-btn {
+    flex: none;
     width: 100%;
     margin-top: var(--space-8);
 }
