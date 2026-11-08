@@ -1128,25 +1128,93 @@ class BlockManager:
     def adjacent_blocks(self, block_id: str) -> List[str]:
         """The blocks reachable out of this block's ends, points as aligned.
 
-        Walks each of the four compass exits through `_next_block_along_direction`,
-        so it follows the switches as they are actually set rather than as any
-        plan describes them, and returns the distinct blocks found. A switch-free
-        run has at most two — one out each end — which is what
-        `services.train_service` resolves a calibration stretch from
-        (design_new.md "Speed calibration", The operator names the measured block).
+        Walks out of every exit tile in each of the four compass directions, so
+        a curved block whose two ends leave by the same side — the end of an
+        oval — has both ends walked. Each walk follows the switches as they are
+        actually set rather than as any plan describes them (the walk
+        `_next_block_along_direction` uses), and the distinct blocks found are
+        returned. A switch-free run has at most two — one out each end — which
+        is what `services.train_service` resolves a calibration stretch and its
+        run-off blocks from (design_new.md "Speed calibration", The operator
+        names the measured block; Each end of the stretch is an outer block and
+        the run-off blocks past it).
         """
         block = self.blocks.get(block_id) if self.blocks else None
         if block is None:
             return []
         found: List[str] = []
         for direction in self._EDGE_OFFSETS:
-            neighbour, _entry_edge = self._next_block_along_direction(block, direction)
-            if neighbour is None:
-                continue
-            if neighbour.block_id == block_id or neighbour.block_id in found:
-                continue
-            found.append(neighbour.block_id)
+            for exit_tile in self._exit_tiles(block, direction):
+                neighbour, _entry_edge = self._walk_out_of(exit_tile, direction)
+                if neighbour is None:
+                    continue
+                if neighbour.block_id == block_id or neighbour.block_id in found:
+                    continue
+                found.append(neighbour.block_id)
         return found
+
+    def runoff_blocks(
+        self, measured_block_id: str, outer_block_ids, room_cm: float
+    ) -> Tuple[Tuple[str, ...], Tuple[str, ...]]:
+        """Each end's run-off blocks, in order out from its outer block, as the
+        points are set now (design_new.md "Speed calibration", Each end of the
+        stretch is an outer block and the run-off blocks past it).
+
+        From each outer block the walk goes on out of the far end of the end's
+        last block so far — the walk `adjacent_blocks` makes — taking the block
+        it reaches. It takes blocks until the end's blocks add up to at least
+        `room_cm`, and then one block more. It stops early when **any of
+        these** holds: the walk reaches no block, the block's far end leads
+        more than one way, or the block it reaches is the measured block or one
+        either end already holds.
+        """
+        taken = {measured_block_id, *outer_block_ids}
+        ends: List[Tuple[str, ...]] = []
+        for outer_block_id in outer_block_ids:
+            runoff: List[str] = []
+            previous, current = measured_block_id, outer_block_id
+            room = self.block_length_cm(outer_block_id)
+            while True:
+                onward = [b for b in self.adjacent_blocks(current) if b != previous]
+                if len(onward) != 1 or onward[0] in taken:
+                    break
+                nxt = onward[0]
+                fits = room >= room_cm
+                runoff.append(nxt)
+                taken.add(nxt)
+                if fits:
+                    break
+                room += self.block_length_cm(nxt)
+                previous, current = current, nxt
+            ends.append(tuple(runoff))
+        while len(ends) < 2:
+            ends.append(())
+        return ends[0], ends[1]
+
+    def block_length_cm(self, block_id: str) -> float:
+        """A block's recorded `length_cm`, `0` when it has none."""
+        block = self.blocks.get(block_id) if self.blocks else None
+        return float(getattr(block, "length_cm", 0.0) or 0.0)
+
+    def _exit_tiles(self, block: Block, direction: str) -> List[Tuple[int, int]]:
+        """Every tile of `block` whose own track has an edge in `direction` and
+        whose neighbour that way is not part of the block, in tile order."""
+        if self.network is None:
+            return []
+        direction = direction.upper() if direction else None
+        if direction not in self._EDGE_OFFSETS:
+            return []
+        edge_mask = EDGE_MASKS.get(direction, 0)
+        tiles: List[Tuple[int, int]] = []
+        for entry in block.ordered_tiles:
+            tx, ty = int(entry[0]), int(entry[1])
+            tile = self.network.get_track(tx, ty)
+            if tile is None or not (tile.track_bits & edge_mask):
+                continue
+            neighbour = self.network.get_neighbor(tx, ty, direction)
+            if neighbour is None or neighbour.block_id != block.block_id:
+                tiles.append((tx, ty))
+        return tiles
 
     def _next_block_along_direction(
         self, block: Block, direction: str
@@ -1179,24 +1247,24 @@ class BlockManager:
         if direction not in self._EDGE_OFFSETS:
             return (None, None)
 
-        # Locate the exit tile inside `block` for this direction: the tile
-        # whose own track has an edge in `direction` AND whose neighbour in
+        # Locate the exit tile inside `block` for this direction: the first
+        # tile whose own track has an edge in `direction` AND whose neighbour in
         # `direction` is not part of the same block. Filtering on the track's
         # own edge mask is essential — a tile like TRACK_NS has no E edge, so
         # its eastern grid-neighbour is irrelevant even if that cell is empty.
-        edge_mask = EDGE_MASKS.get(direction, 0)
-        exit_tile: Optional[Tuple[int, int]] = None
-        for entry in block.ordered_tiles:
-            tx, ty = int(entry[0]), int(entry[1])
-            tile = self.network.get_track(tx, ty)
-            if tile is None or not (tile.track_bits & edge_mask):
-                continue
-            neighbour = self.network.get_neighbor(tx, ty, direction)
-            if neighbour is None or neighbour.block_id != block.block_id:
-                exit_tile = (tx, ty)
-                break
-        if exit_tile is None:
+        exit_tiles = self._exit_tiles(block, direction)
+        if not exit_tiles:
             return (None, None)
+        return self._walk_out_of(exit_tiles[0], direction)
+
+    def _walk_out_of(
+        self, exit_tile: Tuple[int, int], direction: str
+    ) -> Tuple[Optional[Block], Optional[str]]:
+        """Walk forward out of `exit_tile` through its `direction` edge to the
+        next block, crossing bare switch tiles by their current position.
+        Returns ``(next_block, chain_entry_edge)``, or ``(None, None)`` when the
+        walk reaches no block (see `_next_block_along_direction`)."""
+        direction = direction.upper()
 
         # Step out into the neighbour tile and walk forward. `entry_edge` is
         # the edge through which the walk enters the current tile, read from

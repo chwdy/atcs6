@@ -445,17 +445,19 @@ def run_extent_cm(network, span):
 
 
 def test_a_block_whose_two_ends_face_the_same_way_still_centers_the_consist():
-    """The declared facing matches BOTH ends of a horseshoe, so it cannot say
-    which one the nose is at. That does not license giving up on centering:
-    measuring back from either end puts the body in the same place, because
-    centering is symmetric. Only which end is the head differs, and the operator
-    can pin that with a head tile."""
+    """The declared facing matches BOTH ends of a horseshoe, so the operator
+    names the front end. Naming it does not give up centering: measuring back
+    from either end puts the body in the same place, because centering is
+    symmetric (design_new.md "Unidentified trains", Choosing the front end)."""
     network, sim, detector = build_horseshoe_sim()
     detector.current = {"BLK_U": True}
     tick(sim, times=3)
     unidentified_id = only_unidentified(network)
 
-    adopt(sim, unidentified_id, length_cm=150.0, direction="WEST")
+    adopt(
+        sim, unidentified_id, length_cm=150.0, direction="WEST",
+        front_end_tile=(1, 0),
+    )
 
     span = sim.controllers["T1"].physics_sync.current_span
     # 500 cm detected, 150 cm of train: 175 cm unaccounted for at each end.
@@ -474,7 +476,10 @@ def test_a_bent_block_does_not_stand_the_adopted_train_on_its_boundary():
     tick(sim, times=3)
     unidentified_id = only_unidentified(network)
 
-    adopt(sim, unidentified_id, length_cm=150.0, direction="WEST")
+    adopt(
+        sim, unidentified_id, length_cm=150.0, direction="WEST",
+        front_end_tile=(1, 0),
+    )
 
     span = sim.controllers["T1"].physics_sync.current_span
     # The body sits on the three interior tiles, so it touches neither end of the
@@ -483,6 +488,95 @@ def test_a_bent_block_does_not_stand_the_adopted_train_on_its_boundary():
     for end in (span.end_a, span.end_b):
         length = network._get_tile_length_cm(*tuple(end.tile))
         assert 0.0 < end.distance_cm < length
+
+
+def test_a_facing_that_matches_both_ends_is_refused_without_a_front_end():
+    """Both ends of the horseshoe exit WEST, so WEST alone does not say where
+    the front is. Only the operator can see it, so the runtime refuses rather
+    than picking an end, and the train stays unidentified."""
+    network, sim, detector = build_horseshoe_sim()
+    detector.current = {"BLK_U": True}
+    tick(sim, times=3)
+    unidentified_id = only_unidentified(network)
+
+    with pytest.raises(ValueError, match="front_end_tile"):
+        adopt(sim, unidentified_id, length_cm=150.0, direction="WEST")
+
+    assert unidentified_ids(network) == [unidentified_id]
+    assert "T1" not in network.trains
+
+
+@pytest.mark.parametrize(
+    "front_end, head_side_tile",
+    [((1, 0), (2, 0)), ((1, 2), (2, 2))],
+)
+def test_the_named_front_end_is_where_the_front_goes(front_end, head_side_tile):
+    """The body lands in the same place from either end; what the operator's
+    choice changes is which end is the front. 150 cm centered in 500 cm leaves
+    175 cm before the front: the whole end tile plus 75 cm of the next one."""
+    network, sim, detector = build_horseshoe_sim()
+    detector.current = {"BLK_U": True}
+    tick(sim, times=3)
+    unidentified_id = only_unidentified(network)
+
+    adopt(
+        sim, unidentified_id, length_cm=150.0, direction="WEST",
+        front_end_tile=front_end,
+    )
+
+    span = sim.controllers["T1"].physics_sync.current_span
+    assert run_extent_cm(network, span) == (175.0, 325.0)
+    assert tuple(span.end_a.tile) == head_side_tile
+
+
+def test_a_front_end_that_is_not_an_end_for_that_facing_is_refused():
+    """(2,1) is the middle of the run, and (1,0) does not exit NORTH at all."""
+    network, sim, detector = build_horseshoe_sim()
+    detector.current = {"BLK_U": True}
+    tick(sim, times=3)
+    unidentified_id = only_unidentified(network)
+
+    for tile, direction in (((2, 1), "WEST"), ((1, 0), "NORTH")):
+        with pytest.raises(ValueError, match="front_end_tile"):
+            adopt(
+                sim, unidentified_id, length_cm=150.0, direction=direction,
+                front_end_tile=tile,
+            )
+    assert unidentified_ids(network) == [unidentified_id]
+
+
+def test_a_head_tile_and_a_front_end_together_are_refused():
+    network, sim, detector = build_horseshoe_sim()
+    detector.current = {"BLK_U": True}
+    tick(sim, times=3)
+    unidentified_id = only_unidentified(network)
+
+    with pytest.raises(ValueError, match="not both"):
+        adopt(
+            sim, unidentified_id, length_cm=50.0, direction="WEST",
+            head_tile=(1, 0), front_end_tile=(1, 0),
+        )
+    assert unidentified_ids(network) == [unidentified_id]
+
+
+def test_the_service_layer_passes_the_front_end_through():
+    network, sim, detector = build_horseshoe_sim()
+    detector.current = {"BLK_U": True}
+    tick(sim, times=3)
+    unidentified_id = only_unidentified(network)
+    state = _State(network, sim)
+
+    with pytest.raises(ValidationError, match="front_end_tile"):
+        train_service.adopt_unidentified_train(
+            state, unidentified_id, new_train_id="T1", length_cm=150.0,
+            direction="WEST", front_end_tile={"x": 1},
+        )
+    train_service.adopt_unidentified_train(
+        state, unidentified_id, new_train_id="T1", length_cm=150.0,
+        direction="WEST", front_end_tile={"x": 1, "y": 2},
+    )
+    span = sim.controllers["T1"].physics_sync.current_span
+    assert tuple(span.end_a.tile) == (2, 2)
 
 
 def test_a_facing_no_claimed_tile_can_exit_is_still_placed_flush():

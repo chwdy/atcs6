@@ -351,6 +351,18 @@ def update_train(
     return train
 
 
+def _parse_tile(value: Optional[dict], field: str) -> Optional[Tuple[int, int]]:
+    """Parse an optional ``{"x": int, "y": int}`` tile from a request body."""
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValidationError(f"{field} must be an object with x and y")
+    try:
+        return (int(value["x"]), int(value["y"]))
+    except (KeyError, TypeError, ValueError):
+        raise ValidationError(f"{field} must include x and y")
+
+
 def adopt_unidentified_train(
     state: AppState,
     train_id: str,
@@ -360,6 +372,7 @@ def adopt_unidentified_train(
     max_speed_kmh: float = 100.0,
     direction: str = "EAST",
     head_tile: Optional[dict] = None,
+    front_end_tile: Optional[dict] = None,
     cab: Optional[str] = None,
     car_number: str = "",
     train_type: Optional[str] = None,
@@ -390,14 +403,8 @@ def adopt_unidentified_train(
             if cab not in ("A", "B"):
                 raise ValidationError(f"Invalid cab: {cab!r} (expected 'A' or 'B')")
 
-        tile: Optional[Tuple[int, int]] = None
-        if head_tile is not None:
-            if not isinstance(head_tile, dict):
-                raise ValidationError("head_tile must be an object with x and y")
-            try:
-                tile = (int(head_tile["x"]), int(head_tile["y"]))
-            except (KeyError, TypeError, ValueError):
-                raise ValidationError("head_tile must include x and y")
+        tile = _parse_tile(head_tile, "head_tile")
+        front_end = _parse_tile(front_end_tile, "front_end_tile")
         if speed_profile_id:
             refuse_unpickable_profile(state, train_id, speed_profile_id)
 
@@ -419,6 +426,7 @@ def adopt_unidentified_train(
                 length_cm=length_cm,
                 direction=direction,
                 head_tile=tile,
+                front_end_tile=front_end,
                 cab=cab,
                 train_type=train_type,
                 name=car_number or None,
@@ -881,6 +889,55 @@ def resolve_calibration_stretch(state: AppState, measured_block_id: str):
     return (outer[0], outer[1]), length_cm
 
 
+def resolve_calibration_runoff(
+    state: AppState,
+    measured_block_id: str,
+    outer: Tuple[str, str],
+    train_length_cm: float,
+) -> Tuple[Tuple[str, ...], Tuple[str, ...]]:
+    """Each end's run-off blocks, in order out from its outer block
+    (design_new.md "Speed calibration", Each end of the stretch is an outer
+    block and the run-off blocks past it).
+
+    The ends hold at least `train_length_cm` plus
+    `CALIBRATION_RUNOFF_MARGIN_CM`, then one block more
+    (`BlockManager.runoff_blocks`). The pass finds them again each time a leg
+    or the move arms, from the points as they are set then.
+    """
+    from constants import CALIBRATION_RUNOFF_MARGIN_CM
+
+    manager = getattr(state.network, "block_manager", None)
+    if manager is None:
+        return (), ()
+    room_cm = max(0.0, float(train_length_cm or 0.0)) + CALIBRATION_RUNOFF_MARGIN_CM
+    return manager.runoff_blocks(measured_block_id, outer, room_cm)
+
+
+def calibration_block_length_cm(state: AppState, block_id: str) -> float:
+    """A block's recorded length, `0` when it has none."""
+    block = state.network.blocks.get(block_id) if state.network else None
+    return float(getattr(block, "length_cm", 0.0) or 0.0)
+
+
+def _calibration_ends(
+    state: AppState, train, measured_block_id: str, outer: Tuple[str, str]
+) -> Tuple[Tuple[str, ...], Tuple[str, ...]]:
+    """Both ends of the stretch for this train: each outer block followed by
+    its run-off blocks, sized from the train's entered length."""
+    runoff = resolve_calibration_runoff(
+        state, measured_block_id, outer, float(getattr(train, "length_cm", 0.0) or 0.0)
+    )
+    return (outer[0], *runoff[0]), (outer[1], *runoff[1])
+
+
+def _end_lengths(state: AppState, ends: tuple) -> Tuple[Tuple[float, ...], ...]:
+    """The `length_cm` of every block of each end, in the end's order."""
+    return tuple(
+        tuple(calibration_block_length_cm(state, block_id) for block_id in end)
+        for end in ends
+    )
+
+
 def calibration_readiness(
     state: AppState,
     train_id: str,
@@ -891,8 +948,8 @@ def calibration_readiness(
     may open (design_new.md "Speed calibration", Opening a run takes control of
     the train).
 
-    With a `measured_block_id`, the train must also stand in one of that
-    block's two outer blocks, or a walk must take it into one. The panel's
+    With a `measured_block_id`, the train must also stand in one of the two
+    ends of that block's stretch, or a walk must take it into one. The panel's
     readiness line shows the whole list, so the operator reads every unmet
     condition together rather than one at a time.
     """
@@ -929,19 +986,25 @@ def calibration_readiness(
             executor = getattr(sim, "route_executor", None)
             first, second = (block_name(state, b) for b in outer)
             measured_name = block_name(state, measured_block_id)
-            if _span_in_outer_block(held, measured_block_id, outer):
+            ends = _calibration_ends(state, train, measured_block_id, outer)
+            if _span_in_end(held, measured_block_id, ends):
                 if _list_holds(state, measured_block_id, train_id):
                     # The span is off the measured block but its detector has
                     # yet to read clear, and a standing train never lets it go.
                     # A leg cannot reserve a block its own train holds.
                     unmet.append(
                         f"Move the train off {measured_name}, wholly into "
-                        f"{first} or {second} — a crossing is timed from the "
-                        "moment the train enters the measured block"
+                        f"the {first} or {second} end — a crossing is timed "
+                        "from the moment the train enters the measured block"
                     )
             elif (
                 executor is None
-                or executor.calibration_move_walk(train_id, measured_block_id, outer)
+                or executor.calibration_move_walk(
+                    train_id,
+                    measured_block_id,
+                    outer,
+                    (ends[0][1:], ends[1][1:]),
+                )
                 is None
             ):
                 unmet.append(
@@ -973,6 +1036,10 @@ def calibration_readiness(
                 "A finished speed pass is waiting — save it or discard it before "
                 "measuring again"
             )
+        elif run.ending:
+            unmet.append("The last run is stopping the train — wait for it to stand")
+        elif run.is_test:
+            unmet.append("An ATO minimum test is already open for this train")
         else:
             unmet.append("A speed-calibration pass is already open for this train")
     return unmet
@@ -989,13 +1056,21 @@ def _require_calibration_ready(
         raise ConflictError("; ".join(unmet))
 
 
-def _take_control_for_calibration(controller) -> None:
+def _take_control_for_calibration(controller) -> dict:
     """The two operator commands opening a run calls before the run opens
     (design_new.md "Speed calibration", Opening a run takes control of the
     train): `power_on_cmd()` when the train is OFF, then `set_mode("manual")`.
     Each is the write its own command makes, so opening adds no effect beyond
     the run itself, and each emits its own command-result event. The readiness
-    check has already confirmed the train is stopped, so both are accepted."""
+    check has already confirmed the train is stopped, so both are accepted.
+
+    Returns the train's mode and power before the two commands, as the keyword
+    arguments the run stores to give them back (design_new.md "What ends a
+    calibration run", A run the operator ends gives the train back)."""
+    before = {
+        "control_mode_before_opening": controller.commands.control_mode,
+        "powered_before_opening": bool(controller.powered),
+    }
     if not controller.powered:
         controller.commands.report_result(
             "power_on_cmd", controller.commands.power_on_cmd()
@@ -1003,6 +1078,7 @@ def _take_control_for_calibration(controller) -> None:
     controller.commands.report_result(
         "set_mode", controller.commands.set_mode("manual")
     )
+    return before
 
 
 def calibrate_train(
@@ -1025,26 +1101,32 @@ def calibrate_train(
         _require_calibration_ready(
             state, train_id, measured_block_id=measured_block_id
         )
-        train, profile, sim = _calibration_profile(state, train_id)
+        train, _profile, sim = _calibration_profile(state, train_id)
+        resolved = state.speed_profile_registry.resolve(train.speed_profile_id)
         outer, length_cm = resolve_calibration_stretch(state, measured_block_id)
-        heading_to = _leg_heading(state, train_id, measured_block_id, outer)
-        _take_control_for_calibration(_controller(state, train))
+        ends = _calibration_ends(state, train, measured_block_id, outer)
+        heading_to = _leg_heading(state, train_id, measured_block_id, ends)
+        before = _take_control_for_calibration(_controller(state, train))
         return sim.speed_calibration.start(
             train,
-            profile,
+            resolved,
             measured_block_id=measured_block_id,
             outer_block_ids=outer,
+            runoff_block_ids=(ends[0][1:], ends[1][1:]),
+            end_lengths_cm=_end_lengths(state, ends),
             block_length_cm=length_cm,
             heading_to=heading_to,
             now=float(sim.operating_clock()),
+            **before,
         )
 
 
-def _span_in_outer_block(held: set, measured_block_id: str, outer: tuple) -> bool:
-    """Whether the train's span stands in one of the outer blocks and off the
-    measured block (design_new.md "Speed calibration", The pass first moves the
-    train into an outer block)."""
-    return bool(held.intersection(outer)) and measured_block_id not in held
+def _span_in_end(held: set, measured_block_id: str, ends: tuple) -> bool:
+    """Whether the train's span stands in one of the two ends of the stretch
+    and off the measured block (design_new.md "Speed calibration", The pass
+    first moves the train into an end of the stretch)."""
+    in_end = any(held.intersection(end) for end in ends)
+    return in_end and measured_block_id not in held
 
 
 def _list_holds(state: AppState, block_id: str, train_id: str) -> bool:
@@ -1055,23 +1137,23 @@ def _list_holds(state: AppState, block_id: str, train_id: str) -> bool:
 
 
 def _leg_heading(
-    state: AppState, train_id: str, measured_block_id: str, outer: tuple
+    state: AppState, train_id: str, measured_block_id: str, ends: tuple
 ) -> Optional[int]:
-    """Which outer block the opening leg runs toward, or None when the pass
-    must first move the train into one.
+    """Which end the opening leg runs toward, or None when the pass must first
+    move the train into one.
 
-    The opening leg runs toward the outer block the train is not in. Asking for
+    The opening leg runs toward the end the train is not in. Asking for
     authority to the block the train is already standing in is refused by the
     dispatcher, so this orientation is what makes the opening leg possible at
     all (design_new.md "Speed calibration", The pass first moves the train into
-    an outer block).
+    an end of the stretch).
     """
     controller = _controller(state, require_train(state, train_id))
     span = controller.get_current_span()
     held = set(getattr(span, "occupied_blocks", []) or [])
-    if not _span_in_outer_block(held, measured_block_id, outer):
+    if not _span_in_end(held, measured_block_id, ends):
         return None
-    return 1 if outer[0] in held else 0
+    return 1 if held.intersection(ends[0]) else 0
 
 
 def calibrate_status(state: AppState, train_id: str):
@@ -1112,10 +1194,16 @@ def last_speed_calibration_result(
 
 
 def calibrate_cancel(state: AppState, train_id: str) -> None:
-    """Drop an open pass. Its samples go with it and the profile is untouched."""
+    """End the train's run as the operator: an open run first brings the train
+    to a stand inside its leg and then lets it go; a finished pass is discarded
+    at once (design_new.md "What ends a calibration run", An operator ending
+    stops the train before it lets it go). The profile is untouched."""
     sim = getattr(state, "sim_controller", None)
     if sim is not None:
-        sim.speed_calibration.abandon(train_id, reason="cancelled by the operator")
+        with _runtime_lock(state):
+            sim.speed_calibration.stop(train_id, reason="cancelled by the operator")
+            # Discarding a finished pass ends it here, so give the train back now.
+            sim.speed_calibration.give_trains_back()
 
 
 def calibrate_commit(
@@ -1133,11 +1221,17 @@ def calibrate_commit(
     (**Promote to model**) writes them onto the model profile the instance
     derives from and clears them from the instance in the same commit, so every
     locomotive of that model whose instance leaves them unset runs on the new
-    curve, the calibrated one included. Returns the record actually written.
+    curve, the calibrated one included. Every locomotive whose curve the commit
+    changes loses its `ato_min_voltage` in the same commit (A commit clears the
+    ATO minimum voltage of every locomotive whose curve it changes). Returns the
+    record actually written.
     """
+    from dataclasses import replace as _replace
+    from services.speed_profile_service import settle_profile_writes
+
     _train, profile, sim = _calibration_profile(state, train_id)
     run = sim.speed_calibration.runs.get(train_id)
-    if run is None:
+    if run is None or run.is_test:
         raise NotFoundError("No calibration pass is open for this train")
     if not run.is_measured:
         raise ConflictError(
@@ -1146,11 +1240,12 @@ def calibrate_commit(
         )
 
     with state.simulation_lock:
+        registry = state.speed_profile_registry
         if target == "locomotive":
             target_profile, clear_profile = profile, None
         elif target == "model":
             if profile.derived_from:
-                model_profile = state.network.speed_profiles.get(profile.derived_from)
+                model_profile = registry.get(profile.derived_from)
                 if model_profile is None:
                     raise ConflictError(
                         "The model profile this locomotive derives from is missing"
@@ -1162,31 +1257,221 @@ def calibrate_commit(
                 target_profile, clear_profile = profile, None
         else:
             raise ValidationError("target must be 'locomotive' or 'model'")
-        # design_new.md "A commit keeps every lighting voltage below the
-        # starting voltage": check every profile that will run on the curve
-        # before anything is written.
-        from dataclasses import replace as _replace
-        from services.speed_profile_service import resolution_problems
 
         curve = sim.speed_calibration.measured_curve(run)
-        replacements = {
-            target_profile.profile_id: _replace(
-                target_profile, voltage_speed_curve=list(curve)
-            )
-        }
+        written = _replace(target_profile, voltage_speed_curve=list(curve))
+        replacements = {written.profile_id: written}
+        cleared = None
         if clear_profile is not None and clear_profile is not target_profile:
-            replacements[clear_profile.profile_id] = _replace(
-                clear_profile, voltage_speed_curve=None, calibrated_at=None
-            )
-        problems = resolution_problems(state.speed_profile_registry, replacements)
+            cleared = _replace(clear_profile, voltage_speed_curve=None, calibrated_at=None)
+            replacements[cleared.profile_id] = cleared
+        _final, problems = settle_profile_writes(registry, replacements)
         if problems:
             raise ConflictError("; ".join(problems))
         try:
-            sim.speed_calibration.commit(
-                train_id, target_profile, clear_profile=clear_profile
-            )
+            sim.speed_calibration.commit(train_id, written, clear_profile=cleared)
         except ValueError as exc:
             raise ConflictError(str(exc)) from exc
-    return target_profile
+        # `commit` stamped `calibrated_at` onto the copies; settle again so the
+        # records stored carry both the stamp and every cleared ATO minimum.
+        final, _problems = settle_profile_writes(registry, replacements)
+        for record in final.values():
+            registry.register(record)
+        # The commit ended the pass with the train at a stand: give it back.
+        sim.speed_calibration.give_trains_back()
+    return final[written.profile_id]
+
+
+def _open_calibration_run(state: AppState, train_id: str):
+    sim = getattr(state, "sim_controller", None)
+    if sim is None:
+        raise ValidationError("Calibration requires a runtime")
+    run = sim.speed_calibration.runs.get(train_id)
+    if run is None or not run.is_measuring:
+        raise NotFoundError("No calibration run is open for this train")
+    return sim, run
+
+
+def calibrate_trial_voltage(state: AppState, train_id: str, *, track_voltage: Any):
+    """Set the voltage the operator drives a speed pass's trial or an ATO
+    minimum test at (design_new.md "Speed calibration", The pass starts with
+    two trial stages; ATO minimum test). Returns the run."""
+    try:
+        voltage = float(track_voltage)
+    except (TypeError, ValueError) as exc:
+        raise ValidationError("track_voltage must be a number") from exc
+    with _runtime_lock(state):
+        sim, _run = _open_calibration_run(state, train_id)
+        try:
+            return sim.speed_calibration.set_trial_voltage(train_id, voltage)
+        except ValueError as exc:
+            raise ConflictError(str(exc)) from exc
+
+
+def calibrate_keep_lighting(
+    state: AppState, train_id: str, *, lighting_voltage: Optional[float]
+):
+    """Keep, or No lamps (`lighting_voltage=None`), in the lighting trial
+    (design_new.md "Speed calibration", The pass starts with two trial stages).
+
+    Saves the lighting voltage onto the instance profile the train names at
+    once. When the profile's resolved starting voltage is not above it, the
+    same write saves a starting voltage `CALIBRATION_TRIAL_STEP_V` above it,
+    which It moves later replaces. A refused save keeps the pass in the
+    lighting trial and raises `ConflictError` with the reason.
+    """
+    from dataclasses import replace as _replace
+
+    from constants import CALIBRATION_TRIAL_STEP_V
+    from services.speed_profile_service import settle_profile_writes
+    from speed_calibration import PASS_LIGHTING_TRIAL
+
+    held = None if lighting_voltage is None else float(lighting_voltage)
+    with _runtime_lock(state):
+        sim, run = _open_calibration_run(state, train_id)
+        calibration = sim.speed_calibration
+        if run.is_test or run.pass_stage != PASS_LIGHTING_TRIAL or run.ending:
+            raise ConflictError("The lighting trial is not running")
+        if held is not None and held < 0.0:
+            raise ConflictError("The lighting voltage must not be below 0 V")
+        train, profile, _sim = _calibration_profile(state, train_id)
+        registry = state.speed_profile_registry
+        resolved = registry.resolve(train.speed_profile_id)
+        fields: Dict[str, Any] = {"lighting_voltage": held}
+        if held is not None and float(resolved.starting_voltage or 0.0) <= held:
+            fields["starting_voltage"] = round(held + float(CALIBRATION_TRIAL_STEP_V), 6)
+        updated = _replace(profile, **fields)
+        final, problems = settle_profile_writes(registry, {profile.profile_id: updated})
+        if problems:
+            reason = "; ".join(problems)
+            calibration.refuse_starting_trial(train_id, reason)
+            raise ConflictError(reason)
+        for record in final.values():
+            registry.register(record)
+        return calibration.keep_lighting_voltage(train_id, held)
+
+
+def calibrate_it_moves(state: AppState, train_id: str):
+    """It moves: save the held lighting voltage and the trial voltage as
+    `lighting_voltage` and `starting_voltage` onto the instance profile the
+    train names, in one write that follows the hand-edit rules, then start the
+    sweep (design_new.md "Speed calibration", The pass starts with two trial
+    stages). A refused write keeps the pass in the starting trial and raises
+    `ConflictError` with the reason."""
+    from dataclasses import replace as _replace
+    from services.speed_profile_service import settle_profile_writes
+
+    with _runtime_lock(state):
+        sim, _run = _open_calibration_run(state, train_id)
+        calibration = sim.speed_calibration
+        try:
+            lighting, starting = calibration.starting_trial_values(train_id)
+        except ValueError as exc:
+            raise ConflictError(str(exc)) from exc
+        if lighting is not None and starting <= lighting:
+            reason = (
+                f"The starting voltage ({starting:g} V) must be above the lighting "
+                f"voltage you kept ({lighting:g} V). Raise the voltage until the "
+                "train just moves, then press It moves."
+            )
+            calibration.refuse_starting_trial(train_id, reason)
+            raise ConflictError(reason)
+        _train, profile, _sim = _calibration_profile(state, train_id)
+        registry = state.speed_profile_registry
+        updated = _replace(profile, lighting_voltage=lighting, starting_voltage=starting)
+        final, problems = settle_profile_writes(registry, {profile.profile_id: updated})
+        if problems:
+            reason = "; ".join(problems)
+            calibration.refuse_starting_trial(train_id, reason)
+            raise ConflictError(reason)
+        for record in final.values():
+            registry.register(record)
+        return calibration.begin_sweep(train_id, starting)
+
+
+def calibrate_ato_minimum_test(
+    state: AppState,
+    train_id: str,
+    *,
+    measured_block_id: str = "",
+    track_voltage: Any = None,
+):
+    """Open an ATO minimum test (design_new.md "Speed calibration", ATO minimum
+    test) under every condition a speed pass opens under, at `track_voltage`,
+    or at the train's ATO minimum voltage when none is given."""
+    if not measured_block_id:
+        raise ValidationError("measured_block_id is required")
+    with _runtime_lock(state):
+        _require_calibration_ready(
+            state, train_id, measured_block_id=measured_block_id
+        )
+        train, _profile, sim = _calibration_profile(state, train_id)
+        resolved = state.speed_profile_registry.resolve(train.speed_profile_id)
+        voltage = (
+            resolved.ato_minimum_voltage
+            if track_voltage is None
+            else float(track_voltage)
+        )
+        outer, length_cm = resolve_calibration_stretch(state, measured_block_id)
+        ends = _calibration_ends(state, train, measured_block_id, outer)
+        heading_to = _leg_heading(state, train_id, measured_block_id, ends)
+        low, high = resolved.first_point_voltage, float(resolved.max_voltage)
+        if voltage < low - 1e-6 or voltage > high + 1e-6:
+            raise ConflictError(
+                f"the test voltage must lie from {low:g} V (the curve's first "
+                f"point above the starting voltage) up to {high:g} V"
+            )
+        before = _take_control_for_calibration(_controller(state, train))
+        return sim.speed_calibration.start_ato_minimum_test(
+            train,
+            resolved,
+            track_voltage=voltage,
+            measured_block_id=measured_block_id,
+            outer_block_ids=outer,
+            runoff_block_ids=(ends[0][1:], ends[1][1:]),
+            end_lengths_cm=_end_lengths(state, ends),
+            block_length_cm=length_cm,
+            heading_to=heading_to,
+            **before,
+        )
+
+
+def calibrate_ato_minimum_commit(state: AppState, train_id: str):
+    """Commit: write the ATO minimum test's current voltage as the train's
+    `ato_min_voltage` on its instance profile, then end the test (design_new.md
+    "Speed calibration", ATO minimum test, Commit writes `ato_min_voltage` and
+    nothing else). Refuses when the train's resolved starting voltage or curve
+    changed after the test opened. Returns the written record."""
+    from dataclasses import replace as _replace
+    from services.speed_profile_service import settle_profile_writes
+    from speed_calibration import profile_key
+
+    with _runtime_lock(state):
+        sim, run = _open_calibration_run(state, train_id)
+        if not run.is_test:
+            raise NotFoundError("No ATO minimum test is open for this train")
+        train, profile, _sim = _calibration_profile(state, train_id)
+        registry = state.speed_profile_registry
+        if profile.derived_from is None:
+            raise ConflictError(
+                "The train names a model profile; the ATO minimum voltage belongs "
+                "to a locomotive's own profile"
+            )
+        resolved = registry.resolve(train.speed_profile_id)
+        if profile_key(resolved) != run.test_profile_key:
+            raise ConflictError(
+                "The locomotive's starting voltage or curve changed after the test "
+                "opened — test again"
+            )
+        updated = _replace(profile, ato_min_voltage=float(run.trial_voltage))
+        final, problems = settle_profile_writes(
+            registry, {profile.profile_id: updated}, keep_ato_min=(profile.profile_id,)
+        )
+        if problems:
+            raise ConflictError("; ".join(problems))
+        sim.speed_calibration.finish_ato_minimum_test(train_id)
+        for record in final.values():
+            registry.register(record)
+        return final[profile.profile_id]
 
 

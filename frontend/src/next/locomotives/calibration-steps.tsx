@@ -1,7 +1,7 @@
 /**
  * Two additions to the Speed Profile panel's calibration group.
  *
- * `CalibrationSteps`, at the top of the group: the five steps of
+ * `CalibrationSteps`, at the top of the group: the seven steps of
  * design_new.md "Calibrating a locomotive" with the current step marked. Each
  * step holds the group's row that does it (`STEP_ROWS`), moved in from the
  * panel's own HTML, so the operator reads a step's title and finds its
@@ -30,12 +30,25 @@ import { calibration, trains } from './state';
 
 /**
  * The panel rows each step holds, by step index. The speed row follows the
- * speed pass: step 3 names the measured block and starts it, step 4 shows it
- * running, step 5 shows the result to commit.
+ * speed pass: step 2 names the measured block and starts it, steps 3 and 4
+ * hold its two trials, step 5 its sweep, and step 6 the result to commit. The
+ * lighting-voltage field sits with the lighting trial, and the ATO minimum row
+ * is step 7.
  */
-function stepRows(view: CalibrationGroupSummary['view'] | undefined): string[][] {
-  const speed = view === 'speed-running' ? 3 : view === 'speed-held' ? 4 : 2;
-  const rows: string[][] = [['.sp-cal-train-row', '#sp-cal-readiness'], ['#sp-lighting-row'], [], [], []];
+function stepRows(summary: CalibrationGroupSummary | null): string[][] {
+  const stage: Record<string, number> = { lighting_trial: 2, starting_trial: 3, sweep: 4 };
+  const view = summary?.view;
+  const speed =
+    view === 'speed-running' ? stage[summary?.passStage || ''] ?? 2 : view === 'speed-held' ? 5 : 1;
+  const rows: string[][] = [
+    ['.sp-cal-train-row', '#sp-cal-readiness'],
+    [],
+    ['#sp-lighting-row'],
+    [],
+    [],
+    [],
+    ['#sp-ato-row'],
+  ];
   rows[speed].push('#sp-speed-row');
   return rows;
 }
@@ -55,7 +68,7 @@ export function CalibrationSteps() {
     const ol = list.current;
     const group = ol?.closest('#sp-cal-group');
     if (!ol || !group) return;
-    stepRows(summary?.view).forEach((selectors, i) => {
+    stepRows(summary).forEach((selectors, i) => {
       const body = ol.querySelector<HTMLElement>(`[data-step-body="${i}"]`);
       for (const sel of selectors) {
         const row = group.querySelector(sel);

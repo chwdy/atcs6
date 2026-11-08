@@ -29,7 +29,7 @@ function fakePanel() {
       '<div class="control-section-header">Calibration</div>' +
       '<div class="input-small-row sp-cal-train-row"><select id="sp-cal-train"></select></div>' +
       '<div class="sp-cal-readiness" id="sp-cal-readiness"></div>' +
-      '<div id="sp-lighting-row"></div><div id="sp-speed-row"></div></div></div>';
+      '<div id="sp-lighting-row"></div><div id="sp-speed-row"></div><div id="sp-ato-row"></div></div></div>';
     host!.profileShown(profileId);
   };
   return {
@@ -75,8 +75,9 @@ const summary = (over: Partial<CalibrationGroupSummary> = {}): CalibrationGroupS
   view: 'none',
   ready: true,
   unmet: [],
-  lightingVoltageSet: false,
+  passStage: null,
   speedCommitted: false,
+  atoCommitted: false,
   ...over,
 });
 
@@ -128,12 +129,14 @@ describe('Locomotives screen', () => {
 
   it('lists the roster, placed trains not in it, and the model profiles', () => {
     const names = [...document.querySelectorAll('.nloco-row-name')].map((n) => n.textContent);
-    expect(names).toEqual(['Class 47 #2', 'Shinkansen N700', 'T_LOOSE', 'default', 'class47']);
+    expect(names).toEqual(['Class 47 #2', 'Shinkansen N700', 'T_LOOSE', 'Default', 'Class 47']);
+    // A profile row shows its name; its model and id go on the muted line.
+    expect(rowNamed('Class 47').querySelector('.nloco-row-detail')?.textContent).toBe('Bachmann Class 47 · class47');
     expect(rowNamed('Class 47 #2').textContent).toContain('T1 · MANUAL');
     expect(rowNamed('Shinkansen N700').textContent).toContain('not placed');
   });
 
-  it('shows a picked locomotive’s profile with its placed train named, and the five steps', () => {
+  it('shows a picked locomotive’s profile with its placed train named, and the seven steps', () => {
     act(() => rowNamed('Class 47 #2').click());
     expect(panel.shows).toEqual([['inst_R1', 'T1']]);
     expect(document.querySelector('.nloco-main')!.textContent).toContain('Speed Profile panel · inst_R1');
@@ -142,16 +145,18 @@ describe('Locomotives screen', () => {
     const steps = [...group.querySelectorAll('.nloco-step-title')].map((s) => s.textContent);
     expect(steps).toEqual([
       'Name the locomotive',
-      'Set the lighting voltage, when the lamps light before it moves',
       'Name the measured block and start the speed pass',
-      'Let the pass run',
-      'Commit the result',
+      'Find the lighting voltage',
+      'Find the starting voltage',
+      'Let the sweep run',
+      'Commit the curve',
+      'Test and commit the ATO minimum voltage',
     ]);
     // The steps sit right under the group's heading.
     expect(group.children[1].querySelector('.nloco-steps')).not.toBeNull();
 
-    act(() => panel.host().calibrationChanged(summary({ view: 'speed-running' })));
-    expect(group.querySelector('[aria-current="step"]')!.textContent).toContain('Let the pass run');
+    act(() => panel.host().calibrationChanged(summary({ view: 'speed-running', passStage: 'sweep' })));
+    expect(group.querySelector('[aria-current="step"]')!.textContent).toContain('Let the sweep run');
   });
 
   it('puts each of the group’s rows under the step it does; the speed row follows the pass', () => {
@@ -160,13 +165,18 @@ describe('Locomotives screen', () => {
     const stepOf = (sel: string) => group.querySelector(sel)!.closest('.nloco-step')!.querySelector('.nloco-step-title')!.textContent;
     expect(stepOf('#sp-cal-train')).toBe('Name the locomotive');
     expect(stepOf('#sp-cal-readiness')).toBe('Name the locomotive');
-    expect(stepOf('#sp-lighting-row')).toBe('Set the lighting voltage, when the lamps light before it moves');
+    expect(stepOf('#sp-lighting-row')).toBe('Find the lighting voltage');
     expect(stepOf('#sp-speed-row')).toBe('Name the measured block and start the speed pass');
+    expect(stepOf('#sp-ato-row')).toBe('Test and commit the ATO minimum voltage');
 
-    act(() => panel.host().calibrationChanged(summary({ view: 'speed-running' })));
-    expect(stepOf('#sp-speed-row')).toBe('Let the pass run');
+    act(() => panel.host().calibrationChanged(summary({ view: 'speed-running', passStage: 'lighting_trial' })));
+    expect(stepOf('#sp-speed-row')).toBe('Find the lighting voltage');
+    act(() => panel.host().calibrationChanged(summary({ view: 'speed-running', passStage: 'starting_trial' })));
+    expect(stepOf('#sp-speed-row')).toBe('Find the starting voltage');
+    act(() => panel.host().calibrationChanged(summary({ view: 'speed-running', passStage: 'sweep' })));
+    expect(stepOf('#sp-speed-row')).toBe('Let the sweep run');
     act(() => panel.host().calibrationChanged(summary({ view: 'speed-held' })));
-    expect(stepOf('#sp-speed-row')).toBe('Commit the result');
+    expect(stepOf('#sp-speed-row')).toBe('Commit the curve');
     act(() => panel.host().calibrationChanged(summary({ view: 'speed-setup' })));
     expect(stepOf('#sp-speed-row')).toBe('Name the measured block and start the speed pass');
   });
@@ -232,13 +242,15 @@ describe('Locomotives screen', () => {
     await settle();
     act(() => panel.jumpTo('class47'));
     expect(selection.value).toEqual({ kind: 'profile', profileId: 'class47', fromPanel: true });
-    expect(rowNamed('class47').classList.contains('row-selected')).toBe(true);
+    expect(rowNamed('Class 47').classList.contains('row-selected')).toBe(true);
+    // The heading shows the profile's name, the id beside it.
+    expect(document.querySelector('.nloco-main h2')?.textContent).toBe('Class 47');
     expect(panel.shows).toHaveLength(1);
     expect(reveal).toHaveBeenCalledTimes(1);
   });
 
   it('picks the locomotive when another part of the app opens its own profile', async () => {
-    act(() => rowNamed('class47').click());
+    act(() => rowNamed('Class 47').click());
     await settle();
     act(() => panel.jumpTo('inst_R1'));
     await settle();

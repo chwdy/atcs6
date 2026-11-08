@@ -443,7 +443,8 @@ html[data-screen="operate"] #train-monitor-bar {
 
 /* .tc-btn grows with flex: 1, which in this column section starts the
    button at 0 height and drops it to its text height. Keep the 28px. */
-.op-calibrate-btn {
+.op-calibrate-btn,
+.op-delete-train-btn {
     flex: none;
     width: 100%;
     margin-top: var(--space-8);

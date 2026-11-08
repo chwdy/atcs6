@@ -6,6 +6,7 @@ import {
   calibrationSteps,
   modelProfiles,
   panelTarget,
+  profileName,
   rosterFromNetwork,
   rosterPayload,
   rosterFormFrom,
@@ -50,8 +51,9 @@ const summary = (over: Partial<CalibrationGroupSummary> = {}): CalibrationGroupS
   view: 'none',
   ready: true,
   unmet: [],
-  lightingVoltageSet: false,
+  passStage: null,
   speedCommitted: false,
+  atoCommitted: false,
   ...over,
 });
 
@@ -90,6 +92,15 @@ describe('the left list', () => {
       { profile_id: 'a_model', name: '', model: '', derived_from: null, calibrated_at: null },
     ];
     expect(modelProfiles(profiles).map((p) => p.profile_id)).toEqual(['default', 'a_model', 'z_model']);
+  });
+
+  it('orders model profiles by the name they show, the id when they have none', () => {
+    const profiles = [
+      { profile_id: 'a_model', name: 'Zebra', model: '', derived_from: null, calibrated_at: null },
+      { profile_id: 'm_model', name: '', model: '', derived_from: null, calibrated_at: null },
+      { profile_id: 'z_model', name: 'Alpha', model: '', derived_from: null, calibrated_at: null },
+    ];
+    expect(modelProfiles(profiles).map(profileName)).toEqual(['Default', 'Alpha', 'm_model', 'Zebra']);
   });
 });
 
@@ -139,27 +150,26 @@ describe('selectionForProfile', () => {
 });
 
 describe('calibrationSteps', () => {
+  const T = 'todo', C = 'current', D = 'done';
+
   it('starts on naming the locomotive', () => {
-    expect(calibrationSteps(null)).toEqual(['current', 'todo', 'todo', 'todo', 'todo']);
-    expect(calibrationSteps(summary({ trainId: null }))).toEqual(['current', 'todo', 'todo', 'todo', 'todo']);
+    expect(calibrationSteps(null)).toEqual([C, T, T, T, T, T, T]);
+    expect(calibrationSteps(summary({ trainId: null }))).toEqual([C, T, T, T, T, T, T]);
   });
 
-  it('marks the step the open pass belongs to', () => {
-    expect(calibrationSteps(summary())).toEqual(['done', 'current', 'todo', 'todo', 'todo']);
-    expect(calibrationSteps(summary({ view: 'speed-setup' }))).toEqual(['done', 'todo', 'current', 'todo', 'todo']);
-    expect(calibrationSteps(summary({ view: 'speed-running', lightingVoltageSet: true }))).toEqual([
-      'done',
-      'done',
-      'done',
-      'current',
-      'todo',
-    ]);
-    expect(calibrationSteps(summary({ view: 'speed-held' }))).toEqual(['done', 'todo', 'done', 'done', 'current']);
+  it('marks the step the open run belongs to', () => {
+    expect(calibrationSteps(summary())).toEqual([D, C, T, T, T, T, T]);
+    expect(calibrationSteps(summary({ view: 'speed-setup' }))).toEqual([D, C, T, T, T, T, T]);
+    expect(calibrationSteps(summary({ view: 'speed-running', passStage: 'lighting_trial' }))).toEqual([D, D, C, T, T, T, T]);
+    expect(calibrationSteps(summary({ view: 'speed-running', passStage: 'starting_trial' }))).toEqual([D, D, D, C, T, T, T]);
+    expect(calibrationSteps(summary({ view: 'speed-running', passStage: 'sweep' }))).toEqual([D, D, D, D, C, T, T]);
+    expect(calibrationSteps(summary({ view: 'speed-held' }))).toEqual([D, D, D, D, D, C, T]);
+    expect(calibrationSteps(summary({ view: 'ato-running' }))).toEqual([D, D, D, D, D, D, C]);
   });
 
-  it('moves on to the speed pass once the train runs on a lighting voltage, and ends done after a commit', () => {
-    expect(calibrationSteps(summary({ lightingVoltageSet: true }))).toEqual(['done', 'done', 'current', 'todo', 'todo']);
-    expect(calibrationSteps(summary({ speedCommitted: true }))).toEqual(['done', 'done', 'done', 'done', 'done']);
+  it('moves on to the ATO minimum test after a commit, and ends done after its commit', () => {
+    expect(calibrationSteps(summary({ speedCommitted: true }))).toEqual([D, D, D, D, D, D, C]);
+    expect(calibrationSteps(summary({ atoCommitted: true }))).toEqual([D, D, D, D, D, D, D]);
   });
 
   it('shows the canvas only while a run is open or being set up', () => {

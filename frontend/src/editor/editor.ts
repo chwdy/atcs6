@@ -357,7 +357,7 @@ export class Editor {
     // ghost and exits the place-train mode, so neither can outlive its panel.
     if (title !== 'Add Train') {
       this.renderer?.setTrainGhostPreview?.(null);
-      if (this.activeMode?.toolName === 'place-train') this.exitMode();
+      if (['place-train', 'adopt-front'].includes(this.activeMode?.toolName)) this.exitMode();
     }
     if (this.nextPanelHost?.showPanel(title, content)) return;
     return this.uiHandler.showSecondarySidebar(title, content);
@@ -389,6 +389,11 @@ export class Editor {
     // uiHandler.hideSecondarySidebar() takes no args (it ignored `options` in
     // the classic code too); keep the param on the facade for callers.
     this.highlighter.clear(['peek', 'pair']);
+    // The train-placement ghost and the front-end markers belong to the panel
+    // being closed (Add Train or an unidentified train's adoption form).
+    this.renderer?.setTrainGhostPreview?.(null);
+    this.renderer?.requestRedraw?.();
+    if (['place-train', 'adopt-front'].includes(this.activeMode?.toolName)) this.exitMode();
     if (this.nextPanelHost?.hidePanel()) return;
     return this.uiHandler.hideSecondarySidebar();
   }

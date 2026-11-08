@@ -187,6 +187,7 @@ def register(app, state: AppState) -> None:
                 max_speed_kmh=data.get("max_speed", 100.0),
                 direction=data.get("direction", "EAST"),
                 head_tile=data.get("head_tile"),
+                front_end_tile=data.get("front_end_tile"),
                 cab=data.get("cab"),
                 car_number=data.get("car_number", ""),
                 train_type=data.get("train_type"),
@@ -283,17 +284,18 @@ def register(app, state: AppState) -> None:
             {
                 "status": "success",
                 **run.to_dict(),
-                **_stretch_names(run.measured_block_id, run.outer_block_ids),
+                **_stretch_names(run.measured_block_id, run.stretch_block_ids),
             }
         )
 
-    def _stretch_names(measured_block_id, outer_block_ids):
-        """The measured block's and outer blocks' names, so the panel can say
-        which blocks the stretch runs between and which way each crossing ran."""
+    def _stretch_names(measured_block_id, stretch_block_ids):
+        """The names of the measured block and of every block of both ends, so
+        the panel can say which blocks the stretch runs between and which way
+        each crossing ran."""
         return {
             "block_names": {
                 block_id: train_service.block_name(state, block_id)
-                for block_id in (measured_block_id, *outer_block_ids)
+                for block_id in (measured_block_id, *stretch_block_ids)
                 if block_id
             }
         }
@@ -336,7 +338,7 @@ def register(app, state: AppState) -> None:
             {
                 "open": True,
                 **run.to_dict(),
-                **_stretch_names(run.measured_block_id, run.outer_block_ids),
+                **_stretch_names(run.measured_block_id, run.stretch_block_ids),
             }
         )
 
@@ -373,10 +375,104 @@ def register(app, state: AppState) -> None:
             return jsonify({"error": str(exc)}), 400
         return jsonify({"status": "success", "profile": profile.to_dict()})
 
+    def _run_response(run):
+        return jsonify(
+            {
+                "status": "success",
+                "open": True,
+                **run.to_dict(),
+                **_stretch_names(run.measured_block_id, run.stretch_block_ids),
+            }
+        )
+
+    def _calibration_call(fn):
+        """Map the service's errors onto HTTP codes for the calibration
+        controls."""
+        try:
+            return fn()
+        except NotFoundError as exc:
+            return jsonify({"error": str(exc)}), 404
+        except ConflictError as exc:
+            return jsonify({"error": str(exc)}), 409
+        except ValidationError as exc:
+            return jsonify({"error": str(exc)}), 400
+
+    @app.route("/api/trains/<train_id>/calibrate/trial-voltage", methods=["POST"])
+    def calibrate_trial_voltage(train_id):
+        """Set the operator's voltage during a speed pass's trial or an ATO
+        minimum test (design_new.md "Speed calibration", The pass starts with
+        two trial stages; ATO minimum test). Body: ``{"track_voltage": float}``."""
+        data = request.get_json(silent=True) or {}
+        return _calibration_call(
+            lambda: _run_response(
+                train_service.calibrate_trial_voltage(
+                    state, train_id, track_voltage=data.get("track_voltage")
+                )
+            )
+        )
+
+    @app.route("/api/trains/<train_id>/calibrate/keep-lighting", methods=["POST"])
+    def calibrate_keep_lighting(train_id):
+        """Keep the lighting trial's voltage, or No lamps. Body:
+        ``{"lighting_voltage": float | null}``."""
+        data = request.get_json(silent=True) or {}
+        return _calibration_call(
+            lambda: _run_response(
+                train_service.calibrate_keep_lighting(
+                    state, train_id, lighting_voltage=data.get("lighting_voltage")
+                )
+            )
+        )
+
+    @app.route("/api/trains/<train_id>/calibrate/it-moves", methods=["POST"])
+    def calibrate_it_moves(train_id):
+        """It moves: save the lighting and starting voltages and start the
+        sweep. A refused save answers 409 with the reason and keeps the pass in
+        the starting trial."""
+        return _calibration_call(
+            lambda: _run_response(train_service.calibrate_it_moves(state, train_id))
+        )
+
+    @app.route("/api/trains/<train_id>/calibrate/ato-minimum", methods=["POST"])
+    def calibrate_ato_minimum_test(train_id):
+        """Open an ATO minimum test (design_new.md "Speed calibration", ATO
+        minimum test). Body: ``{"measured_block_id": str, "track_voltage":
+        float?}``; the voltage defaults to the train's ATO minimum voltage."""
+        data = request.get_json(silent=True) or {}
+        return _calibration_call(
+            lambda: _run_response(
+                train_service.calibrate_ato_minimum_test(
+                    state,
+                    train_id,
+                    measured_block_id=data.get("measured_block_id", ""),
+                    track_voltage=data.get("track_voltage"),
+                )
+            )
+        )
+
+    @app.route("/api/trains/<train_id>/calibrate/ato-minimum/commit", methods=["POST"])
+    def calibrate_ato_minimum_commit(train_id):
+        """Commit the test's current voltage as the train's `ato_min_voltage`
+        and end the test."""
+        return _calibration_call(
+            lambda: jsonify(
+                {
+                    "status": "success",
+                    "profile": train_service.calibrate_ato_minimum_commit(
+                        state, train_id
+                    ).to_dict(),
+                }
+            )
+        )
+
     @app.route("/api/trains/<train_id>/calibrate/stretch/<block_id>", methods=["GET"])
     def calibrate_stretch(train_id, block_id):
-        """The two outer blocks a measured block resolves to, for the panel to
-        show before the operator starts the pass."""
+        """The two ends a measured block resolves to, for the panel to show
+        before the operator starts the pass: each end's outer block and run-off
+        blocks, sized from the named train's entered length, and how long each
+        end is (design_new.md "Speed calibration", Each end of the stretch is an
+        outer block and the run-off blocks past it). `train_id` "_" names no
+        train, and the ends are then sized for a train of no length."""
         try:
             outer, length_cm = train_service.resolve_calibration_stretch(
                 state, block_id
@@ -385,12 +481,24 @@ def register(app, state: AppState) -> None:
             return jsonify({"error": str(exc)}), 404
         except ValidationError as exc:
             return jsonify({"error": str(exc)}), 400
+        train = state.network.trains.get(train_id) if state.network else None
+        train_length_cm = float(getattr(train, "length_cm", 0.0) or 0.0)
+        runoff = train_service.resolve_calibration_runoff(
+            state, block_id, outer, train_length_cm
+        )
+        ends = [(outer[i], *runoff[i]) for i in (0, 1)]
         return jsonify(
             {
                 "measured_block_id": block_id,
                 "outer_block_ids": list(outer),
+                "runoff_block_ids": [list(r) for r in runoff],
+                "end_lengths_cm": [
+                    sum(train_service.calibration_block_length_cm(state, b) for b in end)
+                    for end in ends
+                ],
+                "train_length_cm": train_length_cm,
                 "length_cm": length_cm,
-                **_stretch_names(block_id, outer),
+                **_stretch_names(block_id, [*ends[0], *ends[1]]),
             }
         )
 

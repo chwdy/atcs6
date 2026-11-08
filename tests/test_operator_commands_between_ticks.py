@@ -176,10 +176,15 @@ def test_opening_a_calibration_run_reports_both_commands():
         power_on_cmd=lambda: "power-on result",
         set_mode=lambda mode: f"set_mode({mode}) result",
         report_result=lambda operation, result: reported.append((operation, result)),
+        control_mode="ato",
     )
     controller = SimpleNamespace(powered=False, commands=commands)
 
-    train_service._take_control_for_calibration(controller)
+    before = train_service._take_control_for_calibration(controller)
+
+    # Opening records the mode and power the run gives back (design_new.md
+    # "A run that finishes or that the operator ends gives the train back").
+    assert before == {"control_mode_before_opening": "ato", "powered_before_opening": False}
 
     assert reported == [
         ("power_on_cmd", "power-on result"),

@@ -5,7 +5,8 @@
  * the fields the operator changed, so a locomotive's own profile (an instance
  * profile) goes on reading every field it has not set itself from its model
  * profile. Three fields are never edited by hand, and on an instance profile
- * only its name, its lighting voltage and its voltage/speed curve may be.
+ * only its name, its lighting, starting and ATO minimum voltages and its
+ * voltage/speed curve may be.
  */
 
 /** Never edited by hand: only a speed calibration commit writes
@@ -15,7 +16,13 @@ const NOT_HAND_EDITED = new Set(['profile_id', 'derived_from', 'calibrated_at'])
 
 /** What a hand edit may change on an instance profile; every other field
  *  belongs to the model profile it derives from. */
-const INSTANCE_HAND_EDITED = new Set(['name', 'lighting_voltage', 'voltage_speed_curve']);
+const INSTANCE_HAND_EDITED = new Set([
+  'name',
+  'lighting_voltage',
+  'starting_voltage',
+  'ato_min_voltage',
+  'voltage_speed_curve',
+]);
 
 /** Whether the panel may edit `field` on this kind of profile. */
 export function handEditable(field: string, isInstance: boolean): boolean {

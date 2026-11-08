@@ -58,7 +58,7 @@ def test_add_train_seeds_profile_anchored_at_max_speed():
     # stays linear. (Consumers read a train's calibration through resolve.)
     profile = net.speed_profiles.resolve(train.speed_profile_id)
     assert profile.power_percent_to_speed(100.0) == 60.0
-    assert profile.power_percent_to_speed(50.0) == pytest.approx(7.5 + (60.0 - 7.5) / 2)
+    assert profile.power_percent_to_speed(50.0) == pytest.approx(30.0)
     assert profile.power_percent_to_speed(0.0) == 0.0
 
     # The physics resolver (`TrainPhysics._get_speed_profile`) returns it.
@@ -111,7 +111,7 @@ def test_profile_less_train_resolves_to_max_speed_anchored_default():
 
     resolved = TrainPhysics(train.train_id, net)._get_speed_profile()
     assert resolved.power_percent_to_speed(100.0) == 75.0
-    assert resolved.power_percent_to_speed(50.0) == pytest.approx(9.375 + (75.0 - 9.375) / 2)
+    assert resolved.power_percent_to_speed(50.0) == pytest.approx(37.5)
     assert resolved.power_percent_to_speed(0.0) == 0.0
     # Distinct from the shared module-global default (which would map 100 -> 100).
     assert resolved.profile_id != "default"

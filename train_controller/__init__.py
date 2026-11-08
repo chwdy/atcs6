@@ -818,10 +818,10 @@ class TrainController:
 
         # ===== 4. ATC ACTION =====
         # The overspeed reference is the distance-0 limit, raised to the train's
-        # starting speed when that limit is 0 for a stop (`reservation_stop`) or
-        # a caution zone: a train reaches a stop at its starting speed and is
-        # cut on that tick (design_new.md step `914f`, and "A speed curve does
-        # not fall below the starting speed ahead of a stop").
+        # ATO minimum speed when that limit is 0 for a stop (`reservation_stop`)
+        # or a caution zone: an ATO train reaches a stop at its ATO minimum
+        # speed and is cut on that tick (design_new.md step `914f`, and "A speed
+        # curve does not fall below the ATO minimum speed ahead of a stop").
         overspeed_reference = float(self.atc.speed_limit)
         if overspeed_reference <= 0.0 and self.atc._last_limit_reason_code in (
             AtcLimitReasonCode.RESERVATION_STOP,
@@ -829,7 +829,7 @@ class TrainController:
         ):
             profile = self._get_speed_profile()
             overspeed_reference = float(
-                getattr(profile, "starting_speed_kmh", 0.0) or 0.0
+                getattr(profile, "ato_minimum_speed_kmh", 0.0) or 0.0
             )
         overspeed = self.physics_sync.current_speed_kmh - overspeed_reference
 
@@ -978,7 +978,7 @@ class TrainController:
         `voltage_source_speed_kmh` is the speed the voltage emitter maps to
         the per-tick voltage (design_new.md "TrainPhysics", Voltage behavior):
           - power_percent          → the percent's speed (straight line from
-                                     the starting speed to the top speed)
+                                     0 km/h to the top speed)
           - ATO / manual simulation→ integrated current speed, so the
                                      locomotive runs at the speed its calculated
                                      span moves at
@@ -1129,15 +1129,21 @@ class TrainController:
         # the locomotive ahead of a calculated span that is standing still.
         voltage_speed = float(self.physics_sync.current_speed_kmh or 0.0)
         # The ATO output's commanded speed rides on `target_speed_kmh`, so
-        # physics can tell a train ATO is driving from one it is stopping
-        # (design_new.md "TrainPhysics", A moving train never runs below its
-        # starting speed): the distance-0 operational limit while engaged, and
-        # 0 otherwise (the **ATO driving rule**).
+        # physics can tell a train ATO is driving from one it is stopping, and
+        # the ATO minimum speed rides on `speed_floor_kmh` (design_new.md
+        # "TrainPhysics", An ATO train never runs below its ATO minimum speed):
+        # the distance-0 operational limit while engaged, and 0 otherwise (the
+        # **ATO driving rule**). A manual train has no floor.
         commanded_kmh = 0.0
+        speed_floor_kmh = 0.0
         if self.commands.control_mode == "ato":
             atc_limit_kmh = None
             if self.commands.engaged:
                 commanded_kmh = max(0.0, float(self.target_speed or 0.0))
+            profile = self._get_speed_profile()
+            speed_floor_kmh = float(
+                getattr(profile, "ato_minimum_speed_kmh", 0.0) or 0.0
+            )
         else:
             atc_limit_kmh = float(self.atc.speed_limit)
         return PhysicsCommand(
@@ -1146,6 +1152,7 @@ class TrainController:
             target_speed_kmh=commanded_kmh,
             voltage_source_speed_kmh=voltage_speed,
             atc_limit_kmh=atc_limit_kmh,
+            speed_floor_kmh=speed_floor_kmh,
         )
 
     def _taint_calibration_crossing_on_cap(self) -> None:

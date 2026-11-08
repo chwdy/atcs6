@@ -79,6 +79,9 @@ def calibrated(state):
 def test_save_to_locomotive_writes_the_instance_and_leaves_siblings_alone(calibrated):
     state, train, model, inst1, inst2, entry, _run = calibrated
     written = train_service.calibrate_commit(state, "T1", target="locomotive")
+    # A commit stores new records in the registry, as a hand edit does.
+    registry = state.network.speed_profiles
+    inst1, model, inst2 = (registry.get(p) for p in ("ef66_i1", "ef66", "ef66_i2"))
 
     # The calibrated train's own instance carries the measured curve ...
     assert written is inst1
@@ -100,6 +103,8 @@ def test_save_to_locomotive_writes_the_instance_and_leaves_siblings_alone(calibr
 def test_promote_to_model_writes_the_model_and_clears_the_instance(calibrated):
     state, _train, model, inst1, _inst2, _entry, _run = calibrated
     written = train_service.calibrate_commit(state, "T1", target="model")
+    registry = state.network.speed_profiles
+    inst1, model = registry.get("ef66_i1"), registry.get("ef66")
 
     # The model profile carries the measured curve ...
     assert written is model
@@ -126,6 +131,7 @@ def test_commit_never_writes_the_model_field_on_the_instance(calibrated):
     # calibrated_at only — `model` is edited on the model profile, never here.
     state, _train, _model, inst1, _inst2, _entry, _run = calibrated
     train_service.calibrate_commit(state, "T1", target="locomotive")
+    inst1 = state.network.speed_profiles.get("ef66_i1")
     assert inst1.model == ""  # left unset on the instance
 
 

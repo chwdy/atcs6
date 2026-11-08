@@ -55,9 +55,13 @@ def _manual_train_at_cruise(dt: float):
     assert c.commands.control_mode == "manual"
     assert c.manual.manual_mode_type == "simulation"
 
-    # Drive on power to a steady cruise under authority.
+    # Drive on power to a steady cruise under authority. A manual train has no
+    # speed floor (design_new.md "TrainPhysics", An ATO train never runs below
+    # its ATO minimum speed), so it builds speed from rest; the run-up is long
+    # enough that the limit below sits above the ATO minimum speed the
+    # lookahead raises lower limits to.
     c.commands.set_handle(HandlePosition.P5)
-    step_seconds(4.5)
+    step_seconds(8.5)
     cruise = c.physics_sync.current_speed_kmh
     assert cruise > 10.0, f"train did not reach a manual cruise (got {cruise:.1f})"
     return c, network, step_seconds, cruise

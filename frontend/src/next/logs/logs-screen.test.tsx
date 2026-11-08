@@ -7,6 +7,7 @@ const api = vi.hoisted(() => {
   return {
     getEventLog: vi.fn(async (_query?: string): Promise<any> => ({ events: [] })),
     getRawOccupancy: vi.fn(async (): Promise<any> => ({ blocks: {} })),
+    getBlockVoltage: vi.fn(async (_id?: string): Promise<any> => ({ voltage: null })),
     getInspectorEntityTrain: vi.fn(async (_id?: string): Promise<any> => null),
     getTrainLookahead: vi.fn(async (_id?: string): Promise<any> => null),
     getScale: vi.fn(async (): Promise<any> => ({ scale: 160 })),
@@ -249,6 +250,38 @@ describe('Detectors tab', () => {
     expect(names).toEqual(['BLK_A', 'BLK_B']);
     expect(root.querySelector('.occ-row-settling .occ-reading')!.textContent).toBe('14.2 mA');
     expect(root.querySelector('.occ-footer')!.textContent).toContain('read #7');
+  });
+
+  it("shows a named block's name, with its id under it", async () => {
+    stateManager.updateFromNetwork({ blocks: { BLK_A: { block_id: 'BLK_A', name: 'Main' } } });
+    api.getRawOccupancy.mockResolvedValue({ blocks: { BLK_A: { raw: false, confirmed: false } } });
+    act(() => render(<LogsScreen />, root));
+    await settle();
+    const cell = root.querySelector('.occ-block')!;
+    expect(cell.firstChild!.textContent).toBe('Main');
+    expect(cell.querySelector('.occ-block-id')!.textContent).toBe('BLK_A');
+    stateManager.updateFromNetwork({ blocks: {} });
+  });
+
+  it('reads the rail voltage only when asked, averaging several readings per block', async () => {
+    api.getRawOccupancy.mockResolvedValue({ blocks: { BLK_A: { raw: false, confirmed: false }, BLK_B: { raw: false, confirmed: false } } });
+    // BLK_A's sensor reads around 6 V; BLK_B has no sensor that measures voltage.
+    const readings = [5, 7, 6, 6, 6];
+    api.getBlockVoltage.mockImplementation(async (id?: string) => ({ voltage: id === 'BLK_A' ? readings.shift()! : null }));
+    act(() => render(<LogsScreen />, root));
+    await settle();
+    await advance(1000);
+    expect(api.getBlockVoltage).not.toHaveBeenCalled();
+    const cells = () => [...root.querySelectorAll('.occ-rail')].map((el) => el.textContent);
+    expect(cells()).toEqual(['—', '—']);
+
+    const button = [...root.querySelectorAll('button')].find((b) => b.textContent === 'Read rail voltage')!;
+    act(() => button.click());
+    await settle();
+    expect(cells()).toEqual(['6 V', '—']);
+    expect(root.querySelector('.occ-rail')!.getAttribute('title')).toContain('from 5 to 7 V');
+    // Five readings of BLK_A; one of BLK_B, since a block that returns nothing is not asked again.
+    expect(api.getBlockVoltage.mock.calls.map((c) => c[0])).toEqual(['BLK_A', 'BLK_A', 'BLK_A', 'BLK_A', 'BLK_A', 'BLK_B']);
   });
 
   it('marks the block picked on the canvas, and says when it has no detector', async () => {

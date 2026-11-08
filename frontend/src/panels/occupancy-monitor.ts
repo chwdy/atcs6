@@ -214,6 +214,29 @@ export function buildRows(
     return rows;
 }
 
+/** How many times one press of "Read rail voltage" reads each block. The rails
+ *  are driven by PWM, so one reading lands anywhere between 0 V and the supply;
+ *  the average of several is what can be compared from block to block. */
+export const RAIL_SAMPLES = 5;
+
+/** The Rail cell for one block, from the voltages its current sensor read
+ *  (`GET /api/blocks/<id>/voltage`). A `null` means no voltage came back: the
+ *  block has no sensor that measures voltage, or the read failed. */
+export function summarizeRailReadings(samples: Array<number | null>): { text: string; detail: string } {
+    const volts = samples.filter((v): v is number => typeof v === 'number' && Number.isFinite(v));
+    if (!volts.length) {
+        return { text: '—', detail: 'No voltage came back: this block has no sensor that measures voltage, or the read failed.' };
+    }
+    const mean = volts.reduce((a, b) => a + b, 0) / volts.length;
+    const min = Math.min(...volts);
+    const max = Math.max(...volts);
+    const reads = `${volts.length} reading${volts.length === 1 ? '' : 's'}`;
+    return {
+        text: `${formatNumber(mean)} V`,
+        detail: `Average of ${reads} from this block's current sensor, from ${formatNumber(min)} to ${formatNumber(max)} V.`,
+    };
+}
+
 /** The USB link strip, or null when there is no link to report (sim mode).
  *
  *  Deliberately silent rather than "n/a" in sim mode: a permanent row saying

@@ -10,19 +10,22 @@ Three values are joined by two mappings (design_new.md "SpeedProfile",
 Two mappings join the three values):
 - `track_voltage <-> speed_kmh` — measured, read through `voltage_speed_curve`;
 - `power_percent <-> speed_kmh` — defined, never stored: `0%` is stopped and
-  above `0` it is a straight line in speed from the starting speed to the top
-  speed (design_new.md "SpeedProfile", Power percent is a share of the speed
-  range).
+  above `0` it is a straight line in speed from `0 km/h` to the top speed
+  (design_new.md "SpeedProfile", Power percent is a share of the speed range).
 
-The curve's first point is the starting voltage and starting speed — the
-lowest voltage at which the locomotive moves steadily, and its speed there
-(design_new.md "SpeedProfile", Starting voltage and starting speed).
+Three voltages are stored beside the curve, each set for one locomotive
+(design_new.md "SpeedProfile"): `lighting_voltage`, the voltage a standing
+train is held at so its lamps light; `starting_voltage`, the lowest voltage at
+which the locomotive moves at all, which the curve is read from (The curve is
+read from the starting voltage up); and `ato_min_voltage`, the lowest voltage
+ATO drives a moving train at (ATO minimum voltage and ATO minimum speed).
 """
 
 from dataclasses import dataclass, field
 from typing import Dict, List, Tuple, Any, Optional
 
 from constants import (
+    DEFAULT_SEEDED_FIRST_POINT_VOLTAGE_V,
     DEFAULT_SEEDED_MAX_VOLTAGE_V,
     DEFAULT_SEEDED_STARTING_VOLTAGE_V,
 )
@@ -54,10 +57,11 @@ def seeded_voltage_speed_curve(
     """The seeded default `voltage_speed_curve` (design_new.md "SpeedProfile",
     `voltage_speed_curve`): two points on the straight line from `0 V` ->
     `0 km/h` to `max_voltage` -> `max_speed_kmh`, one at
-    `DEFAULT_SEEDED_STARTING_VOLTAGE_V` and one at `max_voltage`."""
+    `DEFAULT_SEEDED_FIRST_POINT_VOLTAGE_V` (above the seeded starting voltage)
+    and one at `max_voltage`."""
     top = float(max_speed_kmh)
     top_v = float(max_voltage)
-    start_v = min(float(DEFAULT_SEEDED_STARTING_VOLTAGE_V), top_v)
+    start_v = min(float(DEFAULT_SEEDED_FIRST_POINT_VOLTAGE_V), top_v)
     start_speed = top * start_v / top_v if top_v > 0 else 0.0
     return [(start_v, start_speed), (top_v, top)]
 
@@ -65,7 +69,7 @@ def seeded_voltage_speed_curve(
 def curve_problems(
     curve: Optional[List[Tuple[float, float]]], max_voltage: float
 ) -> List[str]:
-    """Every one of the four conditions on a curve's points that `curve` breaks
+    """Every one of the three conditions on a curve's points that `curve` breaks
     (design_new.md "SpeedProfile", `voltage_speed_curve`), as plain reasons; an
     empty list when the curve is valid. The commit and the profile save both
     refuse a curve this returns a reason for.
@@ -80,9 +84,7 @@ def curve_problems(
         problems.append("the points must be in order of rising voltage")
     first_v, first_s = points[0]
     if first_v <= 0.0 or first_s <= 0.0:
-        problems.append(
-            "the first point (the starting voltage and speed) must be above 0"
-        )
+        problems.append("the first point's voltage and speed must be above 0")
     if abs(voltages[-1] - float(max_voltage)) > 1e-6:
         problems.append(
             f"the last point must be at max_voltage ({float(max_voltage):g} V)"
@@ -90,7 +92,7 @@ def curve_problems(
     if any(b < a for a, b in zip(speeds, speeds[1:])):
         problems.append("speed must not fall as voltage rises")
     if speeds[-1] <= first_s:
-        problems.append("the top speed must be above the starting speed")
+        problems.append("the top speed must be above the first point's speed")
     return problems
 
 
@@ -103,11 +105,16 @@ class SpeedProfile:
         profile_id: Unique identifier for this profile
         name: Display name
         voltage_speed_curve: `(track_voltage, speed_kmh)` points, voltage
-            ascending. The first point is the starting voltage and starting
-            speed; the last is at `max_voltage` and carries the top speed.
+            ascending. The last is at `max_voltage` and carries the top speed.
+            It is read from `starting_voltage` up.
         lighting_voltage: The voltage a powered train that nothing drives
             stands at so its lamps light, or None for a locomotive whose lamps
             light only once it moves (it then stands at `0` V).
+        starting_voltage: The lowest voltage at which the locomotive moves at
+            all; below `max_voltage`.
+        ato_min_voltage: The ATO minimum voltage the operator set for this
+            locomotive, or None (ATO then runs from the curve's first point
+            above the starting voltage). Carried by instance profiles only.
         acceleration_rate: Speed increase rate (km/h per second)
         deceleration_rate: Service brake rate (km/h per second)
         emergency_brake_rate: Emergency brake rate (km/h per second)
@@ -121,8 +128,9 @@ class SpeedProfile:
     # instance profile (one physical locomotive). It is the field that says
     # which of the two kinds a record is (design_new.md "SpeedProfile", Model
     # profiles and instance profiles). An instance profile carries only its own
-    # fields (`lighting_voltage`, `voltage_speed_curve`, `calibrated_at`) and
-    # reads every other field from the model profile it derives from;
+    # fields (`lighting_voltage`, `starting_voltage`, `voltage_speed_curve`,
+    # `calibrated_at`, `ato_min_voltage`) and reads every other field from the
+    # model profile it derives from (`ato_min_voltage` from the instance alone);
     # `SpeedProfileRegistry.resolve` is the one accessor that merges the two.
     derived_from: Optional[str] = None
     # The locomotive model this profile describes, written the same way
@@ -135,14 +143,22 @@ class SpeedProfile:
     # On an instance it is resolved from whichever record supplies the curve
     # (see `_overlay_instance_on_model`).
     calibrated_at: Optional[str] = None
-    # One of the three instance-eligible fields. None means "unset": a MODEL
-    # profile fills the seeded default in __post_init__; an INSTANCE profile
-    # keeps None and `SpeedProfileRegistry.resolve` reads the model's curve.
+    # An instance-eligible field. None means "unset": a MODEL profile fills the
+    # seeded default in __post_init__; an INSTANCE profile keeps None and
+    # `SpeedProfileRegistry.resolve` reads the model's curve.
     voltage_speed_curve: Optional[List[Tuple[float, float]]] = None
-    # One of the three instance-eligible fields. None on a model profile means
-    # the locomotive has no lighting voltage (it stands at 0 V); None on an
-    # instance profile means "read the model's value".
+    # An instance-eligible field. None on a model profile means the locomotive
+    # has no lighting voltage (it stands at 0 V); None on an instance profile
+    # means "read the model's value".
     lighting_voltage: Optional[float] = None
+    # An instance-eligible field. None means "unset": a MODEL profile fills
+    # DEFAULT_SEEDED_STARTING_VOLTAGE_V in __post_init__; an INSTANCE profile
+    # keeps None and reads the model's value.
+    starting_voltage: Optional[float] = None
+    # Instance profiles only: None means ATO runs from the curve's first point
+    # above the starting voltage (design_new.md "SpeedProfile", ATO minimum
+    # voltage and ATO minimum speed).
+    ato_min_voltage: Optional[float] = None
     acceleration_rate: float = 10.0  # km/h per second
     deceleration_rate: float = 15.0  # km/h per second (service brake)
     emergency_brake_rate: float = 30.0  # km/h per second
@@ -166,17 +182,21 @@ class SpeedProfile:
     )
 
     def __post_init__(self) -> None:
-        """Fill a model profile's unset curve and sort the curve by voltage.
+        """Fill a model profile's unset curve and starting voltage, and sort the
+        curve by voltage.
 
         A MODEL profile (`derived_from is None`) is a complete record: an unset
         `voltage_speed_curve` gets the seeded default for a `100 km/h` top
-        speed. An INSTANCE profile keeps its unset fields None ("read from the
-        model").
+        speed, and an unset `starting_voltage` gets
+        `DEFAULT_SEEDED_STARTING_VOLTAGE_V`. An INSTANCE profile keeps its unset
+        fields None ("read from the model").
         """
         if self.derived_from is None and self.voltage_speed_curve is None:
             self.voltage_speed_curve = seeded_voltage_speed_curve(
                 100.0, self.max_voltage
             )
+        if self.derived_from is None and self.starting_voltage is None:
+            self.starting_voltage = float(DEFAULT_SEEDED_STARTING_VOLTAGE_V)
         if self.voltage_speed_curve is not None:
             self.voltage_speed_curve = sorted(
                 ((float(v), float(sp)) for v, sp in self.voltage_speed_curve),
@@ -188,26 +208,47 @@ class SpeedProfile:
     def _curve(self) -> List[Tuple[float, float]]:
         return list(self.voltage_speed_curve or [])
 
-    @property
-    def starting_voltage(self) -> float:
-        """The lowest voltage at which the locomotive moves steadily: the
-        curve's first point (design_new.md "SpeedProfile", Starting voltage and
-        starting speed)."""
-        curve = self._curve()
-        return float(curve[0][0]) if curve else 0.0
+    def _starting(self) -> float:
+        return float(self.starting_voltage) if self.starting_voltage is not None else 0.0
+
+    def readable_curve(self) -> List[Tuple[float, float]]:
+        """The points both readings use (design_new.md "SpeedProfile", The curve
+        is read from the starting voltage up): `(starting_voltage, 0 km/h)`,
+        then every stored point above the starting voltage. A stored point at
+        or below the starting voltage is not read."""
+        start = self._starting()
+        return [(start, 0.0)] + [
+            (float(v), float(s)) for v, s in self._curve() if float(v) > start
+        ]
 
     @property
-    def starting_speed_kmh(self) -> float:
-        """The locomotive's speed at its starting voltage: the curve's first
-        point."""
-        curve = self._curve()
-        return float(curve[0][1]) if curve else 0.0
+    def first_point_voltage(self) -> float:
+        """The voltage of the curve's first point above the starting voltage —
+        the lowest measured voltage, and where the measured part of the curve
+        begins. `max_voltage` when no point lies above it."""
+        readable = self.readable_curve()
+        return float(readable[1][0]) if len(readable) > 1 else float(self.max_voltage)
 
     @property
     def top_speed_kmh(self) -> float:
         """The speed of the curve's last point, at `max_voltage`."""
         curve = self._curve()
         return float(curve[-1][1]) if curve else 0.0
+
+    @property
+    def ato_minimum_voltage(self) -> float:
+        """The lowest voltage ATO drives a moving train at (design_new.md
+        "SpeedProfile", ATO minimum voltage and ATO minimum speed): the
+        resolved `ato_min_voltage` when set, otherwise the curve's first point
+        above the starting voltage."""
+        if self.ato_min_voltage is not None:
+            return float(self.ato_min_voltage)
+        return self.first_point_voltage
+
+    @property
+    def ato_minimum_speed_kmh(self) -> float:
+        """The speed the curve gives at the ATO minimum voltage."""
+        return self.voltage_to_speed(self.ato_minimum_voltage)
 
     def voltage_when_not_driven(self) -> float:
         """What a powered train that nothing drives outputs: `lighting_voltage`,
@@ -219,14 +260,14 @@ class SpeedProfile:
 
     def voltage_to_speed(self, voltage: float) -> float:
         """Read the curve forward (design_new.md "SpeedProfile", Voltage to
-        speed reads the curve forward): a voltage below the starting voltage is
-        `0 km/h`; one at or above it interpolates between the points around it;
-        one above the last point reads the top speed."""
-        curve = self._curve()
-        if not curve:
-            return 0.0
+        speed reads the curve forward): a voltage at or below the starting
+        voltage is `0 km/h`; one above it interpolates between the points
+        around it, on the straight line from `(starting_voltage, 0)` to the
+        first stored point below that point; one at or above the last point
+        reads the top speed."""
+        curve = self.readable_curve()
         v = float(voltage)
-        if v < curve[0][0]:
+        if len(curve) < 2 or v <= curve[0][0]:
             return 0.0
         if v >= curve[-1][0]:
             return float(curve[-1][1])
@@ -240,24 +281,21 @@ class SpeedProfile:
         voltage reads the curve backward).
 
         A speed of `0` is the voltage a train that nothing drives outputs. A
-        speed from the starting speed to the top speed interpolates between the
-        points around it, taking the lowest voltage of a flat stretch. A speed
-        above the top speed is `max_voltage`. A moving train never runs below
-        its starting speed (design_new.md "TrainPhysics"), so a speed between
-        `0` and the starting speed reads as the starting voltage.
+        speed above `0` up to the top speed interpolates between the points
+        around it — so it is always above the starting voltage — taking the
+        lowest voltage of a flat stretch. A speed above the top speed is
+        `max_voltage`.
         """
         speed = float(speed_kmh)
         if speed <= 0.0:
             return self.voltage_when_not_driven()
-        curve = self._curve()
-        if not curve:
-            return 0.0
-        if speed <= curve[0][1]:
-            return float(curve[0][0])
+        curve = self.readable_curve()
+        if len(curve) < 2:
+            return float(self.max_voltage)
         if speed > curve[-1][1]:
             return float(self.max_voltage)
         for (v1, s1), (v2, s2) in zip(curve, curve[1:]):
-            if s1 <= speed <= s2:
+            if s1 < speed <= s2 or (s1 == speed and s2 == speed):
                 if s2 == s1:
                     return float(v1)
                 return self._interpolate(s1, v1, s2, v2, speed)
@@ -267,26 +305,24 @@ class SpeedProfile:
 
     def power_percent_to_speed(self, percent: float) -> float:
         """`0%` is stopped; any percent above `0` is a straight line in speed
-        from the starting speed to the top speed (design_new.md "SpeedProfile",
-        Power percent is a share of the speed range)."""
+        from `0 km/h` to the top speed (design_new.md "SpeedProfile", Power
+        percent is a share of the speed range)."""
         p = float(percent)
         if p <= 0.0:
             return 0.0
         p = min(p, 100.0)
-        start = self.starting_speed_kmh
-        return start + (self.top_speed_kmh - start) * p / 100.0
+        return self.top_speed_kmh * p / 100.0
 
     def speed_to_power_percent(self, speed_kmh: float) -> float:
-        """The same line read backward: `0 km/h` is `0%`, and a speed from the
-        starting speed to the top speed is its share of that range."""
+        """The same line read backward: `0 km/h` is `0%`, and a speed up to the
+        top speed is its share of the top speed."""
         speed = float(speed_kmh)
         if speed <= 0.0:
             return 0.0
-        start = self.starting_speed_kmh
-        span = self.top_speed_kmh - start
-        if span <= 0.0:
+        top = self.top_speed_kmh
+        if top <= 0.0:
             return 100.0
-        return max(0.0, min(100.0, 100.0 * (speed - start) / span))
+        return max(0.0, min(100.0, 100.0 * speed / top))
 
     def power_percent_to_voltage(self, percent: float) -> float:
         """A percent to a voltage, through speed (design_new.md "SpeedProfile",
@@ -315,6 +351,8 @@ class SpeedProfile:
                 else [[v, sp] for v, sp in self.voltage_speed_curve]
             ),
             "lighting_voltage": self.lighting_voltage,
+            "starting_voltage": self.starting_voltage,
+            "ato_min_voltage": self.ato_min_voltage,
             "max_voltage": self.max_voltage,
             "acceleration_rate": self.acceleration_rate,
             "deceleration_rate": self.deceleration_rate,
@@ -343,6 +381,10 @@ class SpeedProfile:
         )
         lighting_raw = data.get("lighting_voltage")
         lighting_voltage = None if lighting_raw is None else float(lighting_raw)
+        starting_raw = data.get("starting_voltage")
+        starting_voltage = None if starting_raw is None else float(starting_raw)
+        ato_min_raw = data.get("ato_min_voltage")
+        ato_min_voltage = None if ato_min_raw is None else float(ato_min_raw)
 
         return cls(
             profile_id=data.get("profile_id", ""),
@@ -352,6 +394,8 @@ class SpeedProfile:
             calibrated_at=data.get("calibrated_at") or None,
             voltage_speed_curve=curve,
             lighting_voltage=lighting_voltage,
+            starting_voltage=starting_voltage,
+            ato_min_voltage=ato_min_voltage,
             acceleration_rate=float(data.get("acceleration_rate", 10.0)),
             deceleration_rate=float(data.get("deceleration_rate", 15.0)),
             emergency_brake_rate=float(data.get("emergency_brake_rate", 30.0)),
@@ -409,7 +453,7 @@ def make_instance_profile(
 ) -> SpeedProfile:
     """An empty instance profile deriving from `model_profile_id`.
 
-    It carries none of its three fields yet (design_new.md "SpeedProfile",
+    It carries none of its own fields yet (design_new.md "SpeedProfile",
     Model profiles and instance profiles): every field resolves from the model
     profile until **Speed calibration** or a hand edit writes one onto this
     instance.
@@ -445,9 +489,10 @@ def _overlay_instance_on_model(
 ) -> SpeedProfile:
     """The complete profile an instance resolves to over its model profile.
 
-    design_new.md "SpeedProfile", The curve and the lighting voltage resolve on
-    their own: the instance's own fields where it carries them, the model's
-    values everywhere else, with no curve point moved or dropped. The result
+    design_new.md "SpeedProfile", The curve and the voltages resolve on their
+    own: the instance's own fields where it carries them, the model's values
+    everywhere else, with no curve point moved or dropped. `ato_min_voltage`
+    comes from the instance alone. The result
     carries the instance's `profile_id` (so a train that names the instance
     still matches its resolved profile) and reads as a flattened model profile.
     """
@@ -455,6 +500,11 @@ def _overlay_instance_on_model(
         instance.lighting_voltage
         if instance.lighting_voltage is not None
         else model.lighting_voltage
+    )
+    starting = (
+        instance.starting_voltage
+        if instance.starting_voltage is not None
+        else model.starting_voltage
     )
     curve = (
         instance.voltage_speed_curve
@@ -476,6 +526,8 @@ def _overlay_instance_on_model(
         calibrated_at=calibrated_at,
         voltage_speed_curve=list(curve) if curve is not None else None,
         lighting_voltage=lighting,
+        starting_voltage=starting,
+        ato_min_voltage=instance.ato_min_voltage,
         acceleration_rate=model.acceleration_rate,
         deceleration_rate=model.deceleration_rate,
         emergency_brake_rate=model.emergency_brake_rate,
@@ -506,6 +558,8 @@ def _instance_without_model(instance: SpeedProfile) -> SpeedProfile:
         calibrated_at=instance.calibrated_at,
         voltage_speed_curve=instance.voltage_speed_curve,
         lighting_voltage=instance.lighting_voltage,
+        starting_voltage=instance.starting_voltage,
+        ato_min_voltage=instance.ato_min_voltage,
     )
 
 

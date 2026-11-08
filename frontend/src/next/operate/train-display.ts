@@ -40,6 +40,15 @@ export function trainStatus(view: TrainView): string {
   return view.controller?.train_status || 'off';
 }
 
+/** Why the Delete train button is unavailable, or null when it may be pressed.
+ *  Only an `OFF` train may be deleted (design_new.md "Train Entity", Deleting
+ *  a train); the server's other refusals come back as its error message. */
+export function deleteTrainUnavailableReason(view: TrainView): string | null {
+  if (view.train?.is_unidentified) return 'An unidentified train is adopted, not deleted';
+  if (trainStatus(view) !== 'off') return 'Power the train off before deleting it';
+  return null;
+}
+
 /** `ato_status` (design_new.md "ATO status"), shown only for an ATO train. */
 export function atoStatus(view: TrainView): string | null {
   if (trainStatus(view) !== 'ato') return null;

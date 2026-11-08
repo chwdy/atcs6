@@ -24,6 +24,22 @@ import { pickableProfileChoices, type ProfileChoice } from '../lib/profile-choic
 import type { EditorHost } from './types';
 import { showConfirmModal, getTrackExits, getNeighborPosition, formatDuration, formatDistanceCm, escapeAttr } from '../lib/helpers';
 
+/** One way a train's front can point: the tile the front starts on, the edge
+ *  it leaves that tile by, and what lies ahead (a block name, a switch, or the
+ *  end of the track). */
+export interface FrontChoice {
+  tile: { x: number; y: number };
+  edge: string;
+  toward: string;
+}
+
+/** A front-choice button: its number (matching the marker drawn on the map)
+ *  and what the front would point toward. */
+function frontChoiceButton(c: FrontChoice, i: number, active: string, dataAttr: string): string {
+  const toward = escapeAttr(c.toward);
+  return `<button type="button" class="switch-btn ${active}" ${dataAttr} title="Front toward ${toward}"><span class="front-choice-num">${i + 1}</span> toward ${toward}</button>`;
+}
+
 /** Read the value of an input by id (empty string if missing). */
 function inputValue(id: string): string {
   return (document.getElementById(id) as HTMLInputElement | null)?.value ?? '';
@@ -70,7 +86,16 @@ export class TrainEditorHandler {
   // The claimed tiles are kept so the facings on offer can be worked out.
   _adoptHeadTile: { x: number; y: number } | null;
   _adoptFacing: string | null;
+  // Which end of the detected track the front is at. A bent run can have two
+  // ends that exit through the same compass edge, so the facing alone cannot
+  // say (design_new.md "Unidentified trains", Choosing the front end).
+  _adoptFrontEnd: { x: number; y: number } | null;
   _adoptClaimedTiles: Array<[number, number]>;
+  // The blocks the unidentified train holds. More than one may mean more than
+  // one locomotive, so the form then asks for the front tile instead of
+  // centring (design_new.md "The form asks where the front is when more than
+  // one block is detected").
+  _adoptBlocks: string[];
 
   constructor(editor: EditorHost) {
     this.editor = editor;
@@ -86,7 +111,9 @@ export class TrainEditorHandler {
     this._placeLengthCm = 100;
     this._adoptHeadTile = null;
     this._adoptFacing = null;
+    this._adoptFrontEnd = null;
     this._adoptClaimedTiles = [];
+    this._adoptBlocks = [];
   }
 
   get api(): any {
@@ -226,17 +253,29 @@ export class TrainEditorHandler {
    *  that leads is whichever end the train's reservation runs from
    *  (design_new.md "Reservation-side head derivation"). */
   _renderFacingOptions(): string {
-    const DIR_WORD: Record<string, string> = { N: 'North', E: 'East', S: 'South', W: 'West' };
     if (!this._placePos || this._placeExits.length === 0) {
       return `<div class="switch-group fluid"><button type="button" class="switch-btn" disabled>Place on a track first</button></div>`;
     }
-    const btns = this._placeExits
-      .map((edge) => {
-        const active = edge === this._placeFacing ? 'active' : '';
-        return `<button type="button" class="switch-btn ${active}" data-facing="${edge}">→ ${DIR_WORD[edge] ?? edge}</button>`;
+    const choices = this._placeChoices();
+    const btns = choices
+      .map((c, i) => {
+        const active = c.edge === this._placeFacing ? 'active' : '';
+        return frontChoiceButton(c, i, active, `data-facing="${c.edge}"`);
       })
       .join('');
     return `<div class="switch-group fluid">${btns}</div>`;
+  }
+
+  /** The ways the front can point from the picked tile: one per exit of that
+   *  tile, each named by what lies ahead past the block it starts in. Compass
+   *  words are not used: two ends of a bent block can leave through the same
+   *  tile edge, and a diagonal rail's exit edge is not the way it is drawn
+   *  heading. */
+  _placeChoices(): FrontChoice[] {
+    if (!this._placePos) return [];
+    const track = this._trackAt(this._placePos.x, this._placePos.y);
+    const blockTiles = this._blockTileKeys(track?.block_section_id);
+    return this._placeExits.map((edge) => this._frontChoice(this._placePos!, edge, blockTiles));
   }
 
   _bindFacingButtons(): void {
@@ -245,7 +284,74 @@ export class TrainEditorHandler {
         this._placeFacing = btn.dataset.facing || null;
         this._refreshPlacementUI();
       };
+      // Hovering a choice previews it on the map, so the operator sees where
+      // the body would lie before committing to it.
+      btn.onmouseenter = () => {
+        if (this._placePos && btn.dataset.facing) this._showPlacementGhost(btn.dataset.facing);
+      };
+      btn.onmouseleave = () => {
+        if (this._placePos && this._placeFacing) this._showPlacementGhost(this._placeFacing);
+      };
     });
+  }
+
+  /** What lies ahead of a front that leaves `tile` through `edge`, walking on
+   *  through the tiles in `within` (the block it starts in, or the detected
+   *  tiles) until the track leaves them. */
+  _frontChoice(tile: { x: number; y: number }, edge: string, within: Set<string>): FrontChoice {
+    const OPP: Record<string, string> = { N: 'S', S: 'N', E: 'W', W: 'E' };
+    let cur = tile;
+    let out = edge;
+    const seen = new Set<string>([`${tile.x},${tile.y}`]);
+    let toward = 'the end of the track';
+    for (let i = 0; i < 1000; i++) {
+      const [nx, ny] = getNeighborPosition(cur.x, cur.y, out);
+      const next = this._trackAt(nx, ny);
+      const entering = OPP[out];
+      const exits = next ? getTrackExits(next.track_bits || 0) : [];
+      if (!next || !exits.includes(entering)) break;
+      const key = `${nx},${ny}`;
+      const onward = exits.filter((e) => e !== entering);
+      if (!within.has(key) || seen.has(key) || onward.length !== 1) {
+        toward = this._trackName(next);
+        break;
+      }
+      seen.add(key);
+      cur = { x: nx, y: ny };
+      out = onward[0];
+    }
+    return { tile: { x: tile.x, y: tile.y }, edge, toward };
+  }
+
+  /** The name an operator knows a piece of track by: the block's name, or the
+   *  switch it is part of. */
+  _trackName(track: any): string {
+    if (track?.is_switch) {
+      const sw = track.switch_id ? this.editor.cachedNetwork?.switches?.[track.switch_id] : undefined;
+      return `switch ${sw?.name || track.switch_id || ''}`.trim();
+    }
+    const bid = track?.block_section_id;
+    if (bid) return this.editor.cachedNetwork?.blocks?.[bid]?.name || bid;
+    return 'track outside any block';
+  }
+
+  _blockTileKeys(blockId: string | null | undefined): Set<string> {
+    const keys = new Set<string>();
+    if (!blockId) return keys;
+    for (const t of this.editor.cachedNetwork?.tracks || []) {
+      if (t.block_section_id === blockId) keys.add(`${t.x},${t.y}`);
+    }
+    return keys;
+  }
+
+  /** Paint the placement ghost for the picked tile facing `facing`, with a
+   *  numbered marker at each way the front can point. */
+  _showPlacementGhost(facing: string): void {
+    if (!this._placePos) return;
+    const { tiles, fits } = this._computeGhostTiles(this._placePos, facing, this._placeLengthCm);
+    const ends = this._placeChoices().map((c, i) => ({ ...c.tile, edge: c.edge, n: i + 1, active: c.edge === facing }));
+    this.editor.renderer?.setTrainGhostPreview?.({ tiles, headTile: this._placePos, facing, fits, ends });
+    this.editor.renderer?.requestRedraw?.();
   }
 
   _bindPickButton(): void {
@@ -355,8 +461,7 @@ export class TrainEditorHandler {
     const note = document.getElementById('at-length-note');
     if (this._placePos && this._placeFacing) {
       const { tiles, fits } = this._computeGhostTiles(this._placePos, this._placeFacing, this._placeLengthCm);
-      this.editor.renderer?.setTrainGhostPreview?.({ tiles, headTile: this._placePos, facing: this._placeFacing, fits });
-      this.editor.renderer?.requestRedraw?.();
+      this._showPlacementGhost(this._placeFacing);
       if (note) {
         const n = tiles.length;
         note.textContent = fits
@@ -387,9 +492,15 @@ export class TrainEditorHandler {
     const OPP: Record<string, string> = { N: 'S', S: 'N', E: 'W', W: 'E' };
     const tiles: Array<{ x: number; y: number }> = [{ x: head.x, y: head.y }];
     const counts = this._blockTileCounts();
-    let remaining = lengthCm - this._tileLengthCm(this._trackAt(head.x, head.y), counts);
+    const headTrack = this._trackAt(head.x, head.y);
+    let remaining = lengthCm - this._tileLengthCm(headTrack, counts);
     let curr = head;
-    let back = OPP[facing] || 'W';
+    // The body leaves the head tile through the other end of the rail the
+    // front exits by, as the server's placement does — not the compass
+    // opposite, which a corner or diagonal tile does not have.
+    const headExits = getTrackExits(headTrack?.track_bits || 0);
+    const headOthers = headExits.filter((e) => e !== facing);
+    let back = headOthers.includes(OPP[facing]) ? OPP[facing] : headOthers[0] || OPP[facing] || 'W';
     const MAX = 60;
     while (remaining > 0 && tiles.length < MAX) {
       const [nx, ny] = getNeighborPosition(curr.x, curr.y, back);
@@ -683,22 +794,29 @@ export class TrainEditorHandler {
   renderUnidentifiedTrainPanel(trainId: string, controller: any): string {
     const blocks: string[] = controller?.span?.occupied_blocks || [];
     const tiles: Array<[number, number]> = controller?.span?.occupied_tiles || [];
-    const where = blocks.length ? blocks.join(', ') : '—';
+    const where = blocks.length ? blocks.map((b) => this._blockLabel(b)).join(', ') : '—';
 
     // An unidentified train in the undetected gap holds nothing, so there is no position to
     // adopt it at — the panel says so instead of offering a form that fails.
     const adoptable = tiles.length > 0;
     this._adoptClaimedTiles = tiles.map(([x, y]) => [x, y] as [number, number]);
-    // Centred is the default, and a null head tile is how that is asked for.
-    // The detector says the train is somewhere in these blocks; it does not say
-    // the train is flush against a boundary, and standing it at the first
-    // claimed tile would say exactly that. Picking a tile below overrides it.
+    this._adoptBlocks = [...blocks];
+    // On one block, centred is the default, and a null head tile is how that is
+    // asked for: the detector says the train is somewhere in the block, not
+    // that it is flush against a boundary. On several blocks there is no
+    // centred choice — they may hold more than one locomotive — so the
+    // operator picks the front tile on the map.
     this._adoptHeadTile = null;
     this._adoptFacing = null;
-
-    const tileOptions = tiles
-      .map(([x, y]) => `<option value="${x},${y}">Front at (${x}, ${y})</option>`)
-      .join('');
+    this._adoptFrontEnd = null;
+    const multiBlock = this._adoptMultiBlock();
+    const multiBlockNote = multiBlock
+      ? `<div class="banner banner-warn tc-banner" id="unidentified-adopt-multiblock">
+                            Detected on ${blocks.length} blocks. They may hold more than one
+                            locomotive, so pick the tile the front of this one stands on. The
+                            blocks its body does not reach stay unidentified, to set up next.
+                        </div>`
+      : '';
 
     const adoptSection = adoptable
       ? `
@@ -720,13 +838,17 @@ export class TrainEditorHandler {
                             <input type="text" id="unidentified-adopt-name" class="input-small-field" placeholder="optional">
                         </div>
 
-                        <div class="input-small-row">
-                            <label class="input-small-label input-small-label-inline" for="unidentified-adopt-head">Position</label>
-                            <select id="unidentified-adopt-head" class="input-small-field">
-                                <option value="" selected>Centred in the blocks</option>
-                                ${tileOptions}
-                            </select>
+                        <div class="input-large-container">
+                            <label class="input-large-label">Front stands on</label>
+                            <div class="at-place-row">
+                                <span class="at-place-value" id="unidentified-adopt-head-value">${multiBlock ? 'Not picked' : 'Centred in the block'}</span>
+                                <button type="button" id="unidentified-adopt-centre" class="btn btn-outline btn-sm at-pick-btn" style="display: none">Centre</button>
+                                <button type="button" id="unidentified-adopt-pick" class="btn btn-outline btn-sm at-pick-btn">
+                                    <i class="ti ti-map-pin"></i> Pick on map
+                                </button>
+                            </div>
                         </div>
+                        ${multiBlockNote}
 
                         <div class="input-large-container">
                             <label class="input-large-label">Front faces</label>
@@ -738,6 +860,7 @@ export class TrainEditorHandler {
                             <input type="number" id="unidentified-adopt-length" class="input-small-field" value="10" min="10" step="10">
                             <span class="at-unit">cm</span>
                         </div>
+                        <div class="at-note" id="unidentified-adopt-note"></div>
 
                         <div class="input-small-row">
                             <label class="input-small-label input-small-label-inline" for="unidentified-adopt-max-speed">Max speed</label>
@@ -800,20 +923,70 @@ export class TrainEditorHandler {
   }
 
   /** Facing choices for adoption: one button per way the front can point,
-   *  matching the add-train form. */
+   *  matching the add-train form. Two ends that exit through the same compass
+   *  edge are two buttons, because they are two places the front can be. */
   _renderAdoptFacingOptions(): string {
-    const DIR_WORD: Record<string, string> = { N: 'North', E: 'East', S: 'South', W: 'West' };
-    const exits: string[] = this._adoptExits();
-    if (exits.length === 0) {
+    if (this._adoptMultiBlock() && !this._adoptHeadTile) {
+      return `<div class="switch-group fluid"><button type="button" class="switch-btn" disabled>Pick the front tile first</button></div>`;
+    }
+    const choices = this._adoptChoices();
+    if (choices.length === 0) {
       return `<div class="switch-group fluid"><button type="button" class="switch-btn" disabled>No track direction here</button></div>`;
     }
-    const btns = exits
-      .map((edge) => {
-        const active = edge === this._adoptFacing ? 'active' : '';
-        return `<button type="button" class="switch-btn ${active}" data-adopt-facing="${edge}">→ ${DIR_WORD[edge] ?? edge}</button>`;
+    const btns = choices
+      .map((c, i) => {
+        const active = this._isAdoptChoice(c) ? 'active' : '';
+        return frontChoiceButton(c, i, active, `data-adopt-choice="${i}"`);
       })
       .join('');
     return `<div class="switch-group fluid">${btns}</div>`;
+  }
+
+  _isAdoptChoice(c: FrontChoice): boolean {
+    if (c.edge !== this._adoptFacing) return false;
+    // With a head tile the choices all start on that tile; only the edge differs.
+    if (this._adoptHeadTile) return true;
+    return !!this._adoptFrontEnd && this._adoptFrontEnd.x === c.tile.x && this._adoptFrontEnd.y === c.tile.y;
+  }
+
+  /** Mark each way the front can point on the map, numbered like its button. */
+  _showAdoptMarkers(hovered: number | null = null): void {
+    const choices = this._adoptChoices();
+    const ends = choices.map((c, i) => ({
+      ...c.tile,
+      edge: c.edge,
+      n: i + 1,
+      active: hovered === null ? this._isAdoptChoice(c) : hovered === i,
+    }));
+    // With a front tile picked and a facing chosen (or hovered), show the body
+    // the request would place, and say which blocks it hands back.
+    const facing = hovered !== null ? choices[hovered]?.edge : this._adoptFacing;
+    const preview = facing ? this._adoptPreview(facing) : null;
+    const note = document.getElementById('unidentified-adopt-note');
+    if (note) {
+      let text = '';
+      if (preview) {
+        const n = preview.tiles.length;
+        if (preview.outside) text = '⚠ The body would reach a block reading no current — shorten it or pick another tile';
+        else if (!preview.fits) text = `⚠ Track too short — the body needs more than the ${n} tile${n === 1 ? '' : 's'} behind the front`;
+        else {
+          text = `Spans ${n} tile${n === 1 ? '' : 's'}`;
+          if (preview.givenBack.length) {
+            text += ` · ${preview.givenBack.map((b) => this._blockLabel(b)).join(', ')} stay${preview.givenBack.length === 1 ? 's' : ''} unidentified`;
+          }
+        }
+      }
+      note.textContent = text;
+      note.classList.toggle('at-note-warn', !!preview && !preview.fits);
+    }
+    const ghost =
+      preview && this._adoptHeadTile
+        ? { tiles: preview.tiles, headTile: this._adoptHeadTile, facing, fits: preview.fits, ends }
+        : ends.length
+          ? { tiles: [], ends }
+          : null;
+    this.editor.renderer?.setTrainGhostPreview?.(ghost);
+    this.editor.renderer?.requestRedraw?.();
   }
 
   /** Wire the unidentified train panel's adoption form after it mounts. */
@@ -839,16 +1012,22 @@ export class TrainEditorHandler {
       console.debug('[TrainEditorHandler] speed profiles load failed:', err);
     }
 
-    const headSel = document.getElementById('unidentified-adopt-head') as HTMLSelectElement | null;
-    if (headSel) {
-      headSel.onchange = () => {
-        const [x, y] = headSel.value.split(',').map((v) => parseInt(v, 10));
-        this._adoptHeadTile = Number.isFinite(x) && Number.isFinite(y) ? { x, y } : null;
-        // The facing choices belong to the tile, so they are rebuilt with it.
-        this._adoptFacing = null;
+    const pick = document.getElementById('unidentified-adopt-pick') as HTMLButtonElement | null;
+    if (pick) {
+      pick.onclick = () => {
+        if (this.editor.activeMode?.toolName === 'adopt-front') {
+          this.editor.exitMode();
+          this.editor._setSelectedTool?.('inspect');
+        } else {
+          this.editor.enterMode(this._buildAdoptFrontMode());
+        }
         this._refreshAdoptUI();
       };
     }
+    const centre = document.getElementById('unidentified-adopt-centre') as HTMLButtonElement | null;
+    if (centre) centre.onclick = () => this._setAdoptHeadTile(null);
+    const length = document.getElementById('unidentified-adopt-length') as HTMLInputElement | null;
+    if (length) length.addEventListener('input', () => this._showAdoptMarkers());
 
     const submit = document.getElementById('btn-adopt-unidentified') as HTMLButtonElement | null;
     if (submit) submit.onclick = () => this._submitAdoptUnidentified(unidentifiedTrainId);
@@ -860,19 +1039,125 @@ export class TrainEditorHandler {
   _refreshAdoptUI(): void {
     const slot = document.getElementById('unidentified-adopt-facing-slot');
     if (slot) slot.innerHTML = this._renderAdoptFacingOptions();
+    const choices = this._adoptChoices();
     document
-      .querySelectorAll<HTMLElement>('#unidentified-adopt-facing-slot .switch-btn[data-adopt-facing]')
+      .querySelectorAll<HTMLElement>('#unidentified-adopt-facing-slot .switch-btn[data-adopt-choice]')
       .forEach((btn) => {
+        const i = parseInt(btn.dataset.adoptChoice || '', 10);
+        const c = choices[i];
+        if (!c) return;
         btn.onclick = () => {
-          this._adoptFacing = btn.dataset.adoptFacing || null;
+          this._adoptFacing = c.edge;
+          // A head tile already says where the front is; centred, the end does.
+          this._adoptFrontEnd = this._adoptHeadTile ? null : { ...c.tile };
           this._refreshAdoptUI();
         };
+        btn.onmouseenter = () => this._showAdoptMarkers(i);
+        btn.onmouseleave = () => this._showAdoptMarkers();
       });
+    this._showAdoptMarkers();
+
+    const value = document.getElementById('unidentified-adopt-head-value');
+    if (value) {
+      const t = this._adoptHeadTile;
+      value.textContent = t ? `(${t.x}, ${t.y})` : this._adoptMultiBlock() ? 'Not picked' : 'Centred in the block';
+    }
+    const centre = document.getElementById('unidentified-adopt-centre') as HTMLButtonElement | null;
+    // Centring is offered back only where it was the default: on one block.
+    if (centre) centre.style.display = !this._adoptHeadTile || this._adoptMultiBlock() ? 'none' : '';
+    const pick = document.getElementById('unidentified-adopt-pick') as HTMLButtonElement | null;
+    if (pick) {
+      const armed = this.editor.activeMode?.toolName === 'adopt-front';
+      pick.classList.toggle('active', armed);
+      pick.innerHTML = armed
+        ? `<i class="ti ti-map-pin"></i> Click a tile… (Esc)`
+        : `<i class="ti ti-map-pin"></i> ${this._adoptHeadTile ? 'Re-pick' : 'Pick on map'}`;
+    }
 
     const submit = document.getElementById('btn-adopt-unidentified') as HTMLButtonElement | null;
-    // Only the facing is required: with no head tile the consist is centred in
-    // the detected track, which is the default.
-    if (submit) submit.disabled = !this._adoptFacing;
+    if (submit) submit.disabled = !this._adoptReady();
+  }
+
+  /** More than one detected block: no centred placement is offered. */
+  _adoptMultiBlock(): boolean {
+    return this._adoptBlocks.length > 1;
+  }
+
+  /** The form can be sent: a facing is chosen, a front tile is picked when
+   *  several blocks were detected, and the previewed body stays on track the
+   *  detector confirmed. */
+  _adoptReady(): boolean {
+    if (!this._adoptFacing) return false;
+    if (this._adoptMultiBlock() && !this._adoptHeadTile) return false;
+    const preview = this._adoptPreview(this._adoptFacing);
+    return !preview || preview.fits;
+  }
+
+  _setAdoptHeadTile(tile: { x: number; y: number } | null): void {
+    this._adoptHeadTile = tile;
+    // The facing choices belong to the tile, so they are rebuilt with it.
+    this._adoptFacing = null;
+    this._adoptFrontEnd = null;
+    this._refreshAdoptUI();
+  }
+
+  /** The body a head-tile adoption would place, for the preview: its tiles,
+   *  whether it stays on track the detector confirmed, and which detected
+   *  blocks it would hand back to an unidentified train. `null` while centred,
+   *  where the runtime works the position out. */
+  _adoptPreview(
+    facing: string
+  ): { tiles: Array<{ x: number; y: number }>; fits: boolean; outside: boolean; givenBack: string[] } | null {
+    const head = this._adoptHeadTile;
+    if (!head) return null;
+    const lengthCm = Math.max(1, parseFloat(inputValue('unidentified-adopt-length')) || 10);
+    const { tiles, fits } = this._computeGhostTiles(head, facing, lengthCm);
+    const claimed = new Set(this._adoptClaimedTiles.map(([x, y]) => `${x},${y}`));
+    const covered = new Set<string>();
+    let outside = false;
+    for (const t of tiles) {
+      const track = this._trackAt(t.x, t.y);
+      const bid = track?.block_section_id;
+      if (!bid) continue; // switch tiles carry no detection; a body may cover them
+      covered.add(bid);
+      if (!claimed.has(`${t.x},${t.y}`)) outside = true;
+    }
+    const givenBack = this._adoptBlocks.filter((b) => !covered.has(b));
+    return { tiles, fits: fits && !outside, outside, givenBack };
+  }
+
+  _blockLabel(blockId: string): string {
+    return this.editor.cachedNetwork?.blocks?.[blockId]?.name || blockId;
+  }
+
+  /** EditorMode for picking the tile an adopted train's front stands on. Only
+   *  a tile the unidentified train claims is accepted. */
+  _buildAdoptFrontMode(): any {
+    const setStatus = (txt: string) => {
+      const el = document.getElementById('status-state');
+      if (el) el.textContent = txt;
+    };
+    const claimed = () => new Set(this._adoptClaimedTiles.map(([x, y]) => `${x},${y}`));
+    return {
+      name: 'Pick the front',
+      toolName: 'adopt-front',
+      cancelMessage: 'Front pick cancelled',
+      onEnter: () => setStatus('Click the tile the front of the train stands on (Esc to cancel)'),
+      onClick: async ({ gridPos }: any) => {
+        if (!claimed().has(`${gridPos.x},${gridPos.y}`)) {
+          showToast('Pick a tile this train was detected on', 'error', 4000);
+          return true;
+        }
+        await this.editor.exitMode();
+        this.editor._setSelectedTool?.('inspect');
+        this._setAdoptHeadTile({ x: gridPos.x, y: gridPos.y });
+        return true;
+      },
+      onExit: () => {
+        setStatus('Ready');
+        this._refreshAdoptUI();
+      },
+    };
   }
 
   async _submitAdoptUnidentified(unidentifiedTrainId: string): Promise<void> {
@@ -883,6 +1168,10 @@ export class TrainEditorHandler {
     }
     if (!this._adoptFacing) {
       showToast('Choose which way it faces', 'error', 3000);
+      return;
+    }
+    if (this._adoptMultiBlock() && !this._adoptHeadTile) {
+      showToast('Pick the tile the front stands on', 'error', 3000);
       return;
     }
 
@@ -896,9 +1185,13 @@ export class TrainEditorHandler {
       direction: DIR[this._adoptFacing] || 'EAST',
     };
     // Omitted unless the operator overrode the centred default, because
-    // omitting it is what asks the runtime to centre the consist.
+    // omitting it is what asks the runtime to centre the consist. Centred, the
+    // chosen end goes with it: a bent run can have two ends with the same
+    // facing (design_new.md "Unidentified trains", Choosing the front end).
     if (this._adoptHeadTile) {
       body.head_tile = { x: this._adoptHeadTile.x, y: this._adoptHeadTile.y };
+    } else if (this._adoptFrontEnd) {
+      body.front_end_tile = { x: this._adoptFrontEnd.x, y: this._adoptFrontEnd.y };
     }
     const name = inputValue('unidentified-adopt-name').trim();
     if (name) body.car_number = name;
@@ -917,30 +1210,35 @@ export class TrainEditorHandler {
     }
   }
 
-  /** The facings adoption can offer.
+  /** The ways the front can point that adoption can offer.
    *
    *  With a head tile chosen, they are that tile's exits: that is where the
    *  front goes, so the front can only face where that tile leads. Centred, the
-   *  front ends up at one of the two ends of the detected track, so the offer is
+   *  front ends up toward one of the ends of the detected track, so the offer is
    *  every exit that leaves the claimed tiles — the same test the runtime uses
-   *  to work out which end is the front for a given facing. */
-  _adoptExits(): string[] {
+   *  to find the candidate ends. Each is its own choice even when two share a
+   *  compass edge. */
+  _adoptChoices(): FrontChoice[] {
+    const claimed = new Set(this._adoptClaimedTiles.map(([x, y]) => `${x},${y}`));
     const tile = this._adoptHeadTile;
+    // Several blocks are never centred, so their ends are not choices until a
+    // front tile is picked.
+    if (!tile && this._adoptMultiBlock()) return [];
     if (tile) {
       const track = this._trackAt(tile.x, tile.y);
-      return track ? getTrackExits(track.track_bits || 0) : [];
+      const exits = track ? getTrackExits(track.track_bits || 0) : [];
+      return exits.map((edge) => this._frontChoice(tile, edge, claimed));
     }
-    const claimed = new Set(this._adoptClaimedTiles.map(([x, y]) => `${x},${y}`));
-    const exits: string[] = [];
+    const choices: FrontChoice[] = [];
     for (const [x, y] of this._adoptClaimedTiles) {
       const track = this._trackAt(x, y);
       if (!track) continue;
       for (const edge of getTrackExits(track.track_bits || 0)) {
         const [nx, ny] = getNeighborPosition(x, y, edge);
-        if (!claimed.has(`${nx},${ny}`) && !exits.includes(edge)) exits.push(edge);
+        if (!claimed.has(`${nx},${ny}`)) choices.push(this._frontChoice({ x, y }, edge, claimed));
       }
     }
-    return exits;
+    return choices;
   }
 
   /** The trains-list card for an unidentified train (design_new.md "Unidentified trains",

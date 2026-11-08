@@ -48,6 +48,8 @@ describe('handEditable', () => {
   it('keeps model fields off an instance profile', () => {
     expect(handEditable('voltage_speed_curve', true)).toBe(true);
     expect(handEditable('lighting_voltage', true)).toBe(true);
+    expect(handEditable('starting_voltage', true)).toBe(true);
+    expect(handEditable('ato_min_voltage', true)).toBe(true);
     expect(handEditable('name', true)).toBe(true);
     expect(handEditable('max_voltage', true)).toBe(false);
     expect(handEditable('max_voltage', false)).toBe(true);

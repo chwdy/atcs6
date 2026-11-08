@@ -6,6 +6,9 @@
  */
 import { describe, it, expect } from 'vitest';
 import {
+  stretchEndBlocks,
+  stretchEndsText,
+  atoTestProgress,
   calibrationControls,
   calibrationTrainChoices,
   compareAxisTop,
@@ -17,6 +20,9 @@ import {
   speedPassEndedMessage,
   trainChoiceLabel,
   trainStoredValue,
+  itMovesProblem,
+  trialInstruction,
+  trialStage,
   viewForOpenRun,
   volts,
 } from './calibration-panel';
@@ -87,6 +93,8 @@ describe('which controls may be pressed', () => {
     expect(calibrationControls({ ...base, trainNamed: false })).toEqual({
       speedCalibrate: false,
       speedStart: false,
+      atoTest: false,
+      atoStart: false,
     });
   });
 
@@ -102,11 +110,75 @@ describe('which controls may be pressed', () => {
     expect(calibrationControls({ ...setup, stretchResolved: true }).speedCalibrate).toBe(false);
   });
 
-  it('offers neither control while a pass is open or a result is held', () => {
-    for (const view of ['speed-running', 'speed-held'] as const) {
+  it('offers no control while a run is open or a result is held', () => {
+    for (const view of ['speed-running', 'speed-held', 'ato-running'] as const) {
       const c = calibrationControls({ ...base, view });
-      expect(c.speedCalibrate || c.speedStart).toBe(false);
+      expect(c.speedCalibrate || c.speedStart || c.atoTest || c.atoStart).toBe(false);
     }
+  });
+
+  it('offers the ATO minimum Test with no run open, and its Start in its setup', () => {
+    expect(calibrationControls(base).atoTest).toBe(true);
+    const setup = { ...base, view: 'ato-setup' as const, stretchResolved: true };
+    expect(calibrationControls(setup).atoStart).toBe(true);
+    expect(calibrationControls({ ...setup, ready: false }).atoStart).toBe(false);
+    expect(calibrationControls(setup).speedStart).toBe(false);
+  });
+});
+
+describe('the trial stages and the ATO minimum test', () => {
+  it('reads which trial is running, and none once sweeping or testing', () => {
+    expect(trialStage({ pass_stage: 'lighting_trial' })).toBe('lighting');
+    expect(trialStage({ pass_stage: 'starting_trial' })).toBe('starting');
+    expect(trialStage({ pass_stage: 'sweep' })).toBeNull();
+    expect(trialStage({ kind: 'ato_minimum_test', pass_stage: 'lighting_trial' })).toBeNull();
+    expect(trialInstruction('lighting')).toMatch(/Keep/);
+    expect(trialInstruction('starting')).toMatch(/It moves/);
+  });
+
+  it('names the kept lighting voltage in the starting trial, so the two do not read as one', () => {
+    expect(trialInstruction('lighting')).toMatch(/^Lighting voltage:/);
+    expect(trialInstruction('starting', 2.2)).toMatch(/^Starting voltage:/);
+    expect(trialInstruction('starting', 2.2)).toContain('The lighting voltage you kept is 2.2 V; the starting voltage must be above it.');
+    expect(trialInstruction('starting', null)).toContain('No lighting voltage was kept');
+  });
+
+  it('says plainly why It moves cannot be pressed at or below the kept lighting voltage', () => {
+    expect(itMovesProblem(2.2, 2.2)).toBe(
+      'The starting voltage (2.2 V) must be above the lighting voltage you kept (2.2 V). Raise the voltage until the train just moves, then press It moves.'
+    );
+    expect(itMovesProblem(2.3, 2.2)).toBeNull();
+    expect(itMovesProblem(0.5, null)).toBeNull();
+  });
+
+  it('says a run is stopping the train once the operator ended it', () => {
+    expect(speedPassProgress({ ending: true, phase: 'leg' }, false)).toBe('Stopping the train, then releasing it.');
+    expect(atoTestProgress({ ending: true, phase: 'leg' })).toBe('Stopping the train, then releasing it.');
+  });
+
+  it('shows an open ATO minimum test as the test', () => {
+    expect(viewForOpenRun({ open: true, kind: 'ato_minimum_test', phase: 'leg' })).toBe('ato-running');
+  });
+
+  it('says how close the test voltage is to steady, and when it stalled', () => {
+    const run = {
+      phase: 'leg',
+      current_voltage: 4,
+      steady_round_trips: 1,
+      steady_round_trips_target: 3,
+      is_steady: false,
+      leg_stalled: false,
+    };
+    expect(atoTestProgress(run)).toBe('Testing 4 V — 1 of 3 round trips in a row with no stall.');
+    expect(atoTestProgress({ ...run, leg_stalled: true })).toMatch(/stalled/);
+    expect(atoTestProgress({ ...run, is_steady: true, steady_round_trips: 3 })).toMatch(/steady/);
+  });
+
+  it('lists a stalled test crossing as counted, with its note', () => {
+    const rows = crossingRows({
+      crossings: [{ track_voltage: 4, attempt: 1, toward_block_id: 'C', seconds: 9, speed_kmh: 3, outcome: 'stalled' }],
+    });
+    expect(rows[0].note).toMatch(/stalled/);
   });
 });
 
@@ -116,6 +188,8 @@ describe('the readiness line', () => {
     expect(readinessApplies('speed-setup')).toBe(true);
     expect(readinessApplies('speed-running')).toBe(false);
     expect(readinessApplies('speed-held')).toBe(false);
+    expect(readinessApplies('ato-setup')).toBe(true);
+    expect(readinessApplies('ato-running')).toBe(false);
   });
 });
 
@@ -130,10 +204,15 @@ describe('a pass already open for the named train is shown, not hidden', () => {
     expect(viewForOpenRun({ open: false })).toBe('none');
     expect(viewForOpenRun(null)).toBe('none');
   });
+
+  it('does not pick up a run that is stopping the train after the operator ended it', () => {
+    expect(viewForOpenRun({ open: true, ending: true, kind: 'ato_minimum_test', phase: 'leg' })).toBe('none');
+    expect(viewForOpenRun({ open: true, ending: true, phase: 'leg' })).toBe('none');
+  });
 });
 
 describe('the measured curve', () => {
-  it('runs in voltage order and starts at the starting voltage, with no origin point', () => {
+  it('runs in voltage order and starts at the lowest measured voltage, with no origin point', () => {
     expect(
       measuredCurve([
         { track_voltage: 8, speed_kmh: 50, kind: 'coarse' },
@@ -145,7 +224,7 @@ describe('the measured curve', () => {
     ]);
   });
 
-  it('lists the failed steps among the passed ones and marks the starting voltage', () => {
+  it("lists the failed steps among the passed ones and marks the curve's first point", () => {
     const rows = pointRows({
       samples: [
         { track_voltage: 4, speed_kmh: 15 },
@@ -154,10 +233,10 @@ describe('the measured curve', () => {
       failed_voltages: [2, 3],
     });
     expect(rows).toEqual([
-      { voltage: 2, speed: null, starting: false },
-      { voltage: 3, speed: null, starting: false },
-      { voltage: 4, speed: 15, starting: true },
-      { voltage: 12, speed: 90, starting: false },
+      { voltage: 2, speed: null, first: false },
+      { voltage: 3, speed: null, first: false },
+      { voltage: 4, speed: 15, first: true },
+      { voltage: 12, speed: 90, first: false },
     ]);
     expect(pointRows({})).toEqual([]);
   });
@@ -177,14 +256,17 @@ describe('the measured curve', () => {
 describe('speedPassEndedMessage', () => {
   it('names the reason a failed pass gives on the command-result stream', () => {
     expect(
-      speedPassEndedMessage({ success: false, reason: 'train overran the stretch past the far outer block' })
-    ).toBe('The pass ended: Train overran the stretch past the far outer block. Nothing was written.');
+      speedPassEndedMessage({ success: false, reason: 'train overran the stretch past the far end' })
+    ).toBe('The pass ended: Train overran the stretch past the far end. Nothing was written.');
   });
 
   it('falls back to the plain line with no failure to name', () => {
     expect(speedPassEndedMessage(null)).toBe('The pass ended. Nothing was written.');
-    expect(speedPassEndedMessage({ success: true, reason: 'speed_calibration finished' })).toBe(
-      'The pass ended. Nothing was written.'
+  });
+
+  it('says what a run that ended by writing wrote', () => {
+    expect(speedPassEndedMessage({ success: true, reason: 'committed 2.64 V as the ATO minimum voltage' })).toBe(
+      'Committed 2.64 V as the ATO minimum voltage.'
     );
   });
 });
@@ -252,7 +334,7 @@ describe('speedPassProgress', () => {
     expect(speedPassProgress(run, false)).toBe('Measuring 8 V (coarse step), attempt 1 — crossing 2 of 4');
     expect(
       speedPassProgress({ ...run, current_voltage: 3.25, current_step_kind: 'narrowing', attempt: 2 }, false)
-    ).toBe('Measuring 3.25 V (narrowing in on the starting voltage), attempt 2 — crossing 2 of 4');
+    ).toBe('Measuring 3.25 V (narrowing in on the lowest voltage that runs every crossing), attempt 2 — crossing 2 of 4');
     expect(speedPassProgress({ ...run, current_step_kind: 'filled', crossings_done: 4 }, false)).toBe(
       'Measuring 8 V (in-between step, where the speed jumps), attempt 1 — crossing 4 of 4'
     );
@@ -260,11 +342,11 @@ describe('speedPassProgress', () => {
 
   it('says the train is being got ready after a failed step', () => {
     expect(speedPassProgress({ phase: 'resetting' }, false)).toBe(
-      'A step failed — getting the train ready for the next step'
+      'Getting the train ready for the next step'
     );
   });
 
-  it('names the measured block and the starting voltage once the result is held', () => {
+  it('names the measured block and the lowest crossing voltage once the result is held', () => {
     const run = {
       samples: [
         { track_voltage: 12, speed_kmh: 90 },
@@ -275,7 +357,29 @@ describe('speedPassProgress', () => {
       block_names: names,
     };
     expect(speedPassProgress(run, true)).toBe(
-      'Measured 3 points across Up. Starting voltage 3.5 V, at 11.0 km/h.'
+      'Measured 3 points across Up. The lowest voltage that ran every crossing is 3.5 V, at 11.0 km/h.'
+    );
+  });
+});
+
+describe('the two ends of the stretch', () => {
+  const stretch = {
+    outer_block_ids: ['R', 'L'],
+    runoff_block_ids: [['M'], []],
+    end_lengths_cm: [183.6, 99.6],
+    train_length_cm: 45,
+    length_cm: 84,
+    block_names: { R: 'Right', L: 'Left', M: 'Main' },
+  };
+
+  it('lists every block of both ends, outer block first', () => {
+    expect(stretchEndBlocks(stretch)).toEqual(['R', 'M', 'L']);
+    expect(stretchEndBlocks({ outer_block_ids: ['R', 'L'] })).toEqual(['R', 'L']);
+  });
+
+  it('names each end with its length and the train length the ends were sized for', () => {
+    expect(stretchEndsText(stretch)).toBe(
+      'Ends: Right → Main (184 cm) ↔ Left (100 cm) · sized for a 45 cm train · measured length 84 cm'
     );
   });
 });

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { TrainView } from './live';
-import { atoStatus, cardControl, cardHoldLine, holdLine, trainCardTone, trainStatus } from './train-display';
+import { atoStatus, cardControl, deleteTrainUnavailableReason, cardHoldLine, holdLine, trainCardTone, trainStatus } from './train-display';
 
 function view(controller: any, extra: Partial<TrainView> = {}): TrainView {
   return {
@@ -121,5 +121,22 @@ describe('trainCardTone: the card edge says whether the train needs the operator
     expect(trainCardTone(held('driver_idle'))).toBe('none');
     expect(trainCardTone(held('paused'))).toBe('none');
     expect(trainCardTone(held('halted', 'layout_emergency_cut_out'))).toBe('none');
+  });
+});
+
+describe('deleteTrainUnavailableReason: only an OFF train may be deleted', () => {
+  it('lets an OFF train be deleted', () => {
+    expect(deleteTrainUnavailableReason(view({ train_status: 'off' }))).toBeNull();
+  });
+
+  it('asks for power-off first while the train is powered', () => {
+    for (const status of ['manual', 'ato', 'eb']) {
+      expect(deleteTrainUnavailableReason(view({ train_status: status }))).toBe('Power the train off before deleting it');
+    }
+  });
+
+  it('refuses an unidentified train, which is adopted instead', () => {
+    const v = view({ train_status: 'off' }, { train: { id: 'T1', is_unidentified: true } });
+    expect(deleteTrainUnavailableReason(v)).toBe('An unidentified train is adopted, not deleted');
   });
 });

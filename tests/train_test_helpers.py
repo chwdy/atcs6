@@ -143,3 +143,16 @@ def attach_synthetic_path(controller, path: Path) -> None:
         dispatcher = _StubPathDispatcher()
         controller.path_dispatcher = dispatcher
     dispatcher.paths_by_train[controller.train_id] = path
+
+
+def skip_calibration_trials(run):
+    """Put a freshly opened speed pass straight onto its sweep, as a successful
+    It moves leaves it (design_new.md "Speed calibration", The pass starts with
+    two trial stages), for tests that measure the sweep itself. The starting
+    voltage stays the one the pass opened with."""
+    from speed_calibration import PASS_SWEEP
+
+    run.pass_stage = PASS_SWEEP
+    run.trial_voltage = 0.0
+    run.current_step_voltage = run.max_voltage
+    return run

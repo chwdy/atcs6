@@ -2458,7 +2458,7 @@ class RouteExecutor:
             )
             if leg_assigned and not latches.route_deactivate:
                 latches.set_route_deactivate(
-                    reason=f"calibration leg abandoned for {train_id}",
+                    reason=f"calibration leg ended for {train_id}",
                     has_active_path=controller.path_projection.received_path_plan
                     is not None,
                 )
@@ -2466,7 +2466,8 @@ class RouteExecutor:
     def _calibration_leg_lost_walk(
         self, train_id: str, controller, run
     ) -> Optional[Tuple[str, str]]:
-        """The leg's `(near, far)` outer blocks when it has lost its walk, else
+        """The leg's near outer block and its stop block (the far end's last
+        block) when it has lost its walk, else
         None (design_new.md "Speed calibration", A leg that loses its walk fails
         the pass).
 
@@ -2474,10 +2475,10 @@ class RouteExecutor:
         train, and the train holds no live path. A leg with a live path meets a
         lost walk through its next extend, which cancels the path, so the check
         runs once that cancel has committed. The walk is lost when none of the
-        walks a create toward the far outer block would enumerate — from the
-        train's start-side span end, with `manual_override = False` and the
+        walks a create toward the far end's last block would enumerate — from
+        the train's start-side span end, with `manual_override = False` and the
         train's own capabilities, as at arming — lies on the route's required
-        walk. A train already on the far outer block has nothing left to walk.
+        walk. A train already on that block has nothing left to walk.
         """
         leg_route_id = run.active_leg_route_id
         if leg_route_id is None or self.assigned_route_id_for(train_id) != leg_route_id:
@@ -2504,8 +2505,9 @@ class RouteExecutor:
         )
         if self.required_walk_candidates(train_id, candidates):
             return None
-        near_block_id = next(
-            (b for b in run.outer_block_ids if b != far_block_id), ""
+        far_index = run.end_index_of(far_block_id)
+        near_block_id = (
+            run.outer_block_ids[1 - far_index] if far_index is not None else ""
         )
         return near_block_id, far_block_id
 
@@ -2531,6 +2533,7 @@ class RouteExecutor:
 
         from train_route import Route
 
+        self._refresh_calibration_ends(run)
         leg = self._calibration_leg_tasks(train_id, run, far_block_id)
         if leg is None:
             near_block_id = next(
@@ -2553,9 +2556,9 @@ class RouteExecutor:
             name=f"speed-calibration leg {seq} for {train_id}",
             mode=RouteMode.ONE_OFF,
             manual_override=False,
-            # The leg drives to the far seam of its far outer block, so the whole
-            # outer block is run-up / stopping room (design_new.md, "A calibration
-            # leg holds no reservation-end standoff").
+            # The leg drives to the far seam of its far end's last block, so the
+            # whole of each end is run-up / stopping room (design_new.md, "A
+            # calibration leg holds no reservation-end standoff").
             zero_reservation_end_standoff=True,
             # Every reservation for the leg follows the walk it was checked on
             # (design_new.md step `66aa`, Required walk).
@@ -2566,24 +2569,48 @@ class RouteExecutor:
         route.assign_train(train_id)
         run.active_leg_route_id = route_id
 
+    def _refresh_calibration_ends(self, run) -> None:
+        """Find each end's run-off blocks again, from the points as they are
+        set now, before a leg or the move arms (design_new.md "Speed
+        calibration", Each end of the stretch is an outer block and the run-off
+        blocks past it). A switch the move or an operator threw since the last
+        leg changes which block lies past an outer block."""
+        from constants import CALIBRATION_RUNOFF_MARGIN_CM
+
+        manager = getattr(self.network, "block_manager", None)
+        if manager is None or not all(run.outer_block_ids):
+            return
+        room_cm = max(0.0, float(run.train_length_cm or 0.0)) + CALIBRATION_RUNOFF_MARGIN_CM
+        run.runoff_block_ids = manager.runoff_blocks(
+            run.measured_block_id, run.outer_block_ids, room_cm
+        )
+        run.end_lengths_cm = tuple(
+            tuple(manager.block_length_cm(b) for b in run.end_block_ids(index))
+            for index in (0, 1)
+        )
+
     def calibration_move_walk(
-        self, train_id: str, measured_block_id: str, outer_block_ids
+        self, train_id: str, measured_block_id: str, outer_block_ids, runoff_block_ids=((), ())
     ) -> Optional[Tuple[str, "GraphWalkCandidate"]]:
-        """The outer block a calibration pass moves the train into, and the walk
-        it takes there, or None when no walk reaches either one without crossing
-        the measured block (design_new.md "Speed calibration", The pass first
-        moves the train into an outer block).
+        """The block a calibration pass's move stops in, and the walk it takes
+        there, or None when no walk reaches either end of the stretch without
+        crossing the measured block (design_new.md "Speed calibration", The
+        pass first moves the train into an end of the stretch).
 
         Of the walks the train's next create would enumerate toward each outer
         block, it keeps those that hold the measured block only as their first
         block or not at all, and takes the best across both by
-        `GraphWalkCandidate.cross_query_key()`. Read-only: opening's readiness
-        check asks it too.
+        `GraphWalkCandidate.cross_query_key()`. When that walk starts on the
+        measured block, the train leaves it outward, so the move runs on to the
+        end's last block: the best walk toward that block that is the measured
+        block followed by the end's blocks in order (The move stops at the far
+        side of the end it enters). Read-only: opening's readiness check asks it
+        too.
         """
         if self.path_dispatcher is None:
             return None
         best = None
-        for block_id in outer_block_ids:
+        for index, block_id in enumerate(outer_block_ids):
             if not block_id:
                 continue
             for candidate in self.path_dispatcher.next_call_walk_candidates(
@@ -2593,19 +2620,30 @@ class RouteExecutor:
                     continue
                 key = candidate.cross_query_key()
                 if best is None or key < best[0]:
-                    best = (key, block_id, candidate)
+                    best = (key, index, block_id, candidate)
                 # Candidates come best first: the first one kept is this
                 # block's best.
                 break
         if best is None:
             return None
-        return best[1], best[2]
+        _key, index, block_id, candidate = best
+        blocks = list(candidate.ordered_blocks or ())
+        runoff = tuple(tuple(r or ()) for r in runoff_block_ids or ())
+        runoff = runoff[index] if index < len(runoff) else ()
+        if blocks[:1] == [measured_block_id] and runoff:
+            end = [block_id, *runoff]
+            for through in self.path_dispatcher.next_call_walk_candidates(
+                train_id, end[-1], None, False
+            ):
+                if list(through.ordered_blocks or ()) == [measured_block_id, *end]:
+                    return end[-1], through
+        return block_id, candidate
 
     def _arm_calibration_move(self, train_id: str, run) -> None:
         """Build and assign the one-off route that moves the train into the
-        nearer outer block before the opening leg, and store its id on the run
-        (design_new.md "Speed calibration", The pass first moves the train into
-        an outer block). Waits, like a leg, while any authority lingers."""
+        nearer end of the stretch before the opening leg, and store its id on
+        the run (design_new.md "Speed calibration", The pass first moves the
+        train into an end of the stretch). Waits, like a leg, while any authority lingers."""
         if run.active_leg_route_id is not None:
             return
         if self._get_active_path_id(train_id) is not None:
@@ -2615,8 +2653,9 @@ class RouteExecutor:
 
         from train_route import BlockTarget, Route
 
+        self._refresh_calibration_ends(run)
         chosen = self.calibration_move_walk(
-            train_id, run.measured_block_id, run.outer_block_ids
+            train_id, run.measured_block_id, run.outer_block_ids, run.runoff_block_ids
         )
         if chosen is None:
             first, second = run.outer_block_ids
@@ -2655,13 +2694,16 @@ class RouteExecutor:
         self, train_id: str, run, far_block_id: str
     ) -> Optional[Tuple[List[RouteTask], List[Tuple[str, str, str, str]]]]:
         """The leg route's two tasks — a `waypoint` at the measured block and a
-        `stop` at the far outer block, each with the direction the stretch
+        `stop` at the far end's last block, each with the direction the stretch
         crosses it in — and the stretch's walk keys, which become the route's
         `required_walk_keys` (design_new.md "Speed calibration", A leg runs on
         the stretch, with the points as they are set).
 
-        The stretch is the walk out of the near outer block, through the measured
-        block, and into the far one, with every switch on it where it is set. It
+        The stretch is the walk from the near end's last block in through its
+        outer block, through the measured block, and out through the far end to
+        its last block, with every switch on it where it is set. The train
+        stands somewhere in the near end, so its path starts partway along the
+        walk (Required walk). It
         is picked from the shared graph query's candidates for the calibration
         train (`PathDispatcher.find_walk_candidates`, over
         `RailwayPathfinder.query_graph_walks`).
@@ -2674,13 +2716,18 @@ class RouteExecutor:
         """
         from train_route import BlockTarget
 
-        near_block_id = next(
-            (b for b in run.outer_block_ids if b != far_block_id), ""
-        )
+        far_index = run.end_index_of(far_block_id)
+        if far_index is None:
+            return None
+        near_end = list(run.end_block_ids(1 - far_index))
+        far_end = list(run.end_block_ids(far_index))
+        if not near_end or not far_end:
+            return None
         measured_block_id = run.measured_block_id
-        stretch = [near_block_id, measured_block_id, far_block_id]
+        stretch = [*reversed(near_end), measured_block_id, *far_end]
+        stop_block_id = far_end[-1]
         for candidate in self.path_dispatcher.find_walk_candidates(
-            near_block_id, far_block_id, train_id=train_id, manual_override=False
+            near_end[-1], stop_block_id, train_id=train_id, manual_override=False
         ):
             if list(candidate.ordered_blocks or ()) != stretch:
                 continue
@@ -2701,8 +2748,8 @@ class RouteExecutor:
                 ),
                 RouteTask(
                     task_kind="stop",
-                    task_location=BlockTarget(block_id=far_block_id),
-                    task_direction=self._walk_direction_in(steps, far_block_id),
+                    task_location=BlockTarget(block_id=stop_block_id),
+                    task_direction=self._walk_direction_in(steps, stop_block_id),
                 ),
             ]
             return tasks, self.path_dispatcher._ordered_walk_keys(steps)

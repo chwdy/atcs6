@@ -343,6 +343,7 @@ class BlockOccupancyDetector:
         vacated: Set[str],
         reoffered: Iterable[str] = (),
         held_clears: Iterable[str] = (),
+        orphaned: Iterable[str] = (),
     ) -> List[AttributionResult]:
         """Attribute confirmed transitions to trains.
 
@@ -360,15 +361,23 @@ class BlockOccupancyDetector:
            confirmed, so it never reaches here as an entry.
         2. `entry` — the reserving train (`Block.reserved_for_train`) touches
            the block (`_match_entry`).
-        3. The one train that touches the block (`touching_trains_for_block`),
-           credited as `entry` or `overrun_entry` (`_credited`).
-        4. `conflict` — more than one train touches it. It goes to no train.
+        3. The one touching train (`touching_trains_for_block`) with the
+           strongest claim (`strongest_claim`), credited as `entry` or
+           `overrun_entry` (`_credited`).
+        4. `conflict` — more than one touching train shares the strongest
+           claim. It goes to no train.
         5. `unidentified` — no train touches it. `train_id` stays `None`.
 
         A block touches a train when it is next to a block in that train's
         block list and, for a directional train, is the block on its head side
         (`_touches`). Nothing here reads a calculated position, except the
         frozen span of a ghosted train (`retained_span`).
+
+        `orphaned` holds standing conflict blocks a deleted train shared the
+        claim on. Each goes straight to an unidentified train, unmatched:
+        deleting a train removes a record, not a locomotive, so the trains left
+        have no better claim than they had (design_new.md "Block occupancy
+        detection", Deleting a train never hands its current to another train).
 
         `reoffered` holds blocks that stay confirmed occupied while no train is
         credited with them — a standing `conflict` block (design_new.md "Block
@@ -417,7 +426,17 @@ class BlockOccupancyDetector:
         results: Dict[str, AttributionResult] = {}
         claimed: Dict[str, Set[str]] = {}
         pending: Set[str] = set()
-        for block_id in set(entered) | reoffered:
+        for block_id in sorted(set(orphaned)):
+            if getattr(self.network.blocks.get(block_id), "occupied_by", None) is not None:
+                continue
+            results[block_id] = AttributionResult(AttributionKind.UNIDENTIFIED, block_id)
+            self._emit(
+                "block_attribution_unknown",
+                f"a train that shared the claim on conflict block {block_id} was "
+                f"deleted; its current goes to an unidentified train, not to the "
+                f"trains left",
+            )
+        for block_id in (set(entered) | reoffered) - set(results):
             holder = getattr(self.network.blocks.get(block_id), "occupied_by", None)
             if holder is not None:
                 results[block_id] = AttributionResult(
@@ -537,7 +556,9 @@ class BlockOccupancyDetector:
         evidence = {train_id: set(blocks) for train_id, blocks in claimed.items()}
         while pending:
             touching = {
-                block_id: self.touching_trains_for_block(block_id, evidence)
+                block_id: self.strongest_claim(
+                    self.touching_trains_for_block(block_id, evidence)
+                )
                 for block_id in sorted(pending)
             }
             resolved = False
@@ -557,6 +578,28 @@ class BlockOccupancyDetector:
                     pending.discard(block_id)
             if not resolved:
                 break
+
+    def strongest_claim(self, touching: List[str]) -> List[str]:
+        """The touching trains that share the strongest claim on a block
+        (design_new.md "Block occupancy detection", The strongest claim among
+        touching trains).
+
+        A directional train (driven toward the block, so touched on its head
+        side only) and a ghosted train (it has lost its locomotive next to the
+        block) can account for new current. When any touching train can, every
+        other one — a stopped train, or one holding no reservation, whose own
+        blocks still read current and which touches only through the
+        either-side rule — is passed over. Otherwise every touching train
+        shares the claim. One train left is rank 3; more than one is a
+        conflict.
+        """
+        accounting = [t for t in touching if self._can_account_for_new_current(t)]
+        return accounting if accounting else list(touching)
+
+    def _can_account_for_new_current(self, train_id: str) -> bool:
+        if self.retained_span is not None and self.retained_span(train_id):
+            return True
+        return bool(self.directional(train_id)) if self.directional is not None else True
 
     def _credited(
         self, block_id: str, train_id: str, gained: Set[str]

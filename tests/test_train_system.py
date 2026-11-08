@@ -69,12 +69,14 @@ class TestSpeedProfile:
 
     @pytest.fixture
     def basic_profile(self) -> SpeedProfile:
-        """A measured curve with a dead band below 3 V, a steep rise to 6 V and
-        a flat top from 9 V (the shape a real locomotive gives)."""
+        """A measured curve whose lowest crossing is at 3 V, a steep rise to 6 V
+        and a flat top from 9 V (the shape a real locomotive gives), with the
+        locomotive starting to move at 2.5 V."""
         return SpeedProfile(
             profile_id="test_profile",
             name="Test Profile",
             lighting_voltage=2.0,
+            starting_voltage=2.5,
             voltage_speed_curve=[(3.0, 30.0), (6.0, 90.0), (9.0, 120.0), (12.0, 120.0)],
             acceleration_rate=10.0,
             deceleration_rate=15.0,
@@ -90,20 +92,30 @@ class TestSpeedProfile:
         assert basic_profile.deceleration_rate == 15.0
         assert basic_profile.emergency_brake_rate == 30.0
 
-    def test_starting_voltage_and_speed_are_the_first_point(self, basic_profile):
-        assert basic_profile.starting_voltage == 3.0
-        assert basic_profile.starting_speed_kmh == 30.0
+    def test_the_starting_voltage_is_stored_and_ato_runs_from_the_first_point(self, basic_profile):
+        """design_new.md "SpeedProfile", Starting voltage; ATO minimum voltage
+        and ATO minimum speed: unset, the ATO minimum is the curve's first point
+        above the starting voltage."""
+        assert basic_profile.starting_voltage == 2.5
+        assert basic_profile.first_point_voltage == 3.0
+        assert basic_profile.ato_minimum_voltage == 3.0
+        assert basic_profile.ato_minimum_speed_kmh == 30.0
         assert basic_profile.top_speed_kmh == 120.0
 
     def test_voltage_to_speed_reads_the_curve_forward(self, basic_profile):
-        """Below the starting voltage the locomotive does not move steadily, so
-        it reads 0 km/h; above it the curve interpolates."""
-        assert basic_profile.voltage_to_speed(2.9) == 0.0
+        """At or below the starting voltage the locomotive does not move, so it
+        reads 0 km/h; from there a straight line runs to the first point, and
+        above it the curve interpolates (design_new.md "SpeedProfile", The curve
+        is read from the starting voltage up)."""
+        assert basic_profile.voltage_to_speed(2.0) == 0.0
+        assert basic_profile.voltage_to_speed(2.5) == 0.0
+        assert basic_profile.voltage_to_speed(2.75) == pytest.approx(15.0)
         assert basic_profile.voltage_to_speed(3.0) == 30.0
         assert basic_profile.voltage_to_speed(4.5) == pytest.approx(60.0)
         assert basic_profile.voltage_to_speed(12.0) == 120.0
 
     def test_speed_to_voltage_reads_the_curve_backward(self, basic_profile):
+        assert basic_profile.speed_to_voltage(15.0) == pytest.approx(2.75)
         assert basic_profile.speed_to_voltage(30.0) == 3.0
         assert basic_profile.speed_to_voltage(60.0) == pytest.approx(4.5)
         assert basic_profile.speed_to_voltage(90.0) == 6.0
@@ -124,19 +136,36 @@ class TestSpeedProfile:
 
     def test_power_percent_is_a_straight_line_in_speed(self, basic_profile):
         """design_new.md "Power percent is a share of the speed range": 0% is
-        stopped, a percent just above 0 is the starting speed, 100% the top
-        speed, and every step adds the same speed."""
+        stopped, a percent p above 0 is top_speed x p / 100, and every step adds
+        the same speed."""
         assert basic_profile.power_percent_to_speed(0.0) == 0.0
-        assert basic_profile.power_percent_to_speed(0.001) == pytest.approx(30.0, abs=0.01)
-        assert basic_profile.power_percent_to_speed(50.0) == pytest.approx(75.0)
+        assert basic_profile.power_percent_to_speed(0.001) == pytest.approx(0.0012)
+        assert basic_profile.power_percent_to_speed(50.0) == pytest.approx(60.0)
         assert basic_profile.power_percent_to_speed(100.0) == 120.0
-        assert basic_profile.speed_to_power_percent(75.0) == pytest.approx(50.0)
+        assert basic_profile.speed_to_power_percent(60.0) == pytest.approx(50.0)
         assert basic_profile.speed_to_power_percent(0.0) == 0.0
 
     def test_power_percent_reaches_voltage_through_speed(self, basic_profile):
-        # 50% is 75 km/h, which the curve reads backward as 5.25 V.
-        assert basic_profile.power_percent_to_voltage(50.0) == pytest.approx(5.25)
+        # 50% is 60 km/h, which the curve reads backward as 4.5 V.
+        assert basic_profile.power_percent_to_voltage(50.0) == pytest.approx(4.5)
         assert basic_profile.power_percent_to_voltage(0.0) == 2.0
+
+    def test_a_percent_just_above_zero_puts_just_over_the_starting_voltage_on(self, basic_profile):
+        """Manual driving runs from the starting voltage up (design_new.md
+        "SpeedProfile", Starting voltage)."""
+        volts = basic_profile.power_percent_to_voltage(0.5)
+        assert 2.5 < volts < 2.6
+
+    def test_a_stored_point_at_or_below_the_starting_voltage_is_not_read(self):
+        profile = SpeedProfile(
+            profile_id="p",
+            name="p",
+            starting_voltage=4.0,
+            voltage_speed_curve=[(3.0, 30.0), (6.0, 90.0), (12.0, 120.0)],
+        )
+        assert profile.voltage_to_speed(3.5) == 0.0
+        assert profile.voltage_to_speed(5.0) == pytest.approx(45.0)
+        assert profile.first_point_voltage == 6.0
 
     def test_to_dict_from_dict_roundtrip(self, basic_profile: SpeedProfile):
         """Test serialization roundtrip."""

@@ -73,3 +73,33 @@
 .at-note-warn {
     color: var(--warning-color);
 }
+
+/* Front-choice buttons ("toward Up"). The number matches the marker drawn on
+   the map at that end, so two ends that share a compass edge stay apart. The
+   label may be long (a block or switch name), so it truncates instead of
+   widening the segment. */
+#at-facing-slot .switch-btn,
+#unidentified-adopt-facing-slot .switch-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.front-choice-num {
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    border: 1.5px solid currentColor;
+    font-size: 10px;
+    font-weight: 600;
+    line-height: 1;
+}

@@ -217,6 +217,14 @@ class SimulationController(SwitchOutputOwner):
         # (design_new.md "Block occupancy detection", An overrun entry or a
         # conflict raises the emergency cut-out).
         self._conflict_blocks: Set[str] = set()
+        # The trains sharing the strongest claim on each conflict block on the
+        # last read, and the conflict blocks a deleted train shared the claim
+        # on. Deleting a train removes a record, not a locomotive, so such a
+        # block goes to an unidentified train on the next read rather than to
+        # the trains left (design_new.md "Block occupancy detection", Deleting
+        # a train never hands its current to another train).
+        self._conflict_candidates: Dict[str, Tuple[str, ...]] = {}
+        self._orphaned_conflict_blocks: Set[str] = set()
 
         # Wall time of the previous pass of the runtime loop, running or
         # stopped. Every pass's `occupied_seconds` accrual measures the unscaled
@@ -536,6 +544,12 @@ class SimulationController(SwitchOutputOwner):
             return
 
         self.simulation_time += delta_seconds
+        # Give back every train whose calibration run finished or was ended by
+        # the operator: the mode and power it had before opening (design_new.md
+        # "What ends a calibration run", A run the operator ends gives the train
+        # back). It runs ahead of Observe, between ticks like an operator
+        # command, once Action of the pass before has torn the leg route down.
+        self.speed_calibration.give_trains_back()
         # One running pass of the runtime loop; a stopped pass calls
         # `poll_hardware_occupancy()` instead and adds nothing, which is what
         # keeps an operator's stop from consuming a dwell (design_new.md
@@ -1762,11 +1776,15 @@ class SimulationController(SwitchOutputOwner):
         # One result per changed block, with its `kind` (design_new.md "Block
         # occupancy detection", The attribution result). The detector owns the
         # match order and the clear rule; everything below reads `kind`.
+        standing = self._standing_conflict_blocks(detector)
+        orphaned = self._orphaned_conflict_blocks & standing
+        self._orphaned_conflict_blocks = set()
         results = detector.attribute(
             entered,
             vacated,
-            self._standing_conflict_blocks(detector),
+            standing - orphaned,
             self._reoffered_held_clears(detector),
+            orphaned=orphaned,
         )
         results = self._name_unidentified_trains(results)
         entered_by_train = blocks_joined_by_train(results)
@@ -1951,6 +1969,9 @@ class SimulationController(SwitchOutputOwner):
                 self._conflict_condition_key(block_id)
             )
         self._conflict_blocks = set(conflicts)
+        self._conflict_candidates = {
+            block_id: tuple(candidates) for block_id, candidates in conflicts.items()
+        }
         for block_id in sorted(conflicts):
             candidates = conflicts[block_id]
             error = ErrorRecord(
@@ -3256,6 +3277,15 @@ class SimulationController(SwitchOutputOwner):
         self.physics_instances.pop(train_id, None)
         self._detected_change_train_ids.discard(train_id)
 
+        # A standing conflict block this train shared the claim on goes to an
+        # unidentified train on the next read, never to the trains left: the
+        # locomotive may still be standing on it (design_new.md "Block
+        # occupancy detection", Deleting a train never hands its current to
+        # another train).
+        for block_id, candidates in self._conflict_candidates.items():
+            if train_id in candidates:
+                self._orphaned_conflict_blocks.add(block_id)
+
         self.notification_center.emit(
             source="SimulationController",
             operation="remove_train",
@@ -3275,6 +3305,7 @@ class SimulationController(SwitchOutputOwner):
         length_cm: float,
         direction: str,
         head_tile: Optional[Tuple[int, int]] = None,
+        front_end_tile: Optional[Tuple[int, int]] = None,
         cab: Optional[Literal["A", "B"]] = None,
         train_type: Optional[str] = None,
         name: Optional[str] = None,
@@ -3323,6 +3354,11 @@ class SimulationController(SwitchOutputOwner):
             head_tile: Optional (x, y) to put the head on, flush at that tile's
                 exit edge in `direction`. Must be a tile the unidentified train currently
                 claims. Omit it to center the consist in the detected track.
+            front_end_tile: Optional (x, y) naming which end of the detected
+                track the front is at, when no `head_tile` is given. Required
+                when the facing leaves the detected track at both of its ends (an
+                L- or U-shaped run); the consist is still centered
+                (design_new.md "Unidentified trains", Choosing the front end).
             cab: Optional initial cab ("A" or "B"), written directly as
                 `add_train` does for a fresh train.
             train_type: Optional train model / type label.
@@ -3341,6 +3377,9 @@ class SimulationController(SwitchOutputOwner):
             ValueError: If the train is unknown or is not an unidentified train, if
                 `new_train_id` is blank or already taken, if `direction` is not a
                 compass name, if `head_tile` is not a tile the unidentified train claims, if
+                both `head_tile` and `front_end_tile` are given, if the facing
+                matches two ends and no `front_end_tile` names one, if
+                `front_end_tile` is not such an end, if
                 the unidentified train claims no tiles at all, if the consist does not fit on
                 the track behind the head, or if it would reach into a block the
                 detector reports clear.
@@ -3386,10 +3425,22 @@ class SimulationController(SwitchOutputOwner):
                 f"Unidentified train train {unidentified_train_id!r} is not standing on any detected "
                 f"block right now; wait for it to be detected again"
             )
+        if head_tile is not None and front_end_tile is not None:
+            raise ValueError(
+                "Name either head_tile or front_end_tile, not both: a head tile "
+                "already says where the front is"
+            )
         head_offset_cm = 0.0
         if head_tile is None:
             head_tile, head_offset_cm = self._centered_adoption_placement(
-                claimed_tiles, resolved_direction, float(length_cm)
+                claimed_tiles,
+                resolved_direction,
+                float(length_cm),
+                front_end_tile=(
+                    (int(front_end_tile[0]), int(front_end_tile[1]))
+                    if front_end_tile is not None
+                    else None
+                ),
             )
         else:
             head_tile = (int(head_tile[0]), int(head_tile[1]))
@@ -3568,6 +3619,8 @@ class SimulationController(SwitchOutputOwner):
         claimed_tiles: List[Tuple[int, int]],
         direction: Direction,
         length_cm: float,
+        *,
+        front_end_tile: Optional[Tuple[int, int]] = None,
     ) -> Tuple[Tuple[int, int], float]:
         """Where to put the head so the consist sits centered in what was detected.
 
@@ -3583,15 +3636,27 @@ class SimulationController(SwitchOutputOwner):
         exit leaves the detected track in the declared direction, and how far
         back from that exit edge the head sits.
 
+        Which end is the front (design_new.md "Unidentified trains", Choosing
+        the front end): the candidate ends are the claimed tiles whose exit in
+        `direction` leaves the detected track. A bent run, such as an L- or
+        U-shaped block, can have two. The facing then does not say which one
+        the front is at, and only the operator can see it, so `front_end_tile`
+        must name it; without one the request is refused rather than the
+        runtime picking an end. A `front_end_tile` that is not a candidate is
+        refused too.
+
         Falls back to the first claimed tile flush at its exit edge only when NO
         claimed tile can leave the detected track through this facing, which
-        `place_train` then reports on its own terms. Two candidate fronts is not
-        that case and must not zero the offset: see below.
+        `place_train` then reports on its own terms.
 
         The detected length is the sum of the claimed tiles' lengths. An unidentified train
         holding two blocks joined by a switch tile is centered to within half
         that switch's length, since a switch carries no detection and so is not
         among the claimed tiles.
+
+        Raises:
+            ValueError: when the facing matches two ends and `front_end_tile`
+                names neither, or when `front_end_tile` is not a candidate end.
         """
         DIR_TO_EDGE = {"NORTH": "N", "SOUTH": "S", "EAST": "E", "WEST": "W"}
         exit_edge = DIR_TO_EDGE.get(direction.name)
@@ -3604,25 +3669,23 @@ class SimulationController(SwitchOutputOwner):
                 continue
             if self.network._get_neighbor_coords(tile[0], tile[1], exit_edge) not in claimed:
                 fronts.append(tile)
-        if not fronts:
+        if front_end_tile is not None:
+            if front_end_tile not in fronts:
+                raise ValueError(
+                    f"front_end_tile {front_end_tile!r} is not an end of the "
+                    f"detected track whose exit faces {direction.name}"
+                )
+            front = front_end_tile
+        elif not fronts:
             return claimed_tiles[0], 0.0
-        # More than one candidate means both ends of the run leave the detected
-        # track through the same compass edge — an L- or U-shaped block, which is
-        # ordinary track and most of what a real layout is made of. The facing
-        # cannot say which of the two ends the nose is at, but it does not have
-        # to: centering is symmetric, so measuring back from either end puts the
-        # body in the SAME place and only head-versus-tail differs. So pick an end
-        # of the run (`claimed_tiles` is in connectivity order) and centre anyway.
-        # Bailing out to a zero offset here is what stood every train adopted on a
-        # corner block flush against a block boundary.
-        front = (
-            fronts[0]
-            if len(fronts) == 1
-            else next(
-                (t for t in (claimed_tiles[0], claimed_tiles[-1]) if t in fronts),
-                fronts[0],
+        elif len(fronts) > 1:
+            ends = ", ".join(f"({x}, {y})" for (x, y) in fronts)
+            raise ValueError(
+                f"Both ends of the detected track face {direction.name} "
+                f"({ends}); name which one the front is at with front_end_tile"
             )
-        )
+        else:
+            front = fronts[0]
 
         detected_length_cm = sum(
             self.network._get_tile_length_cm(x, y) for (x, y) in claimed_tiles

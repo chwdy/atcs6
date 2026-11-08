@@ -44,7 +44,7 @@ def test_each_point_is_stored_at_the_voltage_it_was_measured_at():
 
     registry = SpeedProfileRegistry.from_dict(profiles)
     resolved = registry.resolve("I")
-    assert resolved.starting_voltage == 3.6
+    assert resolved.first_point_voltage == 3.6
     assert resolved.top_speed_kmh == 262.0
     assert resolved.lighting_voltage == 1.9
 

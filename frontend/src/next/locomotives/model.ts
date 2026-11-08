@@ -136,11 +136,17 @@ export function trainsNotInRoster(trains: TrainSummary[], roster: RosterEntry[])
   return trains.filter((t) => t.placed && !(t.rosterEntryId && ids.has(t.rosterEntryId))).sort(byName);
 }
 
-/** The model profiles (those deriving from no other), `default` first. */
+/** The name a profile shows: its name, else its id. */
+export function profileName(p: ProfileSummary): string {
+  return p.name || p.profile_id;
+}
+
+/** The model profiles (those deriving from no other), `default` first, the
+ *  rest in the order of the names they show. */
 export function modelProfiles(profiles: ProfileSummary[]): ProfileSummary[] {
   const models = profiles
     .filter((p) => !p.derived_from && p.profile_id !== DEFAULT_PROFILE_ID)
-    .sort((a, b) => a.profile_id.localeCompare(b.profile_id, undefined, { numeric: true }));
+    .sort((a, b) => profileName(a).localeCompare(profileName(b), undefined, { numeric: true }));
   const def = profiles.find((p) => p.profile_id === DEFAULT_PROFILE_ID) ?? {
     profile_id: DEFAULT_PROFILE_ID,
     name: 'Default',
@@ -201,44 +207,50 @@ export function selectionForProfile(profileId: string, roster: RosterEntry[], tr
 
 // === Calibration steps ===
 
-/** The five steps of design_new.md "Operator workflows" → "Calibrating a
+/** The seven steps of design_new.md "Operator workflows" → "Calibrating a
  *  locomotive", in order. */
 export const CALIBRATION_STEPS: ReadonlyArray<{ title: string; hint: string }> = [
   { title: 'Name the locomotive', hint: 'Pick the train in the Locomotive row.' },
-  { title: 'Set the lighting voltage, when the lamps light before it moves', hint: 'Type the voltage into the Lighting voltage field; it must stay below the starting voltage. Leave it empty for a locomotive whose lamps light only once it moves. It can be set before or after the speed pass.' },
   { title: 'Name the measured block and start the speed pass', hint: 'Press Calibrate speed, pick a block on the map or in the list, then Start.' },
-  { title: 'Let the pass run', hint: 'The train runs back and forth across the measured block at each voltage step. Stop ends it and writes nothing.' },
-  { title: 'Commit the result', hint: 'Save to this locomotive, or Promote to model. Nothing is written until you pick one.' },
+  { title: 'Find the lighting voltage', hint: 'Raise or lower the voltage until the lamps light and the train stands still, then Keep, which saves it. A locomotive whose lamps light only once it moves gets No lamps.' },
+  { title: 'Find the starting voltage', hint: 'Raise the voltage until the train just moves, then It moves. That saves the starting voltage, above the lighting voltage you kept, and starts the sweep.' },
+  { title: 'Let the sweep run', hint: 'The train runs back and forth across the measured block at each voltage step above the starting voltage. Stop ends it and writes nothing.' },
+  { title: 'Commit the curve', hint: 'Save to this locomotive, or Promote to model. Nothing is written until you pick one.' },
+  { title: 'Test and commit the ATO minimum voltage', hint: 'Press Test, and raise or lower the voltage while the train runs back and forth until the speed holds steady, then Commit. You may also type it into the profile.' },
 ];
 
 export type StepState = 'done' | 'current' | 'todo';
 
 /**
- * Where the operator is in the five steps. The step the open pass belongs to
- * is the current one. With no pass open, the next step is the lighting
- * voltage until the named train runs on one, then the speed pass; once a pass
- * is committed every step is done. The lighting voltage is a field, not a
- * run, and a locomotive whose lamps light only once it moves leaves it empty,
- * so opening the speed pass moves on past it either way.
+ * Where the operator is in the seven steps. The step the open run belongs to
+ * is the current one: the speed pass's setup, its two trials, its sweep, its
+ * held result, or the ATO minimum test. With no run open, the next step is
+ * the speed pass until one was committed for the named train, then the ATO
+ * minimum test; once that is committed every step is done.
  */
 export function calibrationSteps(summary: CalibrationGroupSummary | null): StepState[] {
-  const states: StepState[] = ['current', 'todo', 'todo', 'todo', 'todo'];
+  const states: StepState[] = CALIBRATION_STEPS.map(() => 'todo');
+  states[0] = 'current';
   if (!summary?.trainId) return states;
   states[0] = 'done';
-  if (summary.lightingVoltageSet) states[1] = 'done';
-  const runStep: Partial<Record<CalibrationGroupSummary['view'], number>> = {
-    'speed-setup': 2,
-    'speed-running': 3,
-    'speed-held': 4,
-  };
-  const open = runStep[summary.view];
+  const stageStep: Record<string, number> = { lighting_trial: 2, starting_trial: 3, sweep: 4 };
+  let open: number | undefined;
+  if (summary.view === 'speed-setup') open = 1;
+  else if (summary.view === 'speed-running') open = stageStep[summary.passStage || ''] ?? 2;
+  else if (summary.view === 'speed-held') open = 5;
+  else if (summary.view === 'ato-setup' || summary.view === 'ato-running') open = 6;
   if (open !== undefined) {
-    for (let i = 2; i < open; i++) states[i] = 'done';
+    for (let i = 1; i < open; i++) states[i] = 'done';
     states[open] = 'current';
     return states;
   }
-  if (summary.speedCommitted) return states.map(() => 'done');
-  states[summary.lightingVoltageSet ? 2 : 1] = 'current';
+  if (summary.atoCommitted) return states.map(() => 'done');
+  if (summary.speedCommitted) {
+    for (let i = 1; i < 6; i++) states[i] = 'done';
+    states[6] = 'current';
+    return states;
+  }
+  states[1] = 'current';
   return states;
 }
 

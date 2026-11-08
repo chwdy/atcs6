@@ -12,7 +12,8 @@ tools, journey tests) get the same lock discipline for free.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from dataclasses import replace
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from app_state import AppState
 from services.exceptions import (
@@ -27,9 +28,15 @@ from speed_profile import SpeedProfile, SpeedProfileRegistry, curve_problems
 # it, so removing it would orphan the fleet.
 DEFAULT_PROFILE_ID = "default"
 
-# The three fields an instance profile may carry (design_new.md "SpeedProfile",
+# The fields an instance profile may carry (design_new.md "SpeedProfile",
 # Model profiles and instance profiles).
-INSTANCE_FIELDS = ("lighting_voltage", "voltage_speed_curve", "calibrated_at")
+INSTANCE_FIELDS = (
+    "lighting_voltage",
+    "starting_voltage",
+    "voltage_speed_curve",
+    "calibrated_at",
+    "ato_min_voltage",
+)
 
 # Fields a hand edit never changes (design_new.md "SpeedProfile", Editing a
 # profile by hand): the stored value always wins over the request body.
@@ -37,24 +44,21 @@ _NOT_HAND_EDITED = ("derived_from", "calibrated_at")
 
 # What a hand edit may change on an instance profile besides its name; every
 # other field belongs to the model profile it derives from.
-_INSTANCE_HAND_EDITED = ("name", "lighting_voltage", "voltage_speed_curve")
+_INSTANCE_HAND_EDITED = (
+    "name",
+    "lighting_voltage",
+    "starting_voltage",
+    "ato_min_voltage",
+    "voltage_speed_curve",
+)
+
+_VOLTAGE_EPSILON = 1e-9
 
 
-def resolution_problems(
+def _trial_registry(
     registry: SpeedProfileRegistry, replacements: Dict[str, SpeedProfile]
-) -> List[str]:
-    """What breaks when `replacements` take the place of their stored records.
-
-    Every profile the change reaches is resolved as it would be afterwards —
-    each replaced record, and every instance deriving from a replaced model
-    profile that does not carry both its own curve and its own lighting
-    voltage — and checked against the curve's four conditions (design_new.md
-    "SpeedProfile", `voltage_speed_curve`, which also ties the last point to
-    `max_voltage`) and against **A lighting voltage stays below the starting
-    voltage**. Returns plain reasons, each naming its profile; an empty list
-    when nothing breaks. The hand edit and the speed calibration commit both
-    refuse a change this returns a reason for.
-    """
+) -> SpeedProfileRegistry:
+    """A copy of `registry` with `replacements` in place of their records."""
     trial = SpeedProfileRegistry()
     for pid in registry.list_profiles():
         record = registry.get(pid)
@@ -62,33 +66,109 @@ def resolution_problems(
             trial.register(record)
     for record in replacements.values():
         trial.register(record)
+    return trial
 
-    affected = set(replacements)
+
+def _reached(
+    trial: SpeedProfileRegistry, replacements: Dict[str, SpeedProfile]
+) -> List[str]:
+    """Every profile the change reaches: each replaced record, and every
+    instance deriving from a replaced model profile."""
+    reached = set(replacements)
     for pid in trial.list_profiles():
         record = trial.get(pid)
-        if record is None or record.derived_from not in replacements:
-            continue
-        independent = (
-            record.voltage_speed_curve is not None
-            and record.lighting_voltage is not None
-        )
-        if not independent:
-            affected.add(pid)
+        if record is not None and record.derived_from in replacements:
+            reached.add(pid)
+    return sorted(reached)
 
+
+def resolved_problems(pid: str, resolved: SpeedProfile) -> List[str]:
+    """What breaks in one resolved profile (design_new.md "SpeedProfile"): the
+    curve's three conditions, **A lighting voltage stays below the starting
+    voltage**, **A starting voltage stays below `max_voltage`**, and **An ATO
+    minimum voltage stays on the measured part of the curve**. Plain reasons,
+    each naming the profile."""
     problems: List[str] = []
-    for pid in sorted(affected):
-        resolved = trial.resolve(pid)
-        if resolved is None or resolved.voltage_speed_curve is None:
-            continue
-        for reason in curve_problems(resolved.voltage_speed_curve, resolved.max_voltage):
-            problems.append(f"{pid}: {reason}")
-        lighting = resolved.lighting_voltage
-        if lighting is not None and lighting >= resolved.starting_voltage:
+    if resolved.voltage_speed_curve is None:
+        return problems
+    for reason in curve_problems(resolved.voltage_speed_curve, resolved.max_voltage):
+        problems.append(f"{pid}: {reason}")
+    starting = float(resolved.starting_voltage or 0.0)
+    if starting < 0.0:
+        problems.append(f"{pid}: the starting voltage must not be below 0")
+    if starting >= float(resolved.max_voltage) - _VOLTAGE_EPSILON:
+        problems.append(
+            f"{pid}: starting voltage {starting:g} V is not below max_voltage "
+            f"{float(resolved.max_voltage):g} V"
+        )
+    lighting = resolved.lighting_voltage
+    if lighting is not None and lighting >= starting:
+        problems.append(
+            f"{pid}: lighting voltage {lighting:g} V is not below the "
+            f"starting voltage {starting:g} V"
+        )
+    ato_min = resolved.ato_min_voltage
+    if ato_min is not None:
+        low = resolved.first_point_voltage
+        high = float(resolved.max_voltage)
+        if ato_min < low - _VOLTAGE_EPSILON or ato_min > high + _VOLTAGE_EPSILON:
             problems.append(
-                f"{pid}: lighting voltage {lighting:g} V is not below the "
-                f"starting voltage {resolved.starting_voltage:g} V"
+                f"{pid}: ATO minimum voltage {ato_min:g} V must lie from the "
+                f"curve's first point above the starting voltage ({low:g} V) up "
+                f"to max_voltage ({high:g} V)"
             )
     return problems
+
+
+def settle_profile_writes(
+    registry: SpeedProfileRegistry,
+    replacements: Dict[str, SpeedProfile],
+    *,
+    keep_ato_min: Iterable[str] = (),
+) -> Tuple[Dict[str, SpeedProfile], List[str]]:
+    """The records a write actually stores, and what it would break.
+
+    Every instance whose resolved `starting_voltage` or `voltage_speed_curve`
+    the write changes loses its `ato_min_voltage` in the same write
+    (design_new.md "SpeedProfile", A changed starting voltage or curve clears
+    the ATO minimum voltage) — except an instance named in `keep_ato_min`,
+    whose own request sets a new one. Every profile the write reaches is then
+    checked by `resolved_problems`. Returns the replacements, extended with
+    each instance it cleared, and the reasons; the caller stores nothing when
+    the reasons are not empty. The hand edit, the speed calibration commit, the
+    It moves save and the ATO minimum test commit all write through here.
+    """
+    keep = set(keep_ato_min)
+    final: Dict[str, SpeedProfile] = dict(replacements)
+    trial = _trial_registry(registry, final)
+    for pid in _reached(trial, final):
+        before = registry.resolve(pid)
+        after = trial.resolve(pid)
+        record = trial.get(pid)
+        if before is None or after is None or record is None:
+            continue
+        if record.derived_from is None or record.ato_min_voltage is None or pid in keep:
+            continue
+        changed = before.starting_voltage != after.starting_voltage or list(
+            before.voltage_speed_curve or []
+        ) != list(after.voltage_speed_curve or [])
+        if changed:
+            final[pid] = replace(record, ato_min_voltage=None)
+    trial = _trial_registry(registry, final)
+    problems: List[str] = []
+    for pid in _reached(trial, final):
+        resolved = trial.resolve(pid)
+        if resolved is not None:
+            problems.extend(resolved_problems(pid, resolved))
+    return final, problems
+
+
+def resolution_problems(
+    registry: SpeedProfileRegistry, replacements: Dict[str, SpeedProfile]
+) -> List[str]:
+    """What breaks when `replacements` take the place of their stored records
+    (see `settle_profile_writes`). An empty list when nothing breaks."""
+    return settle_profile_writes(registry, replacements)[1]
 
 
 def list_profiles(state: AppState) -> List[SpeedProfile]:
@@ -192,22 +272,23 @@ def update_profile(
       unset fields stay unset and go on reading from its model profile.
     * ``calibrated_at`` and ``derived_from`` are never edited by hand; the
       stored values win over the body.
-    * On an instance profile only ``name``, ``lighting_voltage`` and
-      ``voltage_speed_curve`` may be written; a body that changes any other
-      field is refused, because that field belongs to the model profile.
-    * Every profile the edit reaches must still meet the curve's conditions
-      and keep its lighting voltage below its starting voltage
-      (``resolution_problems``), which also refuses a ``max_voltage`` that a
-      curve does not end at.
+    * On an instance profile only ``name``, ``lighting_voltage``,
+      ``starting_voltage``, ``ato_min_voltage`` and ``voltage_speed_curve`` may
+      be written; a body that changes any other field is refused, because that
+      field belongs to the model profile. ``ato_min_voltage`` is refused on a
+      model profile, which has no such field.
+    * Every profile the edit reaches must still pass ``resolved_problems``, and
+      an edit that changes an instance's starting voltage or curve clears its
+      ATO minimum voltage unless the same body sets one
+      (``settle_profile_writes``).
 
     The URL id wins: a ``profile_id`` in the body must match it or be omitted.
 
     Raises:
         ValidationError when the body's profile_id disagrees with the URL
             id, the body changes a model-profile field on an instance profile,
-            a lighting voltage is below 0, the edit breaks a curve or a
-            lighting voltage of a profile it reaches, or the data does not
-            parse.
+            a voltage is below 0, the edit breaks a profile it reaches, or the
+            data does not parse.
         NotFoundError when no profile has that id.
     """
     data = dict(data or {})
@@ -224,6 +305,9 @@ def update_profile(
     lighting = data.get("lighting_voltage")
     if lighting is not None and float(lighting) < 0.0:
         raise ValidationError("lighting_voltage must not be below 0")
+    if "starting_voltage" in data and data["starting_voltage"] is not None:
+        if float(data["starting_voltage"]) < 0.0:
+            raise ValidationError("starting_voltage must not be below 0")
 
     with state.simulation_lock:
         registry = state.speed_profile_registry
@@ -238,6 +322,11 @@ def update_profile(
                     f"{', '.join(model_fields)} belong to model profile "
                     f"'{existing.derived_from}'; edit that profile instead"
                 )
+        elif data.get("ato_min_voltage") is not None:
+            raise ValidationError(
+                "ato_min_voltage belongs to a locomotive's own profile; a model "
+                "profile has none"
+            )
 
         merged = existing.to_dict()
         merged.update(data)
@@ -245,12 +334,16 @@ def update_profile(
             updated = SpeedProfile.from_dict(merged)
         except (ValueError, KeyError, TypeError) as exc:
             raise ValidationError(f"Invalid profile data: {exc}") from exc
-        problems = resolution_problems(registry, {profile_id: updated})
+        keep = (profile_id,) if "ato_min_voltage" in data else ()
+        final, problems = settle_profile_writes(
+            registry, {profile_id: updated}, keep_ato_min=keep
+        )
         if problems:
             raise ValidationError("; ".join(problems))
-        registry.register(updated)
+        for record in final.values():
+            registry.register(record)
 
-    return updated
+    return final[profile_id]
 
 
 def delete_profile(state: AppState, profile_id: str) -> bool:

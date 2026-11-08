@@ -17,9 +17,9 @@ import { afterLayout, fitCanvas, type CanvasFitHost } from '../canvas-fit';
 import { screen } from '../state';
 import { PlacedTrainDetails, RosterEntryDetails, RosterEntryForm } from './details';
 import { LocomotiveList } from './list';
-import { calibrationRunShown, entryName, panelTarget, placedTrainFor, selectionForTrain } from './model';
+import { calibrationRunShown, entryName, panelTarget, placedTrainFor, profileName, selectionForTrain } from './model';
 import { bindSpeedProfilePanel, type PanelBinding, type SpeedProfilePanel } from './panel';
-import { calibration, roster, selection, trains } from './state';
+import { calibration, profiles, roster, selection, trains } from './state';
 
 /** What the screen needs from App. */
 export interface LocomotivesHost extends CanvasFitHost {
@@ -69,7 +69,8 @@ function Middle({ panel }: { panel: PanelBinding | null }) {
       top = <div class="empty-state empty-state-warn">This train is no longer on the layout.</div>;
     }
   } else if (sel?.kind === 'profile') {
-    title = sel.profileId;
+    const picked = profiles.value.find((p) => p.profile_id === sel.profileId);
+    title = picked ? profileName(picked) : sel.profileId;
   }
 
   return (

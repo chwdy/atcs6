@@ -155,9 +155,9 @@ UNIDENTIFIED_GAP_HOLD_S: float = 5.0
 CALIBRATION_VOLTAGE_STEP_V: float = 2.0
 
 # The narrowing halves the gap between the lowest step that passed and the step
-# that failed below it until the gap is no more than this; the lowest step that
-# passed is then the starting voltage. A filled step needs its two neighbours
-# more than twice this apart.
+# that failed below it (or the starting voltage when none failed) until the gap
+# is no more than this; the lowest step that passed is then the curve's first
+# point. A filled step needs its two neighbours more than twice this apart.
 CALIBRATION_MIN_VOLTAGE_GAP_V: float = 0.25
 
 # The pass measures the voltage halfway between two neighbouring passed steps
@@ -198,11 +198,11 @@ CALIBRATION_MIN_CROSSING_SPEED_KMH: float = 2.0
 # and stops the train at half power first).
 CALIBRATION_HALF_POWER_S: float = 0.5
 
-# After each crossing the pass drives on at the step's power for the time the
-# train's length plus this many centimetres takes at the speed just measured,
-# then stops it (design_new.md "Speed calibration", The run-off is timed from
-# the measured speed). The margin covers the detector's lag on the far block's
-# entry and a length measured a little short.
+# Each end of the calibration stretch takes run-off blocks past its outer block
+# until it holds the train's entered length plus this many centimetres, then
+# one block more (design_new.md "Speed calibration", Each end of the stretch is
+# an outer block and the run-off blocks past it). The margin covers the
+# detector's lag on the far block's entry and a length entered a little short.
 CALIBRATION_RUNOFF_MARGIN_CM: float = 5.0
 
 # How many detector reads a standing train is given for the measured block to
@@ -228,16 +228,31 @@ CALIBRATION_MOVE_VOLTAGE_V: float = 6.0
 # is discarded).
 CALIBRATION_CAP_RETRY_LIMIT: int = 4
 
+# A speed pass opens with two trial stages in which the operator sets the
+# voltage by hand (design_new.md "Speed calibration", The pass starts with two
+# trial stages). The lighting trial starts here when the train's profile sets
+# no lighting voltage, and the panel steps the trial voltage by
+# CALIBRATION_TRIAL_STEP_V. The ATO minimum test uses the same step.
+CALIBRATION_LIGHTING_TRIAL_START_V: float = 1.5
+CALIBRATION_TRIAL_STEP_V: float = 0.1
+
+# The ATO minimum test marks its test voltage steady once this many round trips
+# in a row have finished at it with no stalled crossing (design_new.md "Speed
+# calibration", ATO minimum test, The panel marks a steady voltage).
+ATO_MINIMUM_TEST_ROUND_TRIPS: int = 3
+
 # Seeded model-profile defaults (design_new.md "SpeedProfile", the `max_voltage`
 # and `voltage_speed_curve` field descriptions). A model `SpeedProfile` created
 # at train creation gets these until calibration, a hand edit, or an imported
 # roster entry replaces them. `DEFAULT_SEEDED_MAX_VOLTAGE_V` is the top of the
-# usable `track_voltage` range. `DEFAULT_SEEDED_STARTING_VOLTAGE_V` is the first
-# point of the seeded curve, the straight line from 0 V -> 0 km/h to
-# `max_voltage` -> the train's `max_speed`; a seeded profile sets no
-# `lighting_voltage`.
+# usable `track_voltage` range. `DEFAULT_SEEDED_STARTING_VOLTAGE_V` is the
+# seeded `starting_voltage`. `DEFAULT_SEEDED_FIRST_POINT_VOLTAGE_V` is the first
+# point of the seeded curve, above the starting voltage, on the straight line
+# from 0 V -> 0 km/h to `max_voltage` -> the train's `max_speed`; a seeded
+# profile sets no `lighting_voltage`.
 DEFAULT_SEEDED_MAX_VOLTAGE_V: float = 12.0
-DEFAULT_SEEDED_STARTING_VOLTAGE_V: float = 1.5
+DEFAULT_SEEDED_STARTING_VOLTAGE_V: float = 1.0
+DEFAULT_SEEDED_FIRST_POINT_VOLTAGE_V: float = 1.5
 
 
 # Commissioning session bounds (design_new.md "Hardware REST payload schemas").

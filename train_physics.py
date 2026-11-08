@@ -644,10 +644,10 @@ class TrainPhysics:
         delta: float,
     ) -> float:
         """Compute the next-tick speed: the speed solution for the command kind,
-        then the starting-speed floor (design_new.md "TrainPhysics", A moving
-        train never runs below its starting speed)."""
+        then the command's speed floor (design_new.md "TrainPhysics", An ATO
+        train never runs below its ATO minimum speed)."""
         speed = self._solve_speed(command, profile, previous_speed, delta)
-        return self._apply_starting_speed_floor(command, profile, speed)
+        return self._apply_speed_floor(command, speed)
 
     @staticmethod
     def _drives_forward(command: PhysicsCommand) -> bool:
@@ -671,18 +671,18 @@ class TrainPhysics:
             and float(command.atc_limit_kmh) > 0.0
         )
 
-    def _apply_starting_speed_floor(
-        self, command: PhysicsCommand, profile: "SpeedProfile", speed: float
-    ) -> float:
-        """design_new.md "TrainPhysics", A moving train never runs below its
-        starting speed: a speed above 0 and below the starting speed becomes the
-        starting speed when the tick drives the train forward, and 0 otherwise.
-        Below its starting voltage a locomotive does not move steadily, so a
-        calculated speed there would describe motion it does not make."""
-        starting = float(getattr(profile, "starting_speed_kmh", 0.0) or 0.0)
-        if speed <= 0.0 or speed >= starting:
+    def _apply_speed_floor(self, command: PhysicsCommand, speed: float) -> float:
+        """design_new.md "TrainPhysics", An ATO train never runs below its ATO
+        minimum speed: a speed above 0 and below the command's floor becomes the
+        floor when the tick drives the train forward, and 0 otherwise. The
+        controller sets the floor to the ATO minimum speed for an ATO train and
+        to 0 for every other command. Below its ATO minimum voltage a locomotive
+        may stall on a slope or a bad joint, so a speed ATO calculated there
+        could describe motion the locomotive does not make."""
+        floor = float(command.speed_floor_kmh or 0.0)
+        if speed <= 0.0 or speed >= floor:
             return speed
-        return starting if self._drives_forward(command) else 0.0
+        return floor if self._drives_forward(command) else 0.0
 
     def _solve_speed(
         self,

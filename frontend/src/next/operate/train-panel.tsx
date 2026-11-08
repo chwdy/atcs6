@@ -43,7 +43,7 @@ import { LookAhead } from './look-ahead';
 import type { OperateHost } from './operate-state';
 import { setSelection } from './panel-host';
 import { HANDLE_ORDER, handleClass, handleDescription, trainCommands } from './train-commands';
-import { holdLine, obcStateClass, speedText, trainStateClass } from './train-display';
+import { deleteTrainUnavailableReason, holdLine, obcStateClass, speedText, trainStateClass } from './train-display';
 
 /** Which folded sections are open. Kept across trains and redraws, so an
  *  operator who reads one keeps seeing it. */
@@ -127,8 +127,50 @@ export function TrainPanel({ host, trainId }: { host: OperateHost; trainId: stri
         >
           <i class="ti ti-chart-line" aria-hidden="true" /> Calibrate
         </button>
+        <DeleteTrainButton view={view} />
       </section>
     </div>
+  );
+}
+
+const PRESENCE_UNKNOWN_DETAIL = 'No occupancy backs this train — its span represents nothing detected on the track.';
+
+/** Ask, then delete the train record. The server refuses a train that is not
+ *  OFF, still holds a path or a running route run, or still draws current
+ *  (design_new.md "Train Entity", Deleting a train); its reason is shown. */
+async function deleteTrain(trainId: string, detail: string): Promise<void> {
+  const confirmed = await showConfirmModal({
+    title: 'Delete train',
+    message: `Delete train "${trainId}"?`,
+    detail,
+    confirmText: 'Delete',
+    confirmVariant: 'danger',
+  });
+  if (!confirmed) return;
+  try {
+    await api.deleteTrain(trainId);
+    showToast(`Train "${trainId}" deleted`, 'success', 3000);
+    await window.app?.refreshNetwork();
+  } catch (err: any) {
+    showToast('Failed to delete train: ' + err.message, 'error', 5000);
+  }
+}
+
+/** Delete a train placed by mistake. Available once the train is OFF. */
+function DeleteTrainButton({ view }: { view: TrainView }) {
+  const reason = deleteTrainUnavailableReason(view);
+  return (
+    <button
+      type="button"
+      class="tc-btn tc-btn-danger op-delete-train-btn"
+      disabled={reason !== null}
+      title={reason ?? 'Delete this train from the layout. Its speed profile and roster entry are kept.'}
+      onClick={() =>
+        void deleteTrain(view.id, 'Its speed profile and roster entry are kept. You can place the train again afterwards.')
+      }
+    >
+      <i class="ti ti-trash" aria-hidden="true" /> Delete train
+    </button>
   );
 }
 
@@ -140,23 +182,6 @@ function StatusZone({ view }: { view: TrainView }) {
   const eb = c?.eb_active ?? false;
   const hold = holdLine(view);
   const pending: Array<{ label?: string }> = view.operatorStatus?.pending_actions || [];
-  const removeTrain = async () => {
-    const confirmed = await showConfirmModal({
-      title: 'Remove Train',
-      message: `Remove train "${view.id}"?`,
-      detail: 'No occupancy backs this train — its span represents nothing detected on the track.',
-      confirmText: 'Remove',
-      confirmVariant: 'danger',
-    });
-    if (!confirmed) return;
-    try {
-      await api.deleteTrain(view.id);
-      showToast(`Train "${view.id}" removed`, 'success', 3000);
-      await window.app?.refreshNetwork();
-    } catch (err: any) {
-      showToast('Failed to remove train: ' + err.message, 'error', 5000);
-    }
-  };
   return (
     <section class={`tc-section tc-section-task ${obcStateClass(c?.power_on ?? false, eb)}`}>
       <header class="tc-status-headline">
@@ -188,7 +213,7 @@ function StatusZone({ view }: { view: TrainView }) {
             ? No occupancy detected under this train — nothing on the track backs its position. It may have been
             picked up or run somewhere undetected.
           </div>
-          <button type="button" class="btn btn-sm btn-danger-ghost mt-4" onClick={() => void removeTrain()}>
+          <button type="button" class="btn btn-sm btn-danger-ghost mt-4" onClick={() => void deleteTrain(view.id, PRESENCE_UNKNOWN_DETAIL)}>
             <i class="ti ti-trash" aria-hidden="true" /> Remove train
           </button>
         </div>

@@ -348,6 +348,7 @@ class TestSpeedProfileService:
             data={
                 "profile_id": "P1",
                 "name": "Profile 1",
+                "starting_voltage": 2.5,
                 "voltage_speed_curve": [[3.0, 20.0], [12.0, 100.0]],
             },
         )
@@ -368,6 +369,7 @@ class TestSpeedProfileService:
             data={
                 "profile_id": "P1",
                 "name": "Profile 1",
+                "starting_voltage": 2.5,
                 "voltage_speed_curve": [[3.0, 20.0], [12.0, 100.0]],
             },
         )
@@ -381,15 +383,16 @@ class TestSpeedProfileService:
             )
         assert speed_profile_service.require_profile(state, "P1").lighting_voltage is None
 
-    def test_a_model_curve_edit_is_refused_when_it_breaks_an_instance_lighting(self, state):
-        """An edit reaches every instance that reads the model's curve, so a
-        model curve whose starting voltage is at or below an instance's
-        lighting voltage is refused."""
+    def test_a_model_starting_voltage_edit_is_refused_when_it_breaks_an_instance_lighting(self, state):
+        """An edit reaches every instance that reads the model's starting
+        voltage, so a model starting voltage at or below an instance's lighting
+        voltage is refused."""
         speed_profile_service.create_profile(
             state,
             data={
                 "profile_id": "MODEL",
                 "name": "Model",
+                "starting_voltage": 2.5,
                 "voltage_speed_curve": [[3.0, 20.0], [12.0, 100.0]],
             },
         )
@@ -404,8 +407,86 @@ class TestSpeedProfileService:
         )
         with pytest.raises(ValidationError, match="INST"):
             speed_profile_service.update_profile(
-                state, "MODEL", data={"voltage_speed_curve": [[1.8, 10.0], [12.0, 100.0]]}
+                state, "MODEL", data={"starting_voltage": 1.8}
             )
+
+    def _model_and_instance(self, state, **instance):
+        speed_profile_service.create_profile(
+            state,
+            data={
+                "profile_id": "MODEL",
+                "name": "Model",
+                "starting_voltage": 2.0,
+                "voltage_speed_curve": [[3.0, 20.0], [6.0, 50.0], [12.0, 100.0]],
+            },
+        )
+        speed_profile_service.create_profile(
+            state,
+            data={"profile_id": "INST", "name": "Loco 7", "derived_from": "MODEL", **instance},
+        )
+
+    def test_a_starting_voltage_is_edited_by_hand_on_an_instance(self, state):
+        """design_new.md "SpeedProfile", On an instance profile only `name`,
+        `lighting_voltage`, `starting_voltage`, `ato_min_voltage` and
+        `voltage_speed_curve` may be edited by hand."""
+        self._model_and_instance(state)
+        updated = speed_profile_service.update_profile(
+            state, "INST", data={"starting_voltage": 2.4}
+        )
+        assert updated.starting_voltage == 2.4
+        assert state.speed_profile_registry.resolve("INST").starting_voltage == 2.4
+        assert state.speed_profile_registry.get("MODEL").starting_voltage == 2.0
+
+    def test_a_starting_voltage_at_or_above_max_voltage_is_refused(self, state):
+        self._model_and_instance(state)
+        with pytest.raises(ValidationError, match="max_voltage"):
+            speed_profile_service.update_profile(
+                state, "INST", data={"starting_voltage": 12.0}
+            )
+
+    def test_an_ato_minimum_voltage_stays_on_the_measured_part_of_the_curve(self, state):
+        """design_new.md "SpeedProfile", An ATO minimum voltage stays on the
+        measured part of the curve."""
+        self._model_and_instance(state)
+        ok = speed_profile_service.update_profile(
+            state, "INST", data={"ato_min_voltage": 4.0}
+        )
+        assert ok.ato_min_voltage == 4.0
+        assert state.speed_profile_registry.resolve("INST").ato_minimum_speed_kmh == pytest.approx(30.0)
+        for bad in (2.5, 12.5):
+            with pytest.raises(ValidationError, match="ATO minimum"):
+                speed_profile_service.update_profile(
+                    state, "INST", data={"ato_min_voltage": bad}
+                )
+
+    def test_a_model_profile_carries_no_ato_minimum_voltage(self, state):
+        self._model_and_instance(state)
+        with pytest.raises(ValidationError, match="ato_min_voltage"):
+            speed_profile_service.update_profile(
+                state, "MODEL", data={"ato_min_voltage": 4.0}
+            )
+
+    def test_a_changed_curve_or_starting_voltage_clears_the_ato_minimum_voltage(self, state):
+        """design_new.md "SpeedProfile", A changed starting voltage or curve
+        clears the ATO minimum voltage — also when the change is on the model
+        the instance reads, and unless the same save sets a new one."""
+        self._model_and_instance(state, ato_min_voltage=4.0)
+        registry = state.speed_profile_registry
+        speed_profile_service.update_profile(state, "INST", data={"name": "renamed"})
+        assert registry.get("INST").ato_min_voltage == 4.0
+
+        speed_profile_service.update_profile(state, "INST", data={"starting_voltage": 2.2})
+        assert registry.get("INST").ato_min_voltage is None
+
+        speed_profile_service.update_profile(
+            state, "INST", data={"starting_voltage": 2.3, "ato_min_voltage": 5.0}
+        )
+        assert registry.get("INST").ato_min_voltage == 5.0
+
+        speed_profile_service.update_profile(
+            state, "MODEL", data={"voltage_speed_curve": [[3.0, 20.0], [7.0, 60.0], [12.0, 100.0]]}
+        )
+        assert registry.get("INST").ato_min_voltage is None
 
     def test_update_refuses_a_max_voltage_the_curve_does_not_end_at(self, state):
         speed_profile_service.create_profile(
@@ -501,7 +582,7 @@ class TestSpeedProfileService:
         assert updated.calibrated_at is None
         resolved = state.speed_profile_registry.resolve("INST")
         assert resolved.acceleration_rate == 6.0
-        assert resolved.power_percent_to_speed(50) == pytest.approx(40.0)
+        assert resolved.power_percent_to_speed(50) == pytest.approx(30.0)
 
     def test_update_refuses_a_model_field_on_an_instance(self, state):
         """A model-profile field is edited on the model profile, never on an

@@ -256,6 +256,63 @@ export class API implements LayoutDataClient, SimClient {
     );
   }
 
+  /** Set the voltage the operator drives a speed pass's trial or an ATO
+   *  minimum test at (design_new.md "Speed calibration", The pass starts with
+   *  two trial stages; ATO minimum test). Returns the run. */
+  async setCalibrationTrialVoltage(trainId: string, trackVoltage: number): Promise<any> {
+    return this._request(
+      `/trains/${trainId}/calibrate/trial-voltage`,
+      { method: 'POST', body: { track_voltage: trackVoltage } },
+      'setCalibrationTrialVoltage'
+    );
+  }
+
+  /** Keep the lighting trial's voltage, or No lamps (`null`). */
+  async keepCalibrationLighting(trainId: string, lightingVoltage: number | null): Promise<any> {
+    return this._request(
+      `/trains/${trainId}/calibrate/keep-lighting`,
+      { method: 'POST', body: { lighting_voltage: lightingVoltage } },
+      'keepCalibrationLighting'
+    );
+  }
+
+  /** It moves: save the lighting and starting voltages, then start the sweep.
+   *  A refused save rejects with the reason and the pass stays in the
+   *  starting trial. */
+  async calibrationItMoves(trainId: string): Promise<any> {
+    return this._request(
+      `/trains/${trainId}/calibrate/it-moves`,
+      { method: 'POST' },
+      'calibrationItMoves'
+    );
+  }
+
+  /** Open an ATO minimum test across the measured block, at the train's ATO
+   *  minimum voltage unless `trackVoltage` is given. */
+  async startAtoMinimumTest(
+    trainId: string,
+    measuredBlockId: string,
+    trackVoltage?: number
+  ): Promise<any> {
+    const body: Record<string, unknown> = { measured_block_id: measuredBlockId };
+    if (trackVoltage != null) body.track_voltage = trackVoltage;
+    return this._request(
+      `/trains/${trainId}/calibrate/ato-minimum`,
+      { method: 'POST', body },
+      'startAtoMinimumTest'
+    );
+  }
+
+  /** Commit the ATO minimum test's current voltage as the locomotive's
+   *  `ato_min_voltage`; this ends the test. */
+  async commitAtoMinimum(trainId: string): Promise<any> {
+    return this._request(
+      `/trains/${trainId}/calibrate/ato-minimum/commit`,
+      { method: 'POST' },
+      'commitAtoMinimum'
+    );
+  }
+
   /** Write the measured pass onto a profile. `target` picks which:
    *  'locomotive' (Save to this locomotive) writes the two measured fields onto
    *  this locomotive's instance profile, so only this loco changes; 'model'

@@ -16,6 +16,9 @@ from datetime import datetime
 
 import pytest
 
+from constants import CALIBRATION_LIGHTING_TRIAL_START_V
+from speed_calibration import PASS_LIGHTING_TRIAL, PASS_STARTING_TRIAL, PASS_SWEEP
+
 from app_state import AppState
 from bootstrap import bootstrap_runtime
 from services import train_service
@@ -373,10 +376,14 @@ def test_the_runtime_tick_arms_the_pass_as_a_one_off_route(state):
     run = train_service.calibrate_train(state, train_id, measured_block_id=block_id)
     assert run.leg_armed is False
     assert run.active_leg_route_id is None
-    assert run.current_voltage == run.max_voltage
+    # The pass opens in the lighting trial (design_new.md "Speed calibration",
+    # The pass starts with two trial stages), whose legs run as one-off routes
+    # like the sweep's.
+    assert run.pass_stage == PASS_LIGHTING_TRIAL
+    assert run.current_voltage == CALIBRATION_LIGHTING_TRIAL_START_V
 
     # Which outer block this opening leg runs toward — the one the train is not
-    # standing in — is the far end the leg route's stop task targets.
+    # standing in — names the far end the leg route's stop task lies in.
     outer, _length = train_service.resolve_calibration_stretch(state, block_id)
     held = set(getattr(controller.get_current_span(), "occupied_blocks", []) or [])
     far_block = next(b for b in outer if b not in held)
@@ -396,11 +403,13 @@ def test_the_runtime_tick_arms_the_pass_as_a_one_off_route(state):
     assert leg_route.mode == RouteMode.ONE_OFF
     assert train_id in leg_route.assigned_train_ids
     assert leg_route.manual_override is False
-    # Two tasks: a waypoint at the measured block, then a stop at the far outer
-    # block, so the path crosses the measured block on its way.
+    # Two tasks: a waypoint at the measured block, then a stop at the last
+    # block of the far end — the far outer block, or its last run-off block —
+    # so the path crosses the measured block on its way.
     assert [t.task_kind for t in leg_route.tasks] == ["waypoint", "stop"]
     assert leg_route.tasks[0].task_location.block_id == block_id
-    assert leg_route.tasks[1].task_location.block_id == far_block
+    assert run.heading_toward_block_id == far_block
+    assert leg_route.tasks[1].task_location.block_id == run.heading_end_block_id
 
     # The leg has real authority (a path), and the step's voltage drives the
     # train back through get_propulsion_override, not a zero no-authority cap.
@@ -447,14 +456,23 @@ def test_cancelling_a_pass_deactivates_its_leg_route(state):
     assert path_id is not None
 
     train_service.calibrate_cancel(state, train_id)
+    # The operator's Stop first brings the train to a stand inside its leg
+    # (design_new.md "What ends a calibration run", An operator ending stops
+    # the train before it lets it go): half the drive for its time, then the
+    # run ends once the train stands.
+    controller = sim.controllers[train_id]
+    latch_seen = False
+    for _ in range(30):
+        sim.update(0.1)
+        latch_seen = latch_seen or controller.route_hooks.phase_latches.route_deactivate
+        if train_service.calibrate_status(state, train_id) is None:
+            break
     assert train_service.calibrate_status(state, train_id) is None
 
-    # Cancelling abandons the pass and tears its leg route down through the
-    # ordinary route-deactivate latch, not a direct dispatcher call (design_new.md
-    # "Speed calibration", Pass-abandonment cases command a stop and deactivate
-    # the leg route). The inclusive latch also cancels the still-live leg path.
-    controller = sim.controllers[train_id]
-    assert controller.route_hooks.phase_latches.route_deactivate is True
+    # Ending tears the leg route down through the ordinary route-deactivate
+    # latch, not a direct dispatcher call; the inclusive latch also cancels the
+    # still-live leg path.
+    assert latch_seen or sim.route_executor.assigned_route_id_for(train_id) is None
 
     # The Action deactivation consumer removes the run and unassigns the route;
     # the path clears once the train has stopped (it commands `power_percent = 0`
@@ -628,59 +646,6 @@ def test_deleting_the_train_discards_a_held_result(state):
     assert new_run.is_measuring
 
 
-def test_a_calibration_leg_completes_through_ordinary_stop_completion(state):
-    """The `9d8b` gate, end to end: a calibration leg runs as a one-off route and
-    finishes through ordinary stop completion — Observe step `9d8b`
-    (`PathDispatcher.try_complete_active_path`) completes the leg route's path —
-    rather than through a latch-cancel. This is the mechanism the "success =
-    ordinary stop completion" model rests on (design_new.md "Speed calibration",
-    A leg finishes through ordinary stop completion), and it fires for a
-    manual-mode, override-driven train exactly as it does for an ATO one.
-
-    demo_6's reachable calibration stretches all have a far outer block shorter
-    than the stopping safety margin, so the train comes to rest at the leg
-    route's authority end without entering the far block; the leg route still
-    completes through `9d8b`, and the pass then fails "never reached" because no
-    crossing was timed. What this test pins is the completion mechanism, not the
-    measurement outcome — the far block being too short to enter is a property of
-    the demo layout, not of the leg-route lifecycle.
-    """
-    sim = state.sim_controller
-    train_id = _free_train(state)
-    block_id = _first_calibratable_block(state, train_id)
-    profile = state.network.speed_profiles.get(
-        state.network.trains[train_id].speed_profile_id
-    )
-    curve_before = list(profile.voltage_speed_curve)
-
-    _ready_manual_train(sim, state.network, train_id)
-    sim.update(0.1)
-    run = train_service.calibrate_train(state, train_id, measured_block_id=block_id)
-
-    armed_a_one_off_route = False
-    completed_via_stop_completion = False
-    for _ in range(500):
-        if run.active_leg_route_id:
-            armed_a_one_off_route = True
-        sim.update(0.1)
-        # A leg-route path that reached COMPLETED is the signature of `9d8b`
-        # completing it (a cancelled/abandoned path never reads COMPLETED).
-        for pid, path in sim.path_dispatcher.paths.items():
-            if pid.startswith(f"PATH_{train_id}") and path.status.value == "completed":
-                completed_via_stop_completion = True
-        if completed_via_stop_completion:
-            break
-
-    assert armed_a_one_off_route, "the pass must arm at least one one-off leg route"
-    assert completed_via_stop_completion, (
-        "a calibration leg route must finish through ordinary stop completion "
-        "(Observe step `9d8b`), not a latch-cancel"
-    )
-    # The pass writes nothing to the profile until an operator commits.
-    assert profile.voltage_speed_curve == curve_before
-    assert profile.calibrated_at is None
-
-
 def test_run_invalid_reason_names_the_first_condition_that_failed(state):
     """`run_invalid_reason` holds `run_still_valid`'s four checks and names the
     first one that fails, in order: the controller, power, EB, a pending
@@ -768,3 +733,331 @@ def test_route_requests_for_a_calibrating_train_leave_no_route_behind(state):
     assert quick.status_code == 400
     assert "calibration" in quick.get_json()["error"]
     assert set(sim.route_executor.route_registry) == routes_before
+
+
+# ---- trial stages, It moves, and the ATO minimum test (design_new.md "Speed
+# calibration", The pass starts with two trial stages; ATO minimum test) ----
+
+
+def _with_instance(state, train_id):
+    """demo_6 points its trains at one shared model profile; give the train an
+    instance profile of its own, as `add_train` does (design_new.md
+    "SpeedProfile", Every train must name an instance profile)."""
+    from speed_profile import make_instance_profile
+
+    train = state.network.trains[train_id]
+    instance = make_instance_profile(
+        train.speed_profile_id, profile_id=f"{train_id}__instance", name=train_id
+    )
+    state.speed_profile_registry.register(instance)
+    train.speed_profile_id = instance.profile_id
+    return instance
+
+
+def _opened_pass(state):
+    sim = state.sim_controller
+    train_id = _free_train(state)
+    _with_instance(state, train_id)
+    block_id = _first_calibratable_block(state, train_id)
+    _ready_manual_train(sim, state.network, train_id)
+    sim.update(0.1)
+    run = train_service.calibrate_train(state, train_id, measured_block_id=block_id)
+    return sim, train_id, block_id, run
+
+
+def _instance(state, train_id):
+    train = state.network.trains[train_id]
+    return state.speed_profile_registry.get(train.speed_profile_id)
+
+
+def test_it_moves_saves_both_voltages_on_the_instance_and_starts_the_sweep(state):
+    sim, train_id, _block_id, run = _opened_pass(state)
+    train_service.calibrate_trial_voltage(state, train_id, track_voltage=1.2)
+    train_service.calibrate_keep_lighting(state, train_id, lighting_voltage=1.2)
+    train_service.calibrate_trial_voltage(state, train_id, track_voltage=2.4)
+    train_service.calibrate_it_moves(state, train_id)
+
+    record = _instance(state, train_id)
+    assert record.lighting_voltage == 1.2
+    assert record.starting_voltage == 2.4
+    assert run.pass_stage == PASS_SWEEP
+    assert run.starting_voltage == 2.4
+    sim.update(0.1)
+    assert run.is_measuring
+
+
+def test_it_moves_is_refused_while_the_lighting_voltage_is_not_below_it(state):
+    from services import ConflictError
+
+    _sim, train_id, _block_id, run = _opened_pass(state)
+    train_service.calibrate_keep_lighting(state, train_id, lighting_voltage=2.0)
+    train_service.calibrate_trial_voltage(state, train_id, track_voltage=1.5)
+    with pytest.raises(ConflictError, match="lighting voltage"):
+        train_service.calibrate_it_moves(state, train_id)
+    assert run.pass_stage == PASS_STARTING_TRIAL
+    assert "lighting voltage you kept" in run.trial_save_error
+    # Keep saved the lighting voltage, with a starting voltage just above it.
+    assert _instance(state, train_id).lighting_voltage == 2.0
+    assert _instance(state, train_id).starting_voltage == pytest.approx(2.1)
+
+
+def test_keep_saves_the_lighting_voltage_at_once(state):
+    """design_new.md "Speed calibration", The pass starts with two trial
+    stages: Keep saves the lighting voltage; when the stored starting voltage
+    is not above it, the same write stores one CALIBRATION_TRIAL_STEP_V above
+    it, which It moves replaces. It stays saved when the pass ends."""
+    from constants import CALIBRATION_TRIAL_STEP_V
+
+    sim, train_id, _block_id, run = _opened_pass(state)
+    train_service.calibrate_keep_lighting(state, train_id, lighting_voltage=2.2)
+    record = _instance(state, train_id)
+    assert record.lighting_voltage == 2.2
+    assert record.starting_voltage == pytest.approx(2.2 + CALIBRATION_TRIAL_STEP_V)
+    assert run.pass_stage == PASS_STARTING_TRIAL
+
+    train_service.calibrate_cancel(state, train_id)
+    for _ in range(30):
+        sim.update(0.1)
+    assert train_id not in sim.speed_calibration.runs
+    assert _instance(state, train_id).lighting_voltage == 2.2
+
+
+def test_no_lamps_saves_no_lighting_voltage(state):
+    from dataclasses import replace
+
+    _sim, train_id, _block_id, _run = _opened_pass(state)
+    registry = state.speed_profile_registry
+    record = _instance(state, train_id)
+    registry.register(replace(record, lighting_voltage=0.5, starting_voltage=2.0))
+    train_service.calibrate_keep_lighting(state, train_id, lighting_voltage=None)
+    stored = _instance(state, train_id)
+    assert stored.lighting_voltage is None
+    assert stored.starting_voltage == 2.0  # untouched
+
+
+def test_a_refused_keep_stays_in_the_lighting_trial(state):
+    from services import ConflictError
+
+    _sim, train_id, _block_id, run = _opened_pass(state)
+    top = state.speed_profile_registry.resolve(
+        state.network.trains[train_id].speed_profile_id
+    ).max_voltage
+    with pytest.raises(ConflictError, match="max_voltage"):
+        train_service.calibrate_keep_lighting(state, train_id, lighting_voltage=top - 0.05)
+    assert run.pass_stage == PASS_LIGHTING_TRIAL
+    assert _instance(state, train_id).lighting_voltage is None
+
+
+def test_the_ato_minimum_test_commits_its_voltage_onto_the_instance(state):
+    sim = state.sim_controller
+    train_id = _free_train(state)
+    _with_instance(state, train_id)
+    block_id = _first_calibratable_block(state, train_id)
+    _ready_manual_train(sim, state.network, train_id)
+    sim.update(0.1)
+    resolved = state.speed_profile_registry.resolve(
+        state.network.trains[train_id].speed_profile_id
+    )
+    voltage = resolved.first_point_voltage + 1.0
+    run = train_service.calibrate_ato_minimum_test(
+        state, train_id, measured_block_id=block_id, track_voltage=voltage
+    )
+    assert run.is_test and run.current_voltage == voltage
+    sim.update(0.1)
+    written = train_service.calibrate_ato_minimum_commit(state, train_id)
+    assert written.ato_min_voltage == voltage
+    assert _instance(state, train_id).ato_min_voltage == voltage
+    # The commit ends the test once the train stands (An operator ending
+    # stops the train before it lets it go).
+    for _ in range(20):
+        sim.update(0.1)
+    assert train_id not in sim.speed_calibration.runs
+
+
+def test_the_ato_minimum_commit_is_refused_when_the_curve_changed(state):
+    from services import ConflictError, speed_profile_service
+
+    sim = state.sim_controller
+    train_id = _free_train(state)
+    _with_instance(state, train_id)
+    block_id = _first_calibratable_block(state, train_id)
+    _ready_manual_train(sim, state.network, train_id)
+    sim.update(0.1)
+    profile_id = state.network.trains[train_id].speed_profile_id
+    resolved = state.speed_profile_registry.resolve(profile_id)
+    train_service.calibrate_ato_minimum_test(
+        state, train_id, measured_block_id=block_id,
+        track_voltage=resolved.first_point_voltage,
+    )
+    speed_profile_service.update_profile(
+        state, profile_id, data={"starting_voltage": resolved.starting_voltage + 0.1}
+    )
+    with pytest.raises(ConflictError, match="changed"):
+        train_service.calibrate_ato_minimum_commit(state, train_id)
+
+
+def test_a_curve_commit_clears_the_locomotives_ato_minimum_voltage(state):
+    """design_new.md "Speed calibration", A commit clears the ATO minimum
+    voltage of every locomotive whose curve it changes."""
+    from dataclasses import replace
+
+    from speed_calibration import PHASE_MEASURED, CalibrationSample
+
+    _sim, train_id, _block_id, run = _opened_pass(state)
+    registry = state.speed_profile_registry
+    record = _instance(state, train_id)
+    resolved = registry.resolve(record.profile_id)
+    registry.register(replace(record, ato_min_voltage=resolved.first_point_voltage))
+    top = resolved.max_voltage
+    run.samples = [
+        CalibrationSample(track_voltage=v, speed_kmh=v * 5.0)
+        for v in (top / 4, top / 2, top)
+    ]
+    run.phase = PHASE_MEASURED
+    train_service.calibrate_commit(state, train_id, target="locomotive")
+    stored = _instance(state, train_id)
+    assert stored.ato_min_voltage is None
+    assert stored.calibrated_at is not None
+
+
+def test_the_trial_routes_drive_the_pass_into_its_sweep(state):
+    """The panel's trial controls go through `/calibrate/trial-voltage`,
+    `/calibrate/keep-lighting` and `/calibrate/it-moves`; a value the run
+    refuses answers 409."""
+    from app_factory import create_app
+
+    sim, train_id, _block_id, run = _opened_pass(state)
+    app = create_app(state)
+    app.config["TESTING"] = True
+    base = f"/api/trains/{train_id}/calibrate"
+    with app.test_client() as client:
+        r = client.post(f"{base}/trial-voltage", json={"track_voltage": 1.1})
+        assert r.status_code == 200 and r.get_json()["trial_voltage"] == 1.1
+        assert r.get_json()["pass_stage"] == "lighting_trial"
+        r = client.post(f"{base}/keep-lighting", json={"lighting_voltage": 1.1})
+        assert r.status_code == 200 and r.get_json()["pass_stage"] == "starting_trial"
+        assert client.post(f"{base}/trial-voltage", json={"track_voltage": 99}).status_code == 409
+        client.post(f"{base}/trial-voltage", json={"track_voltage": 2.2})
+        r = client.post(f"{base}/it-moves")
+        assert r.status_code == 200, r.get_json()
+        assert r.get_json()["pass_stage"] == "sweep"
+        assert r.get_json()["starting_voltage"] == 2.2
+    assert run.pass_stage == PASS_SWEEP
+
+
+def test_stop_mid_leg_brings_the_train_to_a_stand_before_letting_it_go(state):
+    """Rig 2026-11-06: Stop at 8 V cut the drive and dropped the leg route on
+    the same tick; the locomotive rolled on into blocks no train held and was
+    released as lost. Stop now keeps the leg route until the train stands."""
+    from tests.train_test_helpers import skip_calibration_trials
+
+    sim, train_id, _block_id, run = _opened_pass(state)
+    skip_calibration_trials(run)
+    controller = sim.get_or_create_controller(train_id)
+    for _ in range(40):
+        sim.update(0.1)
+    assert controller.physics_sync.current_speed_kmh > 0.0
+    route_id = sim.route_executor.assigned_route_id_for(train_id)
+    assert route_id is not None
+
+    train_service.calibrate_cancel(state, train_id)
+    sim.update(0.1)
+    # Still ending, still holding its leg route, driving half the step.
+    assert run.ending and train_id in sim.speed_calibration.runs
+    assert sim.route_executor.assigned_route_id_for(train_id) == route_id
+    for _ in range(30):
+        sim.update(0.1)
+    assert train_id not in sim.speed_calibration.runs
+    assert controller.is_stopped()
+    assert not controller.eb.active
+    assert controller.powered
+    assert controller.commands.control_mode == "manual"
+
+
+def _held_blocks_reserved_for(state, train_id):
+    return [
+        block_id
+        for block_id, block in state.network.blocks.items()
+        if getattr(block, "reserved_for_train", None) == train_id
+        or getattr(block, "locked_by_train", None) == train_id
+    ]
+
+
+def test_the_ato_minimum_commit_gives_an_ato_train_back_its_mode(state):
+    """A run the operator ends gives the train back (design_new.md "What ends a
+    calibration run"): an ATO train calibrated and committed reads ATO again,
+    with no route and no reserved block left behind."""
+    sim = state.sim_controller
+    train_id = _free_train(state)
+    _with_instance(state, train_id)
+    block_id = _first_calibratable_block(state, train_id)
+    controller = _ready_manual_train(sim, state.network, train_id)
+    controller.commands.set_mode("ato")
+    sim.update(0.1)
+    resolved = state.speed_profile_registry.resolve(
+        state.network.trains[train_id].speed_profile_id
+    )
+    run = train_service.calibrate_ato_minimum_test(
+        state,
+        train_id,
+        measured_block_id=block_id,
+        track_voltage=resolved.first_point_voltage + 1.0,
+    )
+    assert run.control_mode_before_opening == "ato"
+    assert controller.commands.control_mode == "manual"
+    for _ in range(20):
+        sim.update(0.1)
+    train_service.calibrate_ato_minimum_commit(state, train_id)
+    for _ in range(60):
+        sim.update(0.1)
+        if train_id not in sim.speed_calibration.runs and not sim.speed_calibration.pending_give_backs:
+            break
+    sim.update(0.1)
+    assert train_id not in sim.speed_calibration.runs
+    assert controller.is_stopped()
+    assert controller.commands.control_mode == "ato"
+    assert controller.ops.train_status != TrainStatus.CALIBRATING
+    assert sim.route_executor.assigned_route_id_for(train_id) is None
+    assert controller.path_projection.received_path_plan is None
+    assert _held_blocks_reserved_for(state, train_id) == []
+
+
+def test_stopping_a_run_opened_on_an_off_train_powers_it_off_again(state):
+    from tests.train_test_helpers import skip_calibration_trials
+
+    sim = state.sim_controller
+    train_id = _free_train(state)
+    _with_instance(state, train_id)
+    block_id = _first_calibratable_block(state, train_id)
+    controller = _ready_manual_train(sim, state.network, train_id)
+    controller.commands.power_off_cmd()
+    sim.update(0.1)
+    assert not controller.powered
+    run = train_service.calibrate_train(state, train_id, measured_block_id=block_id)
+    assert controller.powered and run.powered_before_opening is False
+    skip_calibration_trials(run)
+    for _ in range(20):
+        sim.update(0.1)
+    train_service.calibrate_cancel(state, train_id)
+    for _ in range(60):
+        sim.update(0.1)
+    assert train_id not in sim.speed_calibration.runs
+    assert not controller.powered
+
+
+def test_an_emergency_brake_ending_leaves_the_train_in_manual(state):
+    """EB ends a run without giving the train back: another procedure owns it."""
+    sim = state.sim_controller
+    train_id = _free_train(state)
+    _with_instance(state, train_id)
+    block_id = _first_calibratable_block(state, train_id)
+    controller = _ready_manual_train(sim, state.network, train_id)
+    controller.commands.set_mode("ato")
+    sim.update(0.1)
+    train_service.calibrate_train(state, train_id, measured_block_id=block_id)
+    controller.eb.activate()
+    for _ in range(40):
+        sim.update(0.1)
+    assert train_id not in sim.speed_calibration.runs
+    assert sim.speed_calibration.pending_give_backs == {}
+    assert controller.commands.control_mode == "manual"

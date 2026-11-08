@@ -2,13 +2,21 @@
 it into a `SpeedProfile` as `voltage_speed_curve` (design_new.md "Speed
 calibration").
 
-A pass commands voltages and measures the speed that comes back at each. It
-runs in three parts: coarse steps from `max_voltage` down by
-`CALIBRATION_VOLTAGE_STEP_V` until a step fails; narrowing, which halves the gap
-between the lowest step that passed and the step that failed below it until the
-gap is no more than `CALIBRATION_MIN_VOLTAGE_GAP_V` — the lowest step that
-passed is the starting voltage; and filling, which measures the voltage halfway
-between two neighbouring passed steps whose speeds are far apart. A step passes
+A speed pass opens with two trial stages, in which the train runs toward the
+measured block at a voltage the operator sets by hand: the lighting trial,
+where the operator keeps the voltage that lights the lamps with the train
+standing, and the starting trial, where the operator keeps the voltage at which
+the train just moves. It moves saves both voltages (design_new.md "Speed
+calibration", The pass starts with two trial stages).
+
+The sweep then commands voltages above the starting voltage and measures the
+speed that comes back at each. It runs in three parts: coarse steps from
+`max_voltage` down by `CALIBRATION_VOLTAGE_STEP_V` until a step fails;
+narrowing, which halves the gap between the lowest step that passed and the
+step that failed below it (or the starting voltage) until the gap is no more
+than `CALIBRATION_MIN_VOLTAGE_GAP_V` — the lowest step that passed is the
+curve's first point; and filling, which measures the voltage halfway between
+two neighbouring passed steps whose speeds are far apart. A step passes
 when every crossing in both directions finished; a failed step gives no point.
 It must work this way round: `voltage_speed_curve` is the curve that turns a
 wanted speed into a voltage, and it is the very thing the pass is building, so
@@ -29,6 +37,12 @@ of twice that many crossings, half in each direction: a stretch is rarely dead
 level, and equal counts each way cancel the grade, while one crossing a
 detector timed wrong lands at an end of the order and does not move the sample.
 
+An ATO minimum test is the other kind of run: legs across the same stretch at a
+voltage the operator adjusts while it runs, with every crossing listed and a
+stall listed rather than failed, until the operator commits the voltage as the
+locomotive's `ato_min_voltage` or stops (design_new.md "Speed calibration", ATO
+minimum test).
+
 Finishing the pass does not commit it. It holds its samples until the operator
 picks a target, which is what `commit(...)` writes. `CalibrationRun` is
 in-memory only; only the committed result persists, through ordinary
@@ -42,7 +56,9 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from speed_profile import curve_problems
 from constants import (
+    ATO_MINIMUM_TEST_ROUND_TRIPS,
     CALIBRATION_CAP_RETRY_LIMIT,
+    CALIBRATION_LIGHTING_TRIAL_START_V,
     CALIBRATION_HALF_POWER_S,
     CALIBRATION_MIN_CROSSING_SPEED_KMH,
     CALIBRATION_MOVE_VOLTAGE_V,
@@ -50,7 +66,6 @@ from constants import (
     CALIBRATION_MIN_VOLTAGE_GAP_V,
     CALIBRATION_OFF_B_WAIT_READS,
     CALIBRATION_ROUND_TRIPS,
-    CALIBRATION_RUNOFF_MARGIN_CM,
     CALIBRATION_SAME_SPEED_FRACTION,
     CALIBRATION_STEP_TIMEOUT_S,
     CALIBRATION_VOLTAGE_STEP_V,
@@ -69,8 +84,8 @@ _VOLTAGE_EPSILON = 1e-6
 # the crossing, driving on until the train is off the measured block, and coming
 # to a stand. The pass cycles through them until it is finished. "resetting"
 # follows a failed step: the pass waits for the train to stand, then starts the
-# next step from where it stands, moving it into an outer block first when it
-# is not in one (design_new.md "Speed calibration", A step passes or fails).
+# next step from where it stands, moving it into an end of the stretch first
+# when it is not in one (design_new.md "Speed calibration", A step passes or fails).
 PHASE_MOVING = "moving"
 PHASE_RESETTING = "resetting"
 PHASE_LEG = "leg"
@@ -80,10 +95,21 @@ PHASE_MEASURED = "measured"
 PHASE_FAILED = "failed"
 
 
+# The two kinds of run (design_new.md "Speed calibration").
+RUN_SPEED_PASS = "speed_pass"
+RUN_ATO_MINIMUM_TEST = "ato_minimum_test"
+
+# A speed pass's stage (design_new.md "Speed calibration", The pass starts with
+# two trial stages).
+PASS_LIGHTING_TRIAL = "lighting_trial"
+PASS_STARTING_TRIAL = "starting_trial"
+PASS_SWEEP = "sweep"
+
 # Which part of the sweep a step belongs to (design_new.md "Speed
 # calibration": The sweep runs down from `max_voltage` in
-# `CALIBRATION_VOLTAGE_STEP_V` steps; The pass narrows in on the starting
-# voltage; The pass adds a step between two steps whose speeds are far apart).
+# `CALIBRATION_VOLTAGE_STEP_V` steps; The pass narrows in on the lowest voltage
+# that runs every crossing; The pass adds a step between two steps whose speeds
+# are far apart).
 STEP_COARSE = "coarse"
 STEP_NARROWING = "narrowing"
 STEP_FILLED = "filled"
@@ -107,6 +133,8 @@ CROSSING_DISCARDED = "discarded"
 CROSSING_REPLACED = "replaced"
 CROSSING_DROPPED = "dropped"
 CROSSING_FAILED_STEP = "failed_step"
+CROSSING_STALLED = "stalled"
+CROSSING_NOT_NEEDED = "not_needed"
 
 
 @dataclass(frozen=True)
@@ -168,22 +196,23 @@ class CalibrationObservation:
     "Speed calibration", Plan acquires leg authority all-or-nothing): the step
     timeout does not start counting until the path is present, so a busy stretch
     delays the leg instead of failing it; and once a leg has had its authority
-    and then loses it, the loss means the leg route completed through ordinary
-    stop completion — the train came to rest at the far outer block."""
+    and then loses it before the crossing ends, the leg stood short of the far
+    outer block and its route went."""
 
     held_short: bool = False
-    """Whether the train stands at a reservation end short of the far outer
-    block: it is stopped and the last block of its `received_path_plan` is not
-    the far outer block — as when another train's claim on the walk holds the
+    """Whether the train stands at a reservation end short of the far end's
+    last block: it is stopped and the last block of its `received_path_plan` is
+    not that block — as when another train's claim on the walk holds the
     leg short. The step's power is not what holds it there, so the time it
     stands like this counts toward neither the wait for the measured block nor
     the crossing window (design_new.md "Speed calibration", Time the train
     stands short of its reservation is not counted)."""
 
     outer_block_index: Optional[int] = None
-    """Which outer block (0 or 1) the train stands in, or `None` when it stands
-    in neither. The head's block counts first, so a train straddling both
-    reads as the one its head is in. The move into an outer block ends on it."""
+    """Which end of the stretch (0 or 1, its outer block's index) the train
+    stands in, or `None` when it stands in neither. The head's block counts
+    first, so a train straddling both reads as the one its head is in. The
+    move into an end ends on it."""
 
     measured_block_held: bool = False
     """Whether the train is still on the measured block in either view of
@@ -212,26 +241,28 @@ class CalibrationCommand:
     `c9e1` carries out on the pass's behalf (design_new.md "Speed calibration",
     Each leg runs as its own one-off route): `RouteExecutor` builds and assigns a
     one-off route for `arm_leg_to`, and tears the active leg route down for
-    `deactivate_route`. A leg that reaches the far block carries neither — it
-    finishes through ordinary stop completion. ATC, service-stop, and EB keep the
+    `deactivate_route`. ATC, service-stop, and EB keep the
     same authority over the pass that they hold over any manual command.
     """
 
     drive_voltage: Optional[float] = None
     reverse_cab: bool = False
     deactivate_route: bool = False
-    """Tear the active leg route down. Set on every leg-end that did NOT reach
-    the far block — a step that does not move the train or a crossing that
-    stops inside the stretch (both end the sweep), an overrun, or any pass
-    abandonment. A leg that reaches the far block sets nothing here: it finishes
-    through ordinary stop completion, which tears its route down for it."""
+    """Tear the active leg route down. Set at every leg-end: when the train
+    stands off B after its run-off (design_new.md "Speed calibration", The pass
+    ends each leg once the train stands off B), when the move into an end is
+    done, after a failed step, an overrun, or any pass ending. `RouteExecutor`
+    acts on it only while the leg route is still assigned, so a leg that
+    completed its stop is not torn down twice."""
     move_into_place: bool = False
-    """Build the one-off route that moves the train into the nearer outer
-    block, before the opening leg (design_new.md "Speed calibration", The pass
-    first moves the train into an outer block). `RouteExecutor` picks the
-    block, because choosing the walk needs the dispatcher."""
+    """Build the one-off route that moves the train into the nearer end of the
+    stretch, before the opening leg (design_new.md "Speed calibration", The
+    pass first moves the train into an end of the stretch). `RouteExecutor`
+    picks the end and the block the move stops in, because choosing the walk
+    needs the dispatcher."""
     arm_leg_to: Optional[str] = None
-    """The far outer block to build this leg's one-off route to, before the power
+    """The far outer block of this leg: `RouteExecutor` builds its one-off route
+    through that block's end to the end's last block, before the power
     command can move the train. A leg without a route has no authority, so the
     ATC limit is `0` (`no_reservation`) and the safety-cap ordering clamps the
     commanded percent to it."""
@@ -259,10 +290,64 @@ class CalibrationPropulsionOverride:
 
 @dataclass
 class CalibrationRun:
-    """Transient working record of one calibration pass (in-memory only)."""
+    """Transient working record of one calibration run (in-memory only): a
+    speed pass or an ATO minimum test."""
 
     train_id: str
     profile_id: str
+    kind: str = RUN_SPEED_PASS
+    """A speed pass or an ATO minimum test."""
+    pass_stage: str = PASS_SWEEP
+    """For a speed pass, the lighting trial, the starting trial, or the sweep."""
+    trial_voltage: float = 0.0
+    """The voltage the operator sets, during a speed pass's trials and through
+    a whole ATO minimum test. The run drives it as `current_step_voltage`."""
+    held_lighting_voltage: Optional[float] = None
+    """The lighting voltage Keep holds during the starting trial; None for No
+    lamps."""
+    starting_voltage: float = 0.0
+    """The starting voltage the sweep runs above: the train's resolved value
+    when the run opened, then the one It moves saved."""
+    pending_teardown: bool = False
+    """The trial stages are over: the next Plan pass tears the trial leg down
+    and the train stops before the sweep (design_new.md "Speed calibration",
+    The pass starts with two trial stages)."""
+    trial_save_error: str = ""
+    """Why the last It moves save was refused, for the panel."""
+    test_low_voltage: float = 0.0
+    """For an ATO minimum test, the lowest test voltage it accepts: the curve's
+    first point above the starting voltage when the test opened."""
+    test_profile_key: Tuple = ()
+    """For an ATO minimum test, the train's resolved starting voltage and curve
+    when the test opened; its commit refuses when they changed."""
+    steady_legs: int = 0
+    """For an ATO minimum test, legs in a row finished at the current test
+    voltage with no stalled crossing (design_new.md "Speed calibration", ATO
+    minimum test, The panel marks a steady voltage)."""
+    leg_stalled: bool = False
+    """For an ATO minimum test, whether the leg now running has stalled: it ran
+    past the step timeout or the crossing window. It goes on with no further
+    timeout (A stall is listed, not failed)."""
+    leg_voltage_changed: bool = False
+    """For an ATO minimum test, whether the test voltage changed during the leg
+    now running, so the leg does not count toward a steady voltage."""
+    ending: bool = False
+    """Set by `stop(...)`: the run is bringing the train to a stand inside its
+    leg before it ends (design_new.md "What ends a calibration run", An
+    operator ending stops the train before it lets it go)."""
+    ending_half_until: Optional[float] = None
+    """While ending, the operating time the half-voltage drive runs until."""
+    ending_drive: float = 0.0
+    """The voltage the run was driving when `stop(...)` was called."""
+    ending_reason: str = ""
+    ending_success: bool = False
+    control_mode_before_opening: str = "manual"
+    """The train's `control_mode` before opening set it to `manual`; a run that
+    finishes or that the operator ends gives it back (design_new.md "What ends
+    a calibration run", A run the operator ends gives the train back)."""
+    powered_before_opening: bool = True
+    """Whether the train was powered before opening powered it on; a run that
+    gives the train back powers it off again when it was not."""
     max_voltage: float = 12.0
     """The profile's `max_voltage` when the pass opened: the first coarse step,
     and where the curve's last point must sit."""
@@ -282,9 +367,16 @@ class CalibrationRun:
 
     # The stretch. `outer_block_ids` is (A, C); `heading_to` indexes the one the
     # train is currently running toward, so it names the stopping room this leg
-    # and the run-up the next.
+    # and the run-up the next. Each outer block and the run-off blocks past it
+    # are one end of the stretch (design_new.md "Speed calibration", Each end
+    # of the stretch is an outer block and the run-off blocks past it).
     measured_block_id: str = ""
     outer_block_ids: Tuple[str, str] = ("", "")
+    runoff_block_ids: Tuple[Tuple[str, ...], Tuple[str, ...]] = ((), ())
+    """The run-off blocks past each outer block, in order out from it."""
+    end_lengths_cm: Tuple[Tuple[float, ...], Tuple[float, ...]] = ((), ())
+    """The `length_cm` of every block of each end, outer block first, in the
+    order of `end_block_ids(...)`."""
     block_length_cm: float = 0.0
     heading_to: int = 1
     train_length_cm: float = 0.0
@@ -296,22 +388,23 @@ class CalibrationRun:
     train's length)."""
 
     phase: str = PHASE_LEG
-    """`PHASE_MOVING` while the pass moves the train into an outer block before
+    """`PHASE_MOVING` while the pass moves the train into an end before
     the opening leg, then `PHASE_LEG` / `PHASE_CLEARING` / `PHASE_STOPPING`
     through each leg, and `PHASE_MEASURED` or `PHASE_FAILED` once it ends."""
     move_target_block_id: str = ""
-    """The outer block the move drives the train into, written by
-    `RouteExecutor` when it builds the move's route; "" before then."""
+    """The block the move stops in — the outer block, or the end's last block
+    when the move leaves B outward — written by `RouteExecutor` when it builds
+    the move's route; "" before then."""
     move_slowing: bool = False
     """Whether the move drives half `CALIBRATION_MOVE_VOLTAGE_V` because
-    the head has reached the outer block (design_new.md "Speed calibration",
-    The move stops on the detector)."""
+    the head is in the end it drives into and the train is off B
+    (design_new.md "Speed calibration", The move stops on the detector)."""
     move_cut: bool = False
-    """Whether the move's power is cut because the train has left the block
-    behind and stands only in the outer block."""
+    """Whether the move's power is cut because the train has left every block
+    outside that end and stands only in it."""
     move_blocks_behind: Tuple[str, ...] = ()
-    """The blocks the span covered besides the outer block when the head first
-    reached it: the blocks the move waits to see clear before it cuts."""
+    """The blocks outside the end the span covered when the move dropped to
+    half: the blocks the move waits to see clear before it cuts."""
     leg_armed: bool = False
     """Whether this leg's one-off route and power have been commanded. Every leg
     starts unarmed, so one code path arms them all — including the pass's
@@ -326,6 +419,11 @@ class CalibrationRun:
     first. False for the opening leg, where the train has not turned around."""
     samples: List[CalibrationSample] = field(default_factory=list)
     crossings: List[float] = field(default_factory=list)
+    crossing_headings: List[int] = field(default_factory=list)
+    """The direction (`heading_to`) of each entry in `crossings`, so a step
+    holds `CALIBRATION_ROUND_TRIPS` of each (design_new.md "Speed
+    calibration", Both directions are measured, and a step's sample is their
+    median)."""
     step_remeasured: bool = False
     crossing_log: List[CalibrationCrossing] = field(default_factory=list)
     """Every crossing the pass has run, in order, with what happened to it
@@ -368,17 +466,17 @@ class CalibrationRun:
     """When the current crossing's clock stopped — the moment the far outer
     block was confirmed occupied after B — or `None` until then. Written in
     Observe, read by Plan step `c9e1`, reset by each new leg."""
-    runoff_until: Optional[float] = None
-    """When the run-off after this leg's crossing ends: the far outer block's
-    confirmation plus the time `runoff_length_cm()` takes at the crossing's
-    speed (design_new.md "Speed calibration", The run-off is timed from the
-    measured speed). `None` outside the run-off."""
+    far_end_reached: int = -1
+    """The deepest block of the far end whose entry was confirmed and credited
+    to the calibration train on this leg, as its position in the far end (`0`
+    for the far outer block), or `-1` before the first. Written in Observe,
+    read by Plan step `c9e1`, reset by each new leg (design_new.md "Speed
+    calibration", The run-off lasts until the train is off B)."""
     runoff_started_at: Optional[float] = None
     """When this leg's crossing ended — the far outer block's confirmation — or
     `None` once the length measurement for this leg is taken or given up."""
     runoff_speed_cm_s: float = 0.0
-    """This leg's crossing speed, which the run-off and the length measurement
-    both use."""
+    """This leg's crossing speed, which the length measurement uses."""
     runoff_reads: int = 0
     """Plan passes since the far outer block confirmed, one per detector read,
     counted until the train's block list lets go of the measured block."""
@@ -397,9 +495,12 @@ class CalibrationRun:
     (crossing) arms. A tainted crossing is discarded rather than banked and the
     step is re-measured on the next crossing, so a transient restriction never
     fails the pass (design_new.md, "A capped crossing is discarded")."""
-    step_cap_retries: int = 0
-    """Consecutive discarded (capped) crossings of the current step. Reset to 0
-    by a clean measured crossing and at each step advance. When it reaches
+    step_cap_retries: List[int] = field(default_factory=lambda: [0, 0])
+    """Consecutive discarded (capped) crossings of the current step, one count
+    per direction, indexed by `heading_to`. A clean measured crossing resets its
+    own direction's count; each step advance resets both. Legs alternate
+    direction, so one shared count would be reset by every crossing the other
+    way. When it reaches
     `CALIBRATION_CAP_RETRY_LIMIT` the stretch is too short to measure this step
     at its power, so the pass fails and reports (design_new.md, "A capped
     crossing is discarded")."""
@@ -407,10 +508,32 @@ class CalibrationRun:
     failure_reason: str = ""
     active_leg_route_id: Optional[str] = None
     """The id of this leg's one-off route while it runs, from arming the leg to
-    the route being torn down (by ordinary stop completion on success, or by a
-    deactivate on any other leg-end). `None` between legs and once the pass ends.
+    the route being torn down (by the pass's deactivate at the leg's end, or by
+    ordinary stop completion when the train stopped in the stop's block). `None` between legs and once the pass ends.
     `RouteExecutor` stores it here at Plan step `c9e1`; the pass reads it to know
     a leg is armed and does not mutate route registries itself."""
+
+    @property
+    def in_trial(self) -> bool:
+        """A speed pass's lighting or starting trial is running."""
+        return self.kind == RUN_SPEED_PASS and self.pass_stage in (
+            PASS_LIGHTING_TRIAL,
+            PASS_STARTING_TRIAL,
+        )
+
+    @property
+    def is_test(self) -> bool:
+        return self.kind == RUN_ATO_MINIMUM_TEST
+
+    @property
+    def steady_round_trips(self) -> int:
+        """Round trips in a row finished at the current test voltage with no
+        stalled crossing."""
+        return self.steady_legs // 2
+
+    @property
+    def is_steady(self) -> bool:
+        return self.steady_round_trips >= int(ATO_MINIMUM_TEST_ROUND_TRIPS)
 
     @property
     def crossings_target(self) -> int:
@@ -428,18 +551,20 @@ class CalibrationRun:
             return float("inf")
         return self.block_length_cm / slowest_cm_s
 
-    def runoff_length_cm(self) -> float:
-        """How far the run-off carries the train past the far outer block's
-        confirmation: the train's length — the measured one once there is one,
-        the entered one before — plus `CALIBRATION_RUNOFF_MARGIN_CM`
-        (design_new.md "Speed calibration", The run-off is timed from the
-        measured speed)."""
-        length = (
-            self.measured_length_cm
-            if self.measured_length_cm is not None
-            else self.train_length_cm
-        )
-        return max(0.0, length) + CALIBRATION_RUNOFF_MARGIN_CM
+    def tail_past_measured_block(self) -> bool:
+        """Whether the train's length puts its tail past B: the head's entry
+        into a run-off block of the far end is confirmed, and the far end's
+        blocks before that run-off block add up to at least the train's length
+        — the longer of the entered and the measured one (design_new.md "Speed
+        calibration", The run-off lasts until the train is off B)."""
+        reached = self.far_end_reached
+        if reached < 1:
+            return False
+        lengths = self.end_lengths_cm[self.heading_to]
+        if len(lengths) < reached:
+            return False
+        length = max(self.train_length_cm, self.measured_length_cm or 0.0)
+        return sum(lengths[:reached]) >= length
 
     @property
     def current_voltage(self) -> float:
@@ -464,16 +589,54 @@ class CalibrationRun:
 
     @property
     def heading_toward_block_id(self) -> str:
+        """The far outer block: the leg's crossing ends when it confirms."""
         return self.outer_block_ids[self.heading_to]
+
+    def end_block_ids(self, index: int) -> Tuple[str, ...]:
+        """One end of the stretch: its outer block, then its run-off blocks in
+        order out from it."""
+        outer = self.outer_block_ids[index]
+        return (outer, *self.runoff_block_ids[index]) if outer else ()
+
+    def end_index_of(self, block_id: str) -> Optional[int]:
+        """Which end (0 or 1) holds the block, or None when neither does."""
+        for index in (0, 1):
+            if block_id and block_id in self.end_block_ids(index):
+                return index
+        return None
+
+    @property
+    def heading_end_block_id(self) -> str:
+        """The far end's last block: the leg's stop and reservation end."""
+        end = self.end_block_ids(self.heading_to)
+        return end[-1] if end else ""
+
+    @property
+    def stretch_block_ids(self) -> Tuple[str, ...]:
+        """B and both ends: every block a leg may run on."""
+        return (self.measured_block_id, *self.end_block_ids(0), *self.end_block_ids(1))
 
     def to_dict(self) -> Dict[str, object]:
         """Progress payload for the calibration panel."""
         return {
             "train_id": self.train_id,
             "profile_id": self.profile_id,
+            "kind": self.kind,
+            "pass_stage": self.pass_stage,
+            "trial_voltage": self.trial_voltage,
+            "held_lighting_voltage": self.held_lighting_voltage,
+            "starting_voltage": self.starting_voltage,
+            "trial_save_error": self.trial_save_error,
+            "test_low_voltage": self.test_low_voltage,
+            "steady_round_trips": self.steady_round_trips,
+            "steady_round_trips_target": int(ATO_MINIMUM_TEST_ROUND_TRIPS),
+            "is_steady": self.is_steady,
+            "leg_stalled": self.leg_stalled,
+            "ending": self.ending,
             "phase": self.phase,
             "measured_block_id": self.measured_block_id,
             "outer_block_ids": list(self.outer_block_ids),
+            "runoff_block_ids": [list(blocks) for blocks in self.runoff_block_ids],
             "move_target_block_id": self.move_target_block_id,
             "stage": self.stage,
             "current_voltage": self.current_voltage,
@@ -506,18 +669,19 @@ class CalibrationRun:
         }
 
 
-def coarse_voltages(max_voltage: float) -> List[float]:
+def coarse_voltages(max_voltage: float, starting_voltage: float = 0.0) -> List[float]:
     """The coarse steps, highest first: `max_voltage`, then every
-    `CALIBRATION_VOLTAGE_STEP_V` below it while the voltage stays above `0`
-    (design_new.md "Speed calibration", The sweep runs down from `max_voltage`
-    in `CALIBRATION_VOLTAGE_STEP_V` steps)."""
+    `CALIBRATION_VOLTAGE_STEP_V` below it while the voltage stays above the
+    starting voltage (design_new.md "Speed calibration", The sweep runs down
+    from `max_voltage` in `CALIBRATION_VOLTAGE_STEP_V` steps)."""
     step = float(CALIBRATION_VOLTAGE_STEP_V)
     top = float(max_voltage)
+    floor = max(0.0, float(starting_voltage))
     voltages: List[float] = []
     k = 0
     while step > 0:
         v = round(top - k * step, 6)
-        if v <= _VOLTAGE_EPSILON:
+        if v <= floor + _VOLTAGE_EPSILON:
             break
         voltages.append(v)
         k += 1
@@ -543,6 +707,10 @@ class SpeedCalibration:
         self._operating_clock = None
         self._notification_center = None
         self._block_holder = None
+        # Trains whose run gave them back, waiting for the next
+        # `give_trains_back()`: train id -> (control_mode, powered) before
+        # opening.
+        self.pending_give_backs: Dict[str, Tuple[str, bool]] = {}
 
     def wire_dependencies(
         self,
@@ -573,44 +741,329 @@ class SpeedCalibration:
         *,
         measured_block_id: str = "",
         outer_block_ids: Sequence[str] = (),
+        runoff_block_ids: Sequence[Sequence[str]] = ((), ()),
+        end_lengths_cm: Sequence[Sequence[float]] = ((), ()),
         block_length_cm: float = 0.0,
         heading_to: Optional[int] = 1,
         now: float = 0.0,
+        control_mode_before_opening: str = "manual",
+        powered_before_opening: bool = True,
     ) -> CalibrationRun:
-        """Open a pass; its first step is the coarse step at `max_voltage`.
+        """Open a speed pass. It starts in the lighting trial, at the train's
+        lighting voltage or `CALIBRATION_LIGHTING_TRIAL_START_V` when it has
+        none; the sweep's first step is the coarse step at `max_voltage`.
 
         The pass needs the measured block, its two resolved neighbours, and its
         length. The caller resolves the stretch, because walking the track
         through the points as they are aligned needs the network, and it passes
         `heading_to` as the index of the outer block the train is running
         *toward* — the one it is not already standing in. `heading_to=None`
-        means the train stands in neither outer block, or is on the measured
-        block, so the pass first moves it into the nearer one (design_new.md
-        "Speed calibration", The pass first moves the train into an outer
-        block).
+        means the train stands in neither end of the stretch, or is on the
+        measured block, so the pass first moves it into the nearer one
+        (design_new.md "Speed calibration", The pass first moves the train into
+        an end of the stretch). `runoff_block_ids` holds each end's run-off
+        blocks, in order out from its outer block.
         """
         outer = tuple(outer_block_ids)[:2]
         if len(outer) < 2:
             outer = (outer + ("", ""))[:2]
         max_voltage = float(getattr(profile, "max_voltage", 12.0) or 12.0)
+        lighting = getattr(profile, "lighting_voltage", None)
+        trial = (
+            float(lighting)
+            if lighting is not None
+            else float(CALIBRATION_LIGHTING_TRIAL_START_V)
+        )
         run = CalibrationRun(
             train_id=train.train_id,
             profile_id=profile.profile_id,
+            kind=RUN_SPEED_PASS,
+            pass_stage=PASS_LIGHTING_TRIAL,
+            trial_voltage=trial,
+            starting_voltage=float(getattr(profile, "starting_voltage", 0.0) or 0.0),
             max_voltage=max_voltage,
-            current_step_voltage=max_voltage,
+            current_step_voltage=trial,
             current_step_kind=STEP_COARSE,
             stage=STEP_COARSE,
             measured_block_id=measured_block_id,
             outer_block_ids=(outer[0], outer[1]),
+            runoff_block_ids=_runoff_pair(runoff_block_ids),
+            end_lengths_cm=_lengths_pair(end_lengths_cm),
             block_length_cm=float(block_length_cm or 0.0),
             heading_to=1 if heading_to else 0,
             train_length_cm=float(getattr(train, "length_cm", 0.0) or 0.0),
             phase=PHASE_MOVING if heading_to is None else PHASE_LEG,
         )
+        self._remember_state_before_opening(
+            run, control_mode_before_opening, powered_before_opening
+        )
         self.runs[train.train_id] = run
         return run
 
-    def abandon(self, train_id: str, reason: str = "cancelled") -> None:
+    def start_ato_minimum_test(
+        self,
+        train,
+        profile,
+        *,
+        track_voltage: float,
+        measured_block_id: str = "",
+        outer_block_ids: Sequence[str] = (),
+        runoff_block_ids: Sequence[Sequence[str]] = ((), ()),
+        end_lengths_cm: Sequence[Sequence[float]] = ((), ()),
+        block_length_cm: float = 0.0,
+        heading_to: Optional[int] = 1,
+        control_mode_before_opening: str = "manual",
+        powered_before_opening: bool = True,
+    ) -> CalibrationRun:
+        """Open an ATO minimum test at `track_voltage` (design_new.md "Speed
+        calibration", ATO minimum test). `profile` is the train's resolved
+        profile; the voltage must lie from its curve's first point above the
+        starting voltage up to its `max_voltage`."""
+        low = float(profile.first_point_voltage)
+        high = float(profile.max_voltage)
+        voltage = float(track_voltage)
+        if voltage < low - _VOLTAGE_EPSILON or voltage > high + _VOLTAGE_EPSILON:
+            raise ValueError(
+                f"the test voltage must lie from {low:g} V (the curve's first "
+                f"point above the starting voltage) up to {high:g} V"
+            )
+        outer = tuple(outer_block_ids)[:2]
+        if len(outer) < 2:
+            outer = (outer + ("", ""))[:2]
+        run = CalibrationRun(
+            train_id=train.train_id,
+            profile_id=profile.profile_id,
+            kind=RUN_ATO_MINIMUM_TEST,
+            trial_voltage=voltage,
+            starting_voltage=float(profile.starting_voltage or 0.0),
+            test_low_voltage=low,
+            test_profile_key=_profile_key(profile),
+            max_voltage=high,
+            current_step_voltage=voltage,
+            measured_block_id=measured_block_id,
+            outer_block_ids=(outer[0], outer[1]),
+            runoff_block_ids=_runoff_pair(runoff_block_ids),
+            end_lengths_cm=_lengths_pair(end_lengths_cm),
+            block_length_cm=float(block_length_cm or 0.0),
+            heading_to=1 if heading_to else 0,
+            train_length_cm=float(getattr(train, "length_cm", 0.0) or 0.0),
+            phase=PHASE_MOVING if heading_to is None else PHASE_LEG,
+        )
+        self._remember_state_before_opening(
+            run, control_mode_before_opening, powered_before_opening
+        )
+        self.runs[train.train_id] = run
+        return run
+
+    def _remember_state_before_opening(
+        self, run: CalibrationRun, control_mode: str, powered: bool
+    ) -> None:
+        """Store what the train had before opening. A give-back still waiting
+        from the run before carries the train's earlier state, so a run opened
+        straight after another gives back what the train had before the first."""
+        waiting = self.pending_give_backs.pop(run.train_id, None)
+        if waiting is not None:
+            control_mode, powered = waiting
+        run.control_mode_before_opening = str(control_mode or "manual")
+        run.powered_before_opening = bool(powered)
+
+    def give_trains_back(self) -> None:
+        """Give each train whose run finished or was ended by the operator the
+        mode and power it had before opening (design_new.md "What ends a
+        calibration run", A run the operator ends gives the train back).
+
+        Runs between ticks, like an operator command: `SimulationController`
+        calls it at the start of each pass, after Action of the pass before has
+        torn the leg route down, and the service calls it straight after an
+        ending it made itself. It calls `set_mode(...)` when the mode differs,
+        then `power_off_cmd()` when the train was `OFF` before opening. A train
+        that is moving waits for a later call. A train under EB, `OFF`, or with
+        a new run open is left as it is, because another procedure owns it.
+        """
+        for train_id in list(self.pending_give_backs):
+            controller = self._controller(train_id)
+            if controller is None or train_id in self.runs:
+                self.pending_give_backs.pop(train_id, None)
+                continue
+            if controller.eb.active or not controller.powered:
+                self.pending_give_backs.pop(train_id, None)
+                continue
+            if not controller.is_stopped():
+                continue
+            mode, powered = self.pending_give_backs.pop(train_id)
+            commands = controller.commands
+            if commands.control_mode != mode:
+                commands.report_result("set_mode", commands.set_mode(mode))
+            if not powered:
+                commands.report_result("power_off_cmd", commands.power_off_cmd())
+
+    def _queue_give_back(self, run: CalibrationRun) -> None:
+        self.pending_give_backs[run.train_id] = (
+            run.control_mode_before_opening,
+            run.powered_before_opening,
+        )
+
+    # -- operator controls between ticks ------------------------------------
+
+    def _open_run(self, train_id: str) -> CalibrationRun:
+        run = self.runs.get(train_id)
+        if run is None or not run.is_measuring:
+            raise ValueError("No calibration run is open for this train")
+        if run.ending:
+            raise ValueError("The run is stopping the train")
+        return run
+
+    def set_trial_voltage(self, train_id: str, track_voltage: float) -> CalibrationRun:
+        """Set the voltage the operator drives with, between ticks like an
+        operator command: during a speed pass's trials from `0` up to
+        `max_voltage`, and during an ATO minimum test from its lowest voltage up
+        to `max_voltage` (design_new.md "Speed calibration", The pass starts
+        with two trial stages; ATO minimum test). A new voltage applies from the
+        next tick."""
+        run = self._open_run(train_id)
+        if not (run.in_trial or run.is_test):
+            raise ValueError("The trial voltage can be set only during a trial or a test")
+        low = run.test_low_voltage if run.is_test else 0.0
+        voltage = float(track_voltage)
+        if voltage < low - _VOLTAGE_EPSILON or voltage > run.max_voltage + _VOLTAGE_EPSILON:
+            raise ValueError(
+                f"the voltage must lie from {low:g} V up to {run.max_voltage:g} V"
+            )
+        voltage = round(voltage, 6)
+        if run.is_test and abs(voltage - run.trial_voltage) > _VOLTAGE_EPSILON:
+            run.steady_legs = 0
+            run.leg_voltage_changed = True
+        run.trial_voltage = voltage
+        run.current_step_voltage = voltage
+        # A refused It moves belongs to the voltage it was pressed at.
+        run.trial_save_error = ""
+        return run
+
+    def keep_lighting_voltage(
+        self, train_id: str, lighting_voltage: Optional[float]
+    ) -> CalibrationRun:
+        """Keep (a voltage) or No lamps (`None`): hold the lighting voltage and
+        start the starting trial at it, or at `0` V for none."""
+        run = self._open_run(train_id)
+        if run.kind != RUN_SPEED_PASS or run.pass_stage != PASS_LIGHTING_TRIAL:
+            raise ValueError("The lighting trial is not running")
+        held = None if lighting_voltage is None else float(lighting_voltage)
+        if held is not None and held < 0.0:
+            raise ValueError("the lighting voltage must not be below 0")
+        run.held_lighting_voltage = held
+        run.pass_stage = PASS_STARTING_TRIAL
+        run.trial_voltage = held if held is not None else 0.0
+        run.current_step_voltage = run.trial_voltage
+        run.trial_save_error = ""
+        return run
+
+    def starting_trial_values(self, train_id: str) -> Tuple[Optional[float], float]:
+        """It moves: the held lighting voltage and the trial voltage the service
+        saves as `lighting_voltage` and `starting_voltage`."""
+        run = self._open_run(train_id)
+        if run.kind != RUN_SPEED_PASS or run.pass_stage != PASS_STARTING_TRIAL:
+            raise ValueError("The starting trial is not running")
+        return run.held_lighting_voltage, run.trial_voltage
+
+    def refuse_starting_trial(self, train_id: str, reason: str) -> None:
+        """The It moves save was refused: the pass stays in the starting trial
+        and the panel shows why."""
+        run = self.runs.get(train_id)
+        if run is not None:
+            run.trial_save_error = reason
+
+    def begin_sweep(self, train_id: str, starting_voltage: float) -> CalibrationRun:
+        """The It moves save succeeded: cut the drive, tear the trial leg down,
+        and start the sweep above `starting_voltage` once the train stands —
+        moving it into the nearer end of the stretch first when it stands
+        anywhere else (design_new.md "Speed calibration", The pass starts with two trial
+        stages)."""
+        run = self._open_run(train_id)
+        run.pass_stage = PASS_SWEEP
+        run.starting_voltage = float(starting_voltage)
+        run.trial_save_error = ""
+        run.stage = STEP_COARSE
+        run.current_step_kind = STEP_COARSE
+        run.current_step_voltage = run.max_voltage
+        run.crossings = []
+        run.crossing_headings = []
+        run.attempt = 1
+        run.half_power_until = None
+        run.pending_teardown = True
+        run.phase = PHASE_RESETTING
+        run.leg_armed = False
+        return run
+
+    def finish_ato_minimum_test(self, train_id: str) -> float:
+        """Commit: end the test and return its voltage for the service to write
+        as `ato_min_voltage` (design_new.md "Speed calibration", ATO minimum
+        test, Commit writes `ato_min_voltage` and nothing else). The train
+        brakes to a stand inside its leg."""
+        run = self._open_run(train_id)
+        if not run.is_test:
+            raise ValueError("No ATO minimum test is open for this train")
+        voltage = run.trial_voltage
+        self.stop(
+            train_id,
+            reason=f"committed {voltage:g} V as the ATO minimum voltage",
+            success=True,
+        )
+        return voltage
+
+    def stop(self, train_id: str, reason: str = "cancelled", *, success: bool = False) -> None:
+        """An operator ending: bring the train to a stand inside its leg, then
+        end the run (design_new.md "What ends a calibration run", An operator
+        ending stops the train before it lets it go).
+
+        The run keeps its leg route, drives half the voltage it was driving
+        for `CALIBRATION_HALF_POWER_S`, then `0`, and Plan step `c9e1` ends it
+        through `abandon(...)` once the train is stopped. A finished pass is
+        discarded at once — nothing moves. A second call changes nothing.
+        """
+        run = self.runs.get(train_id)
+        if run is None:
+            return
+        if not run.is_measuring:
+            self.abandon(train_id, reason=reason, success=success, give_back=True)
+            return
+        if run.ending:
+            return
+        override = self.get_propulsion_override(train_id)
+        drive = float(override.track_voltage) if override is not None else 0.0
+        run.ending = True
+        run.ending_reason = reason
+        run.ending_success = success
+        run.ending_drive = drive
+        run.ending_half_until = (
+            self._operating_time() + CALIBRATION_HALF_POWER_S if drive > 0.0 else None
+        )
+        run.half_power = drive > 0.0
+
+    def _advance_ending(
+        self, run: CalibrationRun, obs: CalibrationObservation
+    ) -> Optional[CalibrationCommand]:
+        """One tick of an ending run: hold half the drive for its time, then
+        `0`; once the train is stopped, end the run as `abandon(...)` does."""
+        half = run.ending_half_until is not None and obs.now < run.ending_half_until
+        run.half_power = half
+        if half or not obs.is_stopped:
+            return None
+        self.abandon(
+            run.train_id,
+            reason=run.ending_reason,
+            success=run.ending_success,
+            give_back=True,
+        )
+        return CalibrationCommand(drive_voltage=0.0, deactivate_route=True)
+
+    def abandon(
+        self,
+        train_id: str,
+        reason: str = "cancelled",
+        *,
+        success: bool = False,
+        give_back: bool = False,
+    ) -> None:
         """End a speed pass without writing, and report the reason. The samples
         go with it (design_new.md "Speed calibration", `abandon`).
 
@@ -629,10 +1082,12 @@ class SpeedCalibration:
         if run is not None:
             self._stop_manual_traction(train_id)
             self._deactivate_leg_route(train_id, run)
+            if give_back:
+                self._queue_give_back(run)
             self._emit_command_result(
                 train_id,
                 operation="speed_calibration",
-                success=False,
+                success=success,
                 reason=reason,
             )
 
@@ -704,7 +1159,7 @@ class SpeedCalibration:
         `run_still_valid(...)` at Action step `26f5`.
         """
         run = self.runs.get(train_id)
-        if run is None or not run.is_measuring:
+        if run is None or not run.is_measuring or run.ending:
             return False
         # Only a cap while the clock runs touches the speed being timed. A cap in
         # the run-up — such as the tick a leg starts with its authority still
@@ -727,6 +1182,17 @@ class SpeedCalibration:
         if not run.is_measuring:
             return None
 
+        if run.ending:
+            return self._advance_ending(run, obs)
+
+        if run.pending_teardown:
+            # The trial stages are over (begin_sweep): tear the trial leg down
+            # and let the train come to a stand; the resetting phase then starts
+            # the sweep from where it stands.
+            run.pending_teardown = False
+            run.half_power = False
+            return CalibrationCommand(drive_voltage=0.0, deactivate_route=True)
+
         if run.phase == PHASE_MOVING:
             command = self._advance_move(run, obs)
         elif run.phase == PHASE_RESETTING:
@@ -747,35 +1213,38 @@ class SpeedCalibration:
     def _advance_move(
         self, run: CalibrationRun, obs: CalibrationObservation
     ) -> Optional[CalibrationCommand]:
-        """Move the train into the nearer outer block, then hand over to the
-        opening leg (design_new.md "Speed calibration", The pass first moves
-        the train into an outer block).
+        """Move the train into the nearer end of the stretch, then hand over to
+        the opening leg (design_new.md "Speed calibration", The pass first
+        moves the train into an end of the stretch).
 
-        The move's route finishes through ordinary stop completion like a
-        leg's, so its path having appeared and then gone means it ended. The
-        pass then checks where the train stopped.
+        The move ends once the train stands in the end, off B, with the power
+        cut or the route's run ended. The cut power often stops the train short
+        of the move's stop, so the pass tears a route that is still assigned
+        down itself, as at the end of a leg.
         """
         in_place = obs.outer_block_index is not None and not obs.measured_block_held
-        target = run.move_target_block_id or "an outer block"
+        target = run.move_target_block_id or "an end of the stretch"
 
-        if run.leg_authority_seen and not obs.path_present:
+        if run.leg_authority_seen and (run.move_cut or not obs.path_present):
             if not obs.is_stopped:
                 return None
-            if not in_place:
+            if in_place:
+                # The opening leg runs toward the end the train is not in. Path
+                # creation picks the span end to start from, so the train may
+                # face either way (as when the pass opens with it in place).
+                run.phase = PHASE_LEG
+                run.heading_to = 1 - obs.outer_block_index
+                run.needs_reverse = False
+                run.leg_armed = False
+                if obs.path_present:
+                    return CalibrationCommand(drive_voltage=0.0, deactivate_route=True)
+                return self._advance_leg(run, obs)
+            if not obs.path_present:
                 return self.fail(
                     run,
                     f"the move into {target} ended with the train outside "
-                    f"{run.outer_block_ids[0]} and {run.outer_block_ids[1]}, "
-                    f"or still on {run.measured_block_id}",
+                    f"both ends of the stretch, or still on {run.measured_block_id}",
                 )
-            # The opening leg runs toward the outer block the train is not in.
-            # Path creation picks the span end to start from, so the train may
-            # face either way (as when the pass opens with it already in place).
-            run.phase = PHASE_LEG
-            run.heading_to = 1 - obs.outer_block_index
-            run.needs_reverse = False
-            run.leg_armed = False
-            return self._advance_leg(run, obs)
 
         if not run.leg_armed:
             run.leg_armed = True
@@ -795,18 +1264,24 @@ class SpeedCalibration:
                 run.leg_started_at = obs.now
                 run.half_power_until = obs.now + CALIBRATION_HALF_POWER_S
         # The detector, not the calculated position, stops the move: half power
-        # once the head is in the outer block, nothing once the block behind
-        # has confirmed clear (design_new.md "Speed calibration", The move
-        # stops on the detector).
-        target_block = run.move_target_block_id
-        if run.leg_authority_seen and target_block:
-            if not run.move_slowing and obs.head_block == target_block:
+        # once the head is in the end and the train is off B, nothing once every
+        # block outside the end has confirmed clear (design_new.md "Speed
+        # calibration", The move stops on the detector). Full power holds while
+        # the train is on B, so a long train does not stall there.
+        target_index = run.end_index_of(run.move_target_block_id)
+        if run.leg_authority_seen and target_index is not None:
+            end = set(run.end_block_ids(target_index))
+            if (
+                not run.move_slowing
+                and obs.head_block in end
+                and not obs.measured_block_held
+            ):
                 run.move_slowing = True
                 run.move_blocks_behind = tuple(
-                    block_id for block_id in obs.span_blocks if block_id != target_block
+                    block_id for block_id in obs.span_blocks if block_id not in end
                 )
             behind = set(obs.span_blocks) | set(obs.listed_blocks)
-            if run.move_slowing and behind <= {target_block}:
+            if run.move_slowing and behind <= end:
                 run.move_cut = True
         if (
             run.leg_started_at is not None
@@ -829,8 +1304,8 @@ class SpeedCalibration:
 
         The failed step's leg route is being torn down. Once it is gone and the
         train stands, the next step's first leg starts from where the train is:
-        toward the outer block it is not in, when it stands in one and is off
-        B; otherwise the pass first moves it into the nearer outer block, as it
+        toward the end it is not in, when it stands in one and is off B;
+        otherwise the pass first moves it into the nearer end, as it
         does when a pass opens.
         """
         if obs.path_present or not obs.is_stopped:
@@ -884,11 +1359,13 @@ class SpeedCalibration:
             run.half_power_until = None
             run.crossing_started_at = None
             run.crossing_finished_at = None
-            run.runoff_until = None
+            run.far_end_reached = -1
             run.runoff_started_at = None
             run.runoff_reads = 0
             run.standing_reads = 0
             run.overrun_seen = False
+            run.leg_stalled = False
+            run.leg_voltage_changed = False
             # A fresh crossing begins clean: any taint from the last one is spent
             # (design_new.md, "A capped crossing is discarded").
             run.current_crossing_tainted = False
@@ -918,9 +1395,14 @@ class SpeedCalibration:
                 run.counted_until = obs.now
                 # The leg starts at half the step's voltage (design_new.md
                 # "Speed calibration", The pass starts and stops the train at
-                # half voltage first).
-                run.half_power_until = obs.now + CALIBRATION_HALF_POWER_S
+                # half voltage first). A trial leg drives the operator's
+                # voltage from its first tick.
+                if not run.in_trial:
+                    run.half_power_until = obs.now + CALIBRATION_HALF_POWER_S
         self._count_leg_time(run, obs)
+
+        if run.in_trial:
+            return self._advance_trial_leg(run, obs)
 
         if run.crossing_finished_at is not None and run.crossing_started_at is not None:
             elapsed = run.crossing_finished_at - run.crossing_started_at
@@ -936,33 +1418,52 @@ class SpeedCalibration:
                 # crossing, so the timed speed is not the speed the step
                 # commanded. Discard the sample and re-measure on the next
                 # crossing (the step still needs `crossings_target` of them). The
-                # leg still ends through ordinary stop completion at the far
-                # block. Consecutive discards of one step count against
+                # leg still runs off and ends as any leg does. Consecutive discards of one step count against
                 # CALIBRATION_CAP_RETRY_LIMIT: when a stretch caps every crossing
                 # — too short for this step even at the zero reservation-end
                 # standoff — the pass fails and reports rather than shuttling
                 # forever (design_new.md, "A capped crossing is discarded").
                 run.current_crossing_tainted = False
                 self._log_crossing(run, elapsed, speed, CROSSING_DISCARDED)
-                run.step_cap_retries += 1
-                if run.step_cap_retries >= CALIBRATION_CAP_RETRY_LIMIT:
+                run.step_cap_retries[run.heading_to] += 1
+                if run.step_cap_retries[run.heading_to] >= CALIBRATION_CAP_RETRY_LIMIT:
                     return self.fail(
                         run,
                         f"stretch too short to measure {run.current_voltage:g} V "
-                        f"at block {run.measured_block_id}",
+                        f"at block {run.measured_block_id} toward "
+                        f"{run.heading_toward_block_id}",
                     )
                 return self._leave_measured_block(run, obs, speed)
             if elapsed <= 0.0 or run.block_length_cm <= 0.0:
                 return self.fail(run, "measured block crossing timed at zero")
-            # A clean crossing measured: the cap-retry streak resets.
-            run.step_cap_retries = 0
+            # A clean crossing measured: its direction's cap-retry streak resets.
+            run.step_cap_retries[run.heading_to] = 0
+            if run.is_test:
+                # An ATO minimum test keeps no sample: it lists the crossing
+                # and counts the legs in a row that ran at one voltage with no
+                # stall (design_new.md "Speed calibration", ATO minimum test).
+                self._log_crossing(
+                    run, elapsed, speed, CROSSING_STALLED if run.leg_stalled else CROSSING_USED
+                )
+                if run.leg_stalled:
+                    run.steady_legs = 0
+                elif not run.leg_voltage_changed:
+                    run.steady_legs += 1
+                return self._leave_measured_block(run, obs, speed)
+            if run.crossing_headings.count(run.heading_to) >= max(
+                1, int(CALIBRATION_ROUND_TRIPS)
+            ):
+                # This direction already has its count; the step waits for the
+                # other (design_new.md "Speed calibration", A capped crossing is
+                # discarded).
+                self._log_crossing(run, elapsed, speed, CROSSING_NOT_NEEDED)
+                return self._leave_measured_block(run, obs, speed)
             run.crossings.append(speed)
+            run.crossing_headings.append(run.heading_to)
             self._log_crossing(run, elapsed, speed, CROSSING_USED)
-            # The leg reached the far block, so it finishes through ordinary stop
-            # completion (Plan settlement step `9d8b` completes the leg route). The pass
-            # commands a stop once the train is off B and issues no route op of
-            # its own — success carries no teardown (design_new.md "Speed
-            # calibration", A leg finishes through ordinary stop completion).
+            # The leg reached the far outer block: run off, stop, and end the
+            # leg once the train stands off B (design_new.md "Speed
+            # calibration", The pass ends each leg once the train stands off B).
             return self._leave_measured_block(run, obs, speed)
 
         # The leg had its authority and then lost it without the far block ever
@@ -983,7 +1484,42 @@ class SpeedCalibration:
                 return None
         elif run.crossing_counted_s < run.crossing_window_s:
             return None
+        if run.is_test:
+            # A stall is listed, not failed: the leg goes on at the test voltage
+            # with no further timeout (design_new.md "Speed calibration", ATO
+            # minimum test, A stall is listed, not failed).
+            if not run.leg_stalled:
+                run.leg_stalled = True
+                run.steady_legs = 0
+            return None
         return self._resolve_incomplete_leg(run, obs)
+
+    def _advance_trial_leg(
+        self, run: CalibrationRun, obs: CalibrationObservation
+    ) -> Optional[CalibrationCommand]:
+        """One tick of a trial leg (design_new.md "Speed calibration", The pass
+        starts with two trial stages): it times no crossing and has no step
+        timeout. When the far outer block confirms, the run-off ends as a sweep
+        leg's does; then the pass cuts the drive and the next trial leg runs
+        back the other way. A trial leg that stood at its reservation end short
+        of the far block starts again from where the train stands."""
+        if run.crossing_finished_at is not None:
+            run.crossing_started_at = None
+            run.crossing_finished_at = None
+            run.runoff_started_at = None
+            run.phase = PHASE_CLEARING
+            return None
+        if run.leg_authority_seen and not obs.path_present:
+            return self._restart_leg(run)
+        return None
+
+    def _restart_leg(self, run: CalibrationRun) -> CalibrationCommand:
+        """Tear the leg down and start the next one from where the train stops,
+        as after a failed step, without failing anything."""
+        run.phase = PHASE_RESETTING
+        run.leg_armed = False
+        run.half_power_until = None
+        return CalibrationCommand(drive_voltage=0.0, deactivate_route=True)
 
     @staticmethod
     def _count_leg_time(run: CalibrationRun, obs: CalibrationObservation) -> None:
@@ -1010,48 +1546,53 @@ class SpeedCalibration:
         obs: CalibrationObservation,
         crossing_kmh: Optional[float],
     ) -> Optional[CalibrationCommand]:
-        """End the crossing: drive on at the step's power for the run-off time,
-        then stop (design_new.md "Speed calibration", The run-off is timed from
-        the measured speed; The pass turns the train around at each end).
-
-        The run-off is not ended by B reading clear. Below
-        `current_sense_min_drive_v` B holds its presence for
-        `LIGHTING_CLEAR_HOLD_READS` clear reads before its clear count even
-        starts — several seconds, in which the train would run off the stopping
-        room. The crossing just timed gives the train's speed at this power, so
-        the time its own length takes is known without the detector. A B that
-        already reads clear in both views ends the run-off early."""
+        """End the crossing: drive on at the step's power until the train is
+        off B, then stop (design_new.md "Speed calibration", The run-off lasts
+        until the train is off B; The pass turns the train around at each
+        end)."""
         speed_cm_s = kmh_to_cm_per_sec(crossing_kmh) if crossing_kmh else 0.0
         run.runoff_speed_cm_s = speed_cm_s
         run.runoff_started_at = obs.now
         run.runoff_reads = 0
         run.standing_reads = 0
-        run.runoff_until = (
-            obs.now + run.runoff_length_cm() / speed_cm_s if speed_cm_s > 0.0 else obs.now
-        )
         run.half_power_until = None
-        if obs.measured_block_held and obs.now < run.runoff_until:
-            run.phase = PHASE_CLEARING
-            return None
-        return self._begin_stop(run, obs)
+        run.phase = PHASE_CLEARING
+        return self._advance_clearing(run, obs)
 
     @staticmethod
     def _begin_stop(run: CalibrationRun, obs: CalibrationObservation) -> CalibrationCommand:
         """Stop the train at the end of the run-off: half the step's power for
         `CALIBRATION_HALF_POWER_S`, then `0` (design_new.md "Speed calibration",
-        The pass starts and stops the train at half power first)."""
+        The pass starts and stops the train at half power first). A trial leg
+        cuts the drive at once."""
         run.phase = PHASE_STOPPING
-        run.runoff_until = None
-        run.half_power_until = obs.now + CALIBRATION_HALF_POWER_S
+        run.half_power_until = (
+            None if run.in_trial else obs.now + CALIBRATION_HALF_POWER_S
+        )
         return CalibrationCommand(drive_voltage=0.0)
 
     def _advance_clearing(
         self, run: CalibrationRun, obs: CalibrationObservation
     ) -> Optional[CalibrationCommand]:
+        """One tick of the run-off: keep the step's power until **any of
+        these** holds, then stop (design_new.md "Speed calibration", The run-off
+        lasts until the train is off B):
+
+          - B reads clear in both views;
+          - the train's length puts its tail past B, by the run-off blocks of
+            the far end whose entry has been confirmed. Below
+            `current_sense_min_drive_v` B holds its presence for
+            `LIGHTING_CLEAR_HOLD_READS` reads after the tail has left, and that
+            entry says the train is off B without waiting for it;
+          - the train stands: the ATC limit has held it at its reservation end.
+        """
         if run.overrun_seen:
             return self._fail_overrun(run)
-        until = run.runoff_until
-        if not obs.measured_block_held or until is None or obs.now >= until:
+        if (
+            not obs.measured_block_held
+            or run.tail_past_measured_block()
+            or obs.is_stopped
+        ):
             return self._begin_stop(run, obs)
         return None
 
@@ -1088,7 +1629,7 @@ class SpeedCalibration:
     def _fail_overrun(self, run: CalibrationRun) -> CalibrationCommand:
         """Fail the pass for an overrun Observe recorded on this leg."""
         return self.fail(
-            run, "train overran the stretch past the far outer block"
+            run, "train overran the stretch past the far end"
         )
 
     def _resolve_incomplete_leg(
@@ -1102,7 +1643,15 @@ class SpeedCalibration:
         move the train fails), or it entered the measured block and stopped
         inside the stretch (A crossing that stops inside the stretch fails the
         step). The part-crossing is not timed — it is no measurement, and timing
-        it would put a speed on the curve the locomotive never held."""
+        it would put a speed on the curve the locomotive never held.
+
+        An ATO minimum test has no step to fail: the leg that stood short of
+        the far block is listed as a stalled crossing, with no time, and the
+        next leg starts from where the train stands."""
+        if run.is_test:
+            self._log_crossing(run, None, None, CROSSING_STALLED)
+            run.steady_legs = 0
+            return self._restart_leg(run)
         return self._fail_step(run)
 
     def _fail_step(self, run: CalibrationRun) -> CalibrationCommand:
@@ -1119,8 +1668,9 @@ class SpeedCalibration:
         self._mark_step_crossings(run, CROSSING_DROPPED)
         self._log_crossing(run, None, None, CROSSING_FAILED_STEP)
         run.crossings = []
+        run.crossing_headings = []
         run.step_remeasured = False
-        run.step_cap_retries = 0
+        run.step_cap_retries = [0, 0]
         voltage = run.current_voltage
         self._report_step(run, None, None, None, None, 0, failed=True)
 
@@ -1174,17 +1724,25 @@ class SpeedCalibration:
             # calibration", A train that cannot get off B fails the pass).
             run.standing_reads += 1
             if run.standing_reads > CALIBRATION_OFF_B_WAIT_READS:
+                far_end = " → ".join(run.end_block_ids(run.heading_to))
                 return self.fail(
                     run,
                     f"train stopped with its tail still on {run.measured_block_id} "
-                    f"in {run.heading_toward_block_id} — check the train's length, "
-                    f"or {run.heading_toward_block_id} is too short to hold it",
+                    f"in {far_end} — check the train's length: the ends were "
+                    f"sized for {run.train_length_cm:g} cm, and {far_end} is too "
+                    "short to hold a longer train",
                 )
             return None
+        # The train stands off B in the far end, so the pass ends the leg: the
+        # run-off usually stops it short of the leg's stop in the far end's last
+        # block, so the stop's completion cannot be what ends it (design_new.md
+        # "Speed calibration", The pass ends each leg once the train stands off
+        # B). Plan step `c9e1` tears the route down only while it is still
+        # assigned, so a leg that did complete its stop is not torn down twice.
         if len(run.crossings) >= run.crossings_target:
             outcome = self._close_step(run)
             if outcome is not None:
-                return outcome
+                return replace(outcome, deactivate_route=True)
         # Whatever happened to the step, the train is standing at one end of the
         # stretch and the next leg runs back the other way. Leave it unarmed:
         # the next tick's leg branch takes the path, re-frames the span head, and
@@ -1193,7 +1751,7 @@ class SpeedCalibration:
         run.phase = PHASE_LEG
         run.leg_armed = False
         run.needs_reverse = True
-        return None
+        return CalibrationCommand(drive_voltage=0.0, deactivate_route=True)
 
     def _close_step(self, run: CalibrationRun) -> Optional[CalibrationCommand]:
         """Take the median of the step's crossings, check it against the steps
@@ -1207,6 +1765,7 @@ class SpeedCalibration:
         measured = median(run.crossings)
         crossing_count = len(run.crossings)
         run.crossings = []
+        run.crossing_headings = []
         voltage = run.current_voltage
         above = self._neighbour(run, voltage, higher=True)
         below = (
@@ -1273,7 +1832,7 @@ class SpeedCalibration:
         """Pick the next step, or finish the sweep when none is left. Returns
         the finishing command, or None when a next step was set."""
         run.step_remeasured = False
-        run.step_cap_retries = 0
+        run.step_cap_retries = [0, 0]
         run.step_failed_once = False
         run.attempt = 1
         nxt = self._plan_next_step(run)
@@ -1289,7 +1848,7 @@ class SpeedCalibration:
         - Coarse: the next coarse voltage below the step just run, until a step
           fails or the coarse steps run out.
         - Narrowing: halfway between the lowest passed step and the failed step
-          below it (or `0` V), while they are more than
+          below it (or the starting voltage), while they are more than
           `CALIBRATION_MIN_VOLTAGE_GAP_V` apart.
         - Filling: from the top down, halfway between two neighbouring passed
           steps whose samples differ by more than `CALIBRATION_FILL_SPEED_FRACTION`
@@ -1305,7 +1864,7 @@ class SpeedCalibration:
             if not just_failed:
                 below = [
                     v
-                    for v in coarse_voltages(run.max_voltage)
+                    for v in coarse_voltages(run.max_voltage, run.starting_voltage)
                     if v < run.current_voltage - _VOLTAGE_EPSILON
                 ]
                 if below:
@@ -1316,7 +1875,7 @@ class SpeedCalibration:
                 upper = passed[0].track_voltage
                 lower = max(
                     (v for v in run.failed_voltages if v < upper - _VOLTAGE_EPSILON),
-                    default=0.0,
+                    default=max(0.0, run.starting_voltage),
                 )
                 if upper - lower > gap + _VOLTAGE_EPSILON:
                     return round((upper + lower) / 2.0, 6), STEP_NARROWING
@@ -1466,21 +2025,22 @@ class SpeedCalibration:
             success=True,
             reason=self._measured_reason(run),
         )
-        # A sweep reached here by ordinary stop completion (the final leg
-        # reached the far block) needs no route op — its route already finished.
-        # A sweep that ends on a failed step still holds a RUNNING leg route, so
-        # that caller passes deactivate_route=True to tear it down.
+        # Every caller still holds the last leg's route — the final leg's
+        # stopping branch or a failed step — and asks for it to be torn down;
+        # `RouteExecutor` skips a route already gone.
         return CalibrationCommand(
             drive_voltage=0.0, deactivate_route=deactivate_route
         )
 
     def _measured_reason(self, run: CalibrationRun) -> str:
-        """What a finished pass reports, naming the starting voltage it found."""
+        """What a finished pass reports, naming the lowest voltage that ran
+        every crossing."""
         curve = self.measured_curve(run)
         start_v, start_kmh = curve[0]
         return (
-            f"measured {len(curve)} points; starting voltage {start_v:g} V at "
-            f"{start_kmh:.1f} km/h — pick a profile to write"
+            f"measured {len(curve)} points; the lowest voltage that ran every "
+            f"crossing is {start_v:g} V at {start_kmh:.1f} km/h — pick a profile "
+            "to write"
         )
 
     # -- runtime hook -----------------------------------------------------
@@ -1526,26 +2086,33 @@ class SpeedCalibration:
 
         `entered` holds only entries attribution credited to the calibration
         train, so another train moving elsewhere cannot start or stop the clock.
-        It writes three facts that Plan step `c9e1` reads the same tick:
+        It writes four facts that Plan step `c9e1` reads the same tick:
 
-          * `overrun_seen` when any entry lies outside the stretch, in either
-            half of the leg;
+          * `overrun_seen` when any entry lies outside the stretch — B and both
+            ends, run-off blocks included — in either half of the leg;
           * `crossing_started_at` when B confirms on an armed leg whose clock has
             not started;
           * `crossing_finished_at` when the far outer block confirms on a later
-            read after the clock started.
+            read after the clock started;
+          * `far_end_reached`, the deepest block of the far end confirmed on
+            this leg, which the run-off reads.
 
         A leg that is not armed yet records no crossing: the leg arms in Plan
         after this, and arming resets all three.
         """
-        if run.phase == PHASE_MOVING:
+        if run.phase == PHASE_MOVING or run.ending:
             # The move times nothing and may run through blocks outside the
-            # stretch on its way in.
+            # stretch on its way in; an ending run takes no sample.
             return
         entered = set(entered)
-        stretch = {run.measured_block_id, *run.outer_block_ids}
+        stretch = set(run.stretch_block_ids)
         if entered - stretch:
             run.overrun_seen = True
+        if run.leg_armed:
+            far_end = run.end_block_ids(run.heading_to)
+            for position, block_id in enumerate(far_end):
+                if block_id in entered and position > run.far_end_reached:
+                    run.far_end_reached = position
         if run.phase != PHASE_LEG or not run.leg_armed:
             return
         if run.crossing_started_at is None:
@@ -1597,7 +2164,7 @@ class SpeedCalibration:
             path_present=plan is not None,
             held_short=is_stopped
             and plan is not None
-            and self._last_reserved_block(plan) != run.heading_toward_block_id,
+            and self._last_reserved_block(plan) != run.heading_end_block_id,
             outer_block_index=self._outer_block_index(run, controller),
             measured_block_held=self._on_measured_block(run, controller),
             measured_block_listed=holder is not None
@@ -1626,13 +2193,16 @@ class SpeedCalibration:
         return holder is not None and holder(run.measured_block_id) == run.train_id
 
     def _outer_block_index(self, run: CalibrationRun, controller) -> Optional[int]:
-        """Which outer block the train stands in, the head's block first, or
-        None when its span is in neither."""
+        """Which end of the stretch the train stands in, the head's block
+        first, or None when its span is in neither (design_new.md "Speed
+        calibration", The pass first moves the train into an end of the
+        stretch)."""
         blocks = list(getattr(controller.get_current_span(), "occupied_blocks", ()) or ())
         head = self._head_block(controller)
         for block_id in [head, *blocks]:
-            if block_id and block_id in run.outer_block_ids:
-                return run.outer_block_ids.index(block_id)
+            index = run.end_index_of(block_id)
+            if index is not None:
+                return index
         return None
 
     @staticmethod
@@ -1710,6 +2280,10 @@ class SpeedCalibration:
         abandonment/finish paths zeroed).
         """
         run = self.runs.get(train_id)
+        if run is not None and run.ending:
+            # Stopping before the run ends: half the drive it had, then none.
+            value = run.ending_drive * 0.5 if run.half_power else 0.0
+            return CalibrationPropulsionOverride(track_voltage=float(value))
         if run is not None and run.phase == PHASE_MOVING:
             value = 0.0
             if (
@@ -1774,8 +2348,9 @@ class SpeedCalibration:
 
         Writes two fields and no others: `voltage_speed_curve` from the pass's
         samples and `calibrated_at` from the wall clock (design_new.md "Speed
-        calibration", What commit writes). It must not write `lighting_voltage`,
-        a motion rate, a notch table, or `model`.
+        calibration", What commit writes). It must not write `lighting_voltage`
+        or `starting_voltage` (the It moves save wrote them), a motion rate, a
+        notch table, or `model`.
 
         Which records arrive here is the operator's commit-target choice,
         resolved by the caller. `target_profile` is the record the two fields are
@@ -1783,9 +2358,10 @@ class SpeedCalibration:
         locomotive**, or the model profile the instance derives from for
         **Promote to model**. On promote, `clear_profile` is that instance, whose
         two measured fields are cleared in the same commit so it falls back to
-        following the freshly-written model. The caller checks the lighting
-        voltages of the profiles that will run on the curve (design_new.md "A
-        commit keeps every lighting voltage below the starting voltage").
+        following the freshly-written model. The caller checks every profile
+        that will run on the curve and clears the ATO minimum voltage of each
+        whose curve changes (design_new.md "A commit clears the ATO minimum
+        voltage of every locomotive whose curve it changes").
         """
         run = self.runs.get(train_id)
         if run is None:
@@ -1810,6 +2386,7 @@ class SpeedCalibration:
             clear_profile.voltage_speed_curve = None
             clear_profile.calibrated_at = None
         self.runs.pop(train_id, None)
+        self._queue_give_back(run)
         self._emit_command_result(
             train_id,
             operation="speed_calibration",
@@ -1942,6 +2519,39 @@ class SpeedCalibration:
             )
         except Exception:
             pass
+
+
+def _profile_key(profile) -> Tuple:
+    """A resolved profile's starting voltage and curve, which an ATO minimum
+    test was run against."""
+    return (
+        float(getattr(profile, "starting_voltage", 0.0) or 0.0),
+        tuple(tuple(map(float, p)) for p in (profile.voltage_speed_curve or [])),
+    )
+
+
+def profile_key(profile) -> Tuple:
+    """Public alias of `_profile_key`, for the commit's check."""
+    return _profile_key(profile)
+
+
+def _runoff_pair(runoff_block_ids) -> Tuple[Tuple[str, ...], Tuple[str, ...]]:
+    """Each end's run-off blocks as a pair of tuples."""
+    pair = [tuple(blocks or ()) for blocks in tuple(runoff_block_ids or ())[:2]]
+    while len(pair) < 2:
+        pair.append(())
+    return pair[0], pair[1]
+
+
+def _lengths_pair(end_lengths_cm) -> Tuple[Tuple[float, ...], Tuple[float, ...]]:
+    """Each end's block lengths as a pair of tuples of floats."""
+    pair = [
+        tuple(float(v or 0.0) for v in (lengths or ()))
+        for lengths in tuple(end_lengths_cm or ())[:2]
+    ]
+    while len(pair) < 2:
+        pair.append(())
+    return pair[0], pair[1]
 
 
 def _clamp(value: float, low: float, high: float) -> float:

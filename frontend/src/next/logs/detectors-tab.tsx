@@ -16,13 +16,16 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 
 import { api } from '../../lib/api';
+import { stateManager } from '../../lib/state-manager';
 import {
   FILTER_OPTIONS,
   FLASH_MS,
+  RAIL_SAMPLES,
   REFRESH_OPTIONS,
   buildRows,
   changedBlocks,
   describeLink,
+  summarizeRailReadings,
   type OccupancyFilter,
   type OccupancyRow,
   type RawOccupancySnapshot,
@@ -90,6 +93,40 @@ export function DetectorsTab() {
 
   useRatePoll(read, hz);
 
+  // Rail voltage: what each block's current sensor measures on the rails. Each
+  // reading is a bus transaction, so it runs only when the button is pressed,
+  // never on the refresh above.
+  const [rail, setRail] = useState<Record<string, Array<number | null>>>({});
+  const [railBusy, setRailBusy] = useState(false);
+  const readRail = async () => {
+    const ids = Object.keys(last.current?.blocks || {}).sort();
+    if (!ids.length || railBusy) return;
+    setRailBusy(true);
+    const next: Record<string, Array<number | null>> = {};
+    try {
+      for (const id of ids) {
+        const samples: Array<number | null> = [];
+        for (let i = 0; i < RAIL_SAMPLES; i++) {
+          let volts: number | null = null;
+          try {
+            const res: any = await api.getBlockVoltage(id);
+            volts = typeof res?.voltage === 'number' ? res.voltage : null;
+          } catch {
+            volts = null;
+          }
+          samples.push(volts);
+          // No sensor, or a failed read: reading again would only repeat it
+          // (and its warning in the event log).
+          if (volts === null) break;
+        }
+        next[id] = samples;
+      }
+      setRail(next);
+    } finally {
+      setRailBusy(false);
+    }
+  };
+
   const changeRate = (value: string) => {
     const next = Number(value);
     const rate = Number.isFinite(next) ? next : DEFAULT_HZ;
@@ -131,6 +168,15 @@ export function DetectorsTab() {
         <button class="occ-icon-btn" type="button" title="Read now" aria-label="Read now" onClick={() => void read()}>
           ↻
         </button>
+        <button
+          class="btn btn-secondary btn-sm occ-rail-btn"
+          type="button"
+          disabled={railBusy || !total}
+          title={`Read the voltage on each block's rails from its current sensor, ${RAIL_SAMPLES} times, and show the average`}
+          onClick={() => void readRail()}
+        >
+          {railBusy ? 'Reading…' : 'Read rail voltage'}
+        </button>
       </div>
       {/* The USB link strip shows only when there is a link to report, so in
           Simulation it is absent rather than a permanent row saying nothing. */}
@@ -143,6 +189,7 @@ export function DetectorsTab() {
           flashing={flashing}
           flips={flips.current}
           total={total}
+          rail={rail}
         />
       </div>
       <div class="occ-footer">
@@ -165,8 +212,9 @@ function DetectorRows(props: {
   flashing: ReadonlySet<string>;
   flips: ReadonlyMap<string, number>;
   total: number;
+  rail: Record<string, Array<number | null>>;
 }) {
-  const { snapshot, error, filter, flashing, flips, total } = props;
+  const { snapshot, error, filter, flashing, flips, total, rail } = props;
   const picked = pickedBlockId.value;
   if (error) return <div class="empty-state empty-state-error">{error}</div>;
   if (!snapshot) return <div class="empty-state">Reading…</div>;
@@ -201,6 +249,7 @@ function DetectorRows(props: {
         <span>Source</span>
         <span>Reading</span>
         <span>Drive</span>
+        <span title="The voltage measured on the rails by the block's current sensor. Press Read rail voltage to read it.">Rail</span>
         <span class="occ-col-state" title="Raw read · Confirmed verdict">
           Raw · Conf
         </span>
@@ -211,13 +260,26 @@ function DetectorRows(props: {
           row={row}
           flashing={flashing.has(row.blockId)}
           picked={row.blockId === picked}
+          rail={rail[row.blockId]}
         />
       ))}
     </>
   );
 }
 
-function DetectorRow({ row, flashing, picked }: { row: OccupancyRow; flashing: boolean; picked: boolean }) {
+function DetectorRow({
+  row,
+  flashing,
+  picked,
+  rail,
+}: {
+  row: OccupancyRow;
+  flashing: boolean;
+  picked: boolean;
+  /** This block's rail voltage readings, or undefined before the first press. */
+  rail?: Array<number | null>;
+}) {
+  const railCell = rail ? summarizeRailReadings(rail) : null;
   const el = useRef<HTMLDivElement>(null);
   // Scroll the picked row into view when it is picked, not on every read.
   useLayoutEffect(() => {
@@ -227,9 +289,15 @@ function DetectorRow({ row, flashing, picked }: { row: OccupancyRow; flashing: b
   if (row.settling) classes.push('occ-row-settling');
   if (flashing) classes.push('occ-row-flash');
   if (picked) classes.push('row-selected');
+  // The block's name ("Main", "Left") is what an operator recognises on the
+  // layout; the id goes under it so a row still matches the event log.
+  const name = String((stateManager.get('blocks', row.blockId) as any)?.name || '').trim();
   return (
     <div class={classes.join(' ')} ref={el}>
-      <span class="occ-block">{row.blockId}</span>
+      <span class="occ-block" title={row.blockId}>
+        {name || row.blockId}
+        {name && <span class="occ-block-id">{row.blockId}</span>}
+      </span>
       <span class="occ-source">
         {row.source && <span class={`chip chip-${row.sourceTone}`}>{row.source}</span>}
       </span>
@@ -241,6 +309,9 @@ function DetectorRow({ row, flashing, picked }: { row: OccupancyRow; flashing: b
       <span class="occ-drive">
         {row.drive}
         {row.zone && <span class="occ-zone">{row.zone}</span>}
+      </span>
+      <span class="occ-rail" title={railCell?.detail}>
+        {railCell ? railCell.text : <span class="occ-dash">—</span>}
       </span>
       <span class="occ-state">
         <i class={`occ-dot${row.raw ? ' occ-dot-on' : ''}`} title={`Raw read: ${row.raw ? 'present' : 'clear'}`} />

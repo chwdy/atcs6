@@ -120,8 +120,8 @@ class PhysicsCommand:
         handle already aims at an ATC-aware target, so it needs no physics cap.
         For ATO, `target_speed_kmh` carries the ATO output's commanded speed,
         which physics reads to tell a train ATO drives from one it stops
-        (design_new.md "TrainPhysics", A moving train never runs below its
-        starting speed).
+        (design_new.md "TrainPhysics", An ATO train never runs below its ATO
+        minimum speed).
       - PHYSICS_KIND_TARGET_SPEED: speed snaps directly to
         `target_speed_kmh` (used for the manual `power_percent` submode).
         The controller has already clamped this against the live ATC limit
@@ -137,6 +137,11 @@ class PhysicsCommand:
     (design_new.md "TrainPhysics", A powered train that nothing drives outputs
     `lighting_voltage`).
 
+    `speed_floor_kmh` is the slowest speed above `0` the train may run at this
+    tick: the train's ATO minimum speed for a train in `ato` mode, and `0` for
+    every other command, so a manual train has no floor (design_new.md
+    "TrainPhysics", An ATO train never runs below its ATO minimum speed).
+
     `voltage_source_track_voltage` is the exact voltage magnitude the emitter
     must put on the rails this tick, in place of a voltage derived from a speed.
     It is set under an emergency cut-out (`0`), and while a speed-calibration
@@ -150,3 +155,4 @@ class PhysicsCommand:
     voltage_source_speed_kmh: float = 0.0
     voltage_source_track_voltage: Optional[float] = None
     atc_limit_kmh: Optional[float] = None
+    speed_floor_kmh: float = 0.0

@@ -62,6 +62,10 @@
     justify-content: center;
 }
 
+.occ-rail-btn {
+    margin-left: auto;
+}
+
 .occ-icon-btn:hover {
     border-color: var(--accent-color);
     color: var(--accent-hover);
@@ -112,6 +116,7 @@
         minmax(52px, 0.7fr)
         minmax(66px, 1fr)
         minmax(60px, 0.9fr)
+        minmax(52px, 0.7fr)
         62px;
     align-items: center;
     gap: 8px;
@@ -165,12 +170,22 @@
     white-space: nowrap;
 }
 
+.occ-block-id {
+    display: block;
+    font-size: 10px;
+    font-weight: 400;
+    color: var(--text-tertiary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
 .occ-source {
     min-width: 0;
 }
 
 .occ-reading,
-.occ-drive {
+.occ-drive,
+.occ-rail {
     font-family: var(--font-mono);
     font-size: 11px;
     color: var(--text-primary);

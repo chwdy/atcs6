@@ -199,9 +199,14 @@ interface HoverPreview {
  * _drawLive (see BuildPreview). */
 interface TrainGhost {
   tiles: Array<{ x: number; y: number }>;
-  headTile: { x: number; y: number };
-  facing: string;
-  fits: boolean;
+  headTile?: { x: number; y: number };
+  facing?: string;
+  fits?: boolean;
+  // Each way the front can point, numbered like its button in the panel: a
+  // marker on the edge the front would leave `x,y` by. `active` is the chosen
+  // (or hovered) one. Two ends of a bent block can share a compass edge, so the
+  // number, not the compass word, is what tells them apart.
+  ends?: Array<{ x: number; y: number; edge: string; n: number; active: boolean }>;
 }
 
 // One entity the committed selection touches (a block, platform, switch, or
@@ -1016,7 +1021,8 @@ class Renderer {
   // track and block colors read through — it's a preview, not a committed entity.
   _drawTrainGhost(): void {
     const g = this.trainGhost;
-    if (!g || !g.tiles || g.tiles.length === 0) return;
+    if (!g) return;
+    if ((!g.tiles || g.tiles.length === 0) && !(g.ends && g.ends.length)) return;
     const ctx = this.ctx;
     const p = getCanvasPalette();
     const s = this.scale;
@@ -1038,7 +1044,7 @@ class Renderer {
     const v2y = (ey - ny) / 2;
     ctx.save();
     ctx.fillStyle = withAlpha(ghostColor, 0.32);
-    for (const t of g.tiles) {
+    for (const t of g.tiles || []) {
       const cx = this.gridToScreenX(t.x, t.y);
       const cy = this.gridToScreenY(t.x, t.y);
       ctx.beginPath();
@@ -1048,6 +1054,11 @@ class Renderer {
       ctx.lineTo(cx - v2x, cy - v2y);
       ctx.closePath();
       ctx.fill();
+    }
+    this._drawFrontEndMarkers(g.ends || [], ghostColor);
+    if (!g.headTile || !g.facing || !g.tiles || g.tiles.length === 0) {
+      ctx.restore();
+      return;
     }
     // Head arrow pointing along the facing edge (head is tiles[0]).
     const hx = this.gridToScreenX(g.headTile.x, g.headTile.y);
@@ -1073,6 +1084,41 @@ class Renderer {
     ctx.fillStyle = withAlpha(ghostColor, 0.9);
     ctx.fill();
     ctx.restore();
+  }
+
+  /** Numbered markers for the ways a train's front can point, each sitting on
+   *  the tile edge the front would leave by. The chosen one is filled; the
+   *  others are outlined, so the operator can match the panel's buttons to the
+   *  places on the track. */
+  _drawFrontEndMarkers(ends: NonNullable<TrainGhost['ends']>, color: string): void {
+    if (!ends.length) return;
+    const ctx = this.ctx;
+    const p = getCanvasPalette();
+    const off: Record<string, [number, number]> = { N: [0, 1], E: [1, 0], S: [0, -1], W: [-1, 0] };
+    const r = Math.min(Math.max(7, this.scale * 3.2), 13);
+    for (const e of ends) {
+      const d = off[e.edge] || [1, 0];
+      // The edge midpoint is halfway to the neighbouring tile's centre; the
+      // marker sits just past it so it does not cover the rail join.
+      const cx = this.gridToScreenX(e.x, e.y);
+      const cy = this.gridToScreenY(e.x, e.y);
+      const nx = this.gridToScreenX(e.x + d[0], e.y + d[1]);
+      const ny = this.gridToScreenY(e.x + d[0], e.y + d[1]);
+      const mx = cx + (nx - cx) * 0.62;
+      const my = cy + (ny - cy) * 0.62;
+      ctx.beginPath();
+      ctx.arc(mx, my, r, 0, Math.PI * 2);
+      ctx.fillStyle = e.active ? withAlpha(color, 0.95) : withAlpha(p.bg, 0.85);
+      ctx.fill();
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = withAlpha(color, 0.95);
+      ctx.stroke();
+      ctx.fillStyle = e.active ? p.bg : color;
+      ctx.font = `600 ${Math.round(r * 1.15)}px ui-sans-serif, system-ui, sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(String(e.n), mx, my + 0.5);
+    }
   }
 
   setPendingTunnelEndpoint(endpoint: { x: number; y: number; edge: string } | null): void {

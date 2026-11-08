@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { SpeedProfileEditorHandler, type SpeedProfilePanelHost } from './editor-speed-profiles';
+import { stateManager } from '../lib/state-manager';
 
 // Where the Speed Profile panel draws: the panel host without a host
 // element, or the host's element (the Locomotives screen).
@@ -19,6 +20,7 @@ function fakeEditor() {
         own_fields: [],
         max_voltage: 12,
         lighting_voltage: 1.5,
+        starting_voltage: 1.8,
         voltage_speed_curve: [
           [2, 10],
           [6, 40],
@@ -136,13 +138,17 @@ describe('SpeedProfileEditorHandler curve and lighting voltage', () => {
     expect(host.el.textContent).toContain('Voltage → speed curve');
   });
 
-  it('shows the starting voltage, starting speed and top speed read off the curve', async () => {
+  it('shows the starting voltage, the ATO minimum read off the curve, and the top speed', async () => {
     const { $ } = await openPanel();
-    expect($('#sp-start-v').textContent).toBe('2');
-    expect($('#sp-start-s').textContent).toBe('10');
+    expect($<HTMLInputElement>('#sp-startv').value).toBe('1.8');
+    // A model profile has no ATO minimum voltage of its own: ATO runs from the
+    // curve's first point above the starting voltage until a locomotive sets one.
+    expect($('#sp-atomin-v').textContent).toBe('2');
+    expect($('#sp-atomin-v').nextElementSibling?.textContent).toBe('V for a locomotive that sets none');
+    expect($('#sp-atomin-s').textContent).toBe('10');
     expect($('#sp-top-s').textContent).toBe('100');
-    // The point list: the first point's voltage is editable (the starting
-    // voltage); the last point's voltage is the max voltage, set in its own field.
+    // The point list: the first point's voltage is editable; the last point's
+    // voltage is the max voltage, set in its own field.
     const xs = Array.from(document.querySelectorAll<HTMLInputElement>('#sp-curve-list .sp-px'));
     expect(xs.map((x) => x.value)).toEqual(['2', '6', '12']);
     expect(xs.map((x) => x.disabled)).toEqual([false, false, true]);
@@ -151,7 +157,50 @@ describe('SpeedProfileEditorHandler curve and lighting voltage', () => {
   it('shows the lighting voltage in a plain field, with the hint that it stays below the starting voltage', async () => {
     const { $ } = await openPanel();
     expect($<HTMLInputElement>('#sp-lighting').value).toBe('1.5');
-    expect($('#sp-lighting-hint').textContent).toContain('below the starting voltage (2 V)');
+    expect($('#sp-lighting-hint').textContent).toContain('below the starting voltage (1.8 V)');
+  });
+
+  it('saves a changed name, trimmed, and only that field', async () => {
+    const { editor, $ } = await openPanel();
+    expect($<HTMLInputElement>('#sp-name').value).toBe('p1');
+    typeInto($<HTMLInputElement>('#sp-name'), '  Kato EF66 ', 'change');
+    await vi.advanceTimersByTimeAsync(1);
+    expect(editor.api.updateSpeedProfile).toHaveBeenCalledWith('p1', { name: 'Kato EF66' });
+  });
+
+  it("lets a locomotive's own profile change its name, while its model field stays read-only", async () => {
+    const editor = fakeEditor();
+    const base = editor.api.getSpeedProfile;
+    editor.api.getSpeedProfile = vi.fn(async (id: string) => ({
+      ...(await base(id)),
+      derived_from: 'model',
+    })) as any;
+    const handler = new SpeedProfileEditorHandler(editor);
+    const host = fakeHost();
+    document.body.appendChild(host.el);
+    handler.setHost(host);
+    await handler.showProfileEditor('p1');
+    await vi.advanceTimersByTimeAsync(1);
+    expect(host.el.querySelector('input#sp-model')).toBeNull();
+    const name = host.el.querySelector('#sp-name') as HTMLInputElement;
+    typeInto(name, 'EF66 #2', 'change');
+    await vi.advanceTimersByTimeAsync(1);
+    expect(editor.api.updateSpeedProfile).toHaveBeenCalledWith('p1', { name: 'EF66 #2' });
+  });
+
+  it('saves a changed starting voltage, and only that field', async () => {
+    const { editor, $ } = await openPanel();
+    typeInto($<HTMLInputElement>('#sp-startv'), '1.9', 'change');
+    await vi.advanceTimersByTimeAsync(1);
+    expect(editor.api.updateSpeedProfile).toHaveBeenCalledWith('p1', { starting_voltage: 1.9 });
+  });
+
+  it('does not send a starting voltage at or below the lighting voltage, and says why', async () => {
+    const { editor, $ } = await openPanel();
+    typeInto($<HTMLInputElement>('#sp-startv'), '1.5', 'change');
+    await vi.advanceTimersByTimeAsync(1);
+    expect(editor.api.updateSpeedProfile).not.toHaveBeenCalled();
+    expect($('#sp-volts-hint').textContent).toContain('Not saved');
   });
 
   it('saves a changed lighting voltage, and only that field', async () => {
@@ -211,9 +260,45 @@ describe('SpeedProfileEditorHandler curve and lighting voltage', () => {
     typeInto($<HTMLInputElement>('#cv-vs-s'), '0', 'input');
     expect($<HTMLInputElement>('#cv-vs-v').value).toBe('1.5'); // 0 km/h is the lighting voltage
     typeInto($<HTMLInputElement>('#cv-ps-p'), '50', 'input');
-    expect($<HTMLInputElement>('#cv-ps-s').value).toBe('55'); // halfway from 10 to 100 km/h
-    expect($('#cv-ps-v').textContent).toBe('50% drives 7.5 V on the rails.');
+    expect($<HTMLInputElement>('#cv-ps-s').value).toBe('50'); // half the 100 km/h top speed
+    expect($('#cv-ps-v').textContent).toBe('50% drives 7 V on the rails.');
     typeInto($<HTMLInputElement>('#cv-ps-s'), '100', 'input');
     expect($<HTMLInputElement>('#cv-ps-p').value).toBe('100');
+  });
+});
+
+describe('SpeedProfileEditorHandler calibration group', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    (HTMLCanvasElement.prototype as any).getContext = () => ({});
+  });
+  afterEach(() => {
+    delete (HTMLCanvasElement.prototype as any).getContext;
+    stateManager.removeEntity('trains', 'T9');
+    vi.useRealTimers();
+    document.body.innerHTML = '';
+  });
+
+  it("naming a train on a model profile opens the train's own profile, where its runs save", async () => {
+    stateManager.updateEntity('trains', 'T9', { id: 'T9', car_number: '9', speed_profile_id: 'model__T9' });
+    const editor = fakeEditor();
+    editor.api.getSpeedProfiles = vi.fn(async () => [
+      { profile_id: 'model', derived_from: null },
+      { profile_id: 'model__T9', derived_from: 'model' },
+    ]) as any;
+    (editor.api as any).getCalibration = vi.fn(async () => ({ open: false }));
+    (editor.api as any).getCalibrationReadiness = vi.fn(async () => ({ unmet: [] }));
+    const handler = new SpeedProfileEditorHandler(editor);
+    const host = fakeHost();
+    document.body.appendChild(host.el);
+    handler.setHost(host);
+    await handler.showProfileEditor('model', { trainId: null });
+    await vi.advanceTimersByTimeAsync(1);
+    const select = host.el.querySelector('#sp-cal-train') as HTMLSelectElement;
+    expect(Array.from(select.options).map((o) => o.value)).toContain('T9');
+    select.value = 'T9';
+    select.dispatchEvent(new Event('change'));
+    await vi.advanceTimersByTimeAsync(1);
+    expect(host.profileShown).toHaveBeenLastCalledWith('model__T9');
   });
 });

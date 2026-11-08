@@ -25,7 +25,6 @@ from constants import (
     CALIBRATION_MOVE_VOLTAGE_V,
     CALIBRATION_OFF_B_WAIT_READS,
     CALIBRATION_ROUND_TRIPS,
-    CALIBRATION_RUNOFF_MARGIN_CM,
     CALIBRATION_STEP_TIMEOUT_S,
     CALIBRATION_VOLTAGE_STEP_V,
     OCCUPANCY_OFF_THRESHOLD,
@@ -46,6 +45,7 @@ from speed_calibration import (
     coarse_voltages,
 )
 from speed_profile import make_default_speed_profile
+from tests.train_test_helpers import skip_calibration_trials
 
 BLOCK_LENGTH_CM = 100.0
 
@@ -68,6 +68,7 @@ def _open_run(cal=None, train=None, **kwargs):
         block_length_cm=BLOCK_LENGTH_CM,
         **kwargs,
     )
+    skip_calibration_trials(run)
     return cal, run, profile
 
 
@@ -196,13 +197,24 @@ def test_the_starting_voltage_is_the_lowest_step_that_passed():
     assert curve[0][0] - max(run.failed_voltages) <= CALIBRATION_MIN_VOLTAGE_GAP_V + 1e-9
 
 
-def test_the_narrowing_runs_down_to_zero_when_every_coarse_step_passes():
-    """When even the lowest coarse step passes, the lower bound is `0` V."""
-    cal, run, _profile = _open_run()
+def test_the_narrowing_runs_down_to_the_starting_voltage_when_every_coarse_step_passes():
+    """When even the lowest coarse step passes, the lower bound is the starting
+    voltage (design_new.md "Speed calibration", The pass narrows in on the
+    lowest voltage that runs every crossing): no step runs at or below it."""
+    cal, run, profile = _open_run()
     _run_full_pass(cal, run, loco=lambda v: 10.0 + 7.5 * v)
     assert run.phase == PHASE_MEASURED, run.failure_reason
     curve = cal.measured_curve(run)
-    assert curve[0][0] <= CALIBRATION_MIN_VOLTAGE_GAP_V + 1e-9
+    starting = profile.starting_voltage
+    assert starting < curve[0][0] <= starting + CALIBRATION_MIN_VOLTAGE_GAP_V + 1e-9
+
+
+def test_the_coarse_steps_stay_above_the_starting_voltage():
+    """design_new.md "Speed calibration", The sweep runs down from
+    `max_voltage` in `CALIBRATION_VOLTAGE_STEP_V` steps: while the voltage stays
+    above the starting voltage."""
+    assert coarse_voltages(12.0, 4.0) == [12.0, 10.0, 8.0, 6.0]
+    assert coarse_voltages(12.0, 1.0) == [12.0, 10.0, 8.0, 6.0, 4.0, 2.0]
 
 
 def test_filling_needs_room_between_the_two_steps():
@@ -799,13 +811,16 @@ def test_a_capped_crossing_is_discarded_and_the_pass_goes_on():
 
 def test_a_stretch_that_caps_every_crossing_fails_the_pass():
     """When one step is capped on CALIBRATION_CAP_RETRY_LIMIT consecutive
-    crossings — the stretch is too short for that step even at the zero
-    reservation-end standoff — the pass fails and reports rather than shuttling
-    forever (design_new.md, "A capped crossing is discarded")."""
+    crossings in one direction — the stretch is too short for that step even at
+    the zero reservation-end standoff — the pass fails and reports rather than
+    shuttling forever (design_new.md, "A capped crossing is discarded"). Legs
+    alternate, so with every crossing capped the limit-th one in the first
+    direction is crossing 2 * limit - 1."""
     cal, run, profile = _open_run()
     curve_before = list(profile.voltage_speed_curve)
     clock = 0.0
-    for i in range(CALIBRATION_CAP_RETRY_LIMIT):
+    crossings = 2 * CALIBRATION_CAP_RETRY_LIMIT - 1
+    for i in range(crossings):
         cal.advance(run, CalibrationObservation(now=clock))  # arm the leg
         far = run.heading_toward_block_id
         clock += 1.0
@@ -816,7 +831,7 @@ def test_a_stretch_that_caps_every_crossing_fails_the_pass():
         )
         clock += 2.0
         _observe(cal, run, clock, (far,))
-        if i < CALIBRATION_CAP_RETRY_LIMIT - 1:
+        if i < crossings - 1:
             # Under the limit: the crossing is discarded, the pass continues, and
             # the train stops so the next leg reverses.
             assert run.phase != PHASE_FAILED
@@ -829,6 +844,57 @@ def test_a_stretch_that_caps_every_crossing_fails_the_pass():
     # Nothing was banked; the profile's curve is untouched.
     assert run.samples == []
     assert profile.voltage_speed_curve == curve_before
+
+
+def test_a_clean_crossing_the_other_way_does_not_reset_the_cap_count():
+    """The counts are per direction: a stretch that caps only one direction
+    still reaches the limit while the other direction measures cleanly."""
+    cal, run, _profile = _open_run()
+    clock = 0.0
+    capped = 0
+    for _ in range(4 * CALIBRATION_CAP_RETRY_LIMIT):
+        cal.advance(run, CalibrationObservation(now=clock))  # arm the leg
+        far = run.heading_toward_block_id
+        clock += 1.0
+        _observe(cal, run, clock, ("B",))
+        if far == "C":
+            cal.taint_current_crossing("T1", "reservation-end braking")
+            capped += 1
+        clock += 2.0
+        _observe(cal, run, clock, (far,))
+        if run.phase == PHASE_FAILED:
+            break
+        clock += 1.0
+        cal.advance(run, CalibrationObservation(now=clock, is_stopped=True))
+    assert run.phase == PHASE_FAILED
+    assert "toward C" in run.failure_reason
+    assert capped == CALIBRATION_CAP_RETRY_LIMIT
+    assert run.samples == []
+
+
+def test_a_crossing_in_a_direction_that_has_its_count_is_not_needed():
+    """design_new.md "Speed calibration", A capped crossing is discarded: a
+    measured crossing in a direction that already has CALIBRATION_ROUND_TRIPS
+    is not used, and the step waits for the other direction."""
+    from speed_calibration import CROSSING_NOT_NEEDED
+
+    cal, run, _profile = _open_run()
+    clock = 0.0
+    for _ in range(3 * CALIBRATION_ROUND_TRIPS):
+        cal.advance(run, CalibrationObservation(now=clock))  # arm the leg
+        far = run.heading_toward_block_id
+        clock += 1.0
+        _observe(cal, run, clock, ("B",))
+        if far == "A":
+            cal.taint_current_crossing("T1", "reservation-end braking")
+        clock += 2.0
+        _observe(cal, run, clock, (far,))
+        clock += 1.0
+        cal.advance(run, CalibrationObservation(now=clock, is_stopped=True))
+    outcomes = [(c.toward_block_id, c.outcome) for c in run.crossing_log]
+    assert ("C", CROSSING_NOT_NEEDED) in outcomes
+    assert run.crossing_headings.count(run.outer_block_ids.index("C")) == CALIBRATION_ROUND_TRIPS
+    assert run.samples == []
 
 
 def test_a_cap_before_the_clock_starts_discards_nothing():
@@ -874,29 +940,99 @@ def _cross_into_far_block(cal, run, *, measured_block_held):
     return 3.0
 
 
-def test_the_run_off_is_timed_from_the_measured_speed():
-    """design_new.md "Speed calibration", The run-off is timed from the measured
-    speed: after the far outer block confirms, the step's power stays on for the
-    time the train's length plus CALIBRATION_RUNOFF_MARGIN_CM takes at the speed
-    just measured, whatever B's detector says, then half power, then 0."""
-    cal, run, _profile = _open_run(train=_StubTrain(length_cm=20.0))
+def _open_run_with_runoff(train_length_cm):
+    """A run whose ends each have one run-off block past a 50 cm outer block:
+    A2 past A, C2 past C."""
+    return _open_run(
+        train=_StubTrain(length_cm=train_length_cm),
+        runoff_block_ids=(("A2",), ("C2",)),
+        end_lengths_cm=((50.0, 40.0), (50.0, 40.0)),
+    )
+
+
+def test_the_run_off_lasts_until_a_run_off_block_puts_the_tail_past_b():
+    """design_new.md "Speed calibration", The run-off lasts until the train is
+    off B: while B still reads occupied, the step's power stays on until the
+    head's entry into a run-off block shows the train's length is past B — the
+    far end's blocks before it (C, 50 cm) hold the 20 cm train — then half
+    power, then 0."""
+    cal, run, _profile = _open_run_with_runoff(20.0)
     clock = _cross_into_far_block(cal, run, measured_block_held=True)
-    speed_cm_s = BLOCK_LENGTH_CM / 2.0
-    runoff_s = (20.0 + CALIBRATION_RUNOFF_MARGIN_CM) / speed_cm_s
     assert run.phase == "clearing"
     assert cal.get_propulsion_override("T1").track_voltage == run.current_voltage
+    # Long after any timed run-off, B still reads occupied: power stays on.
     cal.advance(run, CalibrationObservation(
-        now=clock + runoff_s - 0.05, path_present=True, measured_block_held=True))
+        now=clock + 10.0, path_present=True, measured_block_held=True))
+    assert run.phase == "clearing"
     assert cal.get_propulsion_override("T1").track_voltage == run.current_voltage
-    # B still reads occupied, but the run-off is over: the stop begins.
-    end = clock + runoff_s + 0.05
-    cal.advance(run, CalibrationObservation(
-        now=end, path_present=True, measured_block_held=True))
+    # The head enters the run-off block: the train is off B by its length.
+    end = clock + 10.5
+    _observe(cal, run, end, (run.end_block_ids(run.heading_to)[1],),
+             path_present=True, measured_block_held=True)
     assert run.phase == "stopping"
     assert cal.get_propulsion_override("T1").track_voltage == run.current_voltage / 2
     cal.advance(run, CalibrationObservation(
         now=end + CALIBRATION_HALF_POWER_S + 0.1, measured_block_held=True))
     assert cal.get_propulsion_override("T1").track_voltage == 0.0
+
+
+def test_a_train_longer_than_the_blocks_before_the_run_off_block_runs_on():
+    """A 60 cm train whose head has entered the run-off block past a 50 cm outer
+    block may still have its tail on B, so the run-off goes on until B reads
+    clear."""
+    cal, run, _profile = _open_run_with_runoff(60.0)
+    clock = _cross_into_far_block(cal, run, measured_block_held=True)
+    _observe(cal, run, clock + 1.0, (run.end_block_ids(run.heading_to)[1],),
+             path_present=True, measured_block_held=True)
+    assert run.phase == "clearing"
+    cal.advance(run, CalibrationObservation(
+        now=clock + 1.5, path_present=True, measured_block_held=False))
+    assert run.phase == "stopping"
+
+
+def test_the_run_off_judges_the_tail_by_the_longer_length():
+    """The entered length is 10 cm but the pass measured 60 cm: the longer one
+    decides, so entering the run-off block past a 50 cm outer block does not
+    stop the train."""
+    cal, run, _profile = _open_run_with_runoff(10.0)
+    run.measured_length_cm = 60.0
+    clock = _cross_into_far_block(cal, run, measured_block_held=True)
+    _observe(cal, run, clock + 1.0, (run.end_block_ids(run.heading_to)[1],),
+             path_present=True, measured_block_held=True)
+    assert run.phase == "clearing"
+
+
+def test_a_run_off_block_is_not_an_overrun():
+    """design_new.md "Speed calibration", A leg that overruns the stretch fails
+    the pass: only a block past the far end is an overrun."""
+    cal, run, _profile = _open_run_with_runoff(20.0)
+    clock = _cross_into_far_block(cal, run, measured_block_held=True)
+    _observe(cal, run, clock + 1.0, (run.end_block_ids(run.heading_to)[1],),
+             path_present=True, measured_block_held=True)
+    assert run.phase != PHASE_FAILED
+    assert run.overrun_seen is False
+
+
+def test_the_run_off_ends_when_the_train_stands():
+    """With no run-off block to prove the train is off B, the run-off ends when
+    the ATC limit has held the train at its reservation end."""
+    cal, run, _profile = _open_run(train=_StubTrain(length_cm=20.0))
+    clock = _cross_into_far_block(cal, run, measured_block_held=True)
+    assert run.phase == "clearing"
+    cal.advance(run, CalibrationObservation(
+        now=clock + 4.0, path_present=True, is_stopped=True, measured_block_held=True))
+    assert run.phase == "stopping"
+
+
+def test_the_pass_ends_the_leg_once_the_standing_train_is_off_b():
+    """design_new.md "Speed calibration", The pass ends each leg once the train
+    stands off B: the command asks for the leg route to be torn down."""
+    cal, run, _profile = _open_run()
+    clock = _cross_into_far_block(cal, run, measured_block_held=False)
+    command = cal.advance(run, CalibrationObservation(
+        now=clock + CALIBRATION_HALF_POWER_S + 1.0, is_stopped=True))
+    assert command is not None and command.deactivate_route is True
+    assert run.phase == "leg"
 
 
 def test_the_run_off_ends_at_once_when_b_reads_clear():
@@ -940,8 +1076,10 @@ def test_a_train_that_stops_with_its_tail_on_b_fails():
     pass: still on B after CALIBRATION_OFF_B_WAIT_READS standing reads."""
     cal, run, _profile = _open_run()
     clock = _cross_into_far_block(cal, run, measured_block_held=True) + 2.0
-    # The run-off ends and the half-power stop runs its course first.
-    cal.advance(run, CalibrationObservation(now=clock, measured_block_held=True))
+    # The ATC limit holds the train at its reservation end, which ends the
+    # run-off; the half-power stop runs its course first.
+    cal.advance(run, CalibrationObservation(
+        now=clock, is_stopped=True, measured_block_held=True))
     clock += CALIBRATION_HALF_POWER_S
     for _ in range(CALIBRATION_OFF_B_WAIT_READS):
         clock += 0.1
@@ -977,7 +1115,6 @@ def test_the_pass_measures_the_train_length_from_b_clearing():
     _release_b_after(cal, run, clock, lag + 4)
     # 4 reads of 0.1 s at 50 cm/s between head into C and tail off B.
     assert run.measured_length_cm == pytest.approx(20.0)
-    assert run.runoff_length_cm() == pytest.approx(20.0 + CALIBRATION_RUNOFF_MARGIN_CM)
 
 
 def test_the_pass_keeps_the_shortest_length_it_measures():

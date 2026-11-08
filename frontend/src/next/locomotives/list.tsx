@@ -8,8 +8,10 @@ import {
   formatNumber,
   modelProfiles,
   placedTrainFor,
+  profileName,
   sortedRoster,
   trainsNotInRoster,
+  type ProfileSummary,
   type RosterEntry,
   type Selection,
   type TrainSummary,
@@ -30,6 +32,12 @@ function rosterRowDetail(entry: RosterEntry): string {
   return [entry.model && entry.model !== entryName(entry) ? entry.model : '', entry.consist_length_cm != null ? formatNumber(entry.consist_length_cm, 'cm') : '']
     .filter(Boolean)
     .join(' · ');
+}
+
+/** The muted second line of a profile row: its model, and its id when the
+ *  row shows its name. */
+function profileRowDetail(p: ProfileSummary): string {
+  return [p.model, p.name ? p.profile_id : ''].filter(Boolean).join(' · ');
 }
 
 function TrainChip({ train }: { train: TrainSummary | null }) {
@@ -131,13 +139,13 @@ export function LocomotiveList() {
                 aria-pressed={isPicked(sel, 'profile', p.profile_id)}
                 onClick={() => pick({ kind: 'profile', profileId: p.profile_id })}
               >
-                <span class="nloco-row-name font-mono">{p.profile_id}</span>
+                <span class={p.name ? 'nloco-row-name' : 'nloco-row-name font-mono'}>{profileName(p)}</span>
                 {p.calibrated_at ? (
                   <span class="chip chip-success" title={`Measured ${p.calibrated_at}`}>measured</span>
                 ) : (
                   <span class="chip chip-muted" title="No speed calibration has written this curve">not measured</span>
                 )}
-                {(p.model || p.name) && <span class="nloco-row-detail">{p.model || p.name}</span>}
+                {profileRowDetail(p) && <span class="nloco-row-detail">{profileRowDetail(p)}</span>}
               </button>
             </li>
           ))}

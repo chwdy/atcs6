@@ -16,6 +16,7 @@ import { trainDisplayStatus } from '../lib/train-status';
 import { changedProfileFields } from '../lib/profile-edits';
 import {
   type CalibrationRunView,
+  atoTestProgress,
   calibrationControls,
   calibrationTrainChoices,
   compareAxisTop,
@@ -23,10 +24,16 @@ import {
   speedPassProgress,
   measuredCurve,
   pointRows,
+  isSetupView,
+  itMovesProblem,
   readinessApplies,
   speedPassEndedMessage,
+  stretchEndBlocks,
+  stretchEndsText,
   trainChoiceLabel,
   trainStoredValue,
+  trialInstruction,
+  trialStage,
   viewForOpenRun,
   volts,
 } from '../lib/calibration-panel';
@@ -34,13 +41,14 @@ import type { EditorHost } from './types';
 import {
   type Curve,
   type CurvePoint,
+  atoMinimumVoltage,
+  atoMinimumVoltageProblem,
   lightingVoltageProblem,
   powerPercentToSpeed,
   powerPercentToVoltage,
   speedToPowerPercent,
   speedToVoltage,
-  startingSpeed,
-  startingVoltage,
+  startingVoltageProblem,
   topSpeed,
   voltageToSpeed,
 } from '../lib/speed-profile-curve';
@@ -54,13 +62,17 @@ interface SpeedProfileData {
   // ISO stamp of the speed-calibration commit that wrote the curve this profile
   // runs on; null when none did (a seeded or hand-drawn curve).
   calibrated_at: string | null;
-  // [track_voltage, speed_kmh] points, voltage ascending. The first point is
-  // the starting voltage and starting speed; the last sits at max_voltage and
-  // carries the top speed.
+  // [track_voltage, speed_kmh] points, voltage ascending; the last sits at
+  // max_voltage and carries the top speed. Read from starting_voltage up.
   voltage_speed_curve: CurvePoint[];
   // The voltage a standing, powered train is held at so its lamps light; null
   // when the locomotive has none (it then stands at 0 V).
   lighting_voltage: number | null;
+  // The lowest voltage at which the locomotive moves at all.
+  starting_voltage: number;
+  // The ATO minimum voltage set for this locomotive; null when ATO runs from
+  // the curve's first point above the starting voltage. Instance profiles only.
+  ato_min_voltage: number | null;
   max_voltage: number;
   acceleration_rate: number;
   deceleration_rate: number;
@@ -131,8 +143,11 @@ interface CalibrationGroupState {
   measuredBlockId: string;
   stretchText: string;
   stretchResolved: boolean;
-  /** How the last speed pass ended, shown in the setup. */
+  /** How the last run ended, shown in the setup. */
   message: string;
+  /** Which row shows the message while no run is open: the speed pass's
+   *  setup, or the ATO minimum row after a test. */
+  messageRow: 'speed' | 'ato';
   /** The pass ended on its own (EB, a power-off, a session stop, a
    *  measurement fault), not by the operator's Stop: shown as a warning. */
   messageWarn: boolean;
@@ -153,11 +168,15 @@ export interface CalibrationGroupSummary {
   /** The last readiness check: `unmet` is null until the first reply. */
   ready: boolean;
   unmet: string[] | null;
-  /** The named train runs on a lighting voltage. */
-  lightingVoltageSet: boolean;
+  /** The open speed pass's stage: 'lighting_trial', 'starting_trial' or
+   *  'sweep'; null when no speed pass is open. */
+  passStage: string | null;
   /** A speed pass was committed for the named train since the panel was
    *  opened on it. */
   speedCommitted: boolean;
+  /** An ATO minimum voltage was committed for the named train since the panel
+   *  was opened on it. */
+  atoCommitted: boolean;
 }
 
 /**
@@ -181,7 +200,7 @@ export interface SpeedProfilePanelHost {
 const CALIBRATION_REFRESH_MS = 1000;
 
 const EPS_X = 0.05; // min voltage gap between adjacent points (keeps voltage strictly rising)
-const EPS_Y = 0.02; // min speed gap between the starting speed and the top speed
+const EPS_Y = 0.02; // min speed gap between the first point's speed and the top speed
 const HIT_R = 9; // px hit radius for grabbing a point handle
 const ADD_HIT_R = 6; // px distance from the line that still reads as "click the line to add a point"
 const PAD = { left: 40, right: 14, top: 14, bottom: 26 };
@@ -868,6 +887,7 @@ export class SpeedProfileEditorHandler {
     if ('trainId' in options && options.trainId !== this._calTrainId) {
       this._calTrainId = options.trainId ?? null;
       this._speedCommittedFor = null;
+      this._atoCommittedFor = null;
     }
     // A hosted panel is not one of the secondary sidebar's editors.
     if (!this._host) {
@@ -949,6 +969,8 @@ export class SpeedProfileEditorHandler {
       max_voltage:
         typeof d.max_voltage === 'number' ? d.max_voltage : curve.length ? curve[curve.length - 1][0] : 12,
       lighting_voltage: typeof d.lighting_voltage === 'number' ? d.lighting_voltage : null,
+      starting_voltage: typeof d.starting_voltage === 'number' ? d.starting_voltage : 0,
+      ato_min_voltage: typeof d.ato_min_voltage === 'number' ? d.ato_min_voltage : null,
       acceleration_rate: d.acceleration_rate ?? 10,
       deceleration_rate: d.deceleration_rate ?? 15,
       emergency_brake_rate: d.emergency_brake_rate ?? 30,
@@ -977,11 +999,17 @@ export class SpeedProfileEditorHandler {
     const top = topSpeed(p.voltage_speed_curve || []);
     return { xMax: p.max_voltage, yMin: 0, yMax: Math.max(30, Math.ceil(top * 1.25)) };
   }
-  /** The starting voltage and, when set, the lighting voltage, marked on the
-   *  voltage axis. */
-  private _marks(curve: Curve, lighting: number | null): VoltageMark[] {
-    const marks: VoltageMark[] = [];
-    if (curve.length) marks.push({ x: startingVoltage(curve), label: 'starting' });
+  /** The starting voltage, the ATO minimum voltage when there is a curve, and,
+   *  when set, the lighting voltage, marked on the voltage axis. */
+  private _marks(
+    curve: Curve,
+    lighting: number | null,
+    starting: number,
+    atoMin: number | null,
+    maxVoltage: number
+  ): VoltageMark[] {
+    const marks: VoltageMark[] = [{ x: starting, label: 'starting' }];
+    if (curve.length) marks.push({ x: atoMinimumVoltage(curve, starting, maxVoltage, atoMin), label: 'ATO min' });
     if (lighting != null) marks.push({ x: lighting, label: 'lighting' });
     return marks;
   }
@@ -989,7 +1017,11 @@ export class SpeedProfileEditorHandler {
   private _redrawPlot(): void {
     const p = this._profile;
     if (!p) return;
-    this._plot?.setData(this._curvePoints(), this._axis(), this._marks(p.voltage_speed_curve, p.lighting_voltage));
+    this._plot?.setData(
+      this._curvePoints(),
+      this._axis(),
+      this._marks(p.voltage_speed_curve, p.lighting_voltage, p.starting_voltage, p.ato_min_voltage, p.max_voltage)
+    );
   }
 
   /** One of the profile's own values, beside the label it belongs to. A value
@@ -1022,6 +1054,11 @@ export class SpeedProfileEditorHandler {
             <div class="sp-editor">
                 ${this._instanceNoteHtml()}
                 <div class="control-section sp-model-section">
+                    ${this._scalarRowHtml('sp-name', 'Name', p.name || '', {
+                      editable: true,
+                      attrs: 'type="text"',
+                      placeholder: p.profile_id,
+                    })}
                     ${this._scalarRowHtml('sp-model', 'Model', p.model || '', {
                       editable: !ro,
                       attrs: 'type="text"',
@@ -1036,19 +1073,34 @@ export class SpeedProfileEditorHandler {
                       unit: 'V',
                       attrs: 'type="number" min="0" step="0.1"',
                     })}
+                    ${this._scalarRowHtml('sp-startv', 'Starting voltage', fmt(p.starting_voltage), {
+                      editable: true,
+                      unit: 'V',
+                      attrs: 'type="number" min="0" step="0.05"',
+                    })}
+                    ${
+                      ro
+                        ? this._scalarRowHtml('sp-atomin', 'ATO minimum voltage', p.ato_min_voltage == null ? '' : fmt(p.ato_min_voltage), {
+                            editable: true,
+                            unit: 'V',
+                            attrs: 'type="number" min="0" step="0.05"',
+                            placeholder: 'first point',
+                          })
+                        : `<div class="sp-scalar-row">
+                        <span class="input-small-label">ATO minimum voltage</span>
+                        <span class="sp-scalar-value" id="sp-atomin-v"></span><span class="sp-scalar-unit" title="Each locomotive tests and sets its own ATO minimum voltage; this is what one that has set none uses">V for a locomotive that sets none</span>
+                    </div>`
+                    }
                     <div class="sp-scalar-row">
-                        <span class="input-small-label">Starting voltage</span>
-                        <span class="sp-scalar-value" id="sp-start-v"></span><span class="sp-scalar-unit">V</span>
-                    </div>
-                    <div class="sp-scalar-row">
-                        <span class="input-small-label">Starting speed</span>
-                        <span class="sp-scalar-value" id="sp-start-s"></span><span class="sp-scalar-unit">km/h</span>
+                        <span class="input-small-label">ATO minimum speed</span>
+                        <span class="sp-scalar-value" id="sp-atomin-s"></span><span class="sp-scalar-unit">km/h</span>
                     </div>
                     <div class="sp-scalar-row">
                         <span class="input-small-label">Top speed</span>
                         <span class="sp-scalar-value" id="sp-top-s"></span><span class="sp-scalar-unit">km/h</span>
                     </div>
-                    <div class="text-muted text-xs mb-8">X = track voltage, Y = speed (km/h). The first point is the starting voltage: the lowest voltage at which the locomotive moves steadily, and its speed there. The last point sits at the max voltage and gives the top speed. Click the line to add a point · drag to move · right-click a point to remove.</div>
+                    <div class="text-muted text-xs mb-8" id="sp-volts-hint"></div>
+                    <div class="text-muted text-xs mb-8">X = track voltage, Y = speed (km/h). The curve is read from the starting voltage up: from the starting voltage, where the locomotive just moves, a straight line runs to the first point, the lowest voltage that crossed the measured block. The last point sits at the max voltage and gives the top speed. Manual driving runs from the starting voltage up; ATO runs from the ATO minimum voltage up. Click the line to add a point · drag to move · right-click a point to remove.</div>
                     <div class="sp-plot-block">
                         <div class="sp-point-list" id="sp-curve-list"></div>
                         <canvas class="sp-canvas" id="sp-curve-canvas"></canvas>
@@ -1154,6 +1206,14 @@ ${this._calibrationGroupHtml(p)}
     const openModel = document.getElementById('sp-open-model') as HTMLButtonElement | null;
     if (openModel) openModel.onclick = () => void this.showProfileEditor(openModel.dataset.profileId || '');
 
+    // Both a model profile and a locomotive's own profile carry their own name.
+    const name = document.getElementById('sp-name') as HTMLInputElement | null;
+    if (name)
+      name.onchange = () => {
+        this._profile!.name = name.value.trim();
+        this._commit();
+      };
+
     const model = document.getElementById('sp-model') as HTMLInputElement | null;
     if (model)
       model.onchange = () => {
@@ -1185,6 +1245,8 @@ ${this._calibrationGroupHtml(p)}
   /** The named train, once its speed pass was committed; the host marks that
    *  step done. */
   private _speedCommittedFor: string | null = null;
+  /** The named train, once its ATO minimum voltage was committed. */
+  private _atoCommittedFor: string | null = null;
 
   /** Tell the host what the group shows now. */
   private _notifyCalibration(): void {
@@ -1200,8 +1262,10 @@ ${this._calibrationGroupHtml(p)}
             view: cal.view,
             ready: cal.ready,
             unmet: cal.unmet,
-            lightingVoltageSet: !!trainId && this._trainLightingVoltage() != null,
+            passStage:
+              cal.view === 'speed-running' && cal.speedRun ? String(cal.speedRun.pass_stage || '') || null : null,
             speedCommitted: !!trainId && this._speedCommittedFor === trainId,
+            atoCommitted: !!trainId && this._atoCommittedFor === trainId,
           }
         : null
     );
@@ -1225,6 +1289,7 @@ ${this._calibrationGroupHtml(p)}
                         <div class="text-muted text-xs mb-8" id="sp-lighting-hint"></div>
                     </div>
                     <div id="sp-speed-row"></div>
+                    <div id="sp-ato-row"></div>
                 </div>`;
   }
 
@@ -1246,6 +1311,7 @@ ${this._calibrationGroupHtml(p)}
       stretchResolved: false,
       message: '',
       messageWarn: false,
+      messageRow: 'speed',
       timer: null,
       busy: false,
       compare: null,
@@ -1284,6 +1350,12 @@ ${this._calibrationGroupHtml(p)}
     return calibrationTrainChoices(stateManager.getAll('trains'), cal.profiles, cal.profileId);
   }
 
+  /** The profile the train names: its own, where every run's save lands. */
+  private _trainOwnProfileId(trainId: string): string | null {
+    const train = (stateManager.getAll('trains') as any[]).find((t: any) => t?.id === trainId);
+    return train?.speed_profile_id ? String(train.speed_profile_id) : null;
+  }
+
   private _namedTrain(): any | null {
     if (!this._calTrainId) return null;
     return this._calChoices().find((t) => t.id === this._calTrainId) || null;
@@ -1301,11 +1373,19 @@ ${this._calibrationGroupHtml(p)}
   private async _nameTrain(trainId: string | null): Promise<void> {
     const cal = this._cal;
     if (!cal || trainId === this._calTrainId) return;
+    // Every save a run makes lands on the train's own profile, so a train
+    // whose own profile is not the one on screen opens that profile, named.
+    const own = trainId ? this._trainOwnProfileId(trainId) : null;
+    if (own && own !== this._profile?.profile_id) {
+      await this.showProfileEditor(own, { trainId });
+      return;
+    }
     void this._endShownRun(cal);
     this._calTrainId = trainId;
     this._speedCommittedFor = null;
+    this._atoCommittedFor = null;
     cal.generation += 1;
-    cal.view = cal.view === 'speed-setup' ? 'speed-setup' : 'none';
+    cal.view = isSetupView(cal.view) ? cal.view : 'none';
     cal.speedRun = null;
     cal.ready = false;
     cal.unmet = null;
@@ -1331,7 +1411,7 @@ ${this._calibrationGroupHtml(p)}
     cal.view = view;
     cal.speedRun = speedRun;
     cal.measuredBlockId = String(speedRun.measured_block_id || '');
-    this._highlightStretch(cal.measuredBlockId, speedRun.outer_block_ids || []);
+    this._highlightStretch(cal.measuredBlockId, stretchEndBlocks(speedRun));
   }
 
   /** End whatever pass the group is showing, writing nothing. Resolves once
@@ -1340,11 +1420,11 @@ ${this._calibrationGroupHtml(p)}
     const trainId = this._calTrainId;
     if (!trainId) return Promise.resolve();
     let ended: Promise<unknown> = Promise.resolve();
-    if (cal.view === 'speed-running' || cal.view === 'speed-held') {
-      // One call ends an open pass and discards a held result alike.
+    if (cal.view === 'speed-running' || cal.view === 'speed-held' || cal.view === 'ato-running') {
+      // One call ends an open run and discards a held result alike.
       ended = this.api.cancelCalibration(trainId);
     }
-    if (cal.view !== 'speed-setup') this._clearStretchHighlight();
+    if (!isSetupView(cal.view)) this._clearStretchHighlight();
     cal.speedRun = null;
     return ended.then(
       () => {},
@@ -1377,15 +1457,20 @@ ${this._calibrationGroupHtml(p)}
     }
     this._refreshTrainPicker();
     if (!this._calTrainId || cal.busy) return;
-    if (cal.view === 'speed-running') await this._pollSpeedPass(cal);
+    if (cal.view === 'speed-running' || cal.view === 'ato-running') await this._pollSpeedPass(cal);
     else await this._refreshReadiness();
   }
 
   private _renderCalibration(): void {
     this._refreshTrainPicker(true);
     this._renderReadiness();
+    // During a trial the trial owns the voltage: the profile's own lighting
+    // field would show a second, different lighting number beside it.
+    const lightingRow = this._cal?.root.querySelector('#sp-lighting-row') as HTMLElement | null;
+    if (lightingRow) lightingRow.hidden = this._cal?.view === 'speed-running' && !!trialStage(this._cal?.speedRun);
     this._renderLightingHint();
     this._renderSpeedRow();
+    this._renderAtoRow();
     this._notifyCalibration();
   }
 
@@ -1461,7 +1546,7 @@ ${this._calibrationGroupHtml(p)}
     const view = cal.view;
     cal.busy = true;
     try {
-      const block = view === 'speed-setup' ? cal.measuredBlockId : '';
+      const block = isSetupView(view) ? cal.measuredBlockId : '';
       const r = await this.api.getCalibrationReadiness(trainId, block);
       if (this._cal !== cal || cal.generation !== generation || cal.view !== view) return;
       cal.ready = !!r.ready;
@@ -1489,7 +1574,7 @@ ${this._calibrationGroupHtml(p)}
   private _forgetNamedTrain(cal: CalibrationGroupState): void {
     this._calTrainId = null;
     cal.generation += 1;
-    cal.view = cal.view === 'speed-setup' ? 'speed-setup' : 'none';
+    cal.view = isSetupView(cal.view) ? cal.view : 'none';
     cal.speedRun = null;
     cal.ready = false;
     cal.unmet = null;
@@ -1549,6 +1634,8 @@ ${this._calibrationGroupHtml(p)}
     };
     set('#sp-speed-calibrate', c.speedCalibrate);
     set('#sp-cal-start', c.speedStart);
+    set('#sp-ato-test', c.atoTest);
+    set('#sp-ato-start', c.atoStart);
   }
 
   // --- lighting-voltage field ---
@@ -1576,7 +1663,7 @@ ${this._calibrationGroupHtml(p)}
       if (!this._profile) return;
       const text = el.value.trim();
       const value = text === '' ? null : Number(text);
-      const problem = lightingVoltageProblem(value, this._profile.voltage_speed_curve);
+      const problem = lightingVoltageProblem(value, this._profile.starting_voltage);
       if (problem) {
         this._renderLightingHint(problem);
         return;
@@ -1595,22 +1682,22 @@ ${this._calibrationGroupHtml(p)}
   private _renderLightingHint(typed?: string): void {
     const hint = document.getElementById('sp-lighting-hint');
     if (!hint || !this._profile) return;
-    // A curve edit can move the starting voltage down to the stored lighting
-    // voltage, which a save refuses too.
+    // A starting-voltage edit can move it down to the stored lighting voltage,
+    // which a save refuses too.
     const problem =
-      typed ?? lightingVoltageProblem(this._profile.lighting_voltage, this._profile.voltage_speed_curve);
+      typed ?? lightingVoltageProblem(this._profile.lighting_voltage, this._profile.starting_voltage);
     hint.classList.toggle('text-warning', !!problem);
     hint.classList.toggle('text-muted', !problem);
     if (problem) {
       hint.textContent = typed ? `Not saved: ${problem}.` : `A save is refused while ${problem}.`;
       return;
     }
-    const start = startingVoltage(this._profile.voltage_speed_curve);
+    const start = this._profile.starting_voltage;
     const empty = this._isInstance()
       ? 'Empty reads the model profile’s value.'
       : 'Empty means none: a standing, powered train gets 0 V.';
     let text =
-      `For a locomotive whose lamps light before it moves. It must stay below the starting voltage (${fmt(start)} V). ${empty}`;
+      `For a locomotive whose lamps light before it moves. It must stay below the starting voltage (${fmt(start)} V); a speed pass finds both. ${empty}`;
     const train = this._namedTrain();
     const own = this._trainLightingVoltage();
     if (train && own !== this._profile.lighting_voltage) {
@@ -1646,41 +1733,34 @@ ${this._calibrationGroupHtml(p)}
                 ${stamp}
                 ${
                   cal.view === 'none'
-                    ? `<button id="sp-speed-calibrate" class="btn btn-outline btn-sm" title="Measure this locomotive by running it back and forth across a block">Calibrate speed</button>`
+                    ? `<button id="sp-speed-calibrate" class="btn btn-outline btn-sm" title="Find the lighting and starting voltages by hand, then measure this locomotive by running it back and forth across a block">Calibrate speed</button>`
                     : ''
                 }
             </div>`;
 
     let body = '';
+    const trial = cal.view === 'speed-running' ? trialStage(cal.speedRun) : null;
     if (cal.view === 'speed-setup') {
-      const options = this._blockChoices()
-        .map(
-          (c) =>
-            `<option value="${escapeAttr(c.id)}" ${c.id === cal.measuredBlockId ? 'selected' : ''}>${escapeAttr(c.label)}</option>`
-        )
-        .join('');
+      body = this._setupBodyHtml(
+        'The pass starts with two trials, in which you set the voltage by hand: the lighting voltage, then the starting voltage. Then the train runs back and forth across the measured block at each voltage step. The blocks either side are its run-up and its stopping room.',
+        'sp-cal-start',
+        'Take control of the train and run the pass'
+      );
+    } else if (trial) {
       body = `
             <div class="sp-cal-run-body">
-                <div class="text-muted text-xs mb-8">The train runs back and forth across the measured block. The blocks either side are its run-up and its stopping room.</div>
-                <div class="input-small-row mb-8">
-                    <label class="input-small-label input-small-label-inline" for="sp-cal-block">Measured block</label>
-                    <select id="sp-cal-block" class="input-small-field">
-                        <option value="">Choose a block…</option>
-                        ${options}
-                    </select>
-                    <button id="sp-cal-pick" class="btn btn-outline btn-sm" title="Pick on map (click the block on the layout; Esc cancels)"><i class="ti ti-map-pin"></i></button>
-                </div>
-                <div class="text-muted text-xs mb-8" id="sp-cal-stretch">${escapeAttr(cal.stretchText || 'Choose a block to see the stretch.')}</div>
-                ${
-                  cal.message
-                    ? cal.messageWarn
-                      ? `<div class="banner banner-warn sp-cal-message" role="status">${escapeAttr(cal.message)}</div>`
-                      : `<div class="text-xs mb-8">${escapeAttr(cal.message)}</div>`
-                    : ''
-                }
+                <div class="text-xs mb-8" id="sp-cal-progress"></div>
+                <div class="text-muted text-xs mb-8">${escapeAttr(trialInstruction(trial, cal.speedRun?.held_lighting_voltage ?? null))}</div>
+                ${this._trialVoltageHtml()}
+                <div class="text-xs text-warning mb-8" id="sp-cal-trial-error"></div>
                 <div class="sp-cal-actions">
-                    <button id="sp-cal-cancel" class="btn btn-outline btn-sm">Cancel</button>
-                    <button id="sp-cal-start" class="btn btn-accent btn-sm" title="Take control of the train and run the pass">Start</button>
+                    <button id="sp-cal-stop" class="btn btn-outline btn-sm" title="End the pass; nothing is written">Stop</button>
+                    ${
+                      trial === 'lighting'
+                        ? `<button id="sp-cal-nolamps" class="btn btn-outline btn-sm" title="This locomotive's lamps light only once it moves: a standing train gets 0 V">No lamps</button>
+                    <button id="sp-cal-keep" class="btn btn-accent btn-sm" title="Keep this voltage as the lighting voltage">Keep</button>`
+                        : `<button id="sp-cal-moves" class="btn btn-accent btn-sm" title="Save the lighting and starting voltages and start the sweep">It moves</button>`
+                    }
                 </div>
             </div>`;
     } else if (cal.view === 'speed-running' || cal.view === 'speed-held') {
@@ -1702,7 +1782,7 @@ ${this._calibrationGroupHtml(p)}
                 <div class="sp-crossing-list" id="sp-cal-crossings"></div>
                 ${
                   held
-                    ? `<div class="text-muted text-xs mb-8">Save to this locomotive changes only this locomotive. Promote to model writes the curve to ${modelName ? escapeAttr(modelName) : 'the model'}: every locomotive of that model without its own measured curve runs on it, this one included. A locomotive saved with its own curve keeps it.</div>
+                    ? `<div class="text-muted text-xs mb-8">Save to this locomotive changes only this locomotive. Promote to model writes the curve to ${modelName ? escapeAttr(modelName) : 'the model'}: every locomotive of that model without its own measured curve runs on it, this one included. A locomotive saved with its own curve keeps it. Every locomotive whose curve changes loses its ATO minimum voltage until you test a new one.</div>
                 <div class="sp-cal-actions">
                     <button id="sp-cal-discard" class="btn btn-outline btn-sm" title="Throw the measurement away; nothing is written">Discard</button>
                     <button id="sp-cal-model" class="btn btn-outline btn-sm">Promote to model</button>
@@ -1717,19 +1797,13 @@ ${this._calibrationGroupHtml(p)}
     row.innerHTML = head + body;
 
     const open = row.querySelector('#sp-speed-calibrate') as HTMLButtonElement | null;
-    if (open) open.onclick = () => this._openSpeedSetup();
+    if (open) open.onclick = () => this._openSetup('speed-setup');
     if (cal.view === 'speed-setup') {
-      const blockEl = row.querySelector('#sp-cal-block') as HTMLSelectElement;
-      blockEl.onchange = () => void this._resolveStretch(blockEl.value.trim());
-      (row.querySelector('#sp-cal-pick') as HTMLButtonElement).onclick = () =>
-        this.editor.enterMode(this._buildMeasuredBlockPickMode());
-      (row.querySelector('#sp-cal-cancel') as HTMLButtonElement).onclick = () =>
-        this._closeSpeedSetup();
-      (row.querySelector('#sp-cal-start') as HTMLButtonElement).onclick = () =>
-        void this._startSpeedPass();
+      this._bindSetup(row, () => void this._startSpeedPass());
     } else if (cal.view === 'speed-running') {
       (row.querySelector('#sp-cal-stop') as HTMLButtonElement).onclick = () =>
         void this._stopSpeedPass();
+      if (trial) this._bindTrialControls(row, trial);
     } else if (cal.view === 'speed-held') {
       (row.querySelector('#sp-cal-locomotive') as HTMLButtonElement).onclick = () =>
         void this._commitSpeedResult('locomotive');
@@ -1739,15 +1813,188 @@ ${this._calibrationGroupHtml(p)}
         void this._discardSpeedResult();
     }
     const canvas = row.querySelector('#sp-cal-compare') as HTMLCanvasElement | null;
-    if (canvas) {
-      cal.compare = new CurveComparePlot(canvas);
-      this._paintSpeedPass();
-    }
+    if (canvas) cal.compare = new CurveComparePlot(canvas);
+    this._paintSpeedPass();
     this._updateCalibrationControls();
   }
 
+  /** The measured-block picker, the stretch line, the last run's message,
+   *  Cancel and Start — the setup of the speed pass and of the ATO minimum
+   *  test alike. */
+  private _setupBodyHtml(intro: string, startId: string, startTitle: string): string {
+    const cal = this._cal!;
+    const options = this._blockChoices()
+      .map(
+        (c) =>
+          `<option value="${escapeAttr(c.id)}" ${c.id === cal.measuredBlockId ? 'selected' : ''}>${escapeAttr(c.label)}</option>`
+      )
+      .join('');
+    return `
+            <div class="sp-cal-run-body">
+                <div class="text-muted text-xs mb-8">${escapeAttr(intro)}</div>
+                <div class="input-small-row mb-8">
+                    <label class="input-small-label input-small-label-inline" for="sp-cal-block">Measured block</label>
+                    <select id="sp-cal-block" class="input-small-field">
+                        <option value="">Choose a block…</option>
+                        ${options}
+                    </select>
+                    <button id="sp-cal-pick" class="btn btn-outline btn-sm" title="Pick on map (click the block on the layout; Esc cancels)"><i class="ti ti-map-pin"></i></button>
+                </div>
+                <div class="text-muted text-xs mb-8" id="sp-cal-stretch">${escapeAttr(cal.stretchText || 'Choose a block to see the stretch.')}</div>
+                ${this._messageHtml()}
+                <div class="sp-cal-actions">
+                    <button id="sp-cal-cancel" class="btn btn-outline btn-sm">Cancel</button>
+                    <button id="${startId}" class="btn btn-accent btn-sm" title="${escapeAttr(startTitle)}">Start</button>
+                </div>
+            </div>`;
+  }
+
+  /** How the last run ended, shown in the setup and in the ATO minimum row. */
+  private _messageHtml(): string {
+    const cal = this._cal!;
+    if (!cal.message) return '';
+    return cal.messageWarn
+      ? `<div class="banner banner-warn sp-cal-message" role="status">${escapeAttr(cal.message)}</div>`
+      : `<div class="text-xs mb-8">${escapeAttr(cal.message)}</div>`;
+  }
+
+  private _bindSetup(row: HTMLElement, start: () => void): void {
+    const blockEl = row.querySelector('#sp-cal-block') as HTMLSelectElement;
+    blockEl.onchange = () => void this._resolveStretch(blockEl.value.trim());
+    (row.querySelector('#sp-cal-pick') as HTMLButtonElement).onclick = () =>
+      this.editor.enterMode(this._buildMeasuredBlockPickMode());
+    (row.querySelector('#sp-cal-cancel') as HTMLButtonElement).onclick = () => this._closeSetup();
+    const startBtn = row.querySelector('.sp-cal-actions .btn-accent') as HTMLButtonElement;
+    startBtn.onclick = start;
+  }
+
+  // --- the operator's voltage: the trials and the ATO minimum test ---
+  //
+  // design_new.md "Speed calibration", The pass starts with two trial stages,
+  // and ATO minimum test. The run drives the voltage the operator sets, which
+  // a step down / step up of CALIBRATION_TRIAL_STEP_V or a typed value changes
+  // from the next tick.
+
+  private _trialVoltageHtml(): string {
+    const v = Number(this._cal?.speedRun?.trial_voltage ?? 0);
+    return `
+                <div class="input-small-row mb-8">
+                    <label class="input-small-label input-small-label-inline" for="sp-cal-trial-v">Voltage</label>
+                    <button id="sp-cal-trial-down" class="btn btn-outline btn-sm" title="0.1 V lower">−</button>
+                    <input type="number" id="sp-cal-trial-v" class="input-small-field input-small-field-compact" min="0" step="0.1" value="${fmt(v)}">
+                    <span class="sp-scalar-unit">V</span>
+                    <button id="sp-cal-trial-up" class="btn btn-outline btn-sm" title="0.1 V higher">+</button>
+                </div>`;
+  }
+
+  private _bindTrialVoltage(row: HTMLElement): void {
+    const input = row.querySelector('#sp-cal-trial-v') as HTMLInputElement | null;
+    if (!input) return;
+    const send = (v: number) => void this._setTrialVoltage(Math.max(0, Math.round(v * 100) / 100));
+    (row.querySelector('#sp-cal-trial-down') as HTMLButtonElement).onclick = () =>
+      send(Number(this._cal?.speedRun?.trial_voltage ?? 0) - 0.1);
+    (row.querySelector('#sp-cal-trial-up') as HTMLButtonElement).onclick = () =>
+      send(Number(this._cal?.speedRun?.trial_voltage ?? 0) + 0.1);
+    input.onchange = () => {
+      const v = parseFloat(input.value);
+      if (Number.isFinite(v)) send(v);
+    };
+  }
+
+  private _bindTrialControls(row: HTMLElement, trial: 'lighting' | 'starting'): void {
+    this._bindTrialVoltage(row);
+    if (trial === 'lighting') {
+      (row.querySelector('#sp-cal-keep') as HTMLButtonElement).onclick = () =>
+        void this._keepLighting(Number(this._cal?.speedRun?.trial_voltage ?? 0));
+      (row.querySelector('#sp-cal-nolamps') as HTMLButtonElement).onclick = () =>
+        void this._keepLighting(null);
+    } else {
+      (row.querySelector('#sp-cal-moves') as HTMLButtonElement).onclick = () => void this._itMoves();
+    }
+  }
+
+  /** Send a run request and take the run it answers with; a refusal shows
+   *  under the voltage. */
+  private async _runRequest(send: (trainId: string) => Promise<any>): Promise<any | null> {
+    const cal = this._cal;
+    const trainId = this._calTrainId;
+    if (!cal || !trainId) return null;
+    const generation = cal.generation;
+    try {
+      const run = await send(trainId);
+      if (this._cal !== cal || cal.generation !== generation) return null;
+      return run;
+    } catch (err: any) {
+      if (this._cal !== cal || cal.generation !== generation) return null;
+      const el = cal.root.querySelector('#sp-cal-trial-error');
+      if (el) el.textContent = err.message || 'Refused';
+      else showToast(err.message || 'Refused', 'error', 5000);
+      return null;
+    }
+  }
+
+  private async _setTrialVoltage(v: number): Promise<void> {
+    const run = await this._runRequest((id) => this.api.setCalibrationTrialVoltage(id, v));
+    if (!run || !this._cal) return;
+    this._cal.speedRun = run;
+    const el = this._cal.root.querySelector('#sp-cal-trial-error');
+    if (el) el.textContent = '';
+    this._paintRun();
+  }
+
+  private async _keepLighting(v: number | null): Promise<void> {
+    const run = await this._runRequest((id) => this.api.keepCalibrationLighting(id, v));
+    if (!run || !this._cal) return;
+    this._cal.speedRun = run;
+    // Keep saved the lighting voltage (and, when needed, a starting voltage
+    // just above it): show the saved values in the profile's own fields.
+    await this._reloadProfileView();
+    this._renderCalibration();
+  }
+
+  /** Re-read the profile on screen after a save the run made, so its fields
+   *  show what is stored now. */
+  private async _reloadProfileView(): Promise<void> {
+    const p = this._profile;
+    const cal = this._cal;
+    if (!p) return;
+    try {
+      const view = await this.api.getSpeedProfile(p.profile_id, { resolved: true });
+      if (this._profile?.profile_id !== p.profile_id) return;
+      this._applyView(view);
+      if (cal) cal.profiles = (await this.api.getSpeedProfiles()) || cal.profiles;
+    } catch {
+      return;
+    }
+    this._syncValues();
+    this._redrawPlot();
+  }
+
+  private async _itMoves(): Promise<void> {
+    const held = this._cal?.speedRun;
+    const problem = held ? itMovesProblem(Number(held.trial_voltage ?? 0), held.held_lighting_voltage ?? null) : null;
+    if (problem) {
+      const el = this._cal!.root.querySelector('#sp-cal-trial-error');
+      if (el) el.textContent = problem;
+      return;
+    }
+    const run = await this._runRequest((id) => this.api.calibrationItMoves(id));
+    if (!run || !this._cal) return;
+    this._cal.speedRun = run;
+    // The starting voltage was saved: show it in the profile's own fields.
+    await this._reloadProfileView();
+    this._renderCalibration();
+  }
+
+  /** Repaint whichever run is showing, without rebuilding its row. */
+  private _paintRun(): void {
+    if (this._cal?.view === 'ato-running') this._paintAtoTest();
+    else this._paintSpeedPass();
+  }
+
   /** The progress line, the measured points, and the measured curve drawn
-   *  against the curve the train runs on now. */
+   *  against the curve the train runs on now — or, during a trial, the
+   *  voltage it drives. */
   private _paintSpeedPass(): void {
     const cal = this._cal;
     const run = cal?.speedRun;
@@ -1756,44 +2003,33 @@ ${this._calibrationGroupHtml(p)}
     if (progress) {
       progress.textContent = speedPassProgress(run, cal.view === 'speed-held');
     }
+    if (trialStage(run)) {
+      this._paintTrialVoltage(run);
+      const err = cal.root.querySelector('#sp-cal-trial-error');
+      if (err && run.trial_save_error) err.textContent = String(run.trial_save_error);
+      return;
+    }
     const measured = measuredCurve(run.samples || []);
     const list = cal.root.querySelector('#sp-cal-points');
     if (list) {
       // Every finished step by voltage: a step that failed gave no point, and
-      // the lowest step that passed is the starting voltage.
+      // the lowest step that passed is the curve's first point.
       list.innerHTML =
         `<div class="sp-point-head sp-point-head-readonly"><span>V</span><span>km/h</span></div>` +
         pointRows(run)
           .map((r) => {
             const speed = r.speed == null ? 'failed' : fmt(r.speed, 1);
-            const cls = r.speed == null ? ' sp-point-failed' : r.starting ? ' sp-point-starting' : '';
+            const cls = r.speed == null ? ' sp-point-failed' : r.first ? ' sp-point-starting' : '';
             const title = r.speed == null
               ? 'This step failed and gave no point'
-              : r.starting
-                ? 'The starting voltage: the lowest step that passed'
+              : r.first
+                ? 'The lowest step that passed: the curve’s first point'
                 : '';
             return `<div class="sp-point-readonly${cls}"${title ? ` title="${title}"` : ''}><span>${volts(r.voltage)}</span><span>${speed}</span></div>`;
           })
           .join('');
     }
-    const crossings = cal.root.querySelector('#sp-cal-crossings');
-    if (crossings) {
-      const rows = crossingRows(run);
-      crossings.innerHTML = rows.length
-        ? `<div class="sp-crossing-head"><span>V</span><span>Toward</span><span>s</span><span>km/h</span></div>` +
-          rows
-            .map(
-              (r) =>
-                `<div class="sp-crossing-row${r.used ? '' : ' sp-crossing-unused'}${r.firstOfStep ? ' sp-crossing-step' : ''}">` +
-                `<span>${r.firstOfStep ? volts(r.voltage) : ''}</span>` +
-                `<span>${escapeAttr(r.toward)}</span>` +
-                `<span>${r.seconds}</span><span>${r.speed}</span>` +
-                (r.note ? `<span class="sp-crossing-note">${escapeAttr(r.note)}</span>` : '') +
-                `</div>`
-            )
-            .join('')
-        : '';
-    }
+    this._paintCrossings(run);
     const stored: Curve =
       trainStoredValue(this._namedTrain(), cal.profiles, this._profile, 'voltage_speed_curve') ||
       [];
@@ -1802,14 +2038,180 @@ ${this._calibrationGroupHtml(p)}
       stored,
       measured,
       { xMax, yMin: 0, yMax: compareAxisTop(stored, measured) },
-      this._marks(measured, this._trainLightingVoltage())
+      this._marks(measured, this._trainLightingVoltage(), Number(run.starting_voltage) || 0, null, xMax)
     );
   }
 
-  private _openSpeedSetup(): void {
+  private _paintTrialVoltage(run: any): void {
+    const input = this._cal?.root.querySelector('#sp-cal-trial-v') as HTMLInputElement | null;
+    if (input && document.activeElement !== input) input.value = fmt(Number(run.trial_voltage ?? 0));
+  }
+
+  private _paintCrossings(run: any): void {
+    const crossings = this._cal?.root.querySelector('#sp-cal-crossings');
+    if (!crossings) return;
+    const rows = crossingRows(run);
+    crossings.innerHTML = rows.length
+      ? `<div class="sp-crossing-head"><span>V</span><span>Toward</span><span>s</span><span>km/h</span></div>` +
+        rows
+          .map(
+            (r) =>
+              `<div class="sp-crossing-row${r.used ? '' : ' sp-crossing-unused'}${r.firstOfStep ? ' sp-crossing-step' : ''}">` +
+              `<span>${r.firstOfStep ? volts(r.voltage) : ''}</span>` +
+              `<span>${escapeAttr(r.toward)}</span>` +
+              `<span>${r.seconds}</span><span>${r.speed}</span>` +
+              (r.note ? `<span class="sp-crossing-note">${escapeAttr(r.note)}</span>` : '') +
+              `</div>`
+          )
+          .join('')
+      : '';
+  }
+
+  // --- ATO minimum test ---
+  //
+  // design_new.md "Speed calibration", ATO minimum test. The test runs the
+  // train back and forth across the measured block at a voltage the operator
+  // adjusts while it runs; every crossing is listed, a stall is listed rather
+  // than failed, and the voltage is marked steady after enough clean round
+  // trips. Commit writes the voltage as this locomotive's ATO minimum voltage.
+
+  /** The ATO minimum voltage the named train runs on, and whether it was set
+   *  for it rather than read from the curve. */
+  private _trainAtoMinimum(): { volts: number; set: boolean } | null {
+    const cal = this._cal;
+    if (!cal || !this._profile) return null;
+    const train = this._namedTrain();
+    const curve: Curve = trainStoredValue(train, cal.profiles, this._profile, 'voltage_speed_curve') || [];
+    const start = Number(trainStoredValue(train, cal.profiles, this._profile, 'starting_voltage') ?? 0);
+    const own = (cal.profiles || []).find((p: any) => p?.profile_id === train?.speed_profile_id);
+    const set = own?.ato_min_voltage ?? (this._isInstance() ? this._profile.ato_min_voltage : null);
+    return { volts: atoMinimumVoltage(curve, start, this._profile.max_voltage, set ?? null), set: set != null };
+  }
+
+  private _renderAtoRow(): void {
+    const cal = this._cal;
+    const row = cal?.root.querySelector('#sp-ato-row') as HTMLElement | null;
+    if (!cal || !row || !this._profile) return;
+    const ato = this._calTrainId ? this._trainAtoMinimum() : null;
+    const value = ato
+      ? `<span class="sp-cal-stamp" title="${ato.set ? 'Set for this locomotive' : 'Read from the curve’s first point above the starting voltage'}">${fmt(ato.volts)} V${ato.set ? '' : ' · from the curve'}</span>`
+      : '';
+    const head = `
+            <div class="input-small-row sp-cal-run-head">
+                <label class="input-small-label input-small-label-inline">ATO minimum voltage</label>
+                ${value}
+                ${
+                  cal.view === 'none'
+                    ? `<button id="sp-ato-test" class="btn btn-outline btn-sm" title="Run the train back and forth at one voltage to see whether it runs steadily, then commit it as the lowest voltage ATO uses">Test</button>`
+                    : ''
+                }
+            </div>`;
+    let body = '';
+    if (cal.view === 'none' && cal.message && cal.messageRow === 'ato') {
+      body = `<div class="sp-cal-run-body">${this._messageHtml()}</div>`;
+    } else if (cal.view === 'ato-setup') {
+      body = this._setupBodyHtml(
+        'The train runs back and forth across the measured block at the ATO minimum voltage. Raise or lower it while it runs until the speed holds steady, then Commit.',
+        'sp-ato-start',
+        'Take control of the train and start the test'
+      );
+    } else if (cal.view === 'ato-running') {
+      body = `
+            <div class="sp-cal-run-body">
+                <div class="text-xs mb-8" id="sp-ato-progress"></div>
+                ${this._trialVoltageHtml()}
+                <div class="text-xs text-warning mb-8" id="sp-cal-trial-error"></div>
+                <div class="sp-crossing-list" id="sp-cal-crossings"></div>
+                <div class="sp-cal-actions">
+                    <button id="sp-ato-stop" class="btn btn-outline btn-sm" title="End the test; nothing is written">Stop</button>
+                    <button id="sp-ato-commit" class="btn btn-accent btn-sm" title="Write this voltage as this locomotive’s ATO minimum voltage">Commit</button>
+                </div>
+            </div>`;
+    }
+    row.innerHTML = head + body;
+    const test = row.querySelector('#sp-ato-test') as HTMLButtonElement | null;
+    if (test) test.onclick = () => this._openSetup('ato-setup');
+    if (cal.view === 'ato-setup') {
+      this._bindSetup(row, () => void this._startAtoTest());
+    } else if (cal.view === 'ato-running') {
+      this._bindTrialVoltage(row);
+      (row.querySelector('#sp-ato-stop') as HTMLButtonElement).onclick = () => void this._stopAtoTest();
+      (row.querySelector('#sp-ato-commit') as HTMLButtonElement).onclick = () => void this._commitAtoTest();
+      this._paintAtoTest();
+    }
+    this._updateCalibrationControls();
+  }
+
+  private _paintAtoTest(): void {
+    const cal = this._cal;
+    const run = cal?.speedRun;
+    if (!cal || !run) return;
+    const progress = cal.root.querySelector('#sp-ato-progress');
+    if (progress) progress.textContent = atoTestProgress(run);
+    this._paintTrialVoltage(run);
+    this._paintCrossings(run);
+  }
+
+  private async _startAtoTest(): Promise<void> {
+    const cal = this._cal;
+    const trainId = this._calTrainId;
+    if (!cal || !trainId || cal.view !== 'ato-setup') return;
+    const generation = cal.generation;
+    let run: any;
+    try {
+      run = await this.api.startAtoMinimumTest(trainId, cal.measuredBlockId);
+    } catch (err: any) {
+      showToast(err.message || 'Cannot start the test', 'error', 6000);
+      void this._refreshReadiness();
+      return;
+    }
+    if (this._cal !== cal || cal.generation !== generation) {
+      void this.api.cancelCalibration(trainId).catch(() => {});
+      return;
+    }
+    cal.view = 'ato-running';
+    cal.message = '';
+    cal.speedRun = run;
+    this._renderCalibration();
+  }
+
+  private async _stopAtoTest(): Promise<void> {
+    const cal = this._cal;
+    if (!cal || cal.view !== 'ato-running') return;
+    const ended = this._endShownRun(cal);
+    cal.view = 'none';
+    cal.message = 'Stopping the train, then releasing it. Nothing was written.';
+    cal.messageWarn = false;
+    cal.messageRow = 'ato';
+    this._renderCalibration();
+    await ended;
+    void this._refreshReadiness();
+  }
+
+  private async _commitAtoTest(): Promise<void> {
+    const cal = this._cal;
+    const trainId = this._calTrainId;
+    if (!cal || !trainId || cal.view !== 'ato-running') return;
+    let result: any;
+    try {
+      result = await this.api.commitAtoMinimum(trainId);
+    } catch (err: any) {
+      showToast(err.message || 'Commit failed', 'error', 6000);
+      return;
+    }
+    if (this._cal !== cal) return;
+    cal.view = 'none';
+    cal.speedRun = null;
+    this._atoCommittedFor = trainId;
+    this._clearStretchHighlight();
+    showToast(`ATO minimum voltage set to ${fmt(Number(result?.profile?.ato_min_voltage))} V`, 'success', 4000);
+    await this.showProfileEditor(this._trainOwnProfileId(trainId) || this._profile!.profile_id, { trainId });
+  }
+
+  private _openSetup(view: 'speed-setup' | 'ato-setup'): void {
     const cal = this._cal;
     if (!cal || cal.view !== 'none') return;
-    cal.view = 'speed-setup';
+    cal.view = view;
     cal.message = '';
     cal.ready = false;
     cal.unmet = null;
@@ -1818,9 +2220,9 @@ ${this._calibrationGroupHtml(p)}
     else void this._refreshReadiness();
   }
 
-  private _closeSpeedSetup(): void {
+  private _closeSetup(): void {
     const cal = this._cal;
-    if (!cal || cal.view !== 'speed-setup') return;
+    if (!cal || !isSetupView(cal.view)) return;
     cal.view = 'none';
     cal.message = '';
     cal.unmet = null;
@@ -1849,11 +2251,8 @@ ${this._calibrationGroupHtml(p)}
       try {
         const s = await this.api.getCalibrationStretch(this._calTrainId || '_', blockId);
         if (this._cal !== cal || cal.measuredBlockId !== blockId) return;
-        outer = s.outer_block_ids || [];
-        const names: Record<string, string> = s.block_names || {};
-        const shown = outer.map((id: string) => names[id] || id);
-        cal.stretchText =
-          `Run-up / stopping room: ${shown.join(' ↔ ')} · measured length ${s.length_cm} cm`;
+        outer = stretchEndBlocks(s);
+        cal.stretchText = stretchEndsText(s);
         cal.stretchResolved = true;
       } catch (err: any) {
         if (this._cal !== cal || cal.measuredBlockId !== blockId) return;
@@ -1869,7 +2268,7 @@ ${this._calibrationGroupHtml(p)}
     void this._refreshReadiness();
   }
 
-  /** Light the measured block and its two outer blocks on the layout. */
+  /** Light the measured block and both ends of its stretch on the layout. */
   private _highlightStretch(blockId: string, outer: string[]): void {
     const lit = this._blockTiles(blockId);
     for (const b of outer) this._blockTiles(b).forEach((k) => lit.add(k));
@@ -1925,27 +2324,37 @@ ${this._calibrationGroupHtml(p)}
     } finally {
       cal.busy = false;
     }
-    if (this._cal !== cal || cal.generation !== generation || cal.view !== 'speed-running') return;
+    const view = cal.view;
+    if (this._cal !== cal || cal.generation !== generation) return;
+    if (view !== 'speed-running' && view !== 'ato-running') return;
     if (!run.open) {
       // EB, a power-off, a session stop, or a measurement fault ended it
       // (design_new.md "What ends a calibration run"). The ending's reason
       // went out on the command-result stream; the status reply carries the
       // latest one.
-      cal.view = 'speed-setup';
+      cal.view = view === 'ato-running' ? 'none' : 'speed-setup';
+      cal.messageRow = view === 'ato-running' ? 'ato' : 'speed';
       cal.speedRun = null;
       cal.message = speedPassEndedMessage(run.last_result);
-      cal.messageWarn = true;
+      cal.messageWarn = !run.last_result?.success;
+      this._clearStretchHighlight();
       this._renderCalibration();
       void this._refreshReadiness();
       return;
     }
+    const before = cal.speedRun?.pass_stage;
     cal.speedRun = run;
     if (run.phase === 'measured') {
       cal.view = 'speed-held';
       this._renderCalibration();
       return;
     }
-    this._paintSpeedPass();
+    // A trial ended, or the sweep began: the row holds different controls.
+    if (view === 'speed-running' && before !== run.pass_stage) {
+      this._renderCalibration();
+      return;
+    }
+    this._paintRun();
   }
 
   // Stop ends the pass through `SpeedCalibration.abandon(...)`: it cuts the
@@ -1954,9 +2363,13 @@ ${this._calibrationGroupHtml(p)}
     const cal = this._cal;
     if (!cal || cal.view !== 'speed-running') return;
     const ended = this._endShownRun(cal);
+    const wasTrial = !!trialStage(cal.speedRun);
     cal.view = 'speed-setup';
-    cal.message = 'Stopped. Nothing was written.';
+    cal.message = wasTrial
+      ? 'Stopping the train, then releasing it. A lighting voltage you kept is saved; the starting voltage is saved only by It moves.'
+      : 'Stopping the train, then releasing it. Nothing was written.';
     cal.messageWarn = false;
+    cal.messageRow = 'speed';
     this._renderCalibration();
     await ended;
     void this._resolveStretch(cal.measuredBlockId);
@@ -1992,14 +2405,15 @@ ${this._calibrationGroupHtml(p)}
     this._speedCommittedFor = trainId;
     this._clearStretchHighlight();
     showToast(
-      target === 'model' ? 'Promoted to the model profile' : 'Saved to this locomotive',
+      target === 'model'
+        ? `Promoted to the model profile${result?.profile?.profile_id ? ` ${result.profile.profile_id}` : ''}`
+        : 'Saved to this locomotive',
       'success',
       4000
     );
-    // Promote to model wrote a different profile (the model's) and cleared
-    // this loco's own curve, so open the profile that was actually written
-    // rather than the one on screen.
-    await this.showProfileEditor(result?.profile?.profile_id || this._profile!.profile_id);
+    // Show the train's own profile: after Promote to model it runs on the
+    // model's new curve, and the ATO minimum step that follows saves onto it.
+    await this.showProfileEditor(this._trainOwnProfileId(trainId) || this._profile!.profile_id, { trainId });
   }
 
   /** The "x,y" tiles of a block, from the editor's cached track list. */
@@ -2060,7 +2474,7 @@ ${this._calibrationGroupHtml(p)}
       onExit: () => {
         setStatus('Ready');
         const cal = this._cal;
-        if (!picked || !cal || cal.view !== 'speed-setup') return;
+        if (!picked || !cal || !isSetupView(cal.view)) return;
         const blockEl = cal.root.querySelector('#sp-cal-block') as HTMLSelectElement | null;
         // A block the cached network did not carry when the menu was built
         // still has to be selectable — add the row rather than drop the pick.
@@ -2208,6 +2622,32 @@ ${this._calibrationGroupHtml(p)}
         this._rebuildPointList();
       });
 
+    // The starting voltage and, on a locomotive's own profile, the ATO minimum
+    // voltage save on change; a value a save would refuse is named under the
+    // curve's values instead of being sent (design_new.md "SpeedProfile",
+    // Editing a profile by hand).
+    const startv = document.getElementById('sp-startv') as HTMLInputElement | null;
+    if (startv)
+      startv.onchange = () => {
+        const p = this._profile!;
+        const v = parseFloat(startv.value);
+        const problem = startingVoltageProblem(v, p.max_voltage, p.lighting_voltage);
+        if (problem) return this._renderVoltsHint(`Not saved: ${problem}.`);
+        p.starting_voltage = v;
+        this._afterVoltageEdit();
+      };
+    const atomin = document.getElementById('sp-atomin') as HTMLInputElement | null;
+    if (atomin)
+      atomin.onchange = () => {
+        const p = this._profile!;
+        const text = atomin.value.trim();
+        const v = text === '' ? null : parseFloat(text);
+        const problem = atoMinimumVoltageProblem(v, p.voltage_speed_curve, p.starting_voltage, p.max_voltage);
+        if (problem) return this._renderVoltsHint(`Not saved: ${problem}.`);
+        p.ato_min_voltage = v;
+        this._afterVoltageEdit();
+      };
+
     const rates: Array<[string, keyof SpeedProfileData]> = [
       ['sp-accel', 'acceleration_rate'],
       ['sp-decel', 'deceleration_rate'],
@@ -2233,6 +2673,23 @@ ${this._calibrationGroupHtml(p)}
     });
   }
 
+  /** A starting or ATO minimum voltage edit was applied: redraw and save. */
+  private _afterVoltageEdit(): void {
+    this._renderVoltsHint('');
+    this._redrawPlot();
+    this._syncValues();
+    this._commitDebounced(0);
+  }
+
+  /** The line under the curve's values: why a typed voltage was not saved. */
+  private _renderVoltsHint(text: string): void {
+    const hint = document.getElementById('sp-volts-hint');
+    if (!hint) return;
+    hint.textContent = text;
+    hint.classList.toggle('text-warning', !!text);
+    hint.classList.toggle('text-muted', !text);
+  }
+
   private _onScalar(el: HTMLInputElement, apply: (v: number) => void): void {
     const v = parseFloat(el.value);
     if (!Number.isFinite(v)) return;
@@ -2243,9 +2700,9 @@ ${this._calibrationGroupHtml(p)}
 
   // --- converter ---
   //
-  // design_new.md "SpeedProfile": voltage and speed are read off the curve;
-  // power percent is a straight line in speed from the starting speed (just
-  // above 0%) to the top speed (100%), and 0% is stopped. A power percent's
+  // design_new.md "SpeedProfile": voltage and speed are read off the curve
+  // from the starting voltage up; power percent is a straight line in speed
+  // from 0 km/h to the top speed (100%), and 0% is stopped. A power percent's
   // voltage goes through its speed.
   private _bindConverter(): void {
     const bind = (id: string, compute: (val: number) => void) => {
@@ -2261,9 +2718,14 @@ ${this._calibrationGroupHtml(p)}
       const el = document.getElementById(id) as HTMLInputElement | null;
       if (el && document.activeElement !== el) el.value = fmt(val, digits);
     };
-    bind('cv-vs-v', (v) => set('cv-vs-s', voltageToSpeed(curve(), v), 1));
+    const start = () => this._profile!.starting_voltage;
+    bind('cv-vs-v', (v) => set('cv-vs-s', voltageToSpeed(curve(), v, start()), 1));
     bind('cv-vs-s', (s) =>
-      set('cv-vs-v', speedToVoltage(curve(), s, this._profile!.max_voltage, this._profile!.lighting_voltage), 2)
+      set(
+        'cv-vs-v',
+        speedToVoltage(curve(), s, this._profile!.max_voltage, this._profile!.lighting_voltage, start()),
+        2
+      )
     );
     bind('cv-ps-p', (pct) => {
       set('cv-ps-s', powerPercentToSpeed(curve(), pct), 1);
@@ -2281,7 +2743,7 @@ ${this._calibrationGroupHtml(p)}
     const el = document.getElementById('cv-ps-v');
     const p = this._profile;
     if (!el || !p) return;
-    const v = powerPercentToVoltage(p.voltage_speed_curve, pct, p.max_voltage, p.lighting_voltage);
+    const v = powerPercentToVoltage(p.voltage_speed_curve, pct, p.max_voltage, p.lighting_voltage, p.starting_voltage);
     el.textContent = `${fmt(pct, 1)}% drives ${fmt(v)} V on the rails.`;
   }
 
@@ -2294,9 +2756,9 @@ ${this._calibrationGroupHtml(p)}
       const el = document.getElementById(id) as HTMLInputElement | null;
       if (el && document.activeElement !== el) el.value = fmt(val, digits);
     };
-    const halfV = powerPercentToVoltage(curve, 50, p.max_voltage, p.lighting_voltage);
+    const halfV = powerPercentToVoltage(curve, 50, p.max_voltage, p.lighting_voltage, p.starting_voltage);
     set('cv-vs-v', halfV, 2);
-    set('cv-vs-s', voltageToSpeed(curve, halfV), 1);
+    set('cv-vs-s', voltageToSpeed(curve, halfV, p.starting_voltage), 1);
     set('cv-ps-p', 50, 0);
     set('cv-ps-s', powerPercentToSpeed(curve, 50), 1);
     this._showPowerVoltage(50);
@@ -2321,13 +2783,16 @@ ${this._calibrationGroupHtml(p)}
     }
     setVal(document.getElementById('sp-maxv'), fmt(p.max_voltage));
     setVal(document.getElementById('sp-lighting'), p.lighting_voltage == null ? '' : fmt(p.lighting_voltage));
+    setVal(document.getElementById('sp-startv'), fmt(p.starting_voltage));
+    setVal(document.getElementById('sp-atomin'), p.ato_min_voltage == null ? '' : fmt(p.ato_min_voltage));
     const text = (id: string, val: string) => {
       const el = document.getElementById(id);
       if (el) el.textContent = val;
     };
     const curve = p.voltage_speed_curve;
-    text('sp-start-v', fmt(startingVoltage(curve)));
-    text('sp-start-s', fmt(startingSpeed(curve), 1));
+    const atoMin = atoMinimumVoltage(curve, p.starting_voltage, p.max_voltage, p.ato_min_voltage);
+    text('sp-atomin-v', fmt(atoMin));
+    text('sp-atomin-s', fmt(voltageToSpeed(curve, atoMin, p.starting_voltage), 1));
     text('sp-top-s', fmt(topSpeed(curve), 1));
     this._renderLightingHint();
     this._recomputeConverter();

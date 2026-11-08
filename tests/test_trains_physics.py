@@ -299,16 +299,14 @@ class TestTrainPhysicsManualPowerPercent:
 
     def test_power_percent_50_immediate_curve_speed(self):
         """At 50% with the per-train default curve and no braking, speed jumps
-        at once to halfway between the starting speed and this train's 120
-        max_speed."""
+        at once to half this train's 120 max_speed."""
         network, train, controller, physics = self._build_train()
         controller.manual.manual_power_percent = 50.0
         physics.tick(0.1)
         # The profile-less train resolves to a default whose voltage_speed_curve
-        # reaches its own max_speed (120) at max_voltage; its starting speed is
-        # 120 * 1.5 / 12 = 15 km/h, so 50% is 15 + (120 - 15) / 2 = 67.5 km/h
+        # reaches its own max_speed (120) at max_voltage, so 50% is 60 km/h
         # (design_new.md "Power percent is a share of the speed range").
-        assert abs(controller.physics_sync.current_speed_kmh - 67.5) < 0.5
+        assert abs(controller.physics_sync.current_speed_kmh - 60.0) < 0.5
 
     def test_power_percent_eb_overrides_to_decel(self):
         """EB latched: percent ignored; emergency-brake decel applies."""

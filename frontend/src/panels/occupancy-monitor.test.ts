@@ -5,6 +5,7 @@ import {
     describeDebounce,
     describeLink,
     formatReading,
+    summarizeRailReadings,
 } from './occupancy-monitor';
 
 describe('describeDebounce', () => {
@@ -190,5 +191,23 @@ describe('changedBlocks', () => {
     it('does not flash a block on its first appearance', () => {
         expect(changedBlocks(null, { blocks: { A: { confirmed: true } } }).size).toBe(0);
         expect(changedBlocks({ blocks: {} }, { blocks: { A: { confirmed: true } } }).size).toBe(0);
+    });
+});
+
+describe('summarizeRailReadings', () => {
+    it('shows the average, with the lowest and highest reading in the detail', () => {
+        const cell = summarizeRailReadings([10, 12, 11]);
+        expect(cell.text).toBe('11 V');
+        expect(cell.detail).toBe("Average of 3 readings from this block's current sensor, from 10 to 12 V.");
+    });
+
+    it('leaves out readings that came back empty', () => {
+        expect(summarizeRailReadings([8, null]).text).toBe('8 V');
+        expect(summarizeRailReadings([8, null]).detail).toContain('Average of 1 reading ');
+    });
+
+    it('shows a dash when no voltage came back', () => {
+        expect(summarizeRailReadings([null]).text).toBe('—');
+        expect(summarizeRailReadings([]).text).toBe('—');
     });
 });
