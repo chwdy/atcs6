@@ -297,6 +297,7 @@ def main() -> None:
 
     from bootstrap import bootstrap_runtime
     from detector_reading_log import DETECTOR_READING_LOG_DIR
+    from locomotive_file import LOCOMOTIVE_FILE_PATH
     from runtime import start_all_threads
 
     network, path_dispatcher, sim_controller, persistence_manager = bootstrap_runtime(
@@ -309,6 +310,9 @@ def main() -> None:
         # design_new.md "Event log", Detector reading log: what every block
         # detector read, pass by pass, in the per-machine `.runtime/` folder.
         detector_reading_log_dir=DETECTOR_READING_LOG_DIR,
+        # design_new.md "SpeedProfile", Where profiles and the roster are kept:
+        # speed profiles and the roster survive a restart in their own file.
+        locomotive_file_path=LOCOMOTIVE_FILE_PATH,
     )
 
     simulation_lock = threading.Lock()

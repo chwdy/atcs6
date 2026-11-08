@@ -398,7 +398,9 @@ class RailwayNetwork(SwitchOutputOwner):
         self.station_groups.clear()
         self.switches.clear()
         self.tunnels.clear()
-        self.train_roster.clear()
+        # The roster and the speed profiles are not layout data: clearing the
+        # network keeps both (design_new.md "SpeedProfile", Where profiles and
+        # the roster are kept).
         # Derived tile -> owner reverse indices. Not held on any entity dict,
         # so they must be cleared explicitly to avoid stale block/platform
         # membership on reused tiles.
@@ -1885,7 +1887,7 @@ class RailwayNetwork(SwitchOutputOwner):
             })
         return out
 
-    def _saved_speed_profiles(self) -> dict:
+    def saved_speed_profiles(self) -> dict:
         """Every registered profile except the seeded pair each unidentified train carries.
 
         An unidentified train is runtime only, so nothing about it is written to
@@ -1918,6 +1920,33 @@ class RailwayNetwork(SwitchOutputOwner):
                 saved.pop(model_id, None)
         return saved
 
+    def _give_seeded_pair_when_profile_not_stored(self, train) -> None:
+        """Give a loaded train the seeded profile pair when its profile is gone.
+
+        design_new.md "SpeedProfile", A loaded train whose profile is not stored
+        gets the seeded pair: every train names an instance profile, even when a
+        layout is opened where the locomotive file never held that train. A
+        stored record with the seeded ids is reused, never overwritten.
+        """
+        from speed_profile import make_default_speed_profile, make_instance_profile
+
+        pid = train.speed_profile_id
+        if pid and self.speed_profiles.get(pid) is not None:
+            return
+        model = make_default_speed_profile(train.train_id, train.max_speed)
+        if self.speed_profiles.get(model.profile_id) is None:
+            self.speed_profiles.register(model)
+        instance_id = f"{model.profile_id}__instance"
+        if self.speed_profiles.get(instance_id) is None:
+            self.speed_profiles.register(
+                make_instance_profile(
+                    model.profile_id,
+                    profile_id=instance_id,
+                    name=f"{model.name} instance",
+                )
+            )
+        train.speed_profile_id = instance_id
+
     def to_layout_dict(self) -> dict:
         """Layout-only serialization used by persistence.
 
@@ -1941,8 +1970,6 @@ class RailwayNetwork(SwitchOutputOwner):
                 p.to_dict_with_orientation(self) for p in self.platforms.values()
             ],
             "station_groups": [s.to_dict() for s in self.station_groups.values()],
-            "train_roster": self.train_roster.to_dict(),
-            "speed_profiles": self._saved_speed_profiles(),
             "switches": {
                 k: v.to_layout_dict() for k, v in self.switches.items()
             },
@@ -2015,21 +2042,15 @@ class RailwayNetwork(SwitchOutputOwner):
         # (a grouping may name a platform block).
         self._fold_grouped_blocks(data.get("power_districts", []))
 
-        # Rebuild the train roster (config; absent in legacy saves = empty).
-        self.train_roster = TrainRoster.from_dict(data.get("train_roster", []))
-
-        # Rebuild the speed-profile registry (config; absent in legacy saves =
-        # default-only). Calibrated curves, lighting voltages, and every train/
-        # roster speed_profile_id link persist through this (design_new.md
-        # "SpeedProfile").
-        self.speed_profiles = SpeedProfileRegistry.from_dict(
-            data.get("speed_profiles")
-        )
+        # The train roster and the speed profiles are not layout data: they live
+        # in the locomotive file, and loading a layout leaves both as they are
+        # (design_new.md "SpeedProfile", Where profiles and the roster are kept).
 
         # Rebuild trains
         for train_data in data.get("trains", []):
             train = Train.from_dict(train_data)
             self.trains[train.train_id] = train
+            self._give_seeded_pair_when_profile_not_stored(train)
 
         # Rebuild tunnels (after all tracks are in place — add_tunnel
         # validates against the live track set). A malformed entry is

@@ -568,9 +568,13 @@ def test_an_unidentified_train_is_not_written_to_saved_state():
     saved_ids = {t["id"] for t in saved["trains"]}
 
     assert unidentified_id not in saved_ids
-    # Nor is the seeded profile pair it carries.
-    assert profile_id not in saved["speed_profiles"]
-    assert model_id not in saved["speed_profiles"]
+    # Nor is the seeded profile pair it carries written to the locomotive file
+    # (design_new.md "SpeedProfile", Where profiles and the roster are kept).
+    import locomotive_file
+
+    saved_profiles = locomotive_file.contents(network)["speed_profiles"]
+    assert profile_id not in saved_profiles
+    assert model_id not in saved_profiles
 
 
 def test_an_unidentified_train_is_in_the_live_payload_so_it_shows_as_itself():

@@ -58,4 +58,8 @@ event_log.jsonl
 # App-managed hardware backend selection (design_new.md Power, Hardware configuration)
 hardware_config.json
 operation_environment.json
+# App-managed speed profiles + train roster (design_new.md SpeedProfile, Where
+# profiles and the roster are kept), plus its write temp and unreadable copy
+locomotives.json
+locomotives.json.*
 i2c.ipynb

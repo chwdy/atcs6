@@ -184,6 +184,7 @@ def bootstrap_runtime(
     scene: str | None = None,
     event_log_path: str | None = None,
     detector_reading_log_dir: str | os.PathLike | None = None,
+    locomotive_file_path: str | os.PathLike | None = None,
 ) -> tuple[RailwayNetwork, PathDispatcher, SimulationController, PersistenceManager]:
     """Bootstrap the full runtime environment.
 
@@ -200,6 +201,12 @@ def bootstrap_runtime(
             every block detector read into files in this directory
             (design_new.md "Event log", Detector reading log). `None` (the
             default, used by unit tests) leaves that log off.
+        locomotive_file_path: When set, read the speed profiles and the train
+            roster from this file once the scene and its trains exist, and
+            turn on writing it after every state-changing request
+            (design_new.md "SpeedProfile", Where profiles and the roster are
+            kept). `None` (the default, used by unit tests) leaves the file
+            off.
 
     Returns:
         Tuple of (network, path_dispatcher, sim_controller, persistence_manager).
@@ -265,6 +272,15 @@ def bootstrap_runtime(
 
     if demo and setup_train:
         setup_demo_train(network, path_dispatcher, sim_controller, scene=scene)
+
+    # Read after the scene's trains are placed, so a file record replaces the
+    # seeded record of the same id and a scene train keeps its measured curve
+    # across a restart.
+    if locomotive_file_path:
+        import locomotive_file
+
+        locomotive_file.enable(str(locomotive_file_path))
+        locomotive_file.load_into(network, notification_center)
 
     persistence_manager = PersistenceManager()
 

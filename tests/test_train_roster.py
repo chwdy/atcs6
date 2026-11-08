@@ -38,12 +38,14 @@ def test_roster_roundtrip():
     assert restored.get_entry("E2").name == "B"
 
 
-def test_network_persists_roster():
+def test_loading_a_layout_keeps_the_roster():
+    """The roster lives in the locomotive file, not in a layout, so loading a
+    layout leaves it in place (design_new.md "SpeedProfile", Where profiles and
+    the roster are kept)."""
     net = RailwayNetwork()
     net.train_roster.add_entry(RosterEntry(entry_id="E1", max_speed=77.0))
-    net2 = RailwayNetwork()
-    net2.from_dict(net.to_dict())
-    assert net2.train_roster.get_entry("E1").max_speed == 77.0
+    net.from_dict(RailwayNetwork().to_layout_dict())
+    assert net.train_roster.get_entry("E1").max_speed == 77.0
 
 
 # --- placement import (end-to-end add_train) ------------------------------
