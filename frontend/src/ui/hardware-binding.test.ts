@@ -156,6 +156,20 @@ describe('block hardware section', () => {
     expect(html.indexOf('hw-occ-test')).toBeLessThan(html.indexOf('Track power'));
   });
 
+  it('offers a driven threshold beside the current calibration, empty when unset', () => {
+    // design_new.md "Occupancy source follows drive state": an unset driven
+    // threshold means the driven zone uses `threshold_ma`.
+    const unset = section(cfg());
+    expect(unset).toContain('Driven threshold mA');
+    expect(unset).toMatch(/class="input-small-field hw-cur-driven" placeholder="same" value=""/);
+    const set = section(cfg({
+      block_occupancy_current: {
+        [BLOCK]: { chip_id: 'cur0', port: 1, baseline_ma: 0, threshold_ma: 10, driven_threshold_ma: 25 },
+      },
+    }));
+    expect(set).toMatch(/class="input-small-field hw-cur-driven" placeholder="same" value="25"/);
+  });
+
   it('drops a slot with no chip rather than offering an empty dropdown', () => {
     const noCurrent = cfg({
       chips: cfg().chips.filter((c) => c.port_kind !== 'current_sense'),

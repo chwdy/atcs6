@@ -32,8 +32,8 @@ def _setup():
         block_occupancy={"B1": ("in", 0), "B2": ("in", 1)},
         switch_output={},
         block_occupancy_current={
-            "B1": ("cur", 0, 0.0, 0.010),
-            "B2": ("cur", 1, 0.0, 0.010),
+            "B1": ("cur", 0, 0.0, 0.010, 0.010),
+            "B2": ("cur", 1, 0.0, 0.010, 0.010),
         },
     )
     return cfg, device, occupancy

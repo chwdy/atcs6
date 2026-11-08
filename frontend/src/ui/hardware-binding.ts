@@ -27,9 +27,13 @@ interface Binding { chip_id: string; port: number; }
  * resolves the binding (design_new.md "Power", Rail polarity lives on the rail
  * binding). */
 interface TrackBinding { chip_id: string; forward: number; reverse: number; reversed?: boolean; }
+/** `driven_threshold_ma` judges the channel while its block is driven and
+ * `threshold_ma` in the lighting zone; unset, the driven zone uses
+ * `threshold_ma` (design_new.md "Occupancy source follows drive state"). */
 interface CurrentBinding extends Binding {
   baseline_ma?: number | null;
   threshold_ma?: number | null;
+  driven_threshold_ma?: number | null;
 }
 /** A switch's throw wiring: one coil bit per side, plus the optional standby bit
  * a motor driver (TB6612) needs held high while a coil is driven. */
@@ -273,6 +277,7 @@ function currentRowHtml(cfg: HwConfig, logicalId: string, slot: HwSlot): string 
   const opts = channelOptions(slotChips(cfg, slot), current, true);
   const baseline = current && current.baseline_ma != null ? current.baseline_ma : '';
   const threshold = current && current.threshold_ma != null ? current.threshold_ma : '';
+  const driven = current && current.driven_threshold_ma != null ? current.driven_threshold_ma : '';
   return `<div class="input-small-row mb-8">
       <label class="input-small-label input-small-label-inline">${esc(slot.label)}</label>
       <select class="input-small-field hw-cur-select">${opts}</select>
@@ -281,6 +286,10 @@ function currentRowHtml(cfg: HwConfig, logicalId: string, slot: HwSlot): string 
       <label class="input-small-label input-small-label-inline">Baseline / threshold mA</label>
       <input type="number" step="0.1" min="0" class="input-small-field hw-cur-baseline" placeholder="0" value="${esc(baseline)}">
       <input type="number" step="0.1" min="0" class="input-small-field hw-cur-threshold" placeholder="15" value="${esc(threshold)}">
+    </div>
+    <div class="input-small-row mb-8 hw-cur-cal"${current ? '' : ' hidden'}>
+      <label class="input-small-label input-small-label-inline" title="Threshold used while the block is driven. Empty uses the threshold above.">Driven threshold mA</label>
+      <input type="number" step="0.1" min="0" class="input-small-field hw-cur-driven" placeholder="same" value="${esc(driven)}">
     </div>`;
 }
 
@@ -779,9 +788,10 @@ export function bindHardwareSection(cfg: HwConfig | null, logicalId: string): vo
   const curSel = section.querySelector<HTMLSelectElement>('.hw-cur-select');
   if (curSel) {
     const map = 'block_occupancy_current';
-    const calRow = section.querySelector<HTMLElement>('.hw-cur-cal');
+    const calRows = section.querySelectorAll<HTMLElement>('.hw-cur-cal');
     const baseInput = section.querySelector<HTMLInputElement>('.hw-cur-baseline');
     const threshInput = section.querySelector<HTMLInputElement>('.hw-cur-threshold');
+    const drivenInput = section.querySelector<HTMLInputElement>('.hw-cur-driven');
 
     const saveCurrent = async (flashTarget: HTMLElement) => {
       try {
@@ -792,13 +802,18 @@ export function bindHardwareSection(cfg: HwConfig | null, logicalId: string): vo
           const [chipId, port] = curSel.value.split('::');
           const baseline_ma = baseInput && baseInput.value !== '' ? Number(baseInput.value) : null;
           const threshold_ma = threshInput && threshInput.value !== '' ? Number(threshInput.value) : null;
+          const driven_threshold_ma =
+            drivenInput && drivenInput.value !== '' ? Number(drivenInput.value) : null;
           await api.updateHardwareBinding(map, logicalId, chipId, Number(port), {
             baseline_ma,
             threshold_ma,
+            driven_threshold_ma,
           });
-          (cfg as any)[map][logicalId] = { chip_id: chipId, port: Number(port), baseline_ma, threshold_ma };
+          (cfg as any)[map][logicalId] = {
+            chip_id: chipId, port: Number(port), baseline_ma, threshold_ma, driven_threshold_ma,
+          };
         }
-        if (calRow) calRow.hidden = !curSel.value;
+        calRows.forEach((row) => { row.hidden = !curSel.value; });
         flashField(flashTarget, 'ok');
         noteBindingSaved(cfg, 'Current-sense binding');
       } catch (e: any) {
@@ -810,5 +825,6 @@ export function bindHardwareSection(cfg: HwConfig | null, logicalId: string): vo
     curSel.addEventListener('change', () => saveCurrent(curSel));
     baseInput?.addEventListener('change', () => { if (curSel.value) saveCurrent(baseInput); });
     threshInput?.addEventListener('change', () => { if (curSel.value) saveCurrent(threshInput); });
+    drivenInput?.addEventListener('change', () => { if (curSel.value) saveCurrent(drivenInput); });
   }
 }

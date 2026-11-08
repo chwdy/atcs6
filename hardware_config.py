@@ -204,12 +204,16 @@ class CurrentBinding:
     """A block's INA3221 current-sense channel plus its per-channel calibration.
 
     `baseline_ma` / `threshold_ma` None means "use the module default" — the
-    interface resolves them so a user only sets what differs from the norm."""
+    interface resolves them so a user only sets what differs from the norm.
+    `driven_threshold_ma` is the threshold used while the block is driven
+    (design_new.md "Occupancy source follows drive state"); None means the
+    driven zone uses `threshold_ma` too."""
 
     chip_id: str
     port: int
     baseline_ma: Optional[float] = None
     threshold_ma: Optional[float] = None
+    driven_threshold_ma: Optional[float] = None
 
 
 @dataclass
@@ -404,6 +408,7 @@ def _current_binding_dict(m: Dict[str, CurrentBinding]) -> Dict[str, Dict[str, A
             "port": b.port,
             "baseline_ma": b.baseline_ma,
             "threshold_ma": b.threshold_ma,
+            "driven_threshold_ma": b.driven_threshold_ma,
         }
         for lid, b in m.items()
     }
@@ -605,6 +610,7 @@ def _parse_current_bindings(data: Any) -> Dict[str, CurrentBinding]:
             port=port,
             baseline_ma=_opt_float(raw.get("baseline_ma")),
             threshold_ma=_opt_float(raw.get("threshold_ma")),
+            driven_threshold_ma=_opt_float(raw.get("driven_threshold_ma")),
         )
     return out
 
@@ -742,10 +748,12 @@ def _validate(cfg: HardwareConfig) -> None:
         port_kind=PORT_CURRENT_SENSE,
     )
     for logical_id, b in cfg.block_occupancy_current.items():
-        if b.threshold_ma is not None and b.threshold_ma < 0:
-            raise HardwareConfigError(
-                f"block_occupancy_current[{logical_id!r}] threshold_ma must be >= 0"
-            )
+        for field_name in ("threshold_ma", "driven_threshold_ma"):
+            value = getattr(b, field_name)
+            if value is not None and value < 0:
+                raise HardwareConfigError(
+                    f"block_occupancy_current[{logical_id!r}] {field_name} must be >= 0"
+                )
 
 
 def _validate_bindings(
@@ -1356,11 +1364,13 @@ def set_current_binding(
     *,
     baseline_ma: Any = None,
     threshold_ma: Any = None,
+    driven_threshold_ma: Any = None,
     persist: bool = True,
 ) -> HardwareConfig:
     """Set or clear one block's INA3221 current binding (the per-entity block
     editor's current-sense row). `chip_id` None/empty clears it. `baseline_ma` /
-    `threshold_ma` None keep the module defaults. The whole configuration is
+    `threshold_ma` None keep the module defaults; `driven_threshold_ma` None
+    makes the driven zone use `threshold_ma`. The whole configuration is
     re-validated, so an out-of-range / wrong-port-kind / already-used channel is
     rejected and nothing is committed."""
     candidate = _copy_config()
@@ -1375,6 +1385,7 @@ def set_current_binding(
             port=int(port),
             baseline_ma=_opt_float(baseline_ma),
             threshold_ma=_opt_float(threshold_ma),
+            driven_threshold_ma=_opt_float(driven_threshold_ma),
         )
     _validate(candidate)
     _apply(candidate)
@@ -1552,15 +1563,20 @@ def _switch_binding_tuples(
 
 def _current_binding_tuples(
     m: Dict[str, CurrentBinding],
-) -> Dict[str, Tuple[str, int, float, float]]:
-    """Resolve each current binding to (chip_id, port, baseline_a, threshold_a),
-    filling per-channel None with the module defaults and converting mA -> A so
-    the interface compares against raw INA3221 amps."""
-    out: Dict[str, Tuple[str, int, float, float]] = {}
+) -> Dict[str, Tuple[str, int, float, float, float]]:
+    """Resolve each current binding to
+    (chip_id, port, baseline_a, threshold_a, driven_threshold_a), filling
+    per-channel None with the module defaults — an unset driven threshold is the
+    channel's own threshold — and converting mA -> A so the interface compares
+    against raw INA3221 amps."""
+    out: Dict[str, Tuple[str, int, float, float, float]] = {}
     for lid, b in m.items():
         baseline_ma = b.baseline_ma if b.baseline_ma is not None else DEFAULT_CURRENT_BASELINE_MA
         threshold_ma = b.threshold_ma if b.threshold_ma is not None else DEFAULT_CURRENT_THRESHOLD_MA
-        out[lid] = (b.chip_id, b.port, baseline_ma / 1000.0, threshold_ma / 1000.0)
+        driven_ma = b.driven_threshold_ma if b.driven_threshold_ma is not None else threshold_ma
+        out[lid] = (
+            b.chip_id, b.port, baseline_ma / 1000.0, threshold_ma / 1000.0, driven_ma / 1000.0,
+        )
     return out
 
 

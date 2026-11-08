@@ -55,7 +55,12 @@ def set_block_presence(cfg: Any, device: Any, block_id: str, present: bool) -> N
             raise ValueError(f"current binding for {block_id!r} names a missing chip")
         chip = build_chip(device, spec)
         baseline = float(current.baseline_ma or 0.0)
-        threshold = float(current.threshold_ma or 3.0)
+        # Clear of the larger of the two thresholds, so the block reads present
+        # in whichever zone it is in (design_new.md, PUT
+        # /api/virtual-hardware/input/presence).
+        threshold = max(
+            float(current.threshold_ma or 3.0), float(current.driven_threshold_ma or 0.0)
+        )
         # Clear of the threshold rather than at it: a reading that sits exactly
         # on the boundary tests the comparator, not the app's reaction.
         milliamps = baseline + threshold + 5.0 if present else baseline

@@ -50,9 +50,13 @@ TrackBindingMap = Dict[str, Tuple[str, int, int]]
 # A switch binding map: switch_id -> (chip_id, port_main, port_diverge, port_standby).
 # `port_standby` is None when the motor driver needs no standby/enable bit.
 SwitchBindingMap = Dict[str, Tuple[str, int, int, Optional[int]]]
-# A current-sense binding map: block_id -> (chip_id, port, baseline_a, threshold_a).
-# Thresholds arrive already resolved to amps by the config layer.
-CurrentBindingMap = Dict[str, Tuple[str, int, float, float]]
+# A current-sense binding map:
+# block_id -> (chip_id, port, baseline_a, threshold_a, driven_threshold_a).
+# `threshold_a` judges the lighting zone and `driven_threshold_a` the driven zone
+# (design_new.md "Occupancy source follows drive state"). Thresholds arrive
+# already resolved to amps by the config layer, an unset driven threshold
+# already replaced by the channel's own threshold.
+CurrentBindingMap = Dict[str, Tuple[str, int, float, float, float]]
 
 # Direct-call fallback deadband; the config layer passes its own resolved value.
 _IDLE_DEADBAND_V = 0.25
@@ -739,7 +743,7 @@ class OccupancyDriver(OccupancyInput):
                 else None
             )
             current = (
-                self._read_current(block_id, entry)
+                self._read_current(block_id, entry, zone)
                 if block_id in self._current
                 else None
             )
@@ -779,7 +783,7 @@ class OccupancyDriver(OccupancyInput):
     ) -> bool:
         """Read the one detector `deciding_source` chose for this block."""
         if source == "current":
-            return self._read_current(block_id, detail)
+            return self._read_current(block_id, detail, self._drive_zone(block_id))
         if source == "digital":
             return self._read_digital(block_id, cache, detail)
         return False
@@ -811,7 +815,8 @@ class OccupancyDriver(OccupancyInput):
 
     def set_current_threshold_override(self, threshold_ma: Optional[float]) -> None:
         """Judge every current channel against `threshold_ma` instead of its own
-        configured threshold; `None` restores the per-block values.
+        configured thresholds, in every zone; `None` restores the per-block
+        values.
 
         Diagnostic seam for the occupancy bench, which exists so an operator can
         sweep one threshold across the whole layout and watch where each block
@@ -828,9 +833,16 @@ class OccupancyDriver(OccupancyInput):
         )
 
     def _read_current(
-        self, block_id: str, detail: Optional[Dict[str, Any]] = None
+        self,
+        block_id: str,
+        detail: Optional[Dict[str, Any]] = None,
+        zone: DriveZone = DriveZone.LIGHTING,
     ) -> bool:
-        chip_id, port, baseline_a, configured_a = self._current[block_id]
+        """Read one current channel and judge it against the threshold for the
+        block's drive zone: the driven threshold while driven, `threshold_a`
+        otherwise (design_new.md "Occupancy source follows drive state")."""
+        chip_id, port, baseline_a, lighting_a, driven_a = self._current[block_id]
+        configured_a = driven_a if zone is DriveZone.DRIVEN else lighting_a
         threshold_a = (
             configured_a
             if self._current_threshold_override_a is None

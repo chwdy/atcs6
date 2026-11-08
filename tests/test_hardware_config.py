@@ -317,9 +317,34 @@ def test_current_binding_tuples_resolves_defaults_and_converts_ma():
         "B1": hardware_config.CurrentBinding("cur1", 0),                      # defaults
         "B2": hardware_config.CurrentBinding("cur1", 1, baseline_ma=2.0, threshold_ma=20.0),
     }
+    m["B3"] = hardware_config.CurrentBinding(
+        "cur1", 2, threshold_ma=10.0, driven_threshold_ma=25.0
+    )
     out = hardware_config._current_binding_tuples(m)
-    assert out["B1"] == ("cur1", 0, 0.0, hardware_config.DEFAULT_CURRENT_THRESHOLD_MA / 1000.0)
-    assert out["B2"] == ("cur1", 1, 0.002, 0.020)
+    default_a = hardware_config.DEFAULT_CURRENT_THRESHOLD_MA / 1000.0
+    # An unset driven threshold is the channel's own threshold.
+    assert out["B1"] == ("cur1", 0, 0.0, default_a, default_a)
+    assert out["B2"] == ("cur1", 1, 0.002, 0.020, 0.020)
+    assert out["B3"] == ("cur1", 2, 0.0, 0.010, 0.025)
+
+
+def test_driven_threshold_round_trips_and_rejects_negative():
+    cfg = hardware_config.config_from_payload({
+        "chips": [{"chip_id": "cur1", "kind": "ina3221", "i2c_address": "0x40"}],
+        "block_occupancy_current": {
+            "B1": {"chip_id": "cur1", "port": 0, "threshold_ma": 10, "driven_threshold_ma": 25},
+        },
+    })
+    assert cfg.block_occupancy_current["B1"].driven_threshold_ma == 25.0
+    entry = hardware_config._current_binding_dict(cfg.block_occupancy_current)["B1"]
+    assert entry["driven_threshold_ma"] == 25.0
+    with pytest.raises(hardware_config.HardwareConfigError):
+        hardware_config.config_from_payload({
+            "chips": [{"chip_id": "cur1", "kind": "ina3221", "i2c_address": "0x40"}],
+            "block_occupancy_current": {
+                "B1": {"chip_id": "cur1", "port": 0, "driven_threshold_ma": -1},
+            },
+        })
 
 
 def test_occupancy_maps_split_by_port_kind():
@@ -343,10 +368,11 @@ def test_set_current_binding_sets_and_clears():
         persist=False,
     )
     hardware_config.set_current_binding(
-        "B1", "cur1", 0, baseline_ma=1.0, threshold_ma=12, persist=False
+        "B1", "cur1", 0, baseline_ma=1.0, threshold_ma=12, driven_threshold_ma=25,
+        persist=False,
     )
     b = hardware_config.get_hardware_config().block_occupancy_current["B1"]
-    assert (b.port, b.baseline_ma, b.threshold_ma) == (0, 1.0, 12.0)
+    assert (b.port, b.baseline_ma, b.threshold_ma, b.driven_threshold_ma) == (0, 1.0, 12.0, 25.0)
     hardware_config.set_current_binding("B1", None, persist=False)
     assert "B1" not in hardware_config.get_hardware_config().block_occupancy_current
     # a digital ('165) chip in the current map is rejected, nothing committed

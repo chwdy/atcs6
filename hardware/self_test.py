@@ -411,19 +411,19 @@ def run_occupancy_test(
         deadband = _idle_deadband_v(cfg)
         min_drive = _current_sense_min_drive_v(cfg)
         track = _read_track_state(device, cfg, block_id)
-        digital = _read_digital_detector(device, cfg, block_id)
-        current = _read_current_detector(device, cfg, block_id)
 
         # The same zone rule and detector precedence the runtime uses — one
         # definition of each, in `hardware.interfaces` — applied to the voltage
         # read back off the PWM chip, since a test builds no track driver. The
-        # lighting zone decides on the current channel exactly as the driven
-        # zone does, and differs only in that a clear takes a sustained run of
-        # reads.
+        # lighting zone decides on the current channel as the driven zone does,
+        # against the channel's lighting threshold rather than its driven one,
+        # and a clear there takes a sustained run of reads.
         zone = classify_drive_zone(
             track["volts"] if track["bound"] else 0.0, deadband, min_drive
         )
         driven = zone is DriveZone.DRIVEN
+        digital = _read_digital_detector(device, cfg, block_id)
+        current = _read_current_detector(device, cfg, block_id, driven=driven)
         held_zone = zone is DriveZone.LIGHTING
         source = deciding_source(zone, digital["bound"], current["bound"])
 
@@ -543,9 +543,13 @@ def _read_digital_detector(device: Any, cfg: Any, block_id: str) -> Dict[str, An
     return result
 
 
-def _read_current_detector(device: Any, cfg: Any, block_id: str) -> Dict[str, Any]:
+def _read_current_detector(
+    device: Any, cfg: Any, block_id: str, *, driven: bool = False
+) -> Dict[str, Any]:
     """The block's current-sense channel, with the calibration it is judged
-    against: occupied when `abs(current - baseline)` reaches the threshold."""
+    against: occupied when `abs(current - baseline)` reaches the threshold for
+    the block's drive zone — `driven_threshold_ma` (or `threshold_ma` when it is
+    unset) while driven, `threshold_ma` otherwise."""
     from hardware_config import DEFAULT_CURRENT_BASELINE_MA, DEFAULT_CURRENT_THRESHOLD_MA
 
     binding = cfg.block_occupancy_current.get(block_id)
@@ -557,6 +561,8 @@ def _read_current_detector(device: Any, cfg: Any, block_id: str) -> Dict[str, An
     threshold = (
         binding.threshold_ma if binding.threshold_ma is not None else DEFAULT_CURRENT_THRESHOLD_MA
     )
+    if driven and binding.driven_threshold_ma is not None:
+        threshold = binding.driven_threshold_ma
     spec = _spec_for(cfg, binding.chip_id)
     result: Dict[str, Any] = {
         "bound": True, "chip_id": binding.chip_id, "port": binding.port,

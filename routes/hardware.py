@@ -621,6 +621,7 @@ def register(app, state: AppState) -> None:
                         data.get("port"),
                         baseline_ma=data.get("baseline_ma"),
                         threshold_ma=data.get("threshold_ma"),
+                        driven_threshold_ma=data.get("driven_threshold_ma"),
                     )
                 else:
                     hardware_config.set_binding(
@@ -1059,6 +1060,11 @@ def register(app, state: AppState) -> None:
                     "duty_forward": None, "duty_reverse": None,
                     "track_reversed": bool(tbind.reversed) if tbind is not None else None,
                     "threshold_ma": float(cbind.threshold_ma) if cbind is not None else None,
+                    "driven_threshold_ma": (
+                        float(cbind.driven_threshold_ma)
+                        if cbind is not None and cbind.driven_threshold_ma is not None
+                        else None
+                    ),
                     "baseline_ma": float(cbind.baseline_ma or 0.0) if cbind is not None else None,
                     # Null where there is no verdict to report: a block with no
                     # detector has nothing to conclude from, and one bound to a

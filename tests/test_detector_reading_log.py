@@ -316,7 +316,7 @@ def _real_occupancy_input():
         block_track={"B1": ("pwm1", 0, 1)},
         block_occupancy={"B1": ("in1", 3)},
         switch_output={},
-        block_occupancy_current={"B1": ("cur1", 0, 0.0, 0.015)},
+        block_occupancy_current={"B1": ("cur1", 0, 0.0, 0.015, 0.015)},
         idle_deadband_v=0.25,
         current_sense_min_drive_v=4.0,
     )

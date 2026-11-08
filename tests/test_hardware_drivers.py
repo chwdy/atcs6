@@ -382,7 +382,7 @@ def test_block_voltage_readback_reads_bus_voltage_not_commanded():
         block_track={"B1": ("pwm1", 0, 1)},
         block_occupancy={},
         switch_output={},
-        block_occupancy_current={"B1": ("ina1", 0, 0.0, 0.01)},
+        block_occupancy_current={"B1": ("ina1", 0, 0.0, 0.01, 0.01)},
     )
     blk.set_voltage("B1", 12.0)                     # commanded 12 V
     dev.set_ina3221_bus_voltage(0x41, 1, 7.5)       # channel = port 0 + 1
@@ -633,7 +633,7 @@ def test_hybrid_occupancy_selects_source_by_drive_state():
         block_track={"B1": ("pwm1", 0, 1)},
         block_occupancy={"B1": ("in1", 3)},
         switch_output={},
-        block_occupancy_current={"B1": ("cur1", 0, 0.0, 0.015)},  # CH1, 15 mA threshold
+        block_occupancy_current={"B1": ("cur1", 0, 0.0, 0.015, 0.015)},  # CH1, 15 mA threshold
         idle_deadband_v=0.25,
     )
     # Idle (0 V commanded): the digital detector is the source.
@@ -648,6 +648,38 @@ def test_hybrid_occupancy_selects_source_by_drive_state():
     assert inp.read_block_currents()["B1"] is False
     dev.set_ina3221_current(0x41, 1, 0.030)      # 30 mA > 15 mA -> occupied
     assert inp.read_block_currents()["B1"] is True
+
+
+def test_driven_threshold_judges_only_the_driven_zone():
+    # design_new.md "Occupancy source follows drive state": a channel's driven
+    # threshold judges it while the block is driven, and `threshold_ma` judges
+    # it in the lighting zone. 15 mA sits between the two (10 mA lighting,
+    # 25 mA driven) — the stray current a coupled neighbour channel reads.
+    dev = FakeCh347Device(present_addresses={0x40, 0x41})
+    specs = [
+        ChipConfig("pwm1", "pca9685", i2c_address=0x40),
+        ChipConfig("cur1", "ina3221", i2c_address=0x41),
+    ]
+    inp, blk, _sw = build_real_interfaces(
+        dev, specs,
+        block_track={"B1": ("pwm1", 0, 1)},
+        block_occupancy={},
+        switch_output={},
+        block_occupancy_current={"B1": ("cur1", 0, 0.0, 0.010, 0.025)},
+        idle_deadband_v=0.25,
+        current_sense_min_drive_v=4.0,
+    )
+    dev.set_ina3221_current(0x41, 1, 0.015)
+    blk.set_voltage("B1", 8.0)                   # driven: judged against 25 mA
+    assert inp.read_block_currents()["B1"] is False
+    detail = inp.last_read_detail()["B1"]
+    assert detail["threshold_ma"] == pytest.approx(25.0)
+    dev.set_ina3221_current(0x41, 1, 0.030)
+    assert inp.read_block_currents()["B1"] is True
+    dev.set_ina3221_current(0x41, 1, 0.015)
+    blk.set_voltage("B1", 2.0)                   # lighting: judged against 10 mA
+    assert inp.read_block_currents()["B1"] is True
+    assert inp.last_read_detail()["B1"]["threshold_ma"] == pytest.approx(10.0)
 
 
 def _lighting_zone_block(hold_reads=3):
@@ -667,7 +699,7 @@ def _lighting_zone_block(hold_reads=3):
         block_track={"B1": ("pwm1", 0, 1)},
         block_occupancy={"B1": ("in1", 3)},
         switch_output={},
-        block_occupancy_current={"B1": ("cur1", 0, 0.0, 0.015)},  # CH1, 15 mA
+        block_occupancy_current={"B1": ("cur1", 0, 0.0, 0.015, 0.015)},  # CH1, 15 mA
         idle_deadband_v=0.25,
         current_sense_min_drive_v=4.0,
         lighting_clear_hold_reads=hold_reads,
@@ -938,7 +970,7 @@ def test_a_reconnect_reinitialization_reports_every_block_idle():
         block_track={"B1": ("pwm1", 0, 1)},
         block_occupancy={"B1": ("in1", 3)},
         switch_output={},
-        block_occupancy_current={"B1": ("cur1", 0, 0.0, 0.015)},
+        block_occupancy_current={"B1": ("cur1", 0, 0.0, 0.015, 0.015)},
         idle_deadband_v=0.25,
         current_sense_min_drive_v=4.0,
     )
@@ -988,7 +1020,7 @@ def test_current_only_block_reads_ina_regardless_of_drive():
     specs = [ChipConfig("cur1", "ina3221", i2c_address=0x41)]
     inp, _blk, _sw = build_real_interfaces(
         dev, specs, block_track={}, block_occupancy={}, switch_output={},
-        block_occupancy_current={"B1": ("cur1", 2, 0.0, 0.015)},
+        block_occupancy_current={"B1": ("cur1", 2, 0.0, 0.015, 0.015)},
     )
     assert inp is not None
     dev.set_ina3221_current(0x41, 3, 0.030)      # port 2 -> CH3
@@ -1539,7 +1571,7 @@ def test_ina219_fills_the_current_sense_occupancy_slot():
         block_track={"B1": ("pwm1", 0, 1)},
         block_occupancy={},
         switch_output={},
-        block_occupancy_current={"B1": ("cur1", 0, 0.0, 0.015)},
+        block_occupancy_current={"B1": ("cur1", 0, 0.0, 0.015, 0.015)},
     )
     dev.set_ina219_current(0x45, 0.002)                      # 2 mA, under threshold
     assert inp.read_block_currents() == {"B1": False}
@@ -1821,6 +1853,22 @@ def test_occupancy_test_driven_block_is_decided_by_the_current_detector():
     PCA9685(dev, address=0x40).set_duty_cycle(0, 1.0)    # block driven at full
     res = self_test.run_occupancy_test(_occupancy_cfg(), "B1", device=dev)
     assert res["driven"] is True and abs(res["track"]["volts"] - 12.0) < 0.01
+    assert res["source"] == "current" and res["occupied"] is False
+
+
+def test_occupancy_test_judges_a_driven_block_against_its_driven_threshold():
+    # The Test button mirrors the runtime: 20 mA clears a 15 mA lighting
+    # threshold but not a 25 mA driven threshold, so a driven block reads clear.
+    cfg = _occupancy_cfg()
+    cfg.block_occupancy_current["B1"] = CurrentBinding(
+        "cur1", 1, baseline_ma=0.0, threshold_ma=15.0, driven_threshold_ma=25.0
+    )
+    dev = _occupancy_device()
+    dev.set_ina3221_current(0x41, 2, 0.020)
+    PCA9685(dev, address=0x40).set_duty_cycle(0, 1.0)    # block driven at full
+    res = self_test.run_occupancy_test(cfg, "B1", device=dev)
+    assert res["driven"] is True
+    assert res["current"]["threshold_ma"] == 25.0
     assert res["source"] == "current" and res["occupied"] is False
 
 

@@ -58,7 +58,7 @@ def test_failed_current_read_raises_instead_of_reading_clear():
         block_track={"B1": ("pwm1", 0, 1)},
         block_occupancy={"B1": ("in1", 3)},
         switch_output={},
-        block_occupancy_current={"B1": ("cur1", 0, 0.0, 0.015)},
+        block_occupancy_current={"B1": ("cur1", 0, 0.0, 0.015, 0.015)},
         idle_deadband_v=0.25,
     )
     # Drive the block so the current channel is the deciding source.

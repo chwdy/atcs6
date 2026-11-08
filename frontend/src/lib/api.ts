@@ -594,13 +594,18 @@ export class API implements LayoutDataClient, SimClient {
   }
 
   /** Set (or clear, when chipId is null) one port binding, keyed by logical id.
-   * `extra` carries the current map's per-channel calibration (baseline/threshold mA). */
+   * `extra` carries the current map's per-channel calibration (baseline, threshold and
+   * driven threshold mA). */
   async updateHardwareBinding(
     map: string,
     logicalId: string,
     chipId: string | null,
     port: number | null,
-    extra?: { baseline_ma?: number | null; threshold_ma?: number | null }
+    extra?: {
+      baseline_ma?: number | null;
+      threshold_ma?: number | null;
+      driven_threshold_ma?: number | null;
+    }
   ): Promise<any> {
     return this._request(
       '/hardware/binding',

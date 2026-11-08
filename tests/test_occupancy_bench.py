@@ -84,7 +84,7 @@ def test_read_all_sources_reports_both_detectors_while_driven():
         block_track={"B1": ("pwm1", 0, 1)},
         block_occupancy={"B1": ("in1", 2)},
         switch_output={},
-        block_occupancy_current={"B1": ("ina1", 0, 0.0, 0.003)},
+        block_occupancy_current={"B1": ("ina1", 0, 0.0, 0.003, 0.003)},
     )
     blk.set_voltage("B1", 6.0)                 # well above the 4 V current floor
 
@@ -132,7 +132,7 @@ def test_read_all_sources_leaves_the_runtime_read_untouched():
         block_track={"B1": ("pwm1", 0, 1)},
         block_occupancy={"B1": ("in1", 2)},
         switch_output={},
-        block_occupancy_current={"B1": ("ina1", 0, 0.0, 0.003)},
+        block_occupancy_current={"B1": ("ina1", 0, 0.0, 0.003, 0.003)},
     )
     blk.set_voltage("B1", 2.0)                 # the lighting zone
     inp.read_block_currents()
