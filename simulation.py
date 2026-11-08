@@ -32,6 +32,7 @@ from typing import (
     Any,
     Callable,
     Dict,
+    Iterable,
     List,
     Literal,
     Optional,
@@ -2318,7 +2319,16 @@ class SimulationController(SwitchOutputOwner):
                 wired = evidence & detected
                 unknown = bool(wired) and not (wired & confirmed)
             became_unknown = unknown and not controller.presence_unknown
+            recovered = controller.presence_unknown and not unknown
             controller.presence_unknown = unknown
+            if recovered and train is not None:
+                # Detection returned, possibly behind the span it kept while
+                # ghosted: pull the span back onto the blocks it was given
+                # (design_new.md "Power", A recovered ghost's span is pulled
+                # back onto its blocks).
+                physics = self.physics_instances.get(train_id)
+                if physics is not None:
+                    physics.pull_span_back_onto_own_blocks(train, controller)
             if unknown:
                 # Repeat the containment before Plan on every detector read,
                 # not just the rising edge.  An API call between ticks may have
@@ -3201,14 +3211,14 @@ class SimulationController(SwitchOutputOwner):
             adopts it or it retires by itself;
           * the train is not OFF;
           * it still holds a live path or a RUNNING route run, which an OFF
-            train only does after a fatal-halt clear;
-          * a block it holds is a detected block the detector confirms
-            occupied: the locomotive is still on the track, and releasing the
-            block would leave it FREE under it with no later entry to correct it.
+            train only does after a fatal-halt clear.
 
         Otherwise, in order: `RouteExecutor.forget_train(...)` removes its route
-        records; its blocks and its switch occupancy are released;
-        `SpeedCalibration.abandon(...)` discards a finished speed pass still
+        records; its blocks and its switch occupancy are released; the released
+        blocks that still read current are handed to an unidentified train,
+        because the locomotive may still stand on them and the detector reports
+        changes rather than levels, so a released block would stay FREE under
+        it; `SpeedCalibration.abandon(...)` discards a finished speed pass still
         held for it; the train, its controller (with every latch on it) and its
         physics instance leave their registries; and one `remove_train` event
         names it. Its speed profiles and roster entry stay.
@@ -3246,11 +3256,6 @@ class SimulationController(SwitchOutputOwner):
             if detected
             else []
         )
-        if drawing:
-            raise ValueError(
-                f"Train {train_id} still draws current on {', '.join(drawing)}: "
-                "take the locomotive off the track first, then delete it"
-            )
 
         self.route_executor.forget_train(train_id)
 
@@ -3264,6 +3269,12 @@ class SimulationController(SwitchOutputOwner):
                         self.switch_manager.on_switch_tail_vacated(
                             switch_id, train_id, route
                         )
+
+        # Blocks that still read current go to an unidentified train: the
+        # locomotive may still stand on them, and a released block would stay
+        # FREE under it because the detector reports changes, not levels
+        # (design_new.md "Train Entity", Deleting a train, step 3).
+        handed = self._hand_blocks_to_unidentified(drawing)
 
         # A finished pass still held for this train goes, as on a network clear
         # or layout load, so a later train with the same id can open a run. No
@@ -3290,10 +3301,18 @@ class SimulationController(SwitchOutputOwner):
             source="SimulationController",
             operation="remove_train",
             kind=Kind.INFO,
-            message=f"train {train_id} deleted",
-            entities=[train_ref(train_id)],
+            message=(
+                f"train {train_id} deleted; {', '.join(drawing)} still read "
+                f"current and went to unidentified {', '.join(sorted(handed))}"
+                if handed
+                else f"train {train_id} deleted"
+            ),
+            entities=[train_ref(train_id)] + [train_ref(u) for u in sorted(handed)],
             event_time=time.time(),
-            payload={"released_blocks": held_blocks},
+            payload={
+                "released_blocks": held_blocks,
+                "unidentified_train_ids": sorted(handed),
+            },
         )
 
     def adopt_unidentified_train(
@@ -3696,6 +3715,31 @@ class SimulationController(SwitchOutputOwner):
         # which is fine) or on a block reading no current (which it refuses).
         return front, max(0.0, (detected_length_cm - length_cm) / 2.0)
 
+    def _hand_blocks_to_unidentified(self, block_ids: Iterable[str]) -> Dict[str, Set[str]]:
+        """Hand free blocks that read current to unidentified trains.
+
+        The `UnidentifiedTrainTracker` connectivity step that attribution uses
+        for an unmatched block decides which: connected blocks become one
+        unidentified train, and a group reachable from an unidentified train
+        that is already there joins it. No other train is considered. Used for
+        the blocks an adopted consist does not reach and for the blocks a
+        deleted train held that still read current (design_new.md "Unidentified
+        trains", Creation and identity).
+
+        Returns `unidentified_id -> block ids`.
+        """
+        manager = self.block_manager
+        blocks = set(block_ids)
+        if manager is None or not blocks:
+            return {}
+        attribution = self.unidentified_trains.attribute_unmatched_entries(
+            blocks, self._unidentified_clock()
+        )
+        for unidentified_id, held in attribution.items():
+            manager.occupy_blocks(sorted(held), unidentified_id)
+            self.unidentified_trains.write_detected_span(unidentified_id, set(held), set())
+        return attribution
+
     def _hand_surplus_blocks_to_unidentified(
         self, train_id: str, surplus: List[str]
     ) -> Dict[str, Set[str]]:
@@ -3726,14 +3770,7 @@ class SimulationController(SwitchOutputOwner):
         for block_id in sorted(surplus):
             manager.on_block_tail_vacated(block_id, train_id, None)
 
-        # Ordinary Observe attribution: connected surplus blocks become one unidentified train,
-        # and a group touching an unidentified train that is already there joins it.
-        attribution = self.unidentified_trains.attribute_unmatched_entries(
-            set(surplus), self._unidentified_clock()
-        )
-        for unidentified_id, block_ids in attribution.items():
-            manager.occupy_blocks(sorted(block_ids), unidentified_id)
-            self.unidentified_trains.write_detected_span(unidentified_id, set(block_ids), set())
+        attribution = self._hand_blocks_to_unidentified(surplus)
 
         # Say so. Otherwise the operator adopts a train, finds its route refused
         # because the block ahead is occupied, and has no way to connect that to

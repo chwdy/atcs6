@@ -6,11 +6,12 @@ each with the direction the stretch crosses it in, so its path runs out of one
 end, through the measured block, and out through the other end, and leaves
 every switch where it is set.
 
-On this oval, Main (or Sideline, as the points are set) is the only block past
-both outer blocks of Up, and Up the only one past both outer blocks of Main, so
-one end of the stretch takes it as its run-off block and the other end has none
-(design_new.md "Speed calibration", Each end of the stretch is an outer block
-and the run-off blocks past it).
+On this oval, Main (or Sideline, as the points are set) lies past both outer
+blocks of Up, and Up past both outer blocks of Main. Each leg finds the far
+end's run-off blocks with only the blocks the train stands in taken, so each
+end takes that block in turn as its run-off block (design_new.md "Speed
+calibration", Each end of the stretch is an outer block and the run-off blocks
+past it).
 
 Regression for the 2026-10-30 rig run on this scene's track plan (an oval with a
 passing siding). The leg used to name only the far outer block, so the path
@@ -33,7 +34,7 @@ from tests.train_test_helpers import skip_calibration_trials
 from app_state import AppState
 from bootstrap import bootstrap_runtime
 from services import segment_service, train_service
-from speed_calibration import PHASE_FAILED
+from speed_calibration import PHASE_FAILED, PHASE_LEG
 
 pytestmark = pytest.mark.scene("demo7_1")
 
@@ -104,14 +105,17 @@ def test_a_leg_across_up_runs_through_up_and_throws_no_points(state):
     blocks = _leg_path_blocks(state)
 
     assert run.phase != PHASE_FAILED, run.failure_reason
-    assert blocks == [RIGHT, UP, LEFT]
+    # The train stands in Right alone, so the far end past Left takes Main as
+    # the points are set, and no switch moves.
+    assert blocks == [RIGHT, UP, LEFT, MAIN]
+    assert run.runoff_switch_positions == {}
     assert _switch_positions(state) == before
 
     leg_route = state.sim_controller.route_executor.route_registry[
         run.active_leg_route_id
     ]
     kinds = [(t.task_kind, t.task_location.block_id) for t in leg_route.tasks]
-    assert kinds == [("waypoint", UP), ("stop", LEFT)]
+    assert kinds == [("waypoint", UP), ("stop", MAIN)]
     assert all(t.task_direction in ("forward", "reverse") for t in leg_route.tasks)
 
 
@@ -170,9 +174,9 @@ def test_the_leg_route_carries_the_walk_it_was_checked_on(state):
     leg_route = state.sim_controller.route_executor.route_registry[
         run.active_leg_route_id
     ]
-    # The walk starts at the near end's last block — Main, Right's run-off
-    # block — and ends at the far end's, Left, which has none.
-    assert _walk_blocks(leg_route.required_walk_keys) == [MAIN, RIGHT, UP, LEFT]
+    # The walk starts at the near end's last block — Right, since the train
+    # stands in no block past it — and ends at the far end's, Main past Left.
+    assert _walk_blocks(leg_route.required_walk_keys) == [RIGHT, UP, LEFT, MAIN]
 
 
 def test_a_leg_that_loses_its_walk_fails_the_pass(state):
@@ -195,7 +199,7 @@ def test_a_leg_that_loses_its_walk_fails_the_pass(state):
 
     assert run.phase == PHASE_FAILED
     assert "lost its way" in run.failure_reason
-    assert RIGHT in run.failure_reason and LEFT in run.failure_reason
+    assert RIGHT in run.failure_reason and MAIN in run.failure_reason
     assert state.path_dispatcher.active_path_id_by_train(TRAIN) is None
     assert _switch_positions(state) == before
 
@@ -287,6 +291,8 @@ def test_every_step_is_timed_in_both_directions(state, monkeypatch):
     # Every crossing of every step was timed, half each way.
     assert len(headings) == 3 * 2 * CALIBRATION_ROUND_TRIPS
     assert headings.count(LEFT) == headings.count(RIGHT)
+    # Main lies past both Right and Left as the points are set, and each leg
+    # runs off into it, so no switch moves.
     assert _switch_positions(state) == before
 
 
@@ -299,6 +305,9 @@ def test_a_stretch_too_short_for_the_top_step_fails_at_once(state):
     for block_id in (LEFT, RIGHT):
         (segment_id,) = state.network.blocks[block_id].segment_ids
         segment_service.update_segment(state, segment_id, data={"length_cm": 50.0})
+    # No run-off block either side: Main and the Sideline are held `manual`.
+    state.network.blocks[MAIN].manual = True
+    state.network.blocks[SIDELINE].manual = True
     _place(state, (9, 13), "WEST")
     run = skip_calibration_trials(train_service.calibrate_train(state, TRAIN, measured_block_id=UP))
     _run_pass(state, run, until_samples=1)
@@ -322,6 +331,9 @@ def test_a_train_in_the_sideline_is_moved_into_the_nearer_outer_block(state):
     Start stayed off until the operator drove it back by hand."""
     from speed_calibration import PHASE_LEG, PHASE_MOVING
 
+    # SW_7_5 is held `manual`, so the Sideline cannot be Left's run-off block
+    # and the train stands outside the stretch.
+    state.network.switches["SW_7_5"].manual = True
     _place(state, (10, 7), "WEST")
     span = state.sim_controller.get_or_create_controller(TRAIN).get_current_span()
     assert span.occupied_blocks == [SIDELINE]
@@ -342,10 +354,10 @@ def test_a_train_in_the_sideline_is_moved_into_the_nearer_outer_block(state):
     _run_until(state, run, lambda: run.phase == PHASE_LEG)
     assert run.phase == PHASE_LEG, run.failure_reason
     assert run.heading_toward_block_id == LEFT
-    # The move threw SW_11_9 toward the Sideline, so Main is no longer past
-    # Right: the ends are found again when the leg arms, and Left's end takes
-    # Main as its run-off block.
-    assert _leg_path_blocks(state) == [RIGHT, UP, LEFT, MAIN]
+    # The ends are found again when the leg arms. Left's only way on is across
+    # the manual SW_7_5, which no leg may reserve, so Left's end has no run-off
+    # block.
+    assert _leg_path_blocks(state) == [RIGHT, UP, LEFT]
 
 
 def test_a_train_on_the_measured_block_is_moved_off_it_first(state):
@@ -374,6 +386,8 @@ def test_a_move_that_never_arrives_fails_the_pass(state, monkeypatch):
     from constants import CALIBRATION_STEP_TIMEOUT_S
 
     monkeypatch.setattr(speed_calibration, "CALIBRATION_MOVE_VOLTAGE_V", 0.0)
+    # The Sideline cannot be Left's run-off block, so the train must move.
+    state.network.switches["SW_7_5"].manual = True
     _place(state, (10, 7), "WEST")
     run = skip_calibration_trials(train_service.calibrate_train(state, TRAIN, measured_block_id=UP))
     _run_until(state, run, lambda: False, ticks=int(CALIBRATION_STEP_TIMEOUT_S * 10) + 50)
@@ -387,9 +401,11 @@ def test_with_no_way_into_an_outer_block_the_pass_does_not_open(state):
     from services import ConflictError
 
     _place(state, (10, 7), "WEST")
-    # A `manual` block is out of reach of every automatic path.
+    # A `manual` block or switch is out of reach of every automatic path.
     state.network.blocks[RIGHT].manual = True
     state.network.blocks[LEFT].manual = True
+    for switch_id in ("SW_7_5", "SW_11_9"):
+        state.network.switches[switch_id].manual = True
 
     unmet = train_service.calibration_readiness(state, TRAIN, measured_block_id=UP)
     assert any(u.startswith("No way leads from where the train stands") for u in unmet)
@@ -424,12 +440,14 @@ def test_both_ends_of_a_curved_outer_block_are_walked(state):
 
 
 def test_each_end_takes_run_off_blocks_for_the_train_length(state):
-    """Up's ends: Right takes Main, one block past a Right that already holds
-    the train; Left finds Main taken, so it has none."""
+    """Up's ends, each as a leg runs toward it: Right takes Main, one block past
+    a Right that already holds the train, and Left takes Main too, because a
+    leg runs toward one end at a time."""
     outer, _length = train_service.resolve_calibration_stretch(state, UP)
-    runoff = train_service.resolve_calibration_runoff(state, UP, outer, 10.0)
+    runoff, positions = train_service.resolve_calibration_runoff(state, UP, outer, 10.0)
     ends = dict(zip(outer, runoff))
-    assert ends == {RIGHT: (MAIN,), LEFT: ()}
+    assert ends == {RIGHT: (MAIN,), LEFT: (MAIN,)}
+    assert positions == {}
 
 
 def _throw(state, switch_id, position):
@@ -501,9 +519,64 @@ def test_the_stretch_preview_names_each_end_and_its_length(state):
     assert response.status_code == 200
     body = response.get_json()
     ends = dict(zip(body["outer_block_ids"], body["runoff_block_ids"]))
-    assert ends == {RIGHT: [MAIN], LEFT: []}
+    assert ends == {RIGHT: [MAIN], LEFT: [MAIN]}
     lengths = dict(zip(body["outer_block_ids"], body["end_lengths_cm"]))
     assert lengths[RIGHT] == pytest.approx(99.6 + 84.0)
-    assert lengths[LEFT] == pytest.approx(99.6)
+    assert lengths[LEFT] == pytest.approx(99.6 + 84.0)
+    assert body["runoff_switch_positions"] == {}
     assert body["train_length_cm"] == 45.0
     assert body["block_names"][MAIN] == "Main"
+
+
+@pytest.mark.parametrize("start", [((9, 13), "WEST"), ((6, 4), "EAST")])
+def test_a_run_off_block_another_train_stands_in_is_passed_over(state, monkeypatch, start):
+    """design_new.md "Speed calibration", A run-off block holds no other train:
+    with another train standing in Main, each end looks the other way through
+    its switch and takes the Sideline — Right through SW_11_9, Left through
+    SW_7_5 — and each leg throws and locks its own far end's switch when it
+    reserves into the Sideline, whichever end the train starts in.
+
+    Regression for the 2026-11-07 rig: the end walked first took the Sideline,
+    so the other end had no run-off block and its switch was never locked."""
+    from constants import CALIBRATION_ROUND_TRIPS
+
+    import speed_calibration
+
+    train_service.create_train(
+        state, train_id="OTHER", length_cm=10.0,
+        position={"x": 7, "y": 6}, direction="SOUTH",
+    )
+    _place(state, *start)
+    assert state.network.blocks[MAIN].occupied_by == "OTHER"
+    outer, _length = train_service.resolve_calibration_stretch(state, UP)
+    runoff, positions = train_service.resolve_calibration_runoff(
+        state, UP, outer, 10.0, TRAIN
+    )
+    assert dict(zip(outer, runoff)) == {RIGHT: (SIDELINE,), LEFT: (SIDELINE,)}
+    assert positions == {"SW_11_9": 1, "SW_7_5": 1}
+    assert _switch_positions(state) == {"SW_11_9": 0, "SW_7_5": 0}
+
+    run = skip_calibration_trials(
+        train_service.calibrate_train(state, TRAIN, measured_block_id=UP)
+    )
+    monkeypatch.setattr(speed_calibration, "CALIBRATION_VOLTAGE_STEP_V", 0.6)
+    run.current_step_voltage = 3.6
+    switch_into_runoff = {RIGHT: "SW_11_9", LEFT: "SW_7_5"}
+    locked_toward = {RIGHT: set(), LEFT: set()}
+    sim = state.sim_controller
+    for _ in range(9000):
+        sim.update(0.1)
+        if run.active_leg_route_id and run.phase == PHASE_LEG:
+            for switch_id, switch in state.network.switches.items():
+                for _train_id, position in switch.locks.values():
+                    locked_toward[run.heading_toward_block_id].add((switch_id, position))
+        if not run.is_measuring or len(run.samples) >= 1:
+            break
+
+    assert run.phase != PHASE_FAILED, run.failure_reason
+    used = [c.toward_block_id for c in run.crossing_log if c.outcome == "used"]
+    assert used.count(LEFT) == used.count(RIGHT) == CALIBRATION_ROUND_TRIPS
+    for toward, switch_id in switch_into_runoff.items():
+        assert locked_toward[toward] == {(switch_id, 1)}
+    assert _switch_positions(state) == {"SW_11_9": 1, "SW_7_5": 1}
+    assert state.network.blocks[MAIN].occupied_by == "OTHER"

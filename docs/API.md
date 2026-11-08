@@ -306,7 +306,9 @@ Get detailed information about a specific train.
 
 ### DELETE /api/trains/{train_id}
 
-Delete a train from the network.
+Delete a train from the network. The train must be powered off and hold no
+path or running route run (400 otherwise). Blocks it held that still read
+current become an unidentified train, which can then be adopted.
 
 **Response:** `{"success": true}`
 

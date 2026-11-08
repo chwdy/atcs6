@@ -474,8 +474,11 @@ def delete_train(state: AppState, train_id: str) -> bool:
 
     Raises:
         NotFoundError when no train has that id.
-        ValidationError when the train is unidentified, is not OFF, still holds
-            a path or a running route run, or still draws current.
+        ValidationError when the train is unidentified, is not OFF, or still
+            holds a path or a running route run.
+
+    Blocks the train held that still read current become an unidentified
+    train, which the operator adopts to place the train again.
     """
     with _runtime_lock(state):
         train = require_train(state, train_id)
@@ -894,23 +897,27 @@ def resolve_calibration_runoff(
     measured_block_id: str,
     outer: Tuple[str, str],
     train_length_cm: float,
-) -> Tuple[Tuple[str, ...], Tuple[str, ...]]:
-    """Each end's run-off blocks, in order out from its outer block
-    (design_new.md "Speed calibration", Each end of the stretch is an outer
-    block and the run-off blocks past it).
+    train_id: Optional[str] = None,
+) -> Tuple[Tuple[Tuple[str, ...], Tuple[str, ...]], Dict[str, int]]:
+    """Each end's run-off blocks, in order out from its outer block, as each
+    end is when a leg runs toward it (design_new.md "Speed calibration", Each
+    end of the stretch is an outer block and the run-off blocks past it).
 
     The ends hold at least `train_length_cm` plus
     `CALIBRATION_RUNOFF_MARGIN_CM`, then one block more
-    (`BlockManager.runoff_blocks`). The pass finds them again each time a leg
-    or the move arms, from the points as they are set then.
+    (`BlockManager.runoff_blocks`), and never a block a train other than
+    `train_id` stands in. Legs run one way at a time, so the two ends may share
+    a run-off block. Returns the run-off blocks of each end and the switch
+    positions they need that differ from the set ones. The pass finds them
+    again each time a leg or the move arms.
     """
     from constants import CALIBRATION_RUNOFF_MARGIN_CM
 
     manager = getattr(state.network, "block_manager", None)
     if manager is None:
-        return (), ()
+        return ((), ()), {}
     room_cm = max(0.0, float(train_length_cm or 0.0)) + CALIBRATION_RUNOFF_MARGIN_CM
-    return manager.runoff_blocks(measured_block_id, outer, room_cm)
+    return manager.runoff_blocks(measured_block_id, outer, room_cm, train_id)
 
 
 def calibration_block_length_cm(state: AppState, block_id: str) -> float:
@@ -924,8 +931,12 @@ def _calibration_ends(
 ) -> Tuple[Tuple[str, ...], Tuple[str, ...]]:
     """Both ends of the stretch for this train: each outer block followed by
     its run-off blocks, sized from the train's entered length."""
-    runoff = resolve_calibration_runoff(
-        state, measured_block_id, outer, float(getattr(train, "length_cm", 0.0) or 0.0)
+    runoff, _positions = resolve_calibration_runoff(
+        state,
+        measured_block_id,
+        outer,
+        float(getattr(train, "length_cm", 0.0) or 0.0),
+        train.train_id,
     )
     return (outer[0], *runoff[0]), (outer[1], *runoff[1])
 

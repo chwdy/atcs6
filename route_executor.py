@@ -2533,7 +2533,12 @@ class RouteExecutor:
 
         from train_route import Route
 
-        self._refresh_calibration_ends(run)
+        self._refresh_calibration_ends(
+            run,
+            run.outer_block_ids.index(far_block_id)
+            if far_block_id in run.outer_block_ids
+            else None,
+        )
         leg = self._calibration_leg_tasks(train_id, run, far_block_id)
         if leg is None:
             near_block_id = next(
@@ -2569,20 +2574,42 @@ class RouteExecutor:
         route.assign_train(train_id)
         run.active_leg_route_id = route_id
 
-    def _refresh_calibration_ends(self, run) -> None:
+    def _switches_as_the_ends_need(self, candidate, runoff_switch_positions) -> bool:
+        """Whether every switch on the walk is set as it is now, or, for a
+        switch the ends cross with its points not as set, at the position named
+        in `runoff_switch_positions` (design_new.md "Speed calibration", A leg
+        runs on the stretch, with the points as they are set)."""
+        for step in candidate.ordered_walk or ():
+            if step.switch_required_state is None:
+                continue
+            switch = self.network.switches.get(step.resource_id)
+            if switch is None:
+                return False
+            wanted = runoff_switch_positions.get(step.resource_id, switch.position)
+            if int(step.switch_required_state) != int(wanted):
+                return False
+        return True
+
+    def _refresh_calibration_ends(self, run, toward_index: Optional[int]) -> None:
         """Find each end's run-off blocks again, from the points as they are
-        set now, before a leg or the move arms (design_new.md "Speed
-        calibration", Each end of the stretch is an outer block and the run-off
-        blocks past it). A switch the move or an operator threw since the last
-        leg changes which block lies past an outer block."""
+        set now and where the train stands, before a leg or the move arms
+        (design_new.md "Speed calibration", Each end of the stretch is an outer
+        block and the run-off blocks past it). `toward_index` names the end the
+        leg or the move runs toward; with None, each end is found as the far
+        end of a leg run toward it. A switch the move or an operator threw
+        since the last leg changes which block lies past an outer block."""
         from constants import CALIBRATION_RUNOFF_MARGIN_CM
 
         manager = getattr(self.network, "block_manager", None)
         if manager is None or not all(run.outer_block_ids):
             return
         room_cm = max(0.0, float(run.train_length_cm or 0.0)) + CALIBRATION_RUNOFF_MARGIN_CM
-        run.runoff_block_ids = manager.runoff_blocks(
-            run.measured_block_id, run.outer_block_ids, room_cm
+        run.runoff_block_ids, run.runoff_switch_positions = manager.runoff_blocks(
+            run.measured_block_id,
+            run.outer_block_ids,
+            room_cm,
+            run.train_id,
+            toward_index,
         )
         run.end_lengths_cm = tuple(
             tuple(manager.block_length_cm(b) for b in run.end_block_ids(index))
@@ -2590,7 +2617,12 @@ class RouteExecutor:
         )
 
     def calibration_move_walk(
-        self, train_id: str, measured_block_id: str, outer_block_ids, runoff_block_ids=((), ())
+        self,
+        train_id: str,
+        measured_block_id: str,
+        outer_block_ids,
+        runoff_block_ids=((), ()),
+        runoff_switch_positions=None,
     ) -> Optional[Tuple[str, "GraphWalkCandidate"]]:
         """The block a calibration pass's move stops in, and the walk it takes
         there, or None when no walk reaches either end of the stretch without
@@ -2635,7 +2667,11 @@ class RouteExecutor:
             for through in self.path_dispatcher.next_call_walk_candidates(
                 train_id, end[-1], None, False
             ):
-                if list(through.ordered_blocks or ()) == [measured_block_id, *end]:
+                if list(
+                    through.ordered_blocks or ()
+                ) == [measured_block_id, *end] and self._switches_as_the_ends_need(
+                    through, runoff_switch_positions or {}
+                ):
                     return end[-1], through
         return block_id, candidate
 
@@ -2653,9 +2689,13 @@ class RouteExecutor:
 
         from train_route import BlockTarget, Route
 
-        self._refresh_calibration_ends(run)
+        self._refresh_calibration_ends(run, None)
         chosen = self.calibration_move_walk(
-            train_id, run.measured_block_id, run.outer_block_ids, run.runoff_block_ids
+            train_id,
+            run.measured_block_id,
+            run.outer_block_ids,
+            run.runoff_block_ids,
+            run.runoff_switch_positions,
         )
         if chosen is None:
             first, second = run.outer_block_ids
@@ -2667,6 +2707,19 @@ class RouteExecutor:
             return
         block_id, candidate = chosen
         steps = list(candidate.ordered_walk or ())
+        # Found as the far end of a leg toward each end, the two ends may share
+        # a block; keep them as they are with the move running toward the end
+        # it enters, so no block lies in both.
+        entered = next(
+            (
+                b
+                for b in reversed(list(candidate.ordered_blocks or ()))
+                if b in run.outer_block_ids
+            ),
+            None,
+        )
+        if entered is not None:
+            self._refresh_calibration_ends(run, run.outer_block_ids.index(entered))
 
         seq = getattr(self, "_calibration_leg_seq", 0) + 1
         self._calibration_leg_seq = seq
@@ -2732,13 +2785,9 @@ class RouteExecutor:
             if list(candidate.ordered_blocks or ()) != stretch:
                 continue
             steps = list(candidate.ordered_walk or ())
-            points_as_set = all(
-                (switch := self.network.switches.get(step.resource_id)) is not None
-                and int(switch.position) == int(step.switch_required_state)
-                for step in steps
-                if step.switch_required_state is not None
-            )
-            if not points_as_set:
+            if not self._switches_as_the_ends_need(
+                candidate, run.runoff_switch_positions
+            ):
                 continue
             tasks = [
                 RouteTask(

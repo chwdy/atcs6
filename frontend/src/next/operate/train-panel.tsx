@@ -136,8 +136,8 @@ export function TrainPanel({ host, trainId }: { host: OperateHost; trainId: stri
 const PRESENCE_UNKNOWN_DETAIL = 'No occupancy backs this train — its span represents nothing detected on the track.';
 
 /** Ask, then delete the train record. The server refuses a train that is not
- *  OFF, still holds a path or a running route run, or still draws current
- *  (design_new.md "Train Entity", Deleting a train); its reason is shown. */
+ *  OFF or still holds a path or a running route run (design_new.md "Train
+ *  Entity", Deleting a train); its reason is shown. */
 async function deleteTrain(trainId: string, detail: string): Promise<void> {
   const confirmed = await showConfirmModal({
     title: 'Delete train',
@@ -166,7 +166,11 @@ function DeleteTrainButton({ view }: { view: TrainView }) {
       disabled={reason !== null}
       title={reason ?? 'Delete this train from the layout. Its speed profile and roster entry are kept.'}
       onClick={() =>
-        void deleteTrain(view.id, 'Its speed profile and roster entry are kept. You can place the train again afterwards.')
+        void deleteTrain(
+          view.id,
+          'Its speed profile and roster entry are kept. If the locomotive is still on the track, the blocks it stands on ' +
+            'become an unidentified train: adopt it to place the train again with the right front end.'
+        )
       }
     >
       <i class="ti ti-trash" aria-hidden="true" /> Delete train

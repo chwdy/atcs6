@@ -483,8 +483,8 @@ def register(app, state: AppState) -> None:
             return jsonify({"error": str(exc)}), 400
         train = state.network.trains.get(train_id) if state.network else None
         train_length_cm = float(getattr(train, "length_cm", 0.0) or 0.0)
-        runoff = train_service.resolve_calibration_runoff(
-            state, block_id, outer, train_length_cm
+        runoff, switch_positions = train_service.resolve_calibration_runoff(
+            state, block_id, outer, train_length_cm, train_id if train else None
         )
         ends = [(outer[i], *runoff[i]) for i in (0, 1)]
         return jsonify(
@@ -497,6 +497,7 @@ def register(app, state: AppState) -> None:
                     for end in ends
                 ],
                 "train_length_cm": train_length_cm,
+                "runoff_switch_positions": switch_positions,
                 "length_cm": length_cm,
                 **_stretch_names(block_id, [*ends[0], *ends[1]]),
             }

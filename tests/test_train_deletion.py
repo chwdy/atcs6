@@ -2,11 +2,11 @@
 
 `SimulationController.remove_train(train_id)` runs only on a train with nothing
 left to tear down: it is refused for an unidentified train, a train that is not
-OFF, one still holding a path or a RUNNING route run, and one still drawing
-current on a detected block. A deletion it accepts leaves nothing keyed on the
-`train_id` — no route assignment, held request, block or switch occupancy,
-controller, or physics instance — so a later train with the same id starts
-fresh.
+OFF, and one still holding a path or a RUNNING route run. Blocks the train held
+that still read current become an unidentified train. A deletion it accepts
+leaves nothing keyed on the `train_id` — no route assignment, held request,
+block or switch occupancy, controller, or physics instance — so a later train
+with the same id starts fresh.
 
 Run with: ``/opt/homebrew/anaconda3/envs/general/bin/python -m pytest
 tests/test_train_deletion.py -q``
@@ -170,28 +170,97 @@ class WiredDetector(FakeDetector):
         return set(self._block_ids)
 
 
-def test_a_train_still_drawing_current_is_refused_until_it_is_taken_off():
-    """Releasing a block that still reads current would leave it FREE under the
-    locomotive. Once the locomotive is lifted off, the train is ghosted, its
-    teardown leaves it OFF, and the ghost can be deleted."""
-    network, _sim, _detector = build_sim()
+def _wired_sim(num_blocks=3):
+    network, _sim, _detector = build_sim(num_blocks)
     detector = WiredDetector(network.blocks)
     sim = SimulationController(network, PathDispatcher(network), input_interface=detector)
     sim.unidentified_clock = lambda: sim._fake_clock
     sim._fake_clock = 0.0
-    state = _state_for(sim)
+    return network, sim, detector, _state_for(sim)
 
-    detector.current = {"BLK_1": True}
+
+def _adopt(sim, network, detector, blocks, new_id, length_cm=50.0):
+    detector.current = {**detector.current, **{b: True for b in blocks}}
     tick(sim)
+    unidentified = [
+        t.train_id for t in network.trains.values()
+        if t.is_unidentified and network.blocks[blocks[0]].occupied_by == t.train_id
+    ]
+    assert len(unidentified) == 1
     sim.adopt_unidentified_train(
-        only_unidentified(network), "T1",
-        max_speed_kmh=80.0, length_cm=50.0, direction="EAST", cab="A",
+        unidentified[0], new_id,
+        max_speed_kmh=80.0, length_cm=length_cm, direction="EAST", cab="A",
+    )
+    assert all(network.blocks[b].occupied_by == new_id for b in blocks)
+
+
+def test_a_train_whose_locomotive_is_still_on_the_track_becomes_an_unidentified_train():
+    """A train placed wrong is deleted while its locomotive stands on the track.
+    Released, the block would read FREE under the locomotive with no later entry
+    to correct it, so it goes to an unidentified train, which the operator then
+    adopts with the right front end."""
+    network, sim, detector, state = _wired_sim()
+    _adopt(sim, network, detector, ["BLK_1"], "T1")
+
+    assert train_service.delete_train(state, "T1") is True
+
+    assert "T1" not in network.trains
+    assert "T1" not in sim.controllers
+    holder = network.blocks["BLK_1"].occupied_by
+    assert holder is not None and holder != "T1"
+    assert network.trains[holder].is_unidentified is True
+    event = sim.notification_center.latest_by_operation("remove_train")
+    assert event.payload["unidentified_train_ids"] == [holder]
+    assert "BLK_1" in event.message
+
+    # Later reads keep it: the block still reads current and is held.
+    tick(sim, times=5)
+    assert network.blocks["BLK_1"].occupied_by == holder
+    assert only_unidentified(network) == holder
+
+    # The operator places the train again by adopting it.
+    sim.adopt_unidentified_train(
+        holder, "T1", max_speed_kmh=80.0, length_cm=50.0, direction="WEST", cab="A",
     )
     assert network.blocks["BLK_1"].occupied_by == "T1"
+    assert network.trains["T1"].is_unidentified is False
 
-    with pytest.raises(ValidationError, match="draws current on BLK_1"):
-        train_service.delete_train(state, "T1")
+
+def test_a_deleted_trains_current_never_goes_to_the_train_next_to_it():
+    """A stopped train on the next block touches the deleted train's block, but
+    deleting a train removes a record, not a locomotive: the block goes to an
+    unidentified train, never to the train left."""
+    network, sim, detector, state = _wired_sim(5)
+    # One locomotive across BLK_1 and BLK_2: adopt a short consist on BLK_1,
+    # and BLK_2 goes back to an unidentified train, adopted as T2.
+    detector.current = {"BLK_1": True, "BLK_2": True}
+    tick(sim)
+    sim.adopt_unidentified_train(
+        only_unidentified(network), "T1", max_speed_kmh=80.0, length_cm=50.0,
+        direction="EAST", cab="A", head_tile=(1, 0),
+    )
+    sim.adopt_unidentified_train(
+        only_unidentified(network), "T2", max_speed_kmh=80.0, length_cm=50.0,
+        direction="EAST", cab="A",
+    )
     assert network.blocks["BLK_1"].occupied_by == "T1"
+    assert network.blocks["BLK_2"].occupied_by == "T2"
+
+    assert train_service.delete_train(state, "T1") is True
+
+    holder = network.blocks["BLK_1"].occupied_by
+    assert holder not in (None, "T1", "T2")
+    assert network.trains[holder].is_unidentified is True
+    assert network.blocks["BLK_2"].occupied_by == "T2"
+    tick(sim, times=5)
+    assert network.blocks["BLK_1"].occupied_by == holder
+
+
+def test_a_ghosted_train_leaves_no_unidentified_train():
+    """Once the locomotive is lifted off, the train is ghosted, its teardown
+    leaves it OFF, and deleting it frees its blocks: nothing reads current."""
+    network, sim, detector, state = _wired_sim()
+    _adopt(sim, network, detector, ["BLK_1"], "T1")
 
     detector.current = {}
     tick(sim, times=OCCUPANCY_OFF_THRESHOLD + 2)
@@ -200,7 +269,10 @@ def test_a_train_still_drawing_current_is_refused_until_it_is_taken_off():
 
     assert train_service.delete_train(state, "T1") is True
     assert "T1" not in network.trains
-    assert "T1" not in sim.controllers
+    assert network.blocks["BLK_1"].occupied_by is None
+    assert not [t for t in network.trains.values() if t.is_unidentified]
+    event = sim.notification_center.latest_by_operation("remove_train")
+    assert event.payload["unidentified_train_ids"] == []
 
 
 # ------------------------------------------------------------ what it does

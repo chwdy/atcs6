@@ -446,3 +446,32 @@ def test_rising_edge_on_a_clear_reports_no_skipped_release():
     assert controller.presence_unknown is True
     ops = [n.operation for n in sim.notification_center.peek_recent(100)]
     assert "on_block_tail_vacated" not in ops
+
+
+def test_a_recovered_ghost_is_pulled_back_onto_the_blocks_it_was_given():
+    """design_new.md "Power", A recovered ghost's span is pulled back onto its
+    blocks: detection returns only on the block behind the retained span, so
+    once the flag clears the span's head stands on a block the train does not
+    hold. The span slides back until its head is on the train's own block, so
+    the calculated position no longer runs ahead of the detector (the
+    2026-11-07 rig run left a calibration move unable to reserve the train's
+    own block behind its span)."""
+
+    network = build_line(5)
+    sim, train, controller = _place_with_dispatcher(network)
+    release_all_blocks(network)
+    fake = FakeDetectorInput(detected={f"BLK_{i}" for i in range(5)}, live=set())
+    sim.block_occupancy_detector.input_interface = fake
+    sim.update(0.1)
+    assert controller.presence_unknown is True
+    assert controller.physics_sync.current_span.occupied_blocks == ["BLK_1"]
+
+    fake.live = {"BLK_0"}
+    for _ in range(sim.block_occupancy_detector.on_threshold + 3):
+        sim.update(0.1)
+        if not controller.presence_unknown:
+            break
+
+    assert controller.presence_unknown is False
+    assert network.blocks["BLK_0"].occupied_by == "T"
+    assert controller.physics_sync.current_span.occupied_blocks == ["BLK_0"]

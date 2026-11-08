@@ -374,6 +374,10 @@ class CalibrationRun:
     outer_block_ids: Tuple[str, str] = ("", "")
     runoff_block_ids: Tuple[Tuple[str, ...], Tuple[str, ...]] = ((), ())
     """The run-off blocks past each outer block, in order out from it."""
+    runoff_switch_positions: Dict[str, int] = field(default_factory=dict)
+    """The position of each switch the far end crosses with its points not as
+    set, by switch id (design_new.md "Speed calibration", A run-off block holds
+    no other train). The leg's reservation throws it."""
     end_lengths_cm: Tuple[Tuple[float, ...], Tuple[float, ...]] = ((), ())
     """The `length_cm` of every block of each end, outer block first, in the
     order of `end_block_ids(...)`."""
@@ -402,6 +406,9 @@ class CalibrationRun:
     move_cut: bool = False
     """Whether the move's power is cut because the train has left every block
     outside that end and stands only in it."""
+    move_armed_at: Optional[float] = None
+    """When the move's route was asked for. The move's time limit runs from
+    here, so a move that never gets a reservation fails rather than waits."""
     move_blocks_behind: Tuple[str, ...] = ()
     """The blocks outside the end the span covered when the move dropped to
     half: the blocks the move waits to see clear before it cuts."""
@@ -550,6 +557,14 @@ class CalibrationRun:
         if slowest_cm_s <= 0.0:
             return float("inf")
         return self.block_length_cm / slowest_cm_s
+
+    def half_voltage(self, drive: float) -> float:
+        """Half of `drive`, raised to the train's starting voltage when half is
+        below it, and never more than `drive` (design_new.md "Speed
+        calibration", The pass starts and stops the train at half voltage
+        first): below the starting voltage the locomotive would stop at once."""
+        drive = max(0.0, float(drive))
+        return min(drive, max(0.5 * drive, float(self.starting_voltage or 0.0)))
 
     def tail_past_measured_block(self) -> bool:
         """Whether the train's length puts its tail past B: the head's entry
@@ -1232,6 +1247,7 @@ class SpeedCalibration:
                 # The opening leg runs toward the end the train is not in. Path
                 # creation picks the span end to start from, so the train may
                 # face either way (as when the pass opens with it in place).
+                run.move_armed_at = None
                 run.phase = PHASE_LEG
                 run.heading_to = 1 - obs.outer_block_index
                 run.needs_reverse = False
@@ -1250,6 +1266,8 @@ class SpeedCalibration:
             run.leg_armed = True
             run.leg_authority_seen = False
             run.leg_started_at = None
+            if run.move_armed_at is None:
+                run.move_armed_at = obs.now
             run.half_power_until = None
             run.move_slowing = False
             run.move_cut = False
@@ -1284,10 +1302,18 @@ class SpeedCalibration:
             if run.move_slowing and behind <= end:
                 run.move_cut = True
         if (
-            run.leg_started_at is not None
+            run.move_armed_at is not None
             and not in_place
-            and obs.now - run.leg_started_at > CALIBRATION_STEP_TIMEOUT_S
+            and obs.now - run.move_armed_at > CALIBRATION_STEP_TIMEOUT_S
         ):
+            if not run.leg_authority_seen:
+                return self.fail(
+                    run,
+                    f"the move into {target} got no reservation within "
+                    f"{CALIBRATION_STEP_TIMEOUT_S:.0f} s — another train holds "
+                    "the way, or the train's calculated position disagrees with "
+                    "the blocks its detectors read",
+                )
             return self.fail(
                 run,
                 f"the train did not reach {target} within "
@@ -1320,6 +1346,7 @@ class SpeedCalibration:
             return self._advance_leg(run, obs)
         run.phase = PHASE_MOVING
         run.move_target_block_id = ""
+        run.move_armed_at = None
         return self._advance_move(run, obs)
 
     def _advance_leg(
@@ -2282,7 +2309,7 @@ class SpeedCalibration:
         run = self.runs.get(train_id)
         if run is not None and run.ending:
             # Stopping before the run ends: half the drive it had, then none.
-            value = run.ending_drive * 0.5 if run.half_power else 0.0
+            value = run.half_voltage(run.ending_drive) if run.half_power else 0.0
             return CalibrationPropulsionOverride(track_voltage=float(value))
         if run is not None and run.phase == PHASE_MOVING:
             value = 0.0
@@ -2292,7 +2319,11 @@ class SpeedCalibration:
                 and self._leg_authority_present(train_id)
             ):
                 half = run.half_power or run.move_slowing
-                value = CALIBRATION_MOVE_VOLTAGE_V * (0.5 if half else 1.0)
+                value = (
+                    run.half_voltage(CALIBRATION_MOVE_VOLTAGE_V)
+                    if half
+                    else CALIBRATION_MOVE_VOLTAGE_V
+                )
             return CalibrationPropulsionOverride(track_voltage=float(value))
         if run is not None and run.is_measuring:
             driving = run.phase in (PHASE_LEG, PHASE_CLEARING) and run.leg_armed
@@ -2304,9 +2335,9 @@ class SpeedCalibration:
                 # speed timed it.
                 value = step_v
             elif driving:
-                value = step_v * (0.5 if run.half_power else 1.0)
+                value = run.half_voltage(step_v) if run.half_power else step_v
             elif run.phase == PHASE_STOPPING and run.half_power:
-                value = step_v * 0.5
+                value = run.half_voltage(step_v)
             else:
                 value = 0.0
             return CalibrationPropulsionOverride(track_voltage=float(value))

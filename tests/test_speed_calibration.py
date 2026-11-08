@@ -1379,14 +1379,16 @@ def test_a_move_that_does_not_arrive_in_time_fails_the_pass():
     cal, run, _ = _open_run(heading_to=None)
     cal.advance(run, CalibrationObservation(now=0.0))
     cal.advance(run, CalibrationObservation(now=1.0, path_present=True))
+    # The limit runs from when the move's route was asked for (now=0.0), not
+    # from when its path appeared.
     cal.advance(
-        run, CalibrationObservation(now=1.0 + CALIBRATION_STEP_TIMEOUT_S, path_present=True)
+        run, CalibrationObservation(now=CALIBRATION_STEP_TIMEOUT_S - 0.5, path_present=True)
     )
     assert run.phase == PHASE_MOVING
 
     cal.advance(
         run,
-        CalibrationObservation(now=1.5 + CALIBRATION_STEP_TIMEOUT_S, path_present=True),
+        CalibrationObservation(now=CALIBRATION_STEP_TIMEOUT_S + 0.5, path_present=True),
     )
 
     assert run.phase == PHASE_FAILED
@@ -1449,3 +1451,32 @@ def test_a_step_measured_again_is_reported_without_a_recorded_speed():
     steps = [n.payload for n in nc.peek_recent(100) if n.operation == "calibration_step"]
     assert [s["recorded_kmh"] is None for s in steps] == [False, True]
     assert steps[1]["track_voltage"] == coarse_voltages(run.max_voltage)[1]
+
+
+def test_the_half_voltage_is_never_below_the_starting_voltage():
+    """design_new.md "Speed calibration", The pass starts and stops the train at
+    half voltage first: half of a low step would stop the train dead, so the
+    half voltage is raised to the starting voltage, and never above the drive."""
+    _cal, run, _profile = _open_run()
+    run.starting_voltage = 3.0
+    assert run.half_voltage(12.0) == 6.0
+    assert run.half_voltage(4.0) == 3.0
+    assert run.half_voltage(2.0) == 2.0
+
+
+def test_a_move_that_gets_no_reservation_fails_with_a_reason():
+    """design_new.md "Speed calibration", A move that does not arrive fails the
+    pass: the time limit runs from when the move's route was asked for, so a
+    move whose path never appears ends with a reason instead of leaving the
+    pass stuck before its first leg (rig, 2026-11-07: the trials never drove)."""
+    from speed_calibration import PHASE_MOVING
+
+    cal, run, _profile = _open_run(heading_to=None)
+    assert run.phase == PHASE_MOVING
+    command = cal.advance(run, CalibrationObservation(now=0.0))
+    assert command is not None and command.move_into_place
+    cal.advance(run, CalibrationObservation(now=CALIBRATION_STEP_TIMEOUT_S - 1.0))
+    assert run.phase == PHASE_MOVING
+    cal.advance(run, CalibrationObservation(now=CALIBRATION_STEP_TIMEOUT_S + 1.0))
+    assert run.phase == PHASE_FAILED
+    assert "got no reservation" in run.failure_reason

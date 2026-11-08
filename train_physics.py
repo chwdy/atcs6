@@ -1775,6 +1775,120 @@ class TrainPhysics:
             self._record_switch_tiles_left(controller, span_before)
         return moved
 
+    def pull_span_back_onto_own_blocks(
+        self, train: "Train", controller: "TrainController"
+    ) -> bool:
+        """Slide a recovered ghost's span back along the track until its head is
+        in a block its block list holds (design_new.md "Power", A recovered
+        ghost's span is pulled back onto its blocks). Returns True if it moved.
+
+        A ghosted train keeps its last span while it is ghosted, and the
+        blocks detection credits back to it may lie behind that span — the span
+        had been carried onto a block the train never reached, for example by a
+        false entry. The head then stands on a block the train does not hold,
+        ahead of the detector, and a reservation from that head cannot use the
+        train's own blocks behind it. The span moves rigidly, rear end first,
+        one tile at a time, and its rear end never moves onto a block the train
+        does not hold. Only the head side is corrected: a rear end on a block
+        the train left is what an ordinary vacate moves.
+        """
+        span = controller.physics_sync.current_span
+        if span is None or self.network is None:
+            return False
+        own = {
+            block_id
+            for block_id, block in self.network.blocks.items()
+            if getattr(block, "occupied_by", None) == train.train_id
+        }
+        original = controller._framed_head_end
+        head_end = span.end_a if original == "end_a" else span.end_b
+        head_block = self._block_of_tile(tuple(head_end.tile))
+        if not own or head_block is None or head_block in own:
+            return False
+        other = "end_b" if original == "end_a" else "end_a"
+        if controller._apply_head_frame(other) is not None:
+            return False
+        moved = False
+        moved_cm = 0.0
+        blocks_before = set(span.occupied_blocks or [])
+        try:
+            self._work = _work_from_span(
+                controller.physics_sync.current_span, other == "end_a"
+            )
+            work = self._work
+            # The rear moves over track the span already covers and over the
+            # train's own blocks, never onto another block.
+            allowed = own | set(work.occupied_blocks or [])
+            front_is_a = original == "end_a"
+            guard = 0
+            while guard < 200:
+                guard += 1
+                front_tile = work.end_a_tile if front_is_a else work.end_b_tile
+                front_block = self._block_of_tile(front_tile)
+                if front_block is not None and front_block in own:
+                    break
+                # In this frame the front end is the tail: its distance runs
+                # from the edge on the original forward side, so the seam it is
+                # pulled back across is the rest of its tile away.
+                front_distance = (
+                    work.end_a_distance_cm if front_is_a else work.end_b_distance_cm
+                )
+                tile_length = self._get_tile_length_cm(front_tile)
+                wanted = max(0.0, tile_length - front_distance) + 2 * _SEAM_HOLD_EPSILON_CM
+                room = self._head_room_within(allowed, wanted)
+                if room <= _SEAM_HOLD_EPSILON_CM:
+                    break
+                self._advance_head_by(train, room)
+                moved = True
+                moved_cm += room
+                if room < wanted:
+                    break
+            if moved:
+                controller.physics_sync.current_span = _span_from_work(work)
+        finally:
+            self._work = None
+            controller._apply_head_frame(original)
+        if moved:
+            self._report_span_pulled_back(train, moved_cm, blocks_before, own)
+        return moved
+
+    def _report_span_pulled_back(
+        self,
+        train: "Train",
+        moved_cm: float,
+        span_blocks_before: Set[str],
+        own: Set[str],
+    ) -> None:
+        """Report a recovered ghost's span pulled back onto its own blocks."""
+        message = (
+            f"train {train.train_id} was detected on {', '.join(sorted(own))}, "
+            f"behind where the model had it ({', '.join(sorted(span_blocks_before))}); "
+            f"the span was pulled back {moved_cm:.1f}cm"
+        )
+        center = self._notification_center
+        if center is None:
+            logger.warning("[TrainPhysics %s] %s", train.train_id, message)
+            return
+        from notification_center import Kind, train_ref
+
+        try:
+            center.emit(
+                source="TrainPhysics",
+                operation="pull_span_back_onto_own_blocks",
+                kind=Kind.WARNING,
+                message=message,
+                entities=[train_ref(train.train_id)],
+                event_time=time.time(),
+                payload={
+                    "train_id": train.train_id,
+                    "blocks_held": sorted(own),
+                    "span_blocks_before": sorted(span_blocks_before),
+                    "correction_cm": round(float(moved_cm), 1),
+                },
+            )
+        except Exception:  # noqa: BLE001 — reporting never breaks Observe
+            logger.exception("span pull-back report failed")
+
     def _snap_head_to_entered(
         self, train: "Train", controller: "TrainController", entered: Set[str]
     ) -> bool:
