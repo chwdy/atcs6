@@ -174,16 +174,18 @@ export class TrainEditorHandler {
 
     // Populate the speed-profile select from the network's profiles (data-driven
     // set → a select, per DESIGN_LANGUAGE.md §4 "Choosing a selection control").
+    // "Default" (already in the select) seeds a fresh pair; the rest are the
+    // instance profiles no train names, the only ones placement accepts
+    // (design_new.md "SpeedProfile", An operator points a train only at an
+    // instance profile no other train names).
     try {
-      const profiles = await this.api.getSpeedProfiles();
+      const [profiles, trains] = await Promise.all([this.api.getSpeedProfiles(), this.api.getTrains()]);
       const sel = document.getElementById('train-speed-profile') as HTMLSelectElement | null;
-      if (sel && Array.isArray(profiles)) {
-        for (const p of profiles) {
-          const id = p?.profile_id ?? p?.id;
-          if (!id) continue;
+      if (sel) {
+        for (const choice of pickableProfileChoices(profiles, trains)) {
           const opt = document.createElement('option');
-          opt.value = id;
-          opt.textContent = p?.name || id;
+          opt.value = choice.id;
+          opt.textContent = choice.label;
           sel.appendChild(opt);
         }
       }

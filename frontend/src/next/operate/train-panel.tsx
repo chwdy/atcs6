@@ -20,6 +20,7 @@ import { useEffect, useState } from 'preact/hooks';
 import type { ComponentChildren, JSX } from 'preact';
 
 import { api } from '../../lib/api';
+import { pickableProfileChoices } from '../../lib/profile-choices';
 import { installCopyIdHandler } from '../../lib/copy-id';
 import { formatDistanceCm, formatDuration, showConfirmModal } from '../../lib/helpers';
 import { showToast } from '../../lib/toast';
@@ -742,23 +743,21 @@ function EditProperties({ host, view }: { host: OperateHost; view: TrainView }) 
     setProfile(initialProfile);
   }, [view.id]);
 
+  // Offer only what the server accepts: instance profiles no other train names,
+  // plus this train's own (design_new.md "SpeedProfile", An operator points a
+  // train only at an instance profile no other train names).
   useEffect(() => {
     let stale = false;
-    api
-      .getSpeedProfiles()
-      .then((list: any[]) => {
+    Promise.all([api.getSpeedProfiles(), api.getTrains()])
+      .then(([list, trains]: [any[], any[]]) => {
         if (stale) return;
-        setProfiles(
-          (list || [])
-            .map((p: any) => ({ id: String(p?.profile_id ?? p?.id ?? ''), label: String(p?.name || p?.profile_id || p?.id || '') }))
-            .filter((o) => o.id)
-        );
+        setProfiles(pickableProfileChoices(list, trains, initialProfile));
       })
       .catch(() => {});
     return () => {
       stale = true;
     };
-  }, []);
+  }, [view.id, initialProfile]);
 
   const options = profiles.some((o) => o.id === profile) ? profiles : [{ id: profile, label: profile }, ...profiles];
   const save = async () => {

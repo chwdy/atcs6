@@ -738,11 +738,24 @@ class TestTrainService:
             )
 
     def test_assign_speed_profile_success(self, state_with_train):
-        """The seeded `default` profile assigns onto the train."""
-        train = train_service.assign_speed_profile(
-            state_with_train, "TRAIN_A", profile_id="default"
+        """An instance profile no other train names assigns onto the train."""
+        from speed_profile import make_instance_profile
+
+        state_with_train.speed_profile_registry.register(
+            make_instance_profile("default", profile_id="free_instance")
         )
-        assert train.speed_profile_id == "default"
+        train = train_service.assign_speed_profile(
+            state_with_train, "TRAIN_A", profile_id="free_instance"
+        )
+        assert train.speed_profile_id == "free_instance"
+
+    def test_assign_speed_profile_refuses_a_model_profile(self, state_with_train):
+        """design_new.md "SpeedProfile": a train names an instance profile,
+        never a model profile such as the built-in `default`."""
+        with pytest.raises(ValidationError, match="model profile"):
+            train_service.assign_speed_profile(
+                state_with_train, "TRAIN_A", profile_id="default"
+            )
 
     def test_assign_route_unknown_train_raises_not_found(self, state):
         with pytest.raises(NotFoundError):

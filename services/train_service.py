@@ -142,6 +142,37 @@ def list_trains(state: AppState) -> List[Train]:
 # ------------------------------------------------------------------ CRUD ----
 
 
+def refuse_unpickable_profile(state: AppState, train_id: str, profile_id: str) -> None:
+    """Refuse a profile the operator may not point this train at.
+
+    design_new.md "SpeedProfile", An operator points a train only at an
+    instance profile no other train names. Refused when the profile is a model
+    profile (``derived_from`` unset, which includes the built-in ``default``) or
+    another train already names it. The profile the train names now is always
+    accepted. An id that names no profile is left to the caller.
+
+    Raises:
+        ValidationError naming why the profile was refused.
+    """
+    profile = state.speed_profile_registry.get(profile_id)
+    if profile is None:
+        return
+    train = state.network.trains.get(train_id)
+    if train is not None and train.speed_profile_id == profile_id:
+        return
+    if profile.derived_from is None:
+        raise ValidationError(
+            f"Speed profile '{profile_id}' is a model profile; a train runs on "
+            "an instance profile"
+        )
+    for other_id, other in state.network.trains.items():
+        if other_id != train_id and other.speed_profile_id == profile_id:
+            raise ValidationError(
+                f"Speed profile '{profile_id}' is already used by train "
+                f"'{other_id}'; each instance profile belongs to one locomotive"
+            )
+
+
 def _apply_train_config(
     state: AppState,
     train: Train,
@@ -198,6 +229,9 @@ def create_train(
     """
     if not train_id:
         raise ValidationError("Missing train ID")
+    if speed_profile_id:
+        with _runtime_lock(state):
+            refuse_unpickable_profile(state, train_id, speed_profile_id)
 
     if position is not None and state.sim_controller is not None:
         try:
@@ -364,6 +398,8 @@ def adopt_unidentified_train(
                 tile = (int(head_tile["x"]), int(head_tile["y"]))
             except (KeyError, TypeError, ValueError):
                 raise ValidationError("head_tile must include x and y")
+        if speed_profile_id:
+            refuse_unpickable_profile(state, train_id, speed_profile_id)
 
         try:
             length_cm = float(length_cm)
@@ -495,7 +531,8 @@ def assign_speed_profile(
     """Assign a speed profile to a train.
 
     Raises:
-        ValidationError when profile_id is blank.
+        ValidationError when profile_id is blank, names a model profile, or
+            names a profile another train already names.
         NotFoundError when the train or the profile does not exist.
     """
     if not profile_id:
@@ -508,6 +545,7 @@ def assign_speed_profile(
 
         if not state.speed_profile_registry.get(profile_id):
             raise NotFoundError(f"Speed profile '{profile_id}' not found")
+        refuse_unpickable_profile(state, train_id, profile_id)
 
         train.speed_profile_id = profile_id
 
