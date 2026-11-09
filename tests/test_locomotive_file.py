@@ -91,7 +91,10 @@ def test_an_unreadable_file_is_renamed_and_reported(tmp_path):
     assert locomotive_file.load_into(RailwayNetwork(), recorder) is False
     assert not path.exists()
     assert (tmp_path / "locomotives.json.unreadable").read_text() == "{not json"
-    assert [e["kind"] for e in recorder.events] == ["error"]
+    assert [e["kind"] for e in recorder.events] == ["warning"]
+    assert recorder.events[0]["entities"] == []
+    assert recorder.events[0]["payload"]["file"] == "locomotives.json"
+    assert recorder.events[0]["payload"]["renamed_to"] == "locomotives.json.unreadable"
 
 
 def test_the_file_is_read_before_the_scene_so_scene_trains_take_fresh_numbers(tmp_path):

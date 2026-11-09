@@ -1336,7 +1336,12 @@ def calibrate_commit(
                 raise ValidationError("promote_as must be 'new_set' or 'current_set'")
 
         curve = sim.speed_calibration.measured_curve(run)
-        written = _replace(profile, voltage_speed_curve=list(curve))
+        # A commit clears the train's ATO minimum voltage, whether or not the
+        # new curve differs from the stored one (design_new.md "Speed
+        # calibration", A commit clears the train's ATO minimum voltage).
+        written = _replace(
+            profile, voltage_speed_curve=list(curve), ato_min_voltage=None
+        )
         _final, problems = settle_profile_writes(registry, {written.profile_id: written})
         if problems:
             raise ConflictError("; ".join(problems))

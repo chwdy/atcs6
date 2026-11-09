@@ -2433,13 +2433,14 @@ class SpeedCalibration:
         """Write the measured curve onto the train's instance profile and close
         the run.
 
-        Writes two fields and no others: `voltage_speed_curve` from the pass's
-        samples and `calibrated_at` from the wall clock (design_new.md "Speed
-        calibration", What commit writes). It must not write `lighting_voltage`
-        or `starting_voltage` (the trial saves wrote them), a motion rate or a
-        notch table. `target_profile` is the train's instance profile for both
-        **Save to this train** and **Promote**; the caller promotes afterwards
-        and clears the ATO minimum voltage the new curve invalidates.
+        Writes two fields: `voltage_speed_curve` from the pass's samples and
+        `calibrated_at` from the wall clock (design_new.md "Speed calibration",
+        What commit writes). The commit also clears `ato_min_voltage`, which the
+        caller does on the record it passes in. It must not write
+        `lighting_voltage` or `starting_voltage` (the trial saves wrote them), a
+        motion rate or a notch table. `target_profile` is the train's instance
+        profile for both **Save to this train** and **Promote**; the caller
+        promotes afterwards.
         """
         run = self.runs.get(train_id)
         if run is None:

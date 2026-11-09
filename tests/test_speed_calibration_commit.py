@@ -216,3 +216,18 @@ def test_a_hand_edit_of_a_calibrating_trains_profile_is_refused(from_set):
         state, t1.speed_profile_id, data={"lighting_voltage": 0.5}
     )
     assert edited.lighting_voltage == 0.5
+
+
+def test_a_commit_clears_the_ato_minimum_voltage_even_when_the_curve_is_unchanged(from_set):
+    """design_new.md "Speed calibration", A commit clears the train's ATO
+    minimum voltage: on every commit, not only when the curve differs."""
+    state, _model, _the_set, t1, _t2 = from_set
+    registry = state.network.speed_profiles
+    run = state.sim_controller.speed_calibration.runs["T1"]
+    instance = registry.get(t1.speed_profile_id)
+    instance.voltage_speed_curve = list(
+        state.sim_controller.speed_calibration.measured_curve(run)
+    )
+    instance.ato_min_voltage = instance.voltage_speed_curve[1][0]
+    written = train_service.calibrate_commit(state, "T1", target="train")
+    assert written.ato_min_voltage is None

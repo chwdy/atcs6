@@ -67,16 +67,22 @@ def contents(network) -> Dict[str, Any]:
     return {"version": FILE_VERSION, **network.speed_profiles.library_dict()}
 
 
-def _emit_error(notification_center, operation: str, message: str, detail: str) -> None:
+def _emit_warning(
+    notification_center, operation: str, message: str, detail: str, payload: dict
+) -> None:
+    """One `kind = "warning"` event with the file names in its payload and an
+    empty `entities` list (design_new.md "SpeedProfile", Where models, sets and
+    instance profiles are kept)."""
     print(f"[LocomotiveFile] {message}: {detail}")
     if notification_center is None:
         return
     notification_center.emit(
         source=_SOURCE,
         operation=operation,
-        kind=Kind.ERROR,
+        kind=Kind.WARNING,
         message=message,
         entities=[],
+        payload=dict(payload, detail=detail),
         error=ErrorRecord(detail, "locomotive_file"),
     )
 
@@ -113,12 +119,13 @@ def load_into(network, notification_center=None) -> bool:
             where = f"renamed to {moved.name}"
         except OSError as move_exc:
             where = f"could not be renamed ({move_exc})"
-        _emit_error(
+        _emit_warning(
             notification_center,
             "load_into",
             f"locomotive file {path.name} could not be read and was {where}; "
             "starting with no models or sets",
             str(exc),
+            {"file": path.name, "renamed_to": moved.name},
         )
         return False
     network.speed_profiles.load_library(data)
@@ -132,7 +139,7 @@ def save_if_changed(network, notification_center=None) -> bool:
 
     Returns True when it wrote. The write goes to a temporary file first and is
     then renamed over the old one, so a crash mid-write never leaves half a file.
-    A failed write emits one error event and leaves `_last_written` unchanged,
+    A failed write emits one warning event and leaves `_last_written` unchanged,
     so the next request tries again.
     """
     global _last_written
@@ -147,12 +154,13 @@ def save_if_changed(network, notification_center=None) -> bool:
         tmp.write_text(json.dumps(current, indent=2, sort_keys=True))
         os.replace(tmp, path)
     except OSError as exc:
-        _emit_error(
+        _emit_warning(
             notification_center,
             "save_if_changed",
             f"locomotive file {path.name} could not be written; "
             "the next change tries again",
             str(exc),
+            {"file": path.name},
         )
         return False
     _last_written = current
