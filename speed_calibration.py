@@ -2137,6 +2137,29 @@ class SpeedCalibration:
             if entered:
                 self.record_detected_entries(run, entered, now)
 
+    def overrun_ends_the_pass(self, train_id: str, block_ids: Iterable[str]) -> bool:
+        """True when an overrun onto `block_ids` is the one overrun a calibrating
+        train is not cut out for (design_new.md "Block occupancy detection", The
+        one exemption is an overrun past a calibration leg's far end).
+
+        That is an overrun past the far end of an open leg across B — a speed
+        pass's or an ATO minimum test's, not the move into an end of the
+        stretch, and not a run that is stopping — onto blocks outside the
+        stretch. `record_detected_entries(...)` marks exactly that overrun, and
+        the pass fails on it at Plan step `c9e1` the same tick, so the pass is
+        the stop. Any other overrun by a calibrating train, for example into a
+        block of the far end itself, is cut out like any train's.
+        """
+        run = self.runs.get(train_id)
+        if run is None or not run.is_measuring or run.ending:
+            return False
+        if run.phase == PHASE_MOVING or not run.leg_armed:
+            return False
+        blocks = set(block_ids)
+        if not blocks:
+            return False
+        return not (blocks & set(run.stretch_block_ids))
+
     def record_detected_entries(
         self, run: CalibrationRun, entered: Iterable[str], now: float
     ) -> None:

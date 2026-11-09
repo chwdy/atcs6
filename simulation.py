@@ -2071,10 +2071,10 @@ class SimulationController(SwitchOutputOwner):
         span-correction event, which reports the forward-snap magnitude, so both
         may fire for the same entry.
 
-        A train with an open speed-calibration pass is exempt: its overrun is a
-        speed-only measurement fault that the pass itself stops (design_new.md
-        "Speed calibration", A leg that overruns the stretch fails the pass), so
-        no cut-out is raised for it.
+        One overrun by a calibrating train is exempt: an overrun past the far
+        end of an open leg across B, which the pass itself stops as a
+        measurement fault (`SpeedCalibration.overrun_ends_the_pass`). Every
+        other overrun by a calibrating train is cut out.
         """
         calibration = getattr(self, "speed_calibration", None)
         overruns: Dict[str, List[str]] = {}
@@ -2085,13 +2085,15 @@ class SimulationController(SwitchOutputOwner):
             controller = self.controllers.get(train_id)
             if controller is None:
                 continue
-            # A calibration pass drives the train at an unmeasured step into a
-            # stretch whose far end is dead rail by construction; the pass ends
-            # as a measurement fault on this same read and is the stop, so it
-            # raises no cut-out (design_new.md "Speed calibration").
-            if (
-                calibration is not None
-                and calibration.get_propulsion_override(train_id) is not None
+            # The one exemption: an overrun past the far end of an open leg
+            # across B. The pass drives at an unmeasured step into a stretch
+            # whose far end is dead rail by construction, and it ends as a
+            # measurement fault on this same read, so the pass is the stop
+            # (design_new.md "Block occupancy detection", The one exemption is
+            # an overrun past a calibration leg's far end). Any other overrun by
+            # a calibrating train is cut out like any train's.
+            if calibration is not None and calibration.overrun_ends_the_pass(
+                train_id, overruns[train_id]
             ):
                 continue
             overrun_blocks = sorted(overruns[train_id])

@@ -267,8 +267,8 @@ def test_the_span_follows_an_overrun_that_raises_no_cut_out():
     switch tiles at their current `Switch.position`, not along the path).
 
     An open speed-calibration pass is the case where an overrun raises no
-    cut-out. The pass's propulsion override is what that exemption reads, so the
-    test supplies one for FAST. With the cut-out out of the picture, the span
+    cut-out. `SpeedCalibration.overrun_ends_the_pass` is what that exemption
+    reads, so the test supplies one for FAST. With the cut-out out of the picture, the span
     must still be corrected onto the overrun block, must not be pinned there,
     and must end on the same blocks the detector holds for the train."""
     network, sim, controller, detector = _make_fixture()
@@ -278,6 +278,12 @@ def test_the_span_follows_an_overrun_that_raises_no_cut_out():
     pass_drive = CalibrationPropulsionOverride(track_voltage=6.0)
     sim.speed_calibration.get_propulsion_override = (
         lambda train_id: pass_drive if train_id == "FAST" else real_override(train_id)
+    )
+    # The exemption covers only an overrun past the far end of an open leg
+    # across B (design_new.md "Block occupancy detection", The one exemption is
+    # an overrun past a calibration leg's far end); this test stands in for one.
+    sim.speed_calibration.overrun_ends_the_pass = (
+        lambda train_id, blocks: train_id == "FAST"
     )
 
     log: List[dict] = []

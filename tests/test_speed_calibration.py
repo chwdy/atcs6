@@ -1478,3 +1478,40 @@ def test_a_move_that_gets_no_reservation_fails_with_a_reason():
     cal.advance(run, CalibrationObservation(now=CALIBRATION_STEP_TIMEOUT_S + 1.0))
     assert run.phase == PHASE_FAILED
     assert "got no reservation" in run.failure_reason
+
+
+# --- the one overrun a calibrating train is not cut out for ---------------
+
+
+def test_only_an_overrun_past_the_far_end_of_a_leg_ends_the_pass_uncut():
+    """design_new.md "Block occupancy detection", The one exemption is an
+    overrun past a calibration leg's far end: an overrun onto a block outside
+    the stretch on an armed leg across B is the pass's to stop. An overrun into
+    a block of the far end itself is cut out like any train's."""
+    cal, run, _profile = _open_run()
+    _observe(cal, run, 0.0)  # arm the leg
+    assert run.leg_armed
+    assert cal.overrun_ends_the_pass("T1", ["D"]) is True
+    assert cal.overrun_ends_the_pass("T1", [run.heading_toward_block_id]) is False
+    assert cal.overrun_ends_the_pass("T_OTHER", ["D"]) is False
+
+
+def test_an_overrun_during_the_move_into_an_end_is_cut_out():
+    """The move into an end of the stretch is not a leg across B, so its overrun
+    is cut out."""
+    from speed_calibration import PHASE_MOVING
+
+    cal, run, _profile = _open_run()
+    _observe(cal, run, 0.0)
+    run.phase = PHASE_MOVING
+    assert cal.overrun_ends_the_pass("T1", ["D"]) is False
+
+
+def test_an_overrun_while_the_run_is_stopping_is_cut_out():
+    """A run that is stopping takes no sample and fails on no overrun, so its
+    overrun is cut out."""
+    cal, run, _profile = _open_run()
+    _observe(cal, run, 0.0)
+    cal.stop("T1", reason="operator stop")
+    assert run.ending
+    assert cal.overrun_ends_the_pass("T1", ["D"]) is False
