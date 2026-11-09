@@ -1455,8 +1455,8 @@ def register(app, state: AppState) -> None:
         for train_id, train in state.network.trains.items():
             profile_id = getattr(train, "speed_profile_id", None)
             resolved = (
-                registry.resolve(profile_id)
-                if registry is not None and profile_id
+                registry.get(profile_id)
+                if registry is not None and profile_id is not None
                 else None
             )
             if resolved is not None:

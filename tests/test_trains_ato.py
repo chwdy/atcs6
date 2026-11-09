@@ -6,6 +6,8 @@ Run with: pytest tests/test_trains_ato.py -v
 
 import logging
 import pytest
+
+from tests.train_test_helpers import give_profile
 from types import SimpleNamespace
 
 from track import Tile, TRACK_NS, TRACK_EW, TRACK_NW
@@ -1113,15 +1115,13 @@ class TestForwardSimulation:
         # Register a simple linear profile
         profile = SpeedProfile(
             profile_id="test_sim",
-            name="Test Simulation",
             acceleration_rate=10.0,  # 10 km/h per second
             deceleration_rate=15.0,  # 15 km/h per second
             friction_rate=0.5,
             operational_decel_ratio=0.6,
             air_resistance_enabled=False,  # Disable for predictable tests
         )
-        network.speed_profiles.register(profile)
-        train.speed_profile_id = "test_sim"
+        give_profile(network, train, profile)
 
         controller = TrainController(train_id="sim_test", network=network)
         controller.atc.speed_limit = 60.0

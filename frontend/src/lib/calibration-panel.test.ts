@@ -27,33 +27,37 @@ import {
   volts,
 } from './calibration-panel';
 
+// Set 1 (EF66) and set 4 (DD51); instance profiles 11, 12, 14 copied from
+// them; 13 is T2's own copy of set 1 too.
 const PROFILES = [
-  { profile_id: 'EF66', derived_from: null, lighting_voltage: 1.5, voltage_speed_curve: [[2, 10], [12, 90]] },
-  { profile_id: 'EF66__a', derived_from: 'EF66', lighting_voltage: 1.8, voltage_speed_curve: null },
-  { profile_id: 'EF66__b', derived_from: 'EF66', lighting_voltage: null, voltage_speed_curve: [[3, 8], [12, 70]] },
-  { profile_id: 'DD51', derived_from: null, lighting_voltage: 2.0, voltage_speed_curve: [[2.5, 6], [12, 60]] },
+  { profile_id: 1, model_id: 1, parent_profile_id: null, lighting_voltage: 1.5, voltage_speed_curve: [[2, 10], [12, 90]] },
+  { profile_id: 11, model_id: null, parent_profile_id: 1, lighting_voltage: 1.8, voltage_speed_curve: [[2, 10], [12, 90]] },
+  { profile_id: 12, model_id: null, parent_profile_id: 1, lighting_voltage: 1.5, voltage_speed_curve: [[3, 8], [12, 70]] },
+  { profile_id: 13, model_id: null, parent_profile_id: 1, lighting_voltage: 1.5, voltage_speed_curve: [[2, 10], [12, 90]] },
+  { profile_id: 4, model_id: 2, parent_profile_id: null, lighting_voltage: 2.0, voltage_speed_curve: [[2.5, 6], [12, 60]] },
+  { profile_id: 14, model_id: null, parent_profile_id: 4, lighting_voltage: 2.0, voltage_speed_curve: [[2.5, 6], [12, 60]] },
 ];
 
 const TRAINS = [
-  { id: 'T3', car_number: 'EF66-12', speed_profile_id: 'EF66__b' },
-  { id: 'T1', car_number: 'EF66-2', speed_profile_id: 'EF66__a' },
-  { id: 'T2', car_number: '', speed_profile_id: 'EF66' },
-  { id: 'T4', car_number: 'DD51-1', speed_profile_id: 'DD51' },
+  { id: 'T3', car_number: 'EF66-12', speed_profile_id: 12 },
+  { id: 'T1', car_number: 'EF66-2', speed_profile_id: 11 },
+  { id: 'T2', car_number: '', speed_profile_id: 13 },
+  { id: 'T4', car_number: 'DD51-1', speed_profile_id: 14 },
   { id: 'T5', car_number: 'X', speed_profile_id: null },
 ];
 
-describe('the locomotive row lists every train whose resolved profile is on screen', () => {
-  it('lists trains naming the model profile and trains naming an instance of it', () => {
-    const ids = calibrationTrainChoices(TRAINS, PROFILES, 'EF66').map((t) => t.id);
+describe('the locomotive row lists the trains for the profile on screen', () => {
+  it('lists every train copied from a set when the set is on screen', () => {
+    const ids = calibrationTrainChoices(TRAINS, PROFILES, 1).map((t) => t.id);
     expect(ids.sort()).toEqual(['T1', 'T2', 'T3']);
   });
 
-  it('lists only the train naming an instance profile when that instance is on screen', () => {
-    expect(calibrationTrainChoices(TRAINS, PROFILES, 'EF66__a').map((t) => t.id)).toEqual(['T1']);
+  it('lists only the owning train when its instance profile is on screen', () => {
+    expect(calibrationTrainChoices(TRAINS, PROFILES, 11).map((t) => t.id)).toEqual(['T1']);
   });
 
   it('sorts by car number in number order, falling back to the id', () => {
-    expect(calibrationTrainChoices(TRAINS, PROFILES, 'EF66').map((t) => t.id)).toEqual([
+    expect(calibrationTrainChoices(TRAINS, PROFILES, 1).map((t) => t.id)).toEqual([
       'T1', // EF66-2
       'T3', // EF66-12
       'T2', // no car number: T2
@@ -68,21 +72,17 @@ describe('the locomotive row lists every train whose resolved profile is on scre
 });
 
 describe("the train's own stored values", () => {
-  const model = PROFILES[0];
+  const set = PROFILES[0];
 
-  it("reads the instance profile's value when it carries one", () => {
-    expect(trainStoredValue(TRAINS[1], PROFILES, model, 'lighting_voltage')).toBe(1.8);
-    expect(trainStoredValue(TRAINS[0], PROFILES, model, 'voltage_speed_curve')).toEqual([[3, 8], [12, 70]]);
+  it("reads the train's own instance profile", () => {
+    expect(trainStoredValue(TRAINS[1], PROFILES, set, 'lighting_voltage')).toBe(1.8);
+    expect(trainStoredValue(TRAINS[0], PROFILES, set, 'voltage_speed_curve')).toEqual([[3, 8], [12, 70]]);
   });
 
-  it('reads the profile on screen when the instance leaves the field unset', () => {
-    expect(trainStoredValue(TRAINS[0], PROFILES, model, 'lighting_voltage')).toBe(1.5);
-    expect(trainStoredValue(TRAINS[1], PROFILES, model, 'voltage_speed_curve')).toEqual([[2, 10], [12, 90]]);
-  });
-
-  it('reads the profile on screen for a train naming it directly, or for no train', () => {
-    expect(trainStoredValue(TRAINS[2], PROFILES, { ...model, lighting_voltage: 1.6 }, 'lighting_voltage')).toBe(1.6);
-    expect(trainStoredValue(null, PROFILES, model, 'lighting_voltage')).toBe(1.5);
+  it('reads the profile on screen for the train it belongs to, or for no train', () => {
+    const own = PROFILES[1];
+    expect(trainStoredValue(TRAINS[1], PROFILES, { ...own, lighting_voltage: 1.6 }, 'lighting_voltage')).toBe(1.6);
+    expect(trainStoredValue(null, PROFILES, set, 'lighting_voltage')).toBe(1.5);
   });
 });
 

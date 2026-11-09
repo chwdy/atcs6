@@ -33,7 +33,6 @@ from constants import FLANK_PROTECTION_DISTANCE_CM
 from railway_signal import Signal, SignalType, SignalState
 from station import Station
 from segment import Segment
-from train_roster import TrainRoster
 from railway_platform import Platform
 from speed_profile import SpeedProfileRegistry
 from switch_power import SwitchOutputOwner
@@ -102,10 +101,6 @@ class RailwayNetwork(SwitchOutputOwner):
         # `segment_to_block_id(...)` below are the network-level registry reads
         # derived from `Block.segment_ids`, so they can never drift from the
         # blocks themselves.
-        # Train roster: the operator's catalog of owned locomotives (design_new.md
-        # "Train Roster"). Configuration data persisted with the layout snapshot;
-        # a placement may import an entry to seed a fresh Train's defaults.
-        self.train_roster: TrainRoster = TrainRoster()
 
         # Lookahead memo coordination (perf; see TrainController.
         # _compute_canonical_lookahead). `_lookahead_world_version` is bumped by
@@ -122,8 +117,9 @@ class RailwayNetwork(SwitchOutputOwner):
         # TrainController._get_speed_profile read it to drive trains, and the
         # REST API + services read and write the same object through
         # AppState.speed_profile_registry (a property that returns this
-        # registry). SpeedProfileRegistry seeds it with the undeletable
-        # "default" profile.
+        # registry). It always holds the fixed Default profile 0, plus the
+        # models, the sets and every train's instance profile (design_new.md
+        # "SpeedProfile", Models, sets and instance profiles).
         self.speed_profiles: SpeedProfileRegistry = SpeedProfileRegistry()
 
         # Symmetric map of tunnel endpoints. A tunnel pairs two dead-end
@@ -398,9 +394,10 @@ class RailwayNetwork(SwitchOutputOwner):
         self.station_groups.clear()
         self.switches.clear()
         self.tunnels.clear()
-        # The roster and the speed profiles are not layout data: clearing the
-        # network keeps both (design_new.md "SpeedProfile", Where profiles and
-        # the roster are kept).
+        # Models and sets are not layout data: clearing the network keeps them.
+        # Each train's instance profile goes with its train (design_new.md
+        # "SpeedProfile", Where models, sets and instance profiles are kept).
+        self.speed_profiles.remove_instances()
         # Derived tile -> owner reverse indices. Not held on any entity dict,
         # so they must be cleared explicitly to avoid stale block/platform
         # membership on reused tiles.
@@ -1178,6 +1175,12 @@ class RailwayNetwork(SwitchOutputOwner):
                     block.release()
 
         self.trains.pop(train_id, None)
+        # The train's instance profile goes with it (design_new.md "Train
+        # Entity", Deleting a train; "SpeedProfile", Where models, sets and
+        # instance profiles are kept).
+        instance = self.speed_profiles.get(train.speed_profile_id)
+        if instance is not None and instance.is_instance:
+            self.speed_profiles.remove(instance.profile_id)
         self.update_signals_from_blocks()
         return True
 
@@ -1863,8 +1866,8 @@ class RailwayNetwork(SwitchOutputOwner):
                 p.to_dict_with_orientation(self) for p in self.platforms.values()
             ],
             "station_groups": [s.to_dict() for s in self.station_groups.values()],
-            "train_roster": self.train_roster.to_dict(),
             "speed_profiles": self.speed_profiles.to_dict(),
+            "locomotive_models": self.speed_profiles.models_to_list(),
             "switches": {
                 k: v.to_dict() for k, v in self.switches.items()
             },
@@ -1887,65 +1890,61 @@ class RailwayNetwork(SwitchOutputOwner):
             })
         return out
 
-    def saved_speed_profiles(self) -> dict:
-        """Every registered profile except the seeded pair each unidentified train carries.
+    def _train_layout_dict(self, train) -> dict:
+        """A saved train with its instance profile and its parent's names.
 
-        An unidentified train is runtime only, so nothing about it is written to
-        saved state (design_new.md "Unidentified trains", Runtime only). Its
-        instance profile is left out, and so is the model profile that instance
-        derives from when no saved profile or saved train still uses that model.
+        design_new.md "SpeedProfile", A loaded train brings its instance
+        profile: the save writes the instance profile with the train, and the
+        parent set's model `name` and `set_name` (or that the parent is the
+        Default profile), so a load can tell whether the saved parent number
+        still names the same set.
         """
-        saved = self.speed_profiles.to_dict()
-        unidentified_profile_ids = {
-            t.speed_profile_id
-            for t in self.trains.values()
-            if t.is_unidentified and t.speed_profile_id
-        }
-        if not unidentified_profile_ids:
-            return saved
-        model_ids = {
-            (saved.get(pid) or {}).get("derived_from")
-            for pid in unidentified_profile_ids
-        } - {None}
-        for pid in unidentified_profile_ids:
-            saved.pop(pid, None)
-        named_by_saved_trains = {
-            t.speed_profile_id for t in self.trains.values() if not t.is_unidentified
-        }
-        for model_id in model_ids:
-            still_used = model_id in named_by_saved_trains or any(
-                data.get("derived_from") == model_id for data in saved.values()
-            )
-            if not still_used:
-                saved.pop(model_id, None)
-        return saved
+        data = train.to_dict(self)
+        instance = self.speed_profiles.get(train.speed_profile_id)
+        if instance is not None:
+            data["speed_profile"] = instance.to_dict()
+            data["speed_profile_parent"] = self.speed_profiles.parent_label(instance)
+        return data
 
-    def _give_seeded_pair_when_profile_not_stored(self, train) -> None:
-        """Give a loaded train the seeded profile pair when its profile is gone.
+    def _give_loaded_train_its_profile(self, train, train_data: dict) -> None:
+        """Register a loaded train's instance profile under a fresh number.
 
-        design_new.md "SpeedProfile", A loaded train whose profile is not stored
-        gets the seeded pair: every train names an instance profile, even when a
-        layout is opened where the locomotive file never held that train. A
-        stored record with the seeded ids is reused, never overwritten.
+        design_new.md "SpeedProfile", A loaded train brings its instance
+        profile: every field is kept except `parent_profile_id`, which is kept
+        only when it names the Default profile, or a set here whose model name
+        and set name equal the saved ones. A train saved with no instance
+        profile gets a copy of the Default profile.
         """
-        from speed_profile import make_default_speed_profile, make_instance_profile
+        from speed_profile import DEFAULT_PROFILE_ID, SpeedProfile
 
-        pid = train.speed_profile_id
-        if pid and self.speed_profiles.get(pid) is not None:
+        registry = self.speed_profiles
+        saved = train_data.get("speed_profile")
+        if not isinstance(saved, dict):
+            train.speed_profile_id = registry.create_instance(
+                max_speed_kmh=train.max_speed
+            ).profile_id
             return
-        model = make_default_speed_profile(train.train_id, train.max_speed)
-        if self.speed_profiles.get(model.profile_id) is None:
-            self.speed_profiles.register(model)
-        instance_id = f"{model.profile_id}__instance"
-        if self.speed_profiles.get(instance_id) is None:
-            self.speed_profiles.register(
-                make_instance_profile(
-                    model.profile_id,
-                    profile_id=instance_id,
-                    name=f"{model.name} instance",
-                )
-            )
-        train.speed_profile_id = instance_id
+        record = SpeedProfile.from_dict(saved)
+        record.model_id = None
+        record.set_name = ""
+        record.profile_id = registry.allocate_profile_id()
+        label = train_data.get("speed_profile_parent") or {}
+        parent_id = record.parent_profile_id
+        record.parent_profile_id = None
+        if label.get("kind") == "default":
+            record.parent_profile_id = DEFAULT_PROFILE_ID
+        elif label.get("kind") == "set" and parent_id is not None:
+            parent = registry.get(parent_id)
+            if parent is not None and parent.is_set:
+                model = registry.get_model(parent.model_id)
+                if (
+                    model is not None
+                    and model.name == label.get("model_name")
+                    and parent.set_name == label.get("set_name")
+                ):
+                    record.parent_profile_id = parent_id
+        registry.register(record)
+        train.speed_profile_id = record.profile_id
 
     def to_layout_dict(self) -> dict:
         """Layout-only serialization used by persistence.
@@ -1962,7 +1961,9 @@ class RailwayNetwork(SwitchOutputOwner):
             # state and not restored, because a restart re-detects whatever is
             # still drawing current (design_new.md "Unidentified trains", Runtime only).
             "trains": [
-                t.to_dict(self) for t in self.trains.values() if not t.is_unidentified
+                self._train_layout_dict(t)
+                for t in self.trains.values()
+                if not t.is_unidentified
             ],
             "blocks": {k: v.to_layout_dict() for k, v in self.blocks.items()},
             "signals": {k: v.to_layout_dict() for k, v in self.signals.items()},
@@ -2042,15 +2043,16 @@ class RailwayNetwork(SwitchOutputOwner):
         # (a grouping may name a platform block).
         self._fold_grouped_blocks(data.get("power_districts", []))
 
-        # The train roster and the speed profiles are not layout data: they live
-        # in the locomotive file, and loading a layout leaves both as they are
-        # (design_new.md "SpeedProfile", Where profiles and the roster are kept).
+        # Models and sets are not layout data: they live in the locomotive file,
+        # and loading a layout leaves them as they are. Each saved train brings
+        # its own instance profile (design_new.md "SpeedProfile", Where models,
+        # sets and instance profiles are kept).
 
         # Rebuild trains
         for train_data in data.get("trains", []):
             train = Train.from_dict(train_data)
             self.trains[train.train_id] = train
-            self._give_seeded_pair_when_profile_not_stored(train)
+            self._give_loaded_train_its_profile(train, train_data)
 
         # Rebuild tunnels (after all tracks are in place — add_tunnel
         # validates against the live track set). A malformed entry is

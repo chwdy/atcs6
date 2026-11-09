@@ -1710,37 +1710,34 @@ class TestMigratedSpeedProfileRoutes:
         assert listing.status_code == 200
         body = listing.get_json()
         assert body["count"] == len(body["profiles"])
-        assert any(p["profile_id"] == "default" for p in body["profiles"])
+        assert any(p["profile_id"] == 0 for p in body["profiles"])
 
-        default = client.get("/api/speed-profiles/default")
+        default = client.get("/api/speed-profiles/0")
         assert default.status_code == 200
-        assert default.get_json()["profile_id"] == "default"
+        assert default.get_json()["profile_id"] == 0
+        assert default.get_json()["kind"] == "default"
 
-    def test_create_update_delete_and_conflicts(self, client):
-        payload = {"profile_id": "TEST_PROFILE", "name": "Migrated profile"}
-        created = client.post("/api/speed-profiles", json=payload)
-        assert created.status_code == 201
-        assert created.get_json()["profile_id"] == "TEST_PROFILE"
-        assert client.post("/api/speed-profiles", json=payload).status_code == 409
+    def test_update_delete_and_conflicts(self, client, app_state):
+        registry = app_state.network.speed_profiles
+        model = registry.add_model("Migrated model")
+        the_set = registry.create_set(model.model_id, "1", registry.get(0))
+        pid = the_set.profile_id
 
-        updated = client.put(
-            "/api/speed-profiles/TEST_PROFILE", json={"name": "Updated profile"}
-        )
+        # No request creates a profile; only Promote does.
+        assert client.post("/api/speed-profiles", json={}).status_code == 405
+
+        updated = client.put(f"/api/speed-profiles/{pid}", json={"set_name": "2"})
         assert updated.status_code == 200
-        assert updated.get_json()["name"] == "Updated profile"
+        assert updated.get_json()["set_name"] == "2"
 
-        assert client.delete("/api/speed-profiles/default").status_code == 409
-        assert client.delete("/api/speed-profiles/TEST_PROFILE").status_code == 204
-        assert client.get("/api/speed-profiles/TEST_PROFILE").status_code == 404
+        assert client.put("/api/speed-profiles/0", json={"acceleration_rate": 2}).status_code == 409
+        assert client.delete("/api/speed-profiles/0").status_code == 409
+        assert client.delete(f"/api/speed-profiles/{pid}").status_code == 204
+        assert client.get(f"/api/speed-profiles/{pid}").status_code == 404
 
     def test_profile_input_validation(self, client):
-        assert client.post("/api/speed-profiles", json={}).status_code == 400
-        assert client.get("/api/speed-profiles/NOPE").status_code == 404
-        assert client.put("/api/speed-profiles/NOPE", json={"name": "x"}).status_code == 404
-        assert client.get("/api/speed-profiles/NOPE?resolved=true").status_code == 404
-        resolved = client.get("/api/speed-profiles/default?resolved=true").get_json()
-        assert resolved["profile_id"] == "default"
-        assert resolved["own_fields"] == []
+        assert client.get("/api/speed-profiles/999").status_code == 404
+        assert client.put("/api/speed-profiles/999", json={"set_name": "x"}).status_code == 404
 
 
 class TestMigratedScaleRoutes:

@@ -643,33 +643,29 @@ def test_adoption_gives_the_train_its_own_profile_and_retires_the_unidentified_t
 
     train = adopt(sim, unidentified_id, "T1", max_speed_kmh=80.0)
 
-    # The adopted train names a fresh instance profile, deriving from a model
-    # profile seeded alongside it and anchored to the real locomotive's max
-    # speed, not the blank unidentified train default.
-    assert train.speed_profile_id == "default_T1__instance"
-    instance = network.speed_profiles.get("default_T1__instance")
-    assert instance is not None and instance.derived_from == "default_T1"
-    model = network.speed_profiles.get("default_T1")
-    assert model is not None
-    assert model.voltage_speed_curve[-1] == (12.0, 80.0)
-    # The profile the train drives on resolves to that curve.
-    resolved = network.speed_profiles.resolve(train.speed_profile_id)
-    assert resolved.voltage_speed_curve[-1] == (12.0, 80.0)
-    # The unidentified train's seeded pair is retired.
-    assert network.speed_profiles.get(unidentified_profile_id) is None
+    # The adopted train keeps the instance profile the unidentified train
+    # owned, now a copy of the Default profile drawn to the real locomotive's
+    # max speed (design_new.md "SpeedProfile", Giving a train a profile).
+    assert train.speed_profile_id == unidentified_profile_id
+    instance = network.speed_profiles.get(train.speed_profile_id)
+    assert instance.is_instance and instance.parent_profile_id == 0
+    assert instance.voltage_speed_curve[-1] == (12.0, 80.0)
 
 
 def test_an_existing_speed_profile_can_be_kept_instead():
     network, sim, detector = build_sim()
     unidentified_id = an_unidentified_on(sim, detector)
-    from speed_profile import make_default_speed_profile
-
-    measured = make_default_speed_profile("measured_br218", 95.0)
-    network.speed_profiles.register(measured)
+    registry = network.speed_profiles
+    model = registry.add_model("BR 218")
+    measured = registry.create_set(model.model_id, "1", registry.get(0))
+    measured.acceleration_rate = 4.4
 
     train = adopt(sim, unidentified_id, speed_profile_id=measured.profile_id)
 
-    assert train.speed_profile_id == measured.profile_id
+    instance = registry.get(train.speed_profile_id)
+    assert instance.parent_profile_id == measured.profile_id
+    assert instance.acceleration_rate == 4.4
+    assert train.speed_profile_id != measured.profile_id
 
 
 def test_adoption_carries_the_operators_configuration_onto_the_train():

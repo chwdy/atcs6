@@ -203,7 +203,7 @@ function TrainsList({ host }: { host: OperateHost }) {
         return (
           <Row
             key={v.id}
-            label={v.train?.name || v.id}
+            label={v.train?.car_number || v.id}
             meta={`${speedText(v.controller?.current_speed ?? 0)} km/h`}
             chip={<span class={`chip chip-state ${trainStatusChip(status)}`}>{status.toUpperCase()}</span>}
             selected={sel?.kind === 'train' && sel.id === v.id}

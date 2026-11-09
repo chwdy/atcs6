@@ -54,10 +54,11 @@ import {
 } from '../lib/speed-profile-curve';
 
 interface SpeedProfileData {
-  profile_id: string;
-  name: string;
-  // The locomotive model this profile describes, matched against
-  // RosterEntry.model so one measured curve serves every locomotive of a model.
+  profile_id: number;
+  // On a set, its name within its model; blank otherwise.
+  set_name: string;
+  // Kept for the panel's display only; a profile carries no model field of
+  // its own (design_new.md "SpeedProfile": a set names its model by number).
   model: string;
   // ISO stamp of the speed-calibration commit that wrote the curve this profile
   // runs on; null when none did (a seeded or hand-drawn curve).
@@ -128,7 +129,7 @@ interface CurvePlotOptions {
 interface CalibrationGroupState {
   /** The group's element; once it leaves the page the operator has left the profile. */
   root: HTMLElement;
-  profileId: string;
+  profileId: number;
   /** Every profile, to read an instance profile's own values. */
   profiles: any[];
   /** Profile ids a train named that the list did not hold, already re-read for. */
@@ -161,7 +162,7 @@ interface CalibrationGroupState {
 
 /** What the calibration group shows, as the panel's host reads it. */
 export interface CalibrationGroupSummary {
-  profileId: string;
+  profileId: number;
   /** The train the locomotive row names, or null. */
   trainId: string | null;
   view: CalibrationRunView;
@@ -189,9 +190,9 @@ export interface SpeedProfilePanelHost {
   /** The profile list was asked for; the host shows its own list instead. */
   showList(): void;
   /** The panel now shows this profile. */
-  profileShown(profileId: string): void;
+  profileShown(profileId: number): void;
   /** The profile on screen was deleted, which closed the panel. */
-  profileDeleted(profileId: string): void;
+  profileDeleted(profileId: number): void;
   /** The calibration group's named train or run changed. */
   calibrationChanged(summary: CalibrationGroupSummary | null): void;
 }
@@ -733,10 +734,12 @@ export class SpeedProfileEditorHandler {
   editor: EditorHost;
   private _profile: SpeedProfileData | null = null;
   private _lastSaved: SpeedProfileData | null = null;
-  /** The model profile the open profile derives from, or null on a model
-   *  profile; and which instance fields the open instance carries itself. */
-  private _derivedFrom: string | null = null;
-  private _ownFields: string[] = [];
+  /** Which kind of record is open (design_new.md "SpeedProfile", Models,
+   *  sets and instance profiles), and, for an instance profile, where it came
+   *  from; for a set, its model's name. */
+  private _kind: 'default' | 'set' | 'instance' = 'instance';
+  private _parent: { kind: string; model_name?: string; set_name?: string } | null = null;
+  private _modelName = '';
   private _plot: CurvePlot | null = null;
   private _saveTimer: ReturnType<typeof setTimeout> | null = null;
   private _host: SpeedProfilePanelHost | null = null;
@@ -776,9 +779,7 @@ export class SpeedProfileEditorHandler {
 
     let content = `
             <div class="sp-list-panel">
-                <div class="routes-toolbar mb-16">
-                    <button id="sp-new-btn" class="btn btn-primary btn-sm flex-1">+ New Profile</button>
-                </div>`;
+                <div class="text-muted text-xs mb-12">Sets come from a speed pass's Promote; a train's own profile goes with the train.</div>`;
     if (!profiles.length) {
       content += '<div class="empty-state">No speed profiles</div>';
     } else {
@@ -794,32 +795,29 @@ export class SpeedProfileEditorHandler {
 
   private _renderProfileRow(p: any): string {
     const id = p.profile_id;
-    const isDefault = id === 'default';
+    const isDefault = Number(id) === 0;
+    const isSet = p.model_id != null;
     const top = topSpeed(p.voltage_speed_curve || []);
     const pts = p.voltage_speed_curve?.length || 0;
     return `
             <div class="rr-card accent-info mb-8" data-profile-id="${id}">
                 <div class="rr-card-head">
                     <div class="rr-card-title-col">
-                        <div class="rr-card-train font-mono">${id}</div>
+                        <div class="rr-card-train">${escapeAttr(isDefault ? 'Default' : isSet ? `Set ${p.set_name || '—'}` : `Train profile ${id}`)}</div>
                     </div>
                     <div class="route-row-actions">
                         <button class="rr-flat-btn sp-edit-btn" data-profile-id="${id}">Edit</button>
-                        <button class="rr-flat-btn rr-flat-btn-danger sp-delete-btn" data-profile-id="${id}" ${isDefault ? 'disabled title="The default profile cannot be deleted"' : ''}>Delete</button>
+                        <button class="rr-flat-btn rr-flat-btn-danger sp-delete-btn" data-profile-id="${id}" ${isSet ? '' : 'disabled title="Only a set can be deleted; a train profile goes with its train"'}>Delete</button>
                     </div>
                 </div>
                 <div class="chip-row">
                     <span class="chip">${fmt(top, 0)} km/h top</span>
                     <span class="chip">${pts} pts</span>
                 </div>
-                <div class="rr-card-foot">${p.name || ''}</div>
             </div>`;
   }
 
   private _bindListHandlers(): void {
-    const newBtn = document.getElementById('sp-new-btn');
-    if (newBtn) newBtn.onclick = () => this._createProfile();
-
     document.querySelectorAll<HTMLButtonElement>('.sp-edit-btn').forEach((btn) => {
       btn.onclick = () => this.showProfileEditor(btn.dataset.profileId || '');
     });
@@ -829,33 +827,12 @@ export class SpeedProfileEditorHandler {
     });
   }
 
-  private async _createProfile(): Promise<void> {
-    const values = await showFormModal({
-      title: 'New Speed Profile',
-      fields: [
-        { name: 'profile_id', label: 'Profile ID', required: true, placeholder: 'e.g. shinkansen_n700' },
-        { name: 'name', label: 'Name', required: true, placeholder: 'Display name' },
-      ],
-      confirmText: 'Create',
-    });
-    if (!values) return;
-    try {
-      const created = await this.api.createSpeedProfile({
-        profile_id: String(values.profile_id).trim(),
-        name: String(values.name).trim(),
-      });
-      showToast('Speed profile created', 'success', 2000);
-      await this.showProfileEditor(created.profile_id);
-    } catch (err: any) {
-      showToast('Failed to create profile: ' + err.message, 'error', 5000);
-    }
-  }
-
-  private async _deleteProfile(id: string): Promise<void> {
+  private async _deleteProfile(id: number | string): Promise<void> {
     const confirmed = await showConfirmModal({
       title: 'Delete Speed Profile',
-      message: `Delete speed profile "${id}"?`,
-      detail: 'Profiles assigned to a train, and the default profile, cannot be deleted.',
+      message: `Delete set ${this._profile && Number(this._profile.profile_id) === Number(id) ? this._profile.set_name || id : id}?`,
+      detail:
+        'Trains given this set keep their own copies, but can no longer be reset to it. This cannot be undone.',
       confirmText: 'Delete',
       confirmVariant: 'danger',
     });
@@ -865,7 +842,7 @@ export class SpeedProfileEditorHandler {
       showToast('Speed profile deleted', 'success', 2000);
       if (this._host) {
         this.close();
-        this._host.profileDeleted(id);
+        this._host.profileDeleted(Number(id));
       } else {
         await this.showProfilesPanel();
       }
@@ -881,7 +858,7 @@ export class SpeedProfileEditorHandler {
    * calibration group's locomotive row names once the panel is open (kept
    * only while the row lists it); otherwise the row keeps the train it named.
    */
-  async showProfileEditor(profileId: string, options: { trainId?: string | null } = {}): Promise<void> {
+  async showProfileEditor(profileId: number | string, options: { trainId?: string | null } = {}): Promise<void> {
     this._teardownCalibration();
     this._teardownPlots();
     if ('trainId' in options && options.trainId !== this._calTrainId) {
@@ -900,7 +877,7 @@ export class SpeedProfileEditorHandler {
     // by hand).
     let data: any;
     try {
-      data = await this.api.getSpeedProfile(profileId, { resolved: true });
+      data = await this.api.getSpeedProfile(profileId);
       if (!data || data.error) {
         showToast('Speed profile not found', 'error', 5000);
         return;
@@ -914,7 +891,7 @@ export class SpeedProfileEditorHandler {
 
     if (this._host) {
       this._host.el.innerHTML = this._editorHtml(this._profile!);
-      this._host.profileShown(profileId);
+      this._host.profileShown(Number(profileId));
     } else {
       this.editor.showSecondarySidebar(profileId, this._editorHtml(this._profile!));
       // Wider canvas room — same affordance the route editor uses.
@@ -925,36 +902,46 @@ export class SpeedProfileEditorHandler {
 
   /** Take a resolved view from the server as the profile on screen. */
   private _applyView(view: any): void {
-    this._derivedFrom = view.derived_from || null;
-    this._ownFields = Array.isArray(view.own_fields) ? view.own_fields : [];
+    this._kind = view.kind === 'default' || view.kind === 'set' ? view.kind : 'instance';
+    this._parent = view.parent || null;
+    this._modelName = String(view.model_name || '');
     this._profile = this._normalize(view);
     this._lastSaved = this._clone(this._profile);
   }
 
-  /** A locomotive's own profile: only its name, lighting voltage and
-   *  voltage/speed curve are edited here; every other value belongs to its
-   *  model profile. */
+  /** A train's own instance profile, which the calibration runs write. */
   private _isInstance(): boolean {
-    return this._derivedFrom !== null;
+    return this._kind === 'instance';
   }
 
-  /** The note an instance profile opens with: what it carries itself and
-   *  where its other values are edited. */
+  /** The Default profile, which nothing may change (design_new.md
+   *  "SpeedProfile", The Default profile is fixed). */
+  private _isFixed(): boolean {
+    return this._kind === 'default';
+  }
+
+  /** Where the open instance profile came from, by name. */
+  private _sourceLabel(): string {
+    const parent = this._parent;
+    if (!parent || parent.kind === 'none') return 'a scene profile';
+    if (parent.kind === 'default') return 'the Default profile';
+    if (parent.kind === 'deleted') return 'a set that was deleted';
+    return `${parent.model_name || 'a model'} · ${parent.set_name || '—'}`;
+  }
+
+  /** The note the panel opens with: which kind of record this is and what a
+   *  change to it reaches. */
   private _instanceNoteHtml(): string {
-    if (!this._derivedFrom) return '';
-    const model = escapeAttr(this._derivedFrom);
-    const curve = this._ownFields.includes('voltage_speed_curve')
-      ? 'This locomotive has its own voltage → speed curve, so a change to the model curve does not reach it.'
-      : `Its voltage → speed curve comes from <span class="font-mono">${model}</span>; editing it here gives this locomotive its own curve.`;
-    const lighting = this._ownFields.includes('lighting_voltage')
-      ? 'It has its own lighting voltage.'
-      : `Its lighting voltage comes from <span class="font-mono">${model}</span> until you set one here.`;
+    let text: string;
+    if (this._kind === 'default') {
+      text = 'This is the Default profile. It is fixed: any train may start from it, and nothing can change it.';
+    } else if (this._kind === 'set') {
+      text = `This is set <b>${escapeAttr(this._profile?.set_name || '—')}</b> of <b>${escapeAttr(this._modelName || 'a model')}</b>. Trains given this set run on their own copies, so a change here reaches no train until it is given the set again or reset.`;
+    } else {
+      text = `This is the train's own profile, copied from <b>${escapeAttr(this._sourceLabel())}</b>. A change here, and every calibration save, changes only this train.`;
+    }
     return `
-                <div class="info-box text-xs mb-12 sp-instance-note">
-                    This is one locomotive's own profile. ${curve} ${lighting}
-                    Every other value comes from model profile <span class="font-mono">${model}</span> and is edited there.
-                    <button type="button" class="rr-flat-btn" id="sp-open-model" data-profile-id="${model}">Edit ${model} →</button>
-                </div>`;
+                <div class="info-box text-xs mb-12 sp-instance-note">${text}</div>`;
   }
 
   private _normalize(d: any): SpeedProfileData {
@@ -962,7 +949,7 @@ export class SpeedProfileEditorHandler {
     curve.sort((a, b) => a[0] - b[0]);
     return {
       profile_id: d.profile_id,
-      name: d.name || '',
+      set_name: d.set_name || '',
       model: d.model || '',
       calibrated_at: d.calibrated_at || null,
       voltage_speed_curve: curve,
@@ -1025,8 +1012,8 @@ export class SpeedProfileEditorHandler {
   }
 
   /** One of the profile's own values, beside the label it belongs to. A value
-   *  a locomotive's own profile reads from its model profile is plain text,
-   *  not a disabled input: it is edited on the model profile. */
+   *  read off the curve, or on the fixed Default profile, is plain text, not a
+   *  disabled input. */
   private _scalarRowHtml(
     id: string,
     label: string,
@@ -1048,24 +1035,14 @@ export class SpeedProfileEditorHandler {
                     </div>`;
   }
 
+  /** The panel shows no name or model field: a profile has no name, and the
+   *  model is edited on the Locomotives screen's card (design_new.md
+   *  "SpeedProfile", `model`). */
   private _editorHtml(p: SpeedProfileData): string {
-    const ro = this._isInstance();
+    const ro = this._isFixed();
     return `
             <div class="sp-editor">
                 ${this._instanceNoteHtml()}
-                <div class="control-section sp-model-section">
-                    ${this._scalarRowHtml('sp-name', 'Name', p.name || '', {
-                      editable: true,
-                      attrs: 'type="text"',
-                      placeholder: p.profile_id,
-                    })}
-                    ${this._scalarRowHtml('sp-model', 'Model', p.model || '', {
-                      editable: !ro,
-                      attrs: 'type="text"',
-                      placeholder: 'e.g. Kato EF66',
-                    })}
-                </div>
-
                 <div class="control-section">
                     <div class="control-section-header">Voltage → speed curve</div>
                     ${this._scalarRowHtml('sp-maxv', 'Max voltage', fmt(p.max_voltage), {
@@ -1154,14 +1131,14 @@ ${this._calibrationGroupHtml(p)}
                 </details>
 
                 ${
-                  p.profile_id === 'default'
+                  this._isFixed() || this._isInstance()
                     ? ''
-                    : `<div class="flex mt-16"><button id="sp-delete-btn" class="btn btn-danger btn-sm">Delete profile</button></div>`
+                    : `<div class="flex mt-16"><button id="sp-delete-btn" class="btn btn-danger btn-sm">Delete set</button></div>`
                 }
             </div>`;
   }
 
-  /** `readOnly`: the field belongs to the model profile of the instance on screen. */
+  /** `readOnly`: the profile on screen is the fixed Default profile. */
   private _rateRow(label: string, id: string, value: number, readOnly = false): string {
     return `
                     <div class="input-small-row mb-8">
@@ -1183,7 +1160,7 @@ ${this._calibrationGroupHtml(p)}
 
     const canvas = document.getElementById('sp-curve-canvas') as HTMLCanvasElement | null;
     if (canvas) {
-      // Both a model profile and a locomotive's own profile may edit the curve.
+      // A set and a train's own profile may both edit the curve.
       this._plot = new CurvePlot({
         canvas,
         color: getComputedStyle(document.documentElement).getPropertyValue('--success-color').trim() || '#4ade80',
@@ -1202,24 +1179,6 @@ ${this._calibrationGroupHtml(p)}
 
     const del = document.getElementById('sp-delete-btn');
     if (del) del.onclick = () => this._deleteProfile(this._profile!.profile_id);
-
-    const openModel = document.getElementById('sp-open-model') as HTMLButtonElement | null;
-    if (openModel) openModel.onclick = () => void this.showProfileEditor(openModel.dataset.profileId || '');
-
-    // Both a model profile and a locomotive's own profile carry their own name.
-    const name = document.getElementById('sp-name') as HTMLInputElement | null;
-    if (name)
-      name.onchange = () => {
-        this._profile!.name = name.value.trim();
-        this._commit();
-      };
-
-    const model = document.getElementById('sp-model') as HTMLInputElement | null;
-    if (model)
-      model.onchange = () => {
-        this._profile!.model = model.value.trim();
-        this._commit();
-      };
 
     this._syncValues();
     void this._initCalibration();
@@ -1351,9 +1310,9 @@ ${this._calibrationGroupHtml(p)}
   }
 
   /** The profile the train names: its own, where every run's save lands. */
-  private _trainOwnProfileId(trainId: string): string | null {
+  private _trainOwnProfileId(trainId: string): number | null {
     const train = (stateManager.getAll('trains') as any[]).find((t: any) => t?.id === trainId);
-    return train?.speed_profile_id ? String(train.speed_profile_id) : null;
+    return train?.speed_profile_id != null ? Number(train.speed_profile_id) : null;
   }
 
   private _namedTrain(): any | null {
@@ -1693,9 +1652,7 @@ ${this._calibrationGroupHtml(p)}
       return;
     }
     const start = this._profile.starting_voltage;
-    const empty = this._isInstance()
-      ? 'Empty reads the model profile’s value.'
-      : 'Empty means none: a standing, powered train gets 0 V.';
+    const empty = 'Empty means none: a standing, powered train gets 0 V.';
     let text =
       `For a locomotive whose lamps light before it moves. It must stay below the starting voltage (${fmt(start)} V); a speed pass finds both. ${empty}`;
     const train = this._namedTrain();
@@ -1711,11 +1668,9 @@ ${this._calibrationGroupHtml(p)}
   // design_new.md "Speed calibration". The pass times the locomotive across
   // one operator-named measured block and turns it around at each end itself,
   // so a plain length of track measures a locomotive with no loop to lap. It
-  // writes nothing until the operator picks a commit target: Save to this
-  // locomotive writes the measurement onto this loco's instance profile alone,
-  // Promote to model writes it onto the model profile and clears this loco's
-  // own curve, so every locomotive of that model with no curve of its own runs
-  // on it (design_new.md "What commit writes").
+  // writes nothing until the operator picks Save to this train, which writes
+  // the measurement onto the train's own profile alone, or Promote, which also
+  // keeps that profile as a set (design_new.md "What commit writes").
 
   private _renderSpeedRow(): void {
     const cal = this._cal;
@@ -1782,11 +1737,11 @@ ${this._calibrationGroupHtml(p)}
                 <div class="sp-crossing-list" id="sp-cal-crossings"></div>
                 ${
                   held
-                    ? `<div class="text-muted text-xs mb-8">Save to this locomotive changes only this locomotive. Promote to model writes the curve to ${modelName ? escapeAttr(modelName) : 'the model'}: every locomotive of that model without its own measured curve runs on it, this one included. A locomotive saved with its own curve keeps it. Every locomotive whose curve changes loses its ATO minimum voltage until you test a new one.</div>
+                    ? `<div class="text-muted text-xs mb-8">Save to this train writes the curve to this train's own profile only. Promote saves it to the train too, then keeps the whole profile as a set: a new set under a model, or over the set this train came from. The train loses its ATO minimum voltage until you test a new one.</div>
                 <div class="sp-cal-actions">
                     <button id="sp-cal-discard" class="btn btn-outline btn-sm" title="Throw the measurement away; nothing is written">Discard</button>
-                    <button id="sp-cal-model" class="btn btn-outline btn-sm">Promote to model</button>
-                    <button id="sp-cal-locomotive" class="btn btn-accent btn-sm">Save to this locomotive</button>
+                    <button id="sp-cal-promote" class="btn btn-outline btn-sm">Promote…</button>
+                    <button id="sp-cal-train" class="btn btn-accent btn-sm">Save to this train</button>
                 </div>`
                     : `<div class="sp-cal-actions">
                     <button id="sp-cal-stop" class="btn btn-outline btn-sm" title="End the pass; nothing is written">Stop</button>
@@ -1805,10 +1760,10 @@ ${this._calibrationGroupHtml(p)}
         void this._stopSpeedPass();
       if (trial) this._bindTrialControls(row, trial);
     } else if (cal.view === 'speed-held') {
-      (row.querySelector('#sp-cal-locomotive') as HTMLButtonElement).onclick = () =>
-        void this._commitSpeedResult('locomotive');
-      (row.querySelector('#sp-cal-model') as HTMLButtonElement).onclick = () =>
-        void this._commitSpeedResult('model');
+      (row.querySelector('#sp-cal-train') as HTMLButtonElement).onclick = () =>
+        void this._commitSpeedResult({ target: 'train' });
+      (row.querySelector('#sp-cal-promote') as HTMLButtonElement).onclick = () =>
+        void this._promoteSpeedResult();
       (row.querySelector('#sp-cal-discard') as HTMLButtonElement).onclick = () =>
         void this._discardSpeedResult();
     }
@@ -1959,7 +1914,7 @@ ${this._calibrationGroupHtml(p)}
     const cal = this._cal;
     if (!p) return;
     try {
-      const view = await this.api.getSpeedProfile(p.profile_id, { resolved: true });
+      const view = await this.api.getSpeedProfile(p.profile_id);
       if (this._profile?.profile_id !== p.profile_id) return;
       this._applyView(view);
       if (cal) cal.profiles = (await this.api.getSpeedProfiles()) || cal.profiles;
@@ -2084,7 +2039,7 @@ ${this._calibrationGroupHtml(p)}
     const curve: Curve = trainStoredValue(train, cal.profiles, this._profile, 'voltage_speed_curve') || [];
     const start = Number(trainStoredValue(train, cal.profiles, this._profile, 'starting_voltage') ?? 0);
     const own = (cal.profiles || []).find((p: any) => p?.profile_id === train?.speed_profile_id);
-    const set = own?.ato_min_voltage ?? (this._isInstance() ? this._profile.ato_min_voltage : null);
+    const set = own?.ato_min_voltage ?? this._profile.ato_min_voltage ?? null;
     return { volts: atoMinimumVoltage(curve, start, this._profile.max_voltage, set ?? null), set: set != null };
   }
 
@@ -2385,15 +2340,88 @@ ${this._calibrationGroupHtml(p)}
     void this._refreshReadiness();
   }
 
-  /** Write the held result. Nothing is written until the operator picks one
-   *  of the two targets. */
-  private async _commitSpeedResult(target: 'locomotive' | 'model'): Promise<void> {
+  /** Ask where Promote keeps the profile, then commit (design_new.md "Speed
+   *  calibration", What commit writes; "SpeedProfile", Promoting an instance
+   *  profile). Over the current set is offered only when the train came from a
+   *  set that still exists. */
+  private async _promoteSpeedResult(): Promise<void> {
+    let models: any[] = [];
+    try {
+      models = (await this.api.getSpeedLibrary()).models || [];
+    } catch {
+      models = [];
+    }
+    const parent = this._parent;
+    const canOverwrite = parent?.kind === 'set';
+    const NEW_MODEL = '__new__';
+    const values = await showFormModal({
+      title: 'Promote to a set',
+      message: 'Keep this train’s whole profile, with the measured curve, as a set.',
+      fields: [
+        {
+          name: 'where',
+          label: 'Keep it',
+          type: 'select',
+          options: [
+            { value: 'new_set', label: 'As a new set' },
+            ...(canOverwrite
+              ? [{ value: 'current_set', label: `Over ${parent!.model_name || 'its model'} · ${parent!.set_name || '—'}` }]
+              : []),
+          ],
+          defaultValue: 'new_set',
+        },
+        {
+          name: 'model',
+          label: 'Model',
+          type: 'select',
+          options: [
+            ...models
+              .slice()
+              .sort((a: any, b: any) => String(a.name).localeCompare(String(b.name), undefined, { numeric: true }))
+              .map((m: any) => ({ value: String(m.model_id), label: String(m.name) })),
+            { value: NEW_MODEL, label: 'New model…' },
+          ],
+          defaultValue: models.length ? String(models[0].model_id) : NEW_MODEL,
+          hint: 'For a new set only.',
+        },
+        {
+          name: 'model_name',
+          label: 'New model name',
+          placeholder: 'As written on the box',
+          validate: (v, all) =>
+            all.where === 'new_set' && all.model === NEW_MODEL && !String(v || '').trim()
+              ? 'Name the new model'
+              : undefined,
+        },
+        {
+          name: 'set_name',
+          label: 'Set name',
+          placeholder: 'e.g. 1 or #2101',
+          validate: (v, all) =>
+            all.where === 'new_set' && !String(v || '').trim() ? 'Name the new set' : undefined,
+        },
+      ],
+      confirmText: 'Promote',
+    });
+    if (!values) return;
+    if (values.where === 'current_set') {
+      await this._commitSpeedResult({ target: 'promote', promote_as: 'current_set' });
+      return;
+    }
+    const body: any = { target: 'promote', promote_as: 'new_set', set_name: String(values.set_name).trim() };
+    if (values.model === NEW_MODEL) body.model_name = String(values.model_name).trim();
+    else body.model_id = Number(values.model);
+    await this._commitSpeedResult(body);
+  }
+
+  /** Write the held result. Nothing is written until the operator picks Save
+   *  to this train or Promote. */
+  private async _commitSpeedResult(body: any): Promise<void> {
     const cal = this._cal;
     const trainId = this._calTrainId;
     if (!cal || !trainId || cal.view !== 'speed-held') return;
-    let result: any;
     try {
-      result = await this.api.commitCalibration(trainId, target);
+      await this.api.commitCalibration(trainId, body);
     } catch (err: any) {
       showToast(err.message || 'Commit failed', 'error', 6000);
       return;
@@ -2404,15 +2432,9 @@ ${this._calibrationGroupHtml(p)}
     cal.speedRun = null;
     this._speedCommittedFor = trainId;
     this._clearStretchHighlight();
-    showToast(
-      target === 'model'
-        ? `Promoted to the model profile${result?.profile?.profile_id ? ` ${result.profile.profile_id}` : ''}`
-        : 'Saved to this locomotive',
-      'success',
-      4000
-    );
-    // Show the train's own profile: after Promote to model it runs on the
-    // model's new curve, and the ATO minimum step that follows saves onto it.
+    showToast(body.target === 'promote' ? 'Saved to this train and promoted to a set' : 'Saved to this train', 'success', 4000);
+    // Show the train's own profile again: the ATO minimum step that follows
+    // saves onto it.
     await this.showProfileEditor(this._trainOwnProfileId(trainId) || this._profile!.profile_id, { trainId });
   }
 
@@ -2806,28 +2828,17 @@ ${this._calibrationGroupHtml(p)}
 
   private async _commit(): Promise<void> {
     if (!this._profile) return;
-    // A save writes only the fields the operator changed, so a locomotive's
-    // own profile goes on reading everything else from its model profile
-    // (design_new.md "SpeedProfile", Editing a profile by hand).
+    // A save writes only the fields the operator changed, to the one profile
+    // on screen (design_new.md "SpeedProfile", Editing a profile by hand).
     const edits = changedProfileFields(
       this._lastSaved as unknown as Record<string, unknown>,
-      this._profile as unknown as Record<string, unknown>,
-      this._isInstance()
+      this._profile as unknown as Record<string, unknown>
     );
     if (!Object.keys(edits).length) return;
     try {
       await this.api.updateSpeedProfile(this._profile.profile_id, edits);
-      const view = await this.api.getSpeedProfile(this._profile.profile_id, { resolved: true });
-      const hadOwn = this._ownFields.join(',');
+      const view = await this.api.getSpeedProfile(this._profile.profile_id);
       this._applyView(view);
-      // The first hand edit of an instance's curve or lighting voltage changes
-      // what the note says.
-      if (this._isInstance() && hadOwn !== this._ownFields.join(',')) {
-        const note = document.querySelector('.sp-instance-note');
-        if (note) note.outerHTML = this._instanceNoteHtml();
-        const openModel = document.getElementById('sp-open-model') as HTMLButtonElement | null;
-        if (openModel) openModel.onclick = () => void this.showProfileEditor(openModel.dataset.profileId || '');
-      }
       this._redrawPlot();
       this._syncValues();
       this._notifyCalibration();

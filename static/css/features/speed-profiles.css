@@ -116,9 +116,9 @@
 /* ---- the profile's own values ----
    Model, and in the curve's section the max voltage and the values read off
    the curve (starting voltage, starting speed, top speed). The value sits
-   right beside its label (Proximity) and carries its unit. A value a
-   locomotive's own profile reads from its model profile, or that is read off
-   the curve, is plain text, not a disabled input. */
+   right beside its label (Proximity) and carries its unit. A value read off
+   the curve, or on the fixed Default profile, is plain text, not a disabled
+   input. */
 .sp-scalar-row {
     display: flex;
     align-items: center;
@@ -131,9 +131,6 @@
 .sp-scalar-input {
     flex: 0 1 96px;
     min-width: 0;
-}
-.sp-model-section .sp-scalar-input {
-    flex-basis: 220px;
 }
 .sp-scalar-value {
     font-family: var(--font-mono);
@@ -149,9 +146,6 @@
 .sp-scalar-unit {
     font-size: 11px;
     color: var(--text-secondary);
-}
-.sp-model-section .sp-scalar-row {
-    margin-bottom: 0;
 }
 
 /* ---- calibration group ----

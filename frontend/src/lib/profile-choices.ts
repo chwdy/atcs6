@@ -1,43 +1,63 @@
 /**
- * Which speed profiles a train's Speed profile dropdown offers.
+ * Which speed profiles a train's Speed profile dropdown offers, and how a
+ * train's profile is named.
  *
- * design_new.md "SpeedProfile", Model profiles and instance profiles: a train
- * names an instance profile and never a model profile, and an instance profile
- * describes one physical locomotive. So a dropdown offers only instance
- * profiles that no train names yet, such as a roster locomotive that is not on
- * the layout. That also hides the blank pair every unidentified train carries:
- * its model profile is a model, and its instance is named by that train.
+ * design_new.md "SpeedProfile", Models, sets and instance profiles: a train
+ * is given the Default profile or a set, and the server copies it into the
+ * train's own instance profile. So a dropdown offers the Default profile and
+ * every set, grouped by model, and never another train's instance profile.
+ * A screen names a train's profile by where it came from: the model's name
+ * and the set's name (A train shows where its profile came from).
  */
 
 export interface ProfileChoice {
+  /** The profile number, as a string for an `<option value>`. */
   id: string;
   label: string;
 }
 
-function profileId(p: any): string {
-  return String(p?.profile_id ?? p?.id ?? '');
+const DEFAULT_ID = 0;
+
+function byModelThenSet(models: Map<number, string>) {
+  return (a: any, b: any) =>
+    (models.get(a.model_id) || '').localeCompare(models.get(b.model_id) || '', undefined, { numeric: true }) ||
+    String(a.set_name || '').localeCompare(String(b.set_name || ''), undefined, { numeric: true });
+}
+
+function modelNames(models: any[]): Map<number, string> {
+  return new Map((models || []).map((m: any) => [Number(m.model_id), String(m.name || '')]));
+}
+
+/** A set as a screen names it: `model · set`. */
+export function setLabel(set: any, models: any[]): string {
+  const name = modelNames(models).get(Number(set?.model_id)) || 'No model';
+  return `${name} · ${set?.set_name || '—'}`;
 }
 
 /**
- * The instance profiles no train names, plus `currentId` (the profile the train
- * on screen names now) so the dropdown still shows what is selected.
+ * The Default profile, then every set grouped by model and set name. With
+ * `includeDefault` false the Default profile is left out, for a form whose own
+ * first option already stands for it.
  */
-export function pickableProfileChoices(
-  profiles: any[],
-  trains: any[],
-  currentId: string | null = null
-): ProfileChoice[] {
-  const named = new Set((trains || []).map((t) => String(t?.speed_profile_id ?? '')).filter(Boolean));
-  const choices: ProfileChoice[] = [];
-  for (const p of profiles || []) {
-    const id = profileId(p);
-    if (!id) continue;
-    const isCurrent = id === currentId;
-    if (!isCurrent && (!p?.derived_from || named.has(id))) continue;
-    choices.push({ id, label: String(p?.name || id) });
-  }
-  if (currentId && !choices.some((c) => c.id === currentId)) {
-    choices.unshift({ id: currentId, label: currentId });
-  }
+export function profileChoices(profiles: any[], models: any[], includeDefault = true): ProfileChoice[] {
+  const names = modelNames(models);
+  const sets = (profiles || []).filter((p: any) => p?.model_id != null).sort(byModelThenSet(names));
+  const choices: ProfileChoice[] = includeDefault ? [{ id: String(DEFAULT_ID), label: 'Default' }] : [];
+  for (const set of sets) choices.push({ id: String(set.profile_id), label: setLabel(set, models) });
   return choices;
+}
+
+/**
+ * Where a train's instance profile came from (design_new.md "SpeedProfile",
+ * A train shows where its profile came from): `model · set`, `Default`,
+ * `Set deleted` when the parent names no set, or `Scene profile` when it has
+ * no parent.
+ */
+export function profileSourceLabel(instance: any, profiles: any[], models: any[]): string {
+  const parentId = instance?.parent_profile_id;
+  if (parentId == null) return 'Scene profile';
+  if (Number(parentId) === DEFAULT_ID) return 'Default';
+  const parent = (profiles || []).find((p: any) => Number(p?.profile_id) === Number(parentId));
+  if (!parent || parent.model_id == null) return 'Set deleted';
+  return setLabel(parent, models);
 }

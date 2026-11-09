@@ -115,7 +115,7 @@ export function TrainCard({
     >
       <div class="op-card-head">
         <span class="op-card-name" title={view.id}>
-          {view.train?.name || view.id}
+          {view.train?.car_number || view.id}
         </span>
         <span class={`chip chip-state ${trainStatusChip(status)}`} title="train_status">
           {status.toUpperCase()}

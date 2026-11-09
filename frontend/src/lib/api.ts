@@ -32,6 +32,13 @@ interface RequestConfig {
 // `implements` makes the compiler verify this client satisfies both halves of
 // the data contract — the layout surface the reusable editor/renderer need and
 // the sim surface the sim plugin needs.
+/** The body of a speed-pass commit (design_new.md "Speed calibration", What
+ *  commit writes). */
+export type CalibrationCommit =
+  | { target: 'train' }
+  | { target: 'promote'; promote_as: 'current_set' }
+  | { target: 'promote'; promote_as: 'new_set'; set_name: string; model_id?: number; model_name?: string };
+
 export class API implements LayoutDataClient, SimClient {
   baseUrl: string;
 
@@ -205,9 +212,8 @@ export class API implements LayoutDataClient, SimClient {
   //
   // A pass measures a locomotive's voltage/speed response by timing it across an
   // operator-named measured block, turning it around at each end. It writes
-  // nothing until `commitCalibration` — the operator picks whether the result
-  // writes onto this locomotive alone (its instance profile) or is promoted to
-  // the model profile every locomotive of that model shares.
+  // nothing until `commitCalibration` — the operator picks Save to this train
+  // (its instance profile alone) or Promote, which also keeps it as a set.
 
   /** The two outer blocks a measured block resolves to, plus its length. Shown
    *  before Start so the operator sees which stretch the train will run. */
@@ -313,16 +319,15 @@ export class API implements LayoutDataClient, SimClient {
     );
   }
 
-  /** Write the measured pass onto a profile. `target` picks which:
-   *  'locomotive' (Save to this locomotive) writes the two measured fields onto
-   *  this locomotive's instance profile, so only this loco changes; 'model'
-   *  (Promote to model) writes them onto the model profile the instance derives
-   *  from and clears the instance override, so every locomotive of that model
-   *  gets the measurement. */
-  async commitCalibration(trainId: string, target: 'locomotive' | 'model'): Promise<any> {
+  /** Write a finished pass (design_new.md "Speed calibration", What commit
+   *  writes). `{target: 'train'}` is Save to this train. `{target: 'promote',
+   *  promote_as: 'new_set', model_id | model_name, set_name}` or `{target:
+   *  'promote', promote_as: 'current_set'}` is Promote. Discard is
+   *  `cancelCalibration`. */
+  async commitCalibration(trainId: string, body: CalibrationCommit): Promise<any> {
     return this._request(
       `/trains/${trainId}/calibrate/commit`,
-      { method: 'POST', body: { target } },
+      { method: 'POST', body },
       'commitCalibration'
     );
   }
@@ -360,8 +365,10 @@ export class API implements LayoutDataClient, SimClient {
     );
   }
 
-  /** Point a train at a different speed profile (validated server-side). */
-  async assignTrainSpeedProfile(trainId: string, profileId: string): Promise<any> {
+  /** Give a train the Default profile (0) or a set: the server copies it into
+   *  the train's instance profile (design_new.md "SpeedProfile", Giving a
+   *  train a profile). */
+  async assignTrainSpeedProfile(trainId: string, profileId: number): Promise<any> {
     return this._request(
       `/trains/${encodeURIComponent(trainId)}/speed-profile`,
       {
@@ -369,6 +376,16 @@ export class API implements LayoutDataClient, SimClient {
         body: { profile_id: profileId },
       },
       'assignTrainSpeedProfile'
+    );
+  }
+
+  /** Copy the train's parent profile back into its instance profile
+   *  (design_new.md "SpeedProfile", Resetting an instance profile). */
+  async resetTrainSpeedProfile(trainId: string): Promise<any> {
+    return this._request(
+      `/trains/${encodeURIComponent(trainId)}/speed-profile/reset`,
+      { method: 'POST' },
+      'resetTrainSpeedProfile'
     );
   }
 
@@ -2120,38 +2137,52 @@ export class API implements LayoutDataClient, SimClient {
   }
 
   // === Speed Profiles ===
+  //
+  // design_new.md "SpeedProfile": the Default profile 0, sets grouped by
+  // model, and each train's instance profile. Ids are numbers. No request
+  // creates a profile or a model: a set comes only from a speed pass's Promote.
 
   async getSpeedProfiles(): Promise<any[]> {
     const result = await this._request('/speed-profiles', {}, 'getSpeedProfiles');
     return result?.profiles || [];
   }
 
-  /** One speed profile. With `resolved`, the profile as the Speed Profile
-   *  panel shows it: resolved values plus the stored `derived_from` and the
-   *  instance's `own_fields` (design_new.md "SpeedProfile", Editing a profile
-   *  by hand); otherwise the stored record. */
-  async getSpeedProfile(profileId: string, options: { resolved?: boolean } = {}): Promise<any> {
+  /** Every profile and every model, in one read. */
+  async getSpeedLibrary(): Promise<{ profiles: any[]; models: any[] }> {
+    const result = await this._request('/speed-profiles', {}, 'getSpeedLibrary');
+    return { profiles: result?.profiles || [], models: result?.models || [] };
+  }
+
+  /** One profile as the Speed Profile panel shows it: the record, its `kind`
+   *  ('default' | 'set' | 'instance'), an instance's `parent` label and a
+   *  set's `model_name`. */
+  async getSpeedProfile(profileId: number | string): Promise<any> {
     return this._request(
-      `/speed-profiles/${encodeURIComponent(profileId)}${options.resolved ? '?resolved=true' : ''}`,
+      `/speed-profiles/${encodeURIComponent(String(profileId))}`,
       {},
       'getSpeedProfile'
     );
   }
 
-  async createSpeedProfile(data: unknown): Promise<any> {
+  async renameLocomotiveModel(modelId: number, name: string): Promise<any> {
     return this._request(
-      '/speed-profiles',
-      {
-        method: 'POST',
-        body: data,
-      },
-      'createSpeedProfile'
+      `/locomotive-models/${modelId}`,
+      { method: 'PUT', body: { name } },
+      'renameLocomotiveModel'
     );
   }
 
-  async updateSpeedProfile(profileId: string, data: unknown): Promise<any> {
+  async deleteLocomotiveModel(modelId: number): Promise<any> {
     return this._request(
-      `/speed-profiles/${encodeURIComponent(profileId)}`,
+      `/locomotive-models/${modelId}`,
+      { method: 'DELETE' },
+      'deleteLocomotiveModel'
+    );
+  }
+
+  async updateSpeedProfile(profileId: number | string, data: unknown): Promise<any> {
+    return this._request(
+      `/speed-profiles/${encodeURIComponent(String(profileId))}`,
       {
         method: 'PUT',
         body: data,
@@ -2160,9 +2191,9 @@ export class API implements LayoutDataClient, SimClient {
     );
   }
 
-  async deleteSpeedProfile(profileId: string): Promise<any> {
+  async deleteSpeedProfile(profileId: number | string): Promise<any> {
     return this._request(
-      `/speed-profiles/${encodeURIComponent(profileId)}`,
+      `/speed-profiles/${encodeURIComponent(String(profileId))}`,
       {
         method: 'DELETE',
       },

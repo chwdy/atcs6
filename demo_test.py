@@ -296,6 +296,18 @@ def setup_demo_train(network, path_dispatcher=None, sim_controller=None):
     from train_route import PlatformTarget, Route, RouteMode, RouteTask
     from speed_profile import SpeedProfile, DEFAULT_SPEED_PROFILE
 
+    profile = SpeedProfile(
+        voltage_speed_curve=list(DEFAULT_SPEED_PROFILE.voltage_speed_curve),
+        acceleration_rate=3.0,
+        deceleration_rate=4.2,
+        emergency_brake_rate=5,
+        friction_rate=DEFAULT_SPEED_PROFILE.friction_rate,
+        operational_decel_ratio=DEFAULT_SPEED_PROFILE.operational_decel_ratio,
+        air_resistance_enabled=True,
+        drag_coefficient=0.001,
+        reference_speed_kmh=100.0,
+    )
+
     # 50cm train in p1. The platform is a NW->SE staircase; placing the head at
     # the NW-corner tile (23, 23) facing SOUTH puts the train's leading end
     # toward the throat switch (SW_21_20) so it departs forward toward p2.
@@ -308,25 +320,10 @@ def setup_demo_train(network, path_dispatcher=None, sim_controller=None):
         train_type="LOCOMOTIVE",
         initial_cab="A",
         start_tile=(23, 23),
+        source_profile=profile,
     )
     train.min_radius_cm = 31.5  # 315mm minimum curve radius this train can take.
     train.max_slope = 15.0  # can climb up to a 15% uphill grade before stalling.
-
-    profile = SpeedProfile(
-        profile_id="demo_test_profile",
-        name="Demo Test Profile",
-        voltage_speed_curve=list(DEFAULT_SPEED_PROFILE.voltage_speed_curve),
-        acceleration_rate=3.0,
-        deceleration_rate=4.2,
-        emergency_brake_rate=5,
-        friction_rate=DEFAULT_SPEED_PROFILE.friction_rate,
-        operational_decel_ratio=DEFAULT_SPEED_PROFILE.operational_decel_ratio,
-        air_resistance_enabled=True,
-        drag_coefficient=0.001,
-        reference_speed_kmh=100.0,
-    )
-    network.speed_profiles.register(profile)
-    train.speed_profile_id = profile.profile_id
 
     # One-off route p1 -> p2: stop at p2 and stay there.
     route = Route(

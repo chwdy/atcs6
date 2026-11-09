@@ -310,12 +310,20 @@ def main() -> None:
         # design_new.md "Event log", Detector reading log: what every block
         # detector read, pass by pass, in the per-machine `.runtime/` folder.
         detector_reading_log_dir=DETECTOR_READING_LOG_DIR,
-        # design_new.md "SpeedProfile", Where profiles and the roster are kept:
-        # speed profiles and the roster survive a restart in their own file.
+        # design_new.md "SpeedProfile", Where models, sets and instance
+        # profiles are kept: models and sets survive a restart in their own file.
         locomotive_file_path=LOCOMOTIVE_FILE_PATH,
     )
 
-    simulation_lock = threading.Lock()
+    # design_new.md "Detector reading log", Operator commands are written too:
+    # the lock remembers the pass count at each request's last release, which
+    # is the pass a recorded command ran after.
+    from detector_reading_log import SimulationLock
+
+    simulation_lock = SimulationLock()
+    simulation_lock.count_passes_with(
+        lambda: state.sim_controller.detector_reading_log.pass_count
+    )
     simulation_running = False
     simulation_speed = 1.0
     last_update_time = datetime.now()

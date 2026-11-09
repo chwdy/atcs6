@@ -1,38 +1,44 @@
 import { describe, expect, it } from 'vitest';
 
-import { pickableProfileChoices } from './profile-choices';
+import { profileChoices, profileSourceLabel, setLabel } from './profile-choices';
+
+const models = [
+  { model_id: 2, name: 'Siemens Charger' },
+  { model_id: 1, name: 'H100' },
+];
 
 const profiles = [
-  { profile_id: 'default', name: 'Default HO Scale', derived_from: null },
-  { profile_id: 'default_UNIDENT_1', name: 'Default (UNIDENT_1)', derived_from: null },
-  { profile_id: 'default_UNIDENT_1__instance', name: 'Default (UNIDENT_1) instance', derived_from: 'default_UNIDENT_1' },
-  { profile_id: 'loco_7', name: 'Loco 7', derived_from: 'class_37' },
-  { profile_id: 'loco_8', name: 'Loco 8', derived_from: 'class_37' },
-  { profile_id: 'class_37', name: 'Class 37', derived_from: null },
+  { profile_id: 0, model_id: null, parent_profile_id: null },
+  { profile_id: 4, model_id: 2, set_name: '#2101' },
+  { profile_id: 3, model_id: 1, set_name: '2' },
+  { profile_id: 1, model_id: 1, set_name: '1' },
+  { profile_id: 7, model_id: null, parent_profile_id: 1 },
 ];
 
-const trains = [
-  { train_id: 'UNIDENT_1', is_unidentified: true, speed_profile_id: 'default_UNIDENT_1__instance' },
-  { train_id: 'T8', speed_profile_id: 'loco_8' },
-];
-
-describe('pickableProfileChoices', () => {
-  it('offers only instance profiles no train names', () => {
-    expect(pickableProfileChoices(profiles, trains).map((c) => c.id)).toEqual(['loco_7']);
+describe('profileChoices', () => {
+  it('offers the Default profile and every set, grouped by model, never an instance', () => {
+    expect(profileChoices(profiles, models)).toEqual([
+      { id: '0', label: 'Default' },
+      { id: '1', label: 'H100 · 1' },
+      { id: '3', label: 'H100 · 2' },
+      { id: '4', label: 'Siemens Charger · #2101' },
+    ]);
   });
 
-  it("hides an unidentified train's blank pair", () => {
-    const ids = pickableProfileChoices(profiles, trains).map((c) => c.id);
-    expect(ids).not.toContain('default_UNIDENT_1');
-    expect(ids).not.toContain('default_UNIDENT_1__instance');
+  it('leaves the Default out when the form already offers it', () => {
+    expect(profileChoices(profiles, models, false).map((c) => c.id)).toEqual(['1', '3', '4']);
+  });
+});
+
+describe('profileSourceLabel', () => {
+  it('names where a train profile came from', () => {
+    expect(profileSourceLabel({ parent_profile_id: 1 }, profiles, models)).toBe('H100 · 1');
+    expect(profileSourceLabel({ parent_profile_id: 0 }, profiles, models)).toBe('Default');
+    expect(profileSourceLabel({ parent_profile_id: 99 }, profiles, models)).toBe('Set deleted');
+    expect(profileSourceLabel({ parent_profile_id: null }, profiles, models)).toBe('Scene profile');
   });
 
-  it('keeps the profile the train on screen names, even a model profile', () => {
-    expect(pickableProfileChoices(profiles, trains, 'loco_8').map((c) => c.id)).toEqual(['loco_7', 'loco_8']);
-    expect(pickableProfileChoices(profiles, trains, 'default').map((c) => c.id)).toEqual(['default', 'loco_7']);
-  });
-
-  it('shows an unknown current profile by its id', () => {
-    expect(pickableProfileChoices([], [], 'gone')).toEqual([{ id: 'gone', label: 'gone' }]);
+  it('names a set whose model is gone', () => {
+    expect(setLabel({ model_id: 9, set_name: '1' }, models)).toBe('No model · 1');
   });
 });

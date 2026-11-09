@@ -25,7 +25,7 @@ LAYOUT_SECTIONS: Tuple[str, ...] = (
     "station_groups",
     "tunnels",
     "speed_profiles",
-    "train_roster",
+    "locomotive_models",
 )
 
 # Per-entity fields that change only when the layout is edited. Every other

@@ -145,8 +145,6 @@ class StubTerminusScene:
         sim = SimulationController(network, dispatcher)
 
         profile = SpeedProfile(
-            profile_id="stub_profile",
-            name="Stub Terminus Profile",
             voltage_speed_curve=list(DEFAULT_SPEED_PROFILE.voltage_speed_curve),
             acceleration_rate=3.0,
             deceleration_rate=4.2,
@@ -157,7 +155,6 @@ class StubTerminusScene:
             drag_coefficient=0.001,
             reference_speed_kmh=100.0,
         )
-        network.speed_profiles.register(profile)
 
         # -- A: parked route-less occupant of the best platform --
         # Facing WEST: A's head exits toward the switch (a real neighbour) and
@@ -172,8 +169,8 @@ class StubTerminusScene:
             train_type="LOCOMOTIVE",
             initial_cab="A",
             start_tile=(5, 0),
+            source_profile=profile,
         )
-        occupant.speed_profile_id = profile.profile_id
         occ_ctrl = sim.get_or_create_controller(occupant.train_id)
         occ_ctrl.commands.power_on_cmd()  # manual, no route -> sits
 
@@ -190,8 +187,8 @@ class StubTerminusScene:
                 train_type="LOCOMOTIVE",
                 initial_cab="A",
                 start_tile=(4, 1),
+                source_profile=profile,
             )
-            north.speed_profile_id = profile.profile_id
             sim.get_or_create_controller(north.train_id).commands.power_on_cmd()
 
         # -- B: hero, ATO, routed to the station (or a specific platform) --
@@ -223,8 +220,8 @@ class StubTerminusScene:
             train_type="LOCOMOTIVE",
             initial_cab="A",
             start_tile=(1, 0),
+            source_profile=profile,
         )
-        hero.speed_profile_id = profile.profile_id
         route.assign_train(hero.train_id)
         hero_ctrl = sim.get_or_create_controller(hero.train_id)
         hero_ctrl.commands.power_on_cmd()

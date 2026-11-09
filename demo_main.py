@@ -438,21 +438,8 @@ def setup_demo_train(
     start_track = network.get_track(0, 0)
     starting_block_id = start_track.block_id
 
-    # 2. Canonical placement: writes current_span before the first tick.
-    demo_train = sim_controller.add_train(
-        train_id="DEMO_TRAIN",
-        starting_block_id=starting_block_id,
-        initial_direction="EAST",
-        max_speed_kmh=60.0,
-        length_cm=40.0,
-        train_type="LOCOMOTIVE",
-        initial_cab="A",
-    )
-
-    # 3. Register the demo SpeedProfile (definition state, not controller state).
+    # 2. The demo train's profile, copied into its instance profile at placement.
     demo_profile = SpeedProfile(
-        profile_id="demo_profile",
-        name="Demo Profile",
         voltage_speed_curve=list(DEFAULT_SPEED_PROFILE.voltage_speed_curve),
         acceleration_rate=3.0,
         deceleration_rate=4.2,
@@ -463,8 +450,18 @@ def setup_demo_train(
         drag_coefficient=0.001,
         reference_speed_kmh=100.0,
     )
-    network.speed_profiles.register(demo_profile)
-    demo_train.speed_profile_id = demo_profile.profile_id
+
+    # 3. Canonical placement: writes current_span before the first tick.
+    demo_train = sim_controller.add_train(
+        train_id="DEMO_TRAIN",
+        starting_block_id=starting_block_id,
+        initial_direction="EAST",
+        max_speed_kmh=60.0,
+        length_cm=40.0,
+        train_type="LOCOMOTIVE",
+        initial_cab="A",
+        source_profile=demo_profile,
+    )
 
     # 4. Look up stations by name. The demo network builds them in
     #    create_comprehensive_demo above; we re-resolve here so the route

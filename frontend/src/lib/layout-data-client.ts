@@ -205,12 +205,14 @@ export interface SimClient {
     options?: { startMode?: string; startTaskIndex?: number | null }
   ): Promise<any>;
 
-  // --- Speed profiles (train accel/brake curves) ---
+  // --- Speed profiles: the Default profile, sets by model, train instances ---
   getSpeedProfiles(): Promise<any[]>;
-  getSpeedProfile(profileId: string, options?: { resolved?: boolean }): Promise<any>;
-  createSpeedProfile(data: unknown): Promise<any>;
-  updateSpeedProfile(profileId: string, data: unknown): Promise<any>;
-  deleteSpeedProfile(profileId: string): Promise<any>;
+  getSpeedLibrary(): Promise<{ profiles: any[]; models: any[] }>;
+  getSpeedProfile(profileId: number | string): Promise<any>;
+  updateSpeedProfile(profileId: number | string, data: unknown): Promise<any>;
+  deleteSpeedProfile(profileId: number | string): Promise<any>;
+  renameLocomotiveModel(modelId: number, name: string): Promise<any>;
+  deleteLocomotiveModel(modelId: number): Promise<any>;
 }
 
 /** The full client the current host wires up — both halves in one object. */

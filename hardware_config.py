@@ -1133,7 +1133,7 @@ def activation_report(
     # lands in the middle zone rather than reading as driven (design_new.md
     # "Power", `current_sense_min_drive_v` must sit above `lighting_voltage`).
     # Checked here at activation the same way a missing binding is, whatever set
-    # the value (a hand edit, an imported roster entry, a Simulation save that
+    # the value (a hand edit, a copied set, a Simulation save that
     # never evaluated this bound).
     over_floor = sorted(
         train_id

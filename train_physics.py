@@ -299,21 +299,17 @@ class TrainPhysics:
             return DEFAULT_SPEED_PROFILE
 
         profile_id = train.speed_profile_id
-        if profile_id and hasattr(self.network, "speed_profiles"):
-            # resolve(...) applies the model/instance overlay so a partial
-            # instance profile is never driven directly (design_new.md
-            # "SpeedProfile", Model profiles and instance profiles). For a model
-            # profile it returns the profile unchanged.
-            profile = self.network.speed_profiles.resolve(profile_id)
+        if profile_id is not None and hasattr(self.network, "speed_profiles"):
+            # The train runs on its own instance profile, a complete record
+            # (design_new.md "SpeedProfile", Every train owns exactly one
+            # instance profile).
+            profile = self.network.speed_profiles.get(profile_id)
             if profile:
                 return profile
 
-        # No assigned/resolvable profile: anchor the default power curve to THIS
-        # train's max_speed instead of the module-global DEFAULT_SPEED_PROFILE
-        # (which maps 100% -> 100 km/h regardless of the train). Covers trains
-        # created by paths that do not seed a profile (from_dict load, step
-        # replay, editor add-without-place). The memoized fallback lives in one
-        # shared home so the controller and physics read paths cannot drift.
+        # No registered instance profile yet: the Default profile drawn to THIS
+        # train's max_speed. The memoized fallback lives in one shared home so
+        # the controller and physics read paths cannot drift.
         from speed_profile import resolve_memoized_default_profile
 
         return resolve_memoized_default_profile(self, train)

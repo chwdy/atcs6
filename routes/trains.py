@@ -92,7 +92,6 @@ def register(app, state: AppState) -> None:
                 speed_profile_id=data.get("speed_profile_id"),
                 min_radius_cm=data.get("min_radius_cm"),
                 max_slope=data.get("max_slope"),
-                roster_entry_id=data.get("roster_entry_id"),
             )
         except ValidationError as exc:
             return jsonify({"error": str(exc)}), 400
@@ -194,7 +193,6 @@ def register(app, state: AppState) -> None:
                 min_radius_cm=data.get("min_radius_cm"),
                 max_slope=data.get("max_slope"),
                 speed_profile_id=data.get("speed_profile_id"),
-                roster_entry_id=data.get("roster_entry_id"),
             )
         except NotFoundError:
             return jsonify({"error": "Train not found"}), 404
@@ -351,21 +349,25 @@ def register(app, state: AppState) -> None:
 
     @app.route("/api/trains/<train_id>/calibrate/commit", methods=["POST"])
     def calibrate_commit(train_id):
-        """Write a measured pass onto a profile.
+        """Write a finished pass (design_new.md "Speed calibration", What
+        commit writes).
 
-        Body: ``{"target": "locomotive"|"model"}``. ``locomotive`` (Save to this
-        locomotive) writes the two measured fields onto the instance profile this
-        train names, so only this locomotive changes; ``model`` (Promote to
-        model) writes them onto the model profile the instance derives from and
-        clears them from the instance, so every locomotive of that model gets the
-        measurement (design_new.md "What commit writes").
+        Body: ``{"target": "train"}`` (Save to this train), or
+        ``{"target": "promote", "promote_as": "new_set", "model_id": int |
+        "model_name": str, "set_name": str}`` or ``{"target": "promote",
+        "promote_as": "current_set"}`` (Promote). Discard is
+        ``/calibrate/cancel``.
         """
         data = request.get_json(silent=True) or {}
         try:
             profile = train_service.calibrate_commit(
                 state,
                 train_id,
-                target=data.get("target", "locomotive"),
+                target=data.get("target", "train"),
+                promote_as=data.get("promote_as"),
+                model_id=data.get("model_id"),
+                model_name=data.get("model_name"),
+                set_name=data.get("set_name"),
             )
         except NotFoundError as exc:
             return jsonify({"error": str(exc)}), 404
@@ -782,18 +784,11 @@ def register(app, state: AppState) -> None:
 
     @app.route("/api/trains/<train_id>/speed-profile", methods=["PATCH"])
     def assign_train_speed_profile(train_id: str):
-        """Assign speed profile to a train.
-
-        Request body:
-        {
-            "profile_id": str (required)
-        }
-
-        Returns:
-            200 OK with updated train data
-            400 Bad Request if validation fails
-            404 Not Found if train or profile doesn't exist
-        """
+        """Give a train the Default profile or a set: body ``{"profile_id":
+        int}``. Copies it into the train's instance profile (design_new.md
+        "SpeedProfile", Giving a train a profile). 400 for an instance profile
+        or an unknown number, 409 while a calibration run or a finished pass
+        is open for the train."""
         data = request.json or {}
         try:
             train = train_service.assign_speed_profile(
@@ -803,7 +798,21 @@ def register(app, state: AppState) -> None:
             return jsonify({"error": str(exc)}), 400
         except NotFoundError as exc:
             return jsonify({"error": str(exc)}), 404
+        except ConflictError as exc:
+            return jsonify({"error": str(exc)}), 409
 
+        return jsonify(_train_to_dict(train, state.network))
+
+    @app.route("/api/trains/<train_id>/speed-profile/reset", methods=["POST"])
+    def reset_train_speed_profile(train_id: str):
+        """Copy the train's parent profile back into its instance profile
+        (design_new.md "SpeedProfile", Resetting an instance profile)."""
+        try:
+            train = train_service.reset_speed_profile(state, train_id)
+        except NotFoundError as exc:
+            return jsonify({"error": str(exc)}), 404
+        except ConflictError as exc:
+            return jsonify({"error": str(exc)}), 409
         return jsonify(_train_to_dict(train, state.network))
 
     # ============================================================================

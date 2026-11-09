@@ -637,7 +637,9 @@ def test_deleting_the_train_discards_a_held_result(state):
         max_speed_kmh=old_train.max_speed, length_cm=old_train.length_cm,
         start_tile=old_span.end_a.tile,
     )
-    new_train.speed_profile_id = profile_id
+    # The deleted train's instance profile went with it; the new train owns
+    # a fresh one (design_new.md "Train Entity", Deleting a train).
+    assert state.speed_profile_registry.get(profile_id) is None
     assert train_service.calibration_readiness(
         state, train_id, measured_block_id=block_id
     ) == []
@@ -740,18 +742,10 @@ def test_route_requests_for_a_calibrating_train_leave_no_route_behind(state):
 
 
 def _with_instance(state, train_id):
-    """demo_6 points its trains at one shared model profile; give the train an
-    instance profile of its own, as `add_train` does (design_new.md
-    "SpeedProfile", Every train must name an instance profile)."""
-    from speed_profile import make_instance_profile
-
+    """The train's own instance profile (design_new.md "SpeedProfile", Every
+    train owns exactly one instance profile)."""
     train = state.network.trains[train_id]
-    instance = make_instance_profile(
-        train.speed_profile_id, profile_id=f"{train_id}__instance", name=train_id
-    )
-    state.speed_profile_registry.register(instance)
-    train.speed_profile_id = instance.profile_id
-    return instance
+    return state.speed_profile_registry.get(train.speed_profile_id)
 
 
 def _opened_pass(state):
@@ -839,7 +833,7 @@ def test_a_refused_keep_stays_in_the_lighting_trial(state):
     from services import ConflictError
 
     _sim, train_id, _block_id, run = _opened_pass(state)
-    top = state.speed_profile_registry.resolve(
+    top = state.speed_profile_registry.get(
         state.network.trains[train_id].speed_profile_id
     ).max_voltage
     with pytest.raises(ConflictError, match="max_voltage"):
@@ -855,7 +849,7 @@ def test_the_ato_minimum_test_commits_its_voltage_onto_the_instance(state):
     block_id = _first_calibratable_block(state, train_id)
     _ready_manual_train(sim, state.network, train_id)
     sim.update(0.1)
-    resolved = state.speed_profile_registry.resolve(
+    resolved = state.speed_profile_registry.get(
         state.network.trains[train_id].speed_profile_id
     )
     voltage = resolved.first_point_voltage + 1.0
@@ -884,7 +878,7 @@ def test_the_ato_minimum_commit_is_refused_when_the_curve_changed(state):
     _ready_manual_train(sim, state.network, train_id)
     sim.update(0.1)
     profile_id = state.network.trains[train_id].speed_profile_id
-    resolved = state.speed_profile_registry.resolve(profile_id)
+    resolved = state.speed_profile_registry.get(profile_id)
     train_service.calibrate_ato_minimum_test(
         state, train_id, measured_block_id=block_id,
         track_voltage=resolved.first_point_voltage,
@@ -906,7 +900,7 @@ def test_a_curve_commit_clears_the_locomotives_ato_minimum_voltage(state):
     _sim, train_id, _block_id, run = _opened_pass(state)
     registry = state.speed_profile_registry
     record = _instance(state, train_id)
-    resolved = registry.resolve(record.profile_id)
+    resolved = registry.get(record.profile_id)
     registry.register(replace(record, ato_min_voltage=resolved.first_point_voltage))
     top = resolved.max_voltage
     run.samples = [
@@ -914,7 +908,7 @@ def test_a_curve_commit_clears_the_locomotives_ato_minimum_voltage(state):
         for v in (top / 4, top / 2, top)
     ]
     run.phase = PHASE_MEASURED
-    train_service.calibrate_commit(state, train_id, target="locomotive")
+    train_service.calibrate_commit(state, train_id, target="train")
     stored = _instance(state, train_id)
     assert stored.ato_min_voltage is None
     assert stored.calibrated_at is not None
@@ -994,7 +988,7 @@ def test_the_ato_minimum_commit_gives_an_ato_train_back_its_mode(state):
     controller = _ready_manual_train(sim, state.network, train_id)
     controller.commands.set_mode("ato")
     sim.update(0.1)
-    resolved = state.speed_profile_registry.resolve(
+    resolved = state.speed_profile_registry.get(
         state.network.trains[train_id].speed_profile_id
     )
     run = train_service.calibrate_ato_minimum_test(

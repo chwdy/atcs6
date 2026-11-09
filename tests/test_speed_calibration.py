@@ -44,7 +44,7 @@ from speed_calibration import (
     SpeedCalibration,
     coarse_voltages,
 )
-from speed_profile import make_default_speed_profile
+from speed_profile import DEFAULT_SPEED_PROFILE, copied_profile
 from tests.train_test_helpers import skip_calibration_trials
 
 BLOCK_LENGTH_CM = 100.0
@@ -58,7 +58,7 @@ class _StubTrain:
 
 
 def _open_run(cal=None, train=None, **kwargs):
-    profile = make_default_speed_profile("T1", 100.0)
+    profile = copied_profile(DEFAULT_SPEED_PROFILE, profile_id=1, max_speed_kmh=100.0)
     cal = cal or SpeedCalibration()
     run = cal.start(
         train or _StubTrain(),
@@ -706,7 +706,6 @@ def test_commit_writes_the_curve_and_stamp_and_nothing_else():
     cal, run, profile = _open_run()
     profile.lighting_voltage = 1.2
     accel_before = profile.acceleration_rate
-    model_before = profile.model
     _run_full_pass(cal, run)
     curve = cal.commit("T1", profile)
 
@@ -716,7 +715,6 @@ def test_commit_writes_the_curve_and_stamp_and_nothing_else():
     # "What commit writes"): `model` is edited on the model profile, not here;
     # the lighting voltage is set by hand; and a motion rate describes
     # behaviour rather than measured speed.
-    assert profile.model == model_before
     assert profile.lighting_voltage == 1.2
     assert profile.acceleration_rate == accel_before
     assert "T1" not in cal.runs

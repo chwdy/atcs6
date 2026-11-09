@@ -137,6 +137,27 @@ html[data-screen="locomotives"][data-loco-canvas="shown"] .workspace > .canvas-c
     font-weight: 600;
 }
 
+.nloco-row-indent {
+    padding-left: 22px;
+}
+
+.nloco-card-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 8px;
+}
+
+.nloco-card-row select {
+    flex: 1;
+    min-width: 0;
+}
+
+.nloco-row-chips {
+    display: inline-flex;
+    gap: 4px;
+}
+
 .nloco-row-detail {
     grid-column: 1 / -1;
     min-width: 0;
@@ -241,6 +262,18 @@ html[data-screen="locomotives"][data-loco-canvas="shown"] .workspace > .canvas-c
 
 .nloco-form-note {
     font-size: 11px;
+}
+
+.nloco-inline {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+}
+
+.nloco-inline-input {
+    width: 100%;
+    max-width: 180px;
 }
 
 .nloco-form-fields {

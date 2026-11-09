@@ -1,13 +1,12 @@
-"""Speed calibration's two commit targets, through the service layer.
+"""Speed calibration's commit choices, through the service layer.
 
-design_new.md "Speed calibration", What commit writes. **Save to this
-locomotive** writes the two measured fields onto the instance profile the
-calibrated train names, so that one locomotive runs on the new curve and no
-other changes. **Promote to model** writes them onto the model profile the
-instance derives from and clears them from the instance, so every locomotive of
-that model whose instance leaves them unset runs on the new curve. Commit writes
-`voltage_speed_curve` and `calibrated_at` only — never `model`, and never
-`voltage_power_curve`.
+design_new.md "Speed calibration", What commit writes; "SpeedProfile",
+Promoting an instance profile. **Save to this train** writes
+`voltage_speed_curve` and `calibrated_at` onto the train's instance profile.
+**Promote** does the same, then writes the whole instance profile to a set: as
+a new set (under an existing model or a new one), or over the set the instance
+was copied from. No other train changes, because every train runs on its own
+copy.
 """
 
 import threading
@@ -22,9 +21,7 @@ from services import ConflictError, ValidationError
 from services import train_service
 from simulation import SimulationController
 from speed_calibration import PHASE_MEASURED, CalibrationSample
-from speed_profile import SpeedProfile, make_instance_profile
 from train import Train
-from train_roster import RosterEntry
 
 
 @pytest.fixture
@@ -44,122 +41,154 @@ def state():
     )
 
 
-@pytest.fixture
-def calibrated(state):
-    """T1 on its own instance profile with a finished pass open; T2 a sibling
-    instance of the same model. Both instances derive from one model profile."""
-    model = SpeedProfile(profile_id="ef66", name="Kato EF66", model="Kato EF66")
-    inst1 = make_instance_profile("ef66", profile_id="ef66_i1", name="EF66 #1")
-    inst2 = make_instance_profile("ef66", profile_id="ef66_i2", name="EF66 #2")
-    for profile in (model, inst1, inst2):
-        state.network.speed_profiles.register(profile)
+def _train_on(state, train_id, source_profile_id=None):
+    registry = state.network.speed_profiles
+    train = Train(train_id=train_id, max_speed=80.0)
+    train.speed_profile_id = registry.create_instance(
+        source_profile_id=source_profile_id, max_speed_kmh=80.0
+    ).profile_id
+    state.network.trains[train_id] = train
+    return train
 
-    entry = RosterEntry(entry_id="R1", model="Kato EF66", speed_profile_id="ef66_i1")
-    state.network.train_roster.add_entry(entry)
 
-    train = Train(train_id="T1")
-    train.speed_profile_id = "ef66_i1"
-    train.roster_entry_id = "R1"
-    state.network.trains["T1"] = train
-
-    other = Train(train_id="T2")
-    other.speed_profile_id = "ef66_i2"
-    state.network.trains["T2"] = other
-
+def _finish_pass(state, train):
     cal = state.sim_controller.speed_calibration
-    run = cal.start(train, inst1, measured_block_id="B", outer_block_ids=("A", "C"))
+    instance = state.network.speed_profiles.get(train.speed_profile_id)
+    run = cal.start(train, instance, measured_block_id="B", outer_block_ids=("A", "C"))
     run.samples = [
         CalibrationSample(track_voltage=v, speed_kmh=v / 12.0 * 80.0)
         for v in (3.0, 6.0, 9.0, 12.0)
     ]
     run.phase = PHASE_MEASURED
-    return state, train, model, inst1, inst2, entry, run
+    return run
 
 
-def test_save_to_locomotive_writes_the_instance_and_leaves_siblings_alone(calibrated):
-    state, train, model, inst1, inst2, entry, _run = calibrated
-    written = train_service.calibrate_commit(state, "T1", target="locomotive")
-    # A commit stores new records in the registry, as a hand edit does.
+@pytest.fixture
+def from_set(state):
+    """T1 and T2 both copied from set "1" of model "H100"; T1 has a finished
+    pass waiting."""
     registry = state.network.speed_profiles
-    inst1, model, inst2 = (registry.get(p) for p in ("ef66_i1", "ef66", "ef66_i2"))
-
-    # The calibrated train's own instance carries the measured curve ...
-    assert written is inst1
-    assert inst1.calibrated_at is not None
-    assert inst1.voltage_speed_curve[-1] == (12.0, 80.0)
-    # ... while the model and the sibling instance are untouched.
-    assert model.calibrated_at is None
-    assert inst2.calibrated_at is None
-    assert inst2.voltage_speed_curve is None
-    # T2 still resolves to the model's default curve, not T1's measurement.
-    resolved_t2 = state.network.speed_profiles.resolve("ef66_i2")
-    assert resolved_t2.power_percent_to_speed(100.0) == 100.0
-    # Links are unchanged: each entry/train keeps its own instance.
-    assert train.speed_profile_id == "ef66_i1"
-    assert entry.speed_profile_id == "ef66_i1"
-    assert state.network.trains["T2"].speed_profile_id == "ef66_i2"
+    model = registry.add_model("H100")
+    seed = registry.get(0)
+    the_set = registry.create_set(model.model_id, "1", seed)
+    t1 = _train_on(state, "T1", the_set.profile_id)
+    t2 = _train_on(state, "T2", the_set.profile_id)
+    _finish_pass(state, t1)
+    return state, model, the_set, t1, t2
 
 
-def test_promote_to_model_writes_the_model_and_clears_the_instance(calibrated):
-    state, _train, model, inst1, _inst2, _entry, _run = calibrated
-    written = train_service.calibrate_commit(state, "T1", target="model")
+def test_save_to_this_train_writes_only_the_instance(from_set):
+    state, _model, the_set, t1, t2 = from_set
     registry = state.network.speed_profiles
-    inst1, model = registry.get("ef66_i1"), registry.get("ef66")
+    set_curve = list(the_set.voltage_speed_curve)
 
-    # The model profile carries the measured curve ...
-    assert written is model
-    assert model.calibrated_at is not None
-    assert model.voltage_speed_curve[-1] == (12.0, 80.0)
-    # ... and the calibrated train's instance is cleared, so it falls back to
-    # following the model.
-    assert inst1.voltage_speed_curve is None
-    assert inst1.calibrated_at is None
-    # Every locomotive of the model now runs on the new curve — the sibling ...
-    assert state.network.speed_profiles.resolve("ef66_i2").voltage_speed_curve[-1] == (
-        12.0,
-        80.0,
-    )
-    # ... and the calibrated train itself, through its cleared instance.
-    assert state.network.speed_profiles.resolve("ef66_i1").voltage_speed_curve[-1] == (
-        12.0,
-        80.0,
+    written = train_service.calibrate_commit(state, "T1", target="train")
+
+    assert written.profile_id == t1.speed_profile_id
+    assert written.calibrated_at is not None
+    assert written.voltage_speed_curve[-1] == (12.0, 80.0)
+    assert registry.get(t1.speed_profile_id).voltage_speed_curve[-1] == (12.0, 80.0)
+    # The set and the other train's copy are untouched.
+    assert registry.get(the_set.profile_id).voltage_speed_curve == set_curve
+    assert registry.get(the_set.profile_id).calibrated_at is None
+    assert registry.get(t2.speed_profile_id).calibrated_at is None
+    assert written.parent_profile_id == the_set.profile_id
+
+
+def test_promote_as_new_set_under_a_new_model(from_set):
+    state, _model, the_set, t1, _t2 = from_set
+    registry = state.network.speed_profiles
+
+    written = train_service.calibrate_commit(
+        state, "T1", target="promote", promote_as="new_set",
+        model_name="Siemens Charger", set_name="#2101",
     )
 
-
-def test_commit_never_writes_the_model_field_on_the_instance(calibrated):
-    # design_new.md "What commit writes": commit writes voltage_speed_curve and
-    # calibrated_at only — `model` is edited on the model profile, never here.
-    state, _train, _model, inst1, _inst2, _entry, _run = calibrated
-    train_service.calibrate_commit(state, "T1", target="locomotive")
-    inst1 = state.network.speed_profiles.get("ef66_i1")
-    assert inst1.model == ""  # left unset on the instance
+    new_set = registry.get(written.parent_profile_id)
+    assert new_set.is_set and new_set.set_name == "#2101"
+    assert registry.get_model(new_set.model_id).name == "Siemens Charger"
+    assert new_set.voltage_speed_curve == written.voltage_speed_curve
+    assert new_set.calibrated_at == written.calibrated_at
+    assert new_set.profile_id not in (the_set.profile_id, t1.speed_profile_id)
 
 
-def test_a_pass_that_has_not_measured_every_step_writes_nothing(calibrated):
-    state, _train, _model, inst1, _inst2, _entry, run = calibrated
-    run.samples = run.samples[:3]
-    run.phase = "leg"
+def test_promote_as_new_set_under_an_existing_model(from_set):
+    state, model, _the_set, _t1, _t2 = from_set
+    registry = state.network.speed_profiles
 
-    with pytest.raises(ConflictError):
-        train_service.calibrate_commit(state, "T1", target="locomotive")
-    assert inst1.calibrated_at is None
+    written = train_service.calibrate_commit(
+        state, "T1", target="promote", promote_as="new_set",
+        model_id=model.model_id, set_name="2",
+    )
+
+    new_set = registry.get(written.parent_profile_id)
+    assert new_set.model_id == model.model_id
+    assert sorted(p.set_name for p in registry.sets(model.model_id)) == ["1", "2"]
 
 
-def test_target_must_be_locomotive_or_model(calibrated):
-    state, *_ = calibrated
+def test_promote_over_the_current_set(from_set):
+    state, _model, the_set, _t1, t2 = from_set
+    registry = state.network.speed_profiles
+
+    written = train_service.calibrate_commit(
+        state, "T1", target="promote", promote_as="current_set"
+    )
+
+    stored = registry.get(the_set.profile_id)
+    assert stored.voltage_speed_curve == written.voltage_speed_curve
+    assert stored.calibrated_at == written.calibrated_at
+    assert written.parent_profile_id == the_set.profile_id
+    # T2 runs on its own copy, which the promote does not reach.
+    assert registry.get(t2.speed_profile_id).calibrated_at is None
+
+
+def test_promote_over_the_current_set_is_refused_for_the_default(state):
+    train = _train_on(state, "T1")
+    _finish_pass(state, train)
+    with pytest.raises(ConflictError, match="Default"):
+        train_service.calibrate_commit(state, "T1", target="promote", promote_as="current_set")
+    # Refused before anything was written: the pass is still waiting.
+    assert state.sim_controller.speed_calibration.runs.get("T1") is not None
+    assert state.network.speed_profiles.get(train.speed_profile_id).calibrated_at is None
+
+
+def test_promote_over_a_deleted_set_is_refused(from_set):
+    state, _model, the_set, _t1, _t2 = from_set
+    state.network.speed_profiles.remove(the_set.profile_id)
+    with pytest.raises(ConflictError, match="deleted"):
+        train_service.calibrate_commit(state, "T1", target="promote", promote_as="current_set")
+
+
+def test_a_new_set_needs_a_name_and_a_model(from_set):
+    state, *_ = from_set
     with pytest.raises(ValidationError):
-        train_service.calibrate_commit(state, "T1", target="bogus")
+        train_service.calibrate_commit(
+            state, "T1", target="promote", promote_as="new_set", model_name="H100"
+        )
+    with pytest.raises(ValidationError):
+        train_service.calibrate_commit(
+            state, "T1", target="promote", promote_as="new_set", set_name="3"
+        )
 
 
-def test_committing_closes_the_run(calibrated):
-    state, *_ = calibrated
-    train_service.calibrate_commit(state, "T1", target="locomotive")
-    assert train_service.calibrate_status(state, "T1") is None
+def test_a_commit_clears_the_ato_minimum_voltage(from_set):
+    state, _model, _the_set, t1, _t2 = from_set
+    registry = state.network.speed_profiles
+    instance = registry.get(t1.speed_profile_id)
+    instance.ato_min_voltage = 6.0
+
+    written = train_service.calibrate_commit(
+        state, "T1", target="promote", promote_as="current_set"
+    )
+
+    assert written.ato_min_voltage is None
+    assert registry.get(written.parent_profile_id).ato_min_voltage is None
 
 
-def test_cancelling_drops_the_pass_and_leaves_the_profiles_alone(calibrated):
-    state, _train, model, inst1, _inst2, _entry, _run = calibrated
-    train_service.calibrate_cancel(state, "T1")
-    assert train_service.calibrate_status(state, "T1") is None
-    assert inst1.calibrated_at is None
-    assert model.calibrated_at is None
+def test_an_unfinished_pass_writes_nothing(from_set):
+    state, _model, _the_set, t1, _t2 = from_set
+    run = state.sim_controller.speed_calibration.runs["T1"]
+    run.phase = "leg"
+    with pytest.raises(ConflictError):
+        train_service.calibrate_commit(state, "T1", target="train")
+    assert state.network.speed_profiles.get(t1.speed_profile_id).calibrated_at is None

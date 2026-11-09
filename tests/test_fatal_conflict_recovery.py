@@ -112,11 +112,12 @@ def test_the_layout_survives_the_whole_round_trip():
     # the framed head end back to its default.
     assert not sim.controllers["T1"].powered
     assert sim.controllers["T1"]._framed_head_end == "end_a"
-    # add_train seeds a model+instance profile pair and the train names the
-    # instance (design_new.md "SpeedProfile", Model profiles and instance
-    # profiles); the link survives the round trip.
-    assert network.trains["T1"].speed_profile_id == "default_T1__instance"
-    assert network.speed_profiles.get("default_T1__instance").derived_from == "default_T1"
+    # The train owns an instance profile copied from the Default profile
+    # (design_new.md "SpeedProfile", Every train owns exactly one instance
+    # profile); it survives the round trip.
+    instance = network.speed_profiles.get(network.trains["T1"].speed_profile_id)
+    assert instance is not None and instance.is_instance
+    assert instance.parent_profile_id == 0
 
 
 def test_clearing_an_unhalted_runtime_is_refused():

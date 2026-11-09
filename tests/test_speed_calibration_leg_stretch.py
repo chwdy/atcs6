@@ -580,3 +580,25 @@ def test_a_run_off_block_another_train_stands_in_is_passed_over(state, monkeypat
         assert locked_toward[toward] == {(switch_id, 1)}
     assert _switch_positions(state) == {"SW_11_9": 1, "SW_7_5": 1}
     assert state.network.blocks[MAIN].occupied_by == "OTHER"
+
+
+def test_the_ends_hold_the_train_length_plus_the_run_off_margin(state, monkeypatch):
+    """design_new.md "Speed calibration", Each end of the stretch is an outer
+    block and the run-off blocks past it: the ends hold the train's entered
+    length plus `CALIBRATION_RUNOFF_MARGIN_CM`, then one block more."""
+    from constants import CALIBRATION_RUNOFF_MARGIN_CM
+
+    manager = state.network.block_manager
+    asked = []
+    real = manager.runoff_blocks
+
+    def spy(measured, outer, room_cm, *args, **kwargs):
+        asked.append(room_cm)
+        return real(measured, outer, room_cm, *args, **kwargs)
+
+    monkeypatch.setattr(manager, "runoff_blocks", spy)
+    outer, _length = train_service.resolve_calibration_stretch(state, UP)
+    asked.clear()
+    train_service.resolve_calibration_runoff(state, UP, outer, 96.0)
+    # Found as each end is when a leg runs toward it: one lookup per end.
+    assert asked and set(asked) == {96.0 + CALIBRATION_RUNOFF_MARGIN_CM}

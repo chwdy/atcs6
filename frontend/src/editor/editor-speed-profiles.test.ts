@@ -13,11 +13,12 @@ function fakeEditor() {
     _currentEditorId: null as string | null,
     showSecondarySidebar: vi.fn(),
     api: {
-      getSpeedProfile: vi.fn(async (id: string) => ({
-        profile_id: id,
-        name: id,
-        derived_from: null,
-        own_fields: [],
+      getSpeedProfile: vi.fn(async (id: number | string) => ({
+        profile_id: Number(id),
+        kind: 'set',
+        model_id: 1,
+        set_name: '1',
+        model_name: 'H100',
         max_voltage: 12,
         lighting_voltage: 1.5,
         starting_voltage: 1.8,
@@ -56,8 +57,8 @@ describe('SpeedProfileEditorHandler host', () => {
   it('draws in the secondary sidebar when no host is set', async () => {
     const editor = fakeEditor();
     const handler = new SpeedProfileEditorHandler(editor);
-    await handler.showProfileEditor('p1');
-    expect(editor.showSecondarySidebar).toHaveBeenCalledWith('p1', expect.stringContaining('sp-cal-group'));
+    await handler.showProfileEditor(3);
+    expect(editor.showSecondarySidebar).toHaveBeenCalledWith(3, expect.stringContaining('sp-cal-group'));
     expect(editor._currentEditorType).toBe('speed-profile');
   });
 
@@ -66,11 +67,11 @@ describe('SpeedProfileEditorHandler host', () => {
     const handler = new SpeedProfileEditorHandler(editor);
     const host = fakeHost();
     handler.setHost(host);
-    await handler.showProfileEditor('p1', { trainId: 'T1' });
+    await handler.showProfileEditor(3, { trainId: 'T1' });
     expect(editor.showSecondarySidebar).not.toHaveBeenCalled();
     expect(editor._currentEditorType).toBeNull();
     expect(host.el.querySelector('#sp-cal-group')).not.toBeNull();
-    expect(host.profileShown).toHaveBeenCalledWith('p1');
+    expect(host.profileShown).toHaveBeenCalledWith(3);
   });
 
   it('sends a request for the profile list to the host', async () => {
@@ -88,7 +89,7 @@ describe('SpeedProfileEditorHandler host', () => {
     const handler = new SpeedProfileEditorHandler(editor);
     const host = fakeHost();
     handler.setHost(host);
-    await handler.showProfileEditor('p1');
+    await handler.showProfileEditor(3);
     handler._cleanup();
     expect(host.el.innerHTML).not.toBe('');
     handler.close();
@@ -116,7 +117,7 @@ describe('SpeedProfileEditorHandler curve and lighting voltage', () => {
     const host = fakeHost();
     document.body.appendChild(host.el);
     handler.setHost(host);
-    await handler.showProfileEditor('p1');
+    await handler.showProfileEditor(3);
     await vi.advanceTimersByTimeAsync(1);
     const $ = <T extends HTMLElement>(sel: string) => host.el.querySelector(sel) as T;
     return { editor, handler, host, $ };
@@ -160,39 +161,41 @@ describe('SpeedProfileEditorHandler curve and lighting voltage', () => {
     expect($('#sp-lighting-hint').textContent).toContain('below the starting voltage (1.8 V)');
   });
 
-  it('saves a changed name, trimmed, and only that field', async () => {
-    const { editor, $ } = await openPanel();
-    expect($<HTMLInputElement>('#sp-name').value).toBe('p1');
-    typeInto($<HTMLInputElement>('#sp-name'), '  Kato EF66 ', 'change');
-    await vi.advanceTimersByTimeAsync(1);
-    expect(editor.api.updateSpeedProfile).toHaveBeenCalledWith('p1', { name: 'Kato EF66' });
+  it('shows no name or model field on a model profile: the Locomotives card edits the model', async () => {
+    await openPanel();
+    expect(document.querySelector('#sp-name')).toBeNull();
+    expect(document.querySelector('#sp-model')).toBeNull();
   });
 
-  it("lets a locomotive's own profile change its name, while its model field stays read-only", async () => {
+  it("shows a train's own profile with no name or model field, naming where it came from without an id", async () => {
     const editor = fakeEditor();
     const base = editor.api.getSpeedProfile;
-    editor.api.getSpeedProfile = vi.fn(async (id: string) => ({
+    editor.api.getSpeedProfile = vi.fn(async (id: number | string) => ({
       ...(await base(id)),
-      derived_from: 'model',
+      kind: 'instance',
+      model_id: null,
+      set_name: '',
+      parent_profile_id: 7,
+      parent: { kind: 'set', model_name: 'Kato EF66', set_name: '2' },
     })) as any;
     const handler = new SpeedProfileEditorHandler(editor);
     const host = fakeHost();
     document.body.appendChild(host.el);
     handler.setHost(host);
-    await handler.showProfileEditor('p1');
+    await handler.showProfileEditor(11);
     await vi.advanceTimersByTimeAsync(1);
-    expect(host.el.querySelector('input#sp-model')).toBeNull();
-    const name = host.el.querySelector('#sp-name') as HTMLInputElement;
-    typeInto(name, 'EF66 #2', 'change');
-    await vi.advanceTimersByTimeAsync(1);
-    expect(editor.api.updateSpeedProfile).toHaveBeenCalledWith('p1', { name: 'EF66 #2' });
+    expect(host.el.querySelector('#sp-model')).toBeNull();
+    expect(host.el.querySelector('#sp-name')).toBeNull();
+    const note = host.el.querySelector('.sp-instance-note')!.textContent!;
+    expect(note).toContain('Kato EF66 · 2');
+    expect(note).not.toContain('7');
   });
 
   it('saves a changed starting voltage, and only that field', async () => {
     const { editor, $ } = await openPanel();
     typeInto($<HTMLInputElement>('#sp-startv'), '1.9', 'change');
     await vi.advanceTimersByTimeAsync(1);
-    expect(editor.api.updateSpeedProfile).toHaveBeenCalledWith('p1', { starting_voltage: 1.9 });
+    expect(editor.api.updateSpeedProfile).toHaveBeenCalledWith(3, { starting_voltage: 1.9 });
   });
 
   it('does not send a starting voltage at or below the lighting voltage, and says why', async () => {
@@ -207,14 +210,14 @@ describe('SpeedProfileEditorHandler curve and lighting voltage', () => {
     const { editor, $ } = await openPanel();
     typeInto($<HTMLInputElement>('#sp-lighting'), '1.2', 'change');
     await vi.advanceTimersByTimeAsync(1);
-    expect(editor.api.updateSpeedProfile).toHaveBeenCalledWith('p1', { lighting_voltage: 1.2 });
+    expect(editor.api.updateSpeedProfile).toHaveBeenCalledWith(3, { lighting_voltage: 1.2 });
   });
 
   it('saves an empty lighting voltage as none', async () => {
     const { editor, $ } = await openPanel();
     typeInto($<HTMLInputElement>('#sp-lighting'), '', 'change');
     await vi.advanceTimersByTimeAsync(1);
-    expect(editor.api.updateSpeedProfile).toHaveBeenCalledWith('p1', { lighting_voltage: null });
+    expect(editor.api.updateSpeedProfile).toHaveBeenCalledWith(3, { lighting_voltage: null });
   });
 
   it('does not send a lighting voltage at or above the starting voltage, and says why', async () => {
@@ -230,7 +233,7 @@ describe('SpeedProfileEditorHandler curve and lighting voltage', () => {
     const speed = document.querySelector<HTMLInputElement>('#sp-curve-list .sp-py[data-i="1"]')!;
     typeInto(speed, '45', 'input');
     await vi.advanceTimersByTimeAsync(1);
-    expect(editor.api.updateSpeedProfile).toHaveBeenCalledWith('p1', {
+    expect(editor.api.updateSpeedProfile).toHaveBeenCalledWith(3, {
       voltage_speed_curve: [
         [2, 10],
         [6, 45],
@@ -243,7 +246,7 @@ describe('SpeedProfileEditorHandler curve and lighting voltage', () => {
     const { editor, $ } = await openPanel();
     typeInto($<HTMLInputElement>('#sp-maxv'), '14', 'input');
     await vi.advanceTimersByTimeAsync(300);
-    expect(editor.api.updateSpeedProfile).toHaveBeenCalledWith('p1', {
+    expect(editor.api.updateSpeedProfile).toHaveBeenCalledWith(3, {
       max_voltage: 14,
       voltage_speed_curve: [
         [2, 10],
@@ -279,12 +282,12 @@ describe('SpeedProfileEditorHandler calibration group', () => {
     document.body.innerHTML = '';
   });
 
-  it("naming a train on a model profile opens the train's own profile, where its runs save", async () => {
-    stateManager.updateEntity('trains', 'T9', { id: 'T9', car_number: '9', speed_profile_id: 'model__T9' });
+  it("naming a train on a set opens the train's own profile, where its runs save", async () => {
+    stateManager.updateEntity('trains', 'T9', { id: 'T9', car_number: '9', speed_profile_id: 19 });
     const editor = fakeEditor();
     editor.api.getSpeedProfiles = vi.fn(async () => [
-      { profile_id: 'model', derived_from: null },
-      { profile_id: 'model__T9', derived_from: 'model' },
+      { profile_id: 1, model_id: 1, parent_profile_id: null },
+      { profile_id: 19, model_id: null, parent_profile_id: 1 },
     ]) as any;
     (editor.api as any).getCalibration = vi.fn(async () => ({ open: false }));
     (editor.api as any).getCalibrationReadiness = vi.fn(async () => ({ unmet: [] }));
@@ -292,13 +295,13 @@ describe('SpeedProfileEditorHandler calibration group', () => {
     const host = fakeHost();
     document.body.appendChild(host.el);
     handler.setHost(host);
-    await handler.showProfileEditor('model', { trainId: null });
+    await handler.showProfileEditor(1, { trainId: null });
     await vi.advanceTimersByTimeAsync(1);
     const select = host.el.querySelector('#sp-cal-train') as HTMLSelectElement;
     expect(Array.from(select.options).map((o) => o.value)).toContain('T9');
     select.value = 'T9';
     select.dispatchEvent(new Event('change'));
     await vi.advanceTimersByTimeAsync(1);
-    expect(host.profileShown).toHaveBeenLastCalledWith('model__T9');
+    expect(host.profileShown).toHaveBeenLastCalledWith(19);
   });
 });

@@ -13,7 +13,7 @@ import { render } from 'preact';
 import type { SpeedProfileEditorHandler } from '../../editor/editor-speed-profiles';
 import { CalibrationSteps, WhileCalibrating } from './calibration-steps';
 import { panelTarget, selectionForProfile } from './model';
-import { roster, selection, setCalibration, trains } from './state';
+import { profiles, selection, setCalibration, trains } from './state';
 
 export type SpeedProfilePanel = Pick<SpeedProfileEditorHandler, 'setHost' | 'showProfileEditor' | 'close'>;
 
@@ -21,11 +21,11 @@ export interface PanelBinding {
   /** The element the panel draws into. */
   el: HTMLElement;
   /** Show a profile, naming `trainId` in the locomotive row. */
-  show(profileId: string, trainId: string | null): Promise<void>;
+  show(profileId: number, trainId: string | null): Promise<void>;
   /** Close the panel; this ends a run it shows (design_new.md "What ends a calibration run"). */
   close(): void;
   /** The profile the panel shows, or null. */
-  shown(): string | null;
+  shown(): number | null;
 }
 
 /**
@@ -36,7 +36,7 @@ export interface PanelBinding {
 export function bindSpeedProfilePanel(panel: SpeedProfilePanel, reveal: () => void): PanelBinding {
   const el = document.createElement('div');
   el.className = 'nloco-panel-host';
-  let shown: string | null = null;
+  let shown: number | null = null;
   /** Shows this screen asked for that are still on their way. */
   let asked = 0;
   let slots: HTMLElement[] = [];
@@ -69,13 +69,12 @@ export function bindSpeedProfilePanel(panel: SpeedProfilePanel, reveal: () => vo
       shown = profileId;
       mountSteps();
       if (asked > 0) return;
-      // The panel opened a profile this screen did not ask for: it jumped to
-      // the model profile (Edit model →, Promote to model), or another part
-      // of the app opened it (a train panel's Edit profile). Pick it in the
-      // list: a locomotive's own profile picks that locomotive, which shows
-      // the profile again with its train named.
-      const picked = panelTarget(selection.peek(), roster.peek(), trains.peek()).profileId;
-      if (picked !== profileId) selection.value = selectionForProfile(profileId, roster.peek(), trains.peek());
+      // The panel opened a profile this screen did not ask for: naming a
+      // train in the locomotive row opened that train's own profile, or
+      // another part of the app opened it (a train panel's Edit profile).
+      // Pick it in the list: a train's own profile picks that train.
+      const picked = panelTarget(selection.peek(), trains.peek()).profileId;
+      if (picked !== profileId) selection.value = selectionForProfile(profileId, trains.peek(), profiles.peek());
       reveal();
     },
     profileDeleted() {

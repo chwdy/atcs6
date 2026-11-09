@@ -140,6 +140,9 @@ class DetectorReadingLog:
         # Counts every recorded pass in this process, written or not, so a gap
         # in `pass` on disk shows exactly where lines were lost.
         self._pass_count: int = 0
+        # Counts every recorded operator command in this process, so a gap in
+        # `command_no` shows a command line was lost.
+        self._command_count: int = 0
         # What the file says each block last read. A change line is the
         # difference against this, so it moves only when a line was written.
         self._last_readings: Dict[str, Dict[str, Any]] = {}
@@ -150,6 +153,9 @@ class DetectorReadingLog:
         # Whether the last write failed, so the first success resolves the
         # reported condition.
         self._write_failing: bool = False
+        # What the server held when it finished booting, written once on the
+        # `"start"` line; None until `set_start_state(...)` is called.
+        self._start_state: Optional[Dict[str, Any]] = None
 
     # -- configuration ------------------------------------------------------
 
@@ -183,6 +189,17 @@ class DetectorReadingLog:
             self._report_failure(exc)
             self._close_file()
             self._path = None
+
+    @property
+    def pass_count(self) -> int:
+        """How many passes the log has recorded in this process: the `pass`
+        value of the last pass line, or 0 before the first."""
+        return self._pass_count
+
+    def set_start_state(self, start_state: Dict[str, Any]) -> None:
+        """Keep what the server held at the end of boot, to write on the
+        `"start"` line (see `start_state_of`)."""
+        self._start_state = start_state
 
     def request_full(self, reason: str) -> None:
         """Make the next line list every block, saying `reason`.
@@ -288,6 +305,8 @@ class DetectorReadingLog:
             line["on_threshold"] = detector.on_threshold
             line["off_threshold"] = detector.off_threshold
             line["readings"] = readings
+            if reason == FULL_START and self._start_state is not None:
+                line["start_state"] = self._start_state
         else:
             changed = {
                 block_id: reading
@@ -307,6 +326,63 @@ class DetectorReadingLog:
         self._last_detector = detector
         self._last_environment = environment
         self._full_reason = None
+
+    # -- operator commands ----------------------------------------------------
+
+    def record_command(
+        self,
+        *,
+        method: str,
+        path: str,
+        query: str,
+        body: Any,
+        status: int,
+        after_pass: int,
+    ) -> None:
+        """Write one line for a state-changing request the server answered.
+        Never raises.
+
+        `after_pass` is the `pass` of the last pass that ran before the request
+        changed anything, so a replay sends it between that pass and the next.
+        The line is written when the request is answered, which can be after a
+        later pass line, so `after_pass`, not the line's place in the file, says
+        when it ran. The caller holds `simulation_lock`, as `record_pass(...)`'s
+        caller does, so the two never write at once.
+        """
+        if self._dir is None:
+            return
+        self._command_count += 1
+        line: Dict[str, Any] = {
+            "command_no": self._command_count,
+            "after_pass": int(after_pass),
+            "wall_time": time.time(),
+            "command": {
+                "method": method,
+                "path": path,
+                "query": query,
+                "body": body,
+                "status": int(status),
+            },
+        }
+        try:
+            text = json.dumps(line, separators=(",", ":"), default=str) + "\n"
+            if self._path is None:
+                self._open_new_file()
+                if self._full_reason is None:
+                    self._full_reason = FULL_NEW_FILE
+            if self._file is None:
+                self._file = open(self._path, "a", encoding="utf-8", buffering=1)
+            self._file.write(text)
+            self._bytes_in_file += len(text)
+        except Exception as exc:  # noqa: BLE001 - logging must not fail a request
+            self._close_file()
+            self._report_failure(exc)
+            return
+        if self._write_failing:
+            self._write_failing = False
+            nc = self._notification_center
+            if nc is not None:
+                nc.resolve_condition(WRITE_FAILED_CONDITION_KEY)
 
     # -- files --------------------------------------------------------------
 
@@ -403,6 +479,86 @@ class DetectorReadingLog:
             )
         except Exception:  # noqa: BLE001 - last resort: a failed emit must not be silent
             logger.exception("detector reading log: reporting a failed write raised")
+
+
+def start_state_of(network: Any) -> Dict[str, Any]:
+    """What the server holds at the end of boot, for the `"start"` line.
+
+    - `layout` — the layout as a layout save holds it (`to_layout_dict()`);
+    - `hardware` — the hardware setup as a layout save holds it;
+    - `locomotives` — the models, sets and counters, as the locomotive file holds them;
+    - `selected_environment` — the environment selected at boot;
+    - `trains_on_track` — the trains that hold a block at boot. A layout save
+      records no train position, so a replay cannot put these back.
+    """
+    import hardware_config
+    import operation_environment
+
+    return {
+        "layout": network.to_layout_dict(),
+        "hardware": hardware_config.persisted_dict(),
+        "locomotives": network.speed_profiles.library_dict(),
+        "selected_environment": operation_environment.get_selected().value,
+        "trains_on_track": sorted(
+            {
+                block.occupied_by
+                for block in network.blocks.values()
+                if block.occupied_by is not None
+            }
+        ),
+    }
+
+
+class SimulationLock:
+    """The lock that serializes operator requests with runtime passes, and
+    remembers, per thread, how many passes the reading log had recorded when
+    that thread last released it.
+
+    A request changes state while it holds this lock, and the runtime loop
+    runs each pass while it holds it. So the count a request thread saw at its
+    last release is the `pass` of the last pass before the request's change:
+    the `after_pass` its command line records, exact even when a pass runs
+    between the change and the moment the request is answered.
+    """
+
+    def __init__(self) -> None:
+        import threading
+
+        self._lock = threading.Lock()
+        self._local = threading.local()
+        self._pass_count: Optional[Any] = None
+
+    def count_passes_with(self, pass_count: Any) -> None:
+        """Read the pass count from `pass_count()` at each release."""
+        self._pass_count = pass_count
+
+    def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
+        return self._lock.acquire(blocking, timeout)
+
+    def release(self) -> None:
+        if self._pass_count is not None:
+            # Read while still held, so no pass can slip in between.
+            self._local.released_at = self._pass_count()
+        self._lock.release()
+
+    def locked(self) -> bool:
+        return self._lock.locked()
+
+    def __enter__(self) -> "SimulationLock":
+        self.acquire()
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        self.release()
+
+    def forget_release(self) -> None:
+        """Forget this thread's last release, at the start of a request."""
+        self._local.released_at = None
+
+    def last_release(self) -> Optional[int]:
+        """The pass count at this thread's last release since
+        `forget_release()`, or None when it has not released the lock since."""
+        return getattr(self._local, "released_at", None)
 
 
 def read_detector_reading_log(path: str | os.PathLike) -> list[Dict[str, Any]]:

@@ -7,7 +7,7 @@
  * drives that train; the pass never picks a train for itself. These helpers
  * answer which trains the row lists, which of the group's controls may be
  * pressed, what the train's own stored values are when the profile on screen
- * is the model profile its instance derives from, and what the pass's progress,
+ * is the set its instance was copied from, and what the pass's progress,
  * points and crossings read as.
  */
 
@@ -57,18 +57,21 @@ export function stretchEndsText(stretch: any): string {
 }
 
 /**
- * Every placed train whose resolved profile is the profile on screen: each
- * train naming it directly, and each train naming an instance profile that
- * derives from it. Sorted by car number so the list reads the same each time.
+ * The trains the locomotive row lists for the profile on screen
+ * (design_new.md "Speed calibration", The panel): the train that owns it when
+ * it is an instance profile, and every train whose instance profile was copied
+ * from it when it is a set or the Default profile. Sorted by name so the list
+ * reads the same each time.
  */
-export function calibrationTrainChoices(trains: any[], profiles: any[], profileId: string): any[] {
-  const derivedFrom = new Map<string, string | null>();
-  for (const p of profiles || []) derivedFrom.set(String(p?.profile_id), p?.derived_from ?? null);
+export function calibrationTrainChoices(trains: any[], profiles: any[], profileId: number | string): any[] {
+  const parentOf = new Map<number, number | null>();
+  for (const p of profiles || []) parentOf.set(Number(p?.profile_id), p?.parent_profile_id ?? null);
+  const onScreen = Number(profileId);
   return (trains || [])
     .filter((t: any) => {
-      const named = t?.speed_profile_id;
-      if (!named) return false;
-      return named === profileId || derivedFrom.get(String(named)) === profileId;
+      const own = t?.speed_profile_id;
+      if (own == null) return false;
+      return Number(own) === onScreen || parentOf.get(Number(own)) === onScreen;
     })
     .sort((a: any, b: any) =>
       trainName(a).localeCompare(trainName(b), undefined, { numeric: true })
@@ -86,10 +89,9 @@ export function trainChoiceLabel(train: any, status: string | null): string {
 }
 
 /**
- * A field as the named train runs on it. Every train the row lists names the
- * profile on screen or an instance profile deriving from it, so the value is
- * the instance's own when it carries one and the profile on screen's
- * otherwise — `SpeedProfileRegistry.resolve` for that one field.
+ * A field as the named train runs on it: the value on the train's own
+ * instance profile, or the profile on screen's when that record is not in the
+ * list yet.
  */
 export function trainStoredValue(
   train: any,
@@ -98,9 +100,9 @@ export function trainStoredValue(
   field: string
 ): any {
   const named = train?.speed_profile_id;
-  if (named && named !== profileOnScreen.profile_id) {
-    const own = (profiles || []).find((p: any) => p?.profile_id === named);
-    if (own?.[field] != null) return own[field];
+  if (named != null && Number(named) !== Number(profileOnScreen.profile_id)) {
+    const own = (profiles || []).find((p: any) => Number(p?.profile_id) === Number(named));
+    if (own && field in own) return own[field];
   }
   return profileOnScreen[field];
 }

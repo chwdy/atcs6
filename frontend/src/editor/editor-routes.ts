@@ -12,7 +12,7 @@ import { showToast } from '../lib/toast';
 import { stateManager } from '../lib/state-manager';
 import { nextStepToRun, routeAssignedMessage, routeUnassignedMessage } from '../lib/train-status';
 import type { EditorHost } from './types';
-import { showConfirmModal, validatePriorityInput } from '../lib/helpers';
+import { escapeAttr, showConfirmModal, validatePriorityInput } from '../lib/helpers';
 import { showResourcePicker, dismissResourcePicker } from './resource-picker';
 
 export class RouteEditorHandler {
@@ -1339,14 +1339,15 @@ export class RouteEditorHandler {
     const availableTrains = allTrainsRaw
       .map((t: any) => ({
         train_id: t?.train_id || t?.id || '',
-        model: t?.model || '',
+        // A locomotive has one name (design_new.md "Train Entity").
+        name: t?.car_number || '',
       }))
       .filter((t: any) => t.train_id && !assignedTrains.includes(t.train_id));
 
     let trainSelectHtml = '<option value="">Select train...</option>';
     availableTrains.forEach((train: any) => {
-      const label = train.model ? `${train.train_id} (${train.model})` : train.train_id;
-      trainSelectHtml += `<option value="${train.train_id}">${label}</option>`;
+      const label = train.name || train.train_id;
+      trainSelectHtml += `<option value="${escapeAttr(train.train_id)}">${escapeAttr(label)}</option>`;
     });
 
     return `

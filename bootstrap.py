@@ -201,12 +201,11 @@ def bootstrap_runtime(
             every block detector read into files in this directory
             (design_new.md "Event log", Detector reading log). `None` (the
             default, used by unit tests) leaves that log off.
-        locomotive_file_path: When set, read the speed profiles and the train
-            roster from this file once the scene and its trains exist, and
-            turn on writing it after every state-changing request
-            (design_new.md "SpeedProfile", Where profiles and the roster are
-            kept). `None` (the default, used by unit tests) leaves the file
-            off.
+        locomotive_file_path: When set, read the models, sets and id counters
+            from this file before the scene is built, and turn on writing it
+            after every state-changing request (design_new.md "SpeedProfile",
+            Where models, sets and instance profiles are kept). `None` (the
+            default, used by unit tests) leaves the file off.
 
     Returns:
         Tuple of (network, path_dispatcher, sim_controller, persistence_manager).
@@ -270,17 +269,24 @@ def bootstrap_runtime(
     if detector_reading_log_dir:
         sim_controller.detector_reading_log.enable(detector_reading_log_dir)
 
-    if demo and setup_train:
-        setup_demo_train(network, path_dispatcher, sim_controller, scene=scene)
-
-    # Read after the scene's trains are placed, so a file record replaces the
-    # seeded record of the same id and a scene train keeps its measured curve
-    # across a restart.
+    # Read before the scene's trains are placed, so their instance profiles
+    # take numbers the file has not given out (design_new.md "SpeedProfile",
+    # Where models, sets and instance profiles are kept).
     if locomotive_file_path:
         import locomotive_file
 
         locomotive_file.enable(str(locomotive_file_path))
         locomotive_file.load_into(network, notification_center)
+
+    if demo and setup_train:
+        setup_demo_train(network, path_dispatcher, sim_controller, scene=scene)
+
+    # design_new.md "Detector reading log", The run starts from what the server
+    # held at boot: written on the first line, before any pass or command.
+    if detector_reading_log_dir:
+        from detector_reading_log import start_state_of
+
+        sim_controller.detector_reading_log.set_start_state(start_state_of(network))
 
     persistence_manager = PersistenceManager()
 

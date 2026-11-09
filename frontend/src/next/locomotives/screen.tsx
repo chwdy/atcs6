@@ -2,9 +2,10 @@
  * The Locomotives screen (docs/ui-layout-rewrite-plan.md §6), shown when the
  * Locomotives tab is picked.
  *
- * Left: the locomotives the operator owns (the Train Roster), placed trains
- * not in it, and the model profiles. Middle: the picked locomotive and its
- * Speed Profile panel with the calibration group. Right, only while a
+ * Left: the trains on the layout, then the models with their sets and the
+ * Default profile. Middle: the picked train, set or model, and the Speed
+ * Profile panel with the calibration group for a train or a set. Right, only
+ * while a
  * calibration run is open or being set up: today's layout canvas, because
  * step 3 names the measured block on the map and the operator watches the
  * pass (static/css/next/locomotives.css moves it there).
@@ -15,11 +16,11 @@ import { useEffect, useRef } from 'preact/hooks';
 
 import { afterLayout, fitCanvas, type CanvasFitHost } from '../canvas-fit';
 import { screen } from '../state';
-import { PlacedTrainDetails, RosterEntryDetails, RosterEntryForm } from './details';
+import { DefaultDetails, ModelDetails, SetDetails, TrainDetails } from './details';
 import { LocomotiveList } from './list';
-import { calibrationRunShown, entryName, panelTarget, placedTrainFor, profileName, selectionForTrain } from './model';
+import { calibrationRunShown, modelOf, panelTarget, profileById, selectionForTrain } from './model';
 import { bindSpeedProfilePanel, type PanelBinding, type SpeedProfilePanel } from './panel';
-import { calibration, profiles, roster, selection, trains } from './state';
+import { calibration, models, profiles, selection, trains } from './state';
 
 /** What the screen needs from App. */
 export interface LocomotivesHost extends CanvasFitHost {
@@ -29,13 +30,12 @@ export interface LocomotivesHost extends CanvasFitHost {
 let revealScreen: (() => void) | null = null;
 
 /**
- * Show the Locomotives screen with this train's locomotive picked: its
- * roster entry when it was placed from one, otherwise the train itself. The
- * Speed Profile panel opens with the train named in its locomotive row.
- * Operate's Calibrate button calls this (plan §5).
+ * Show the Locomotives screen with this train picked. The Speed Profile panel
+ * opens on the train's own profile with the train named in its locomotive
+ * row. Operate's Calibrate button calls this (plan §5).
  */
 export function openLocomotiveForTrain(trainId: string): void {
-  selection.value = selectionForTrain(trainId, roster.peek(), trains.peek());
+  selection.value = selectionForTrain(trainId);
   revealScreen?.();
 }
 
@@ -46,49 +46,45 @@ function Middle({ panel }: { panel: PanelBinding | null }) {
   }, [panel]);
 
   const sel = selection.value;
-  const target = panelTarget(sel, roster.value, trains.value);
   let title = 'Locomotives';
   let top = null;
-  if (sel?.kind === 'new') {
-    title = 'Add locomotive';
-    top = <RosterEntryForm existing={null} />;
-  } else if (sel?.kind === 'roster') {
-    const entry = roster.value.find((e) => e.entry_id === sel.entryId);
-    if (entry) {
-      title = entryName(entry);
-      top = <RosterEntryDetails key={entry.entry_id} entry={entry} train={placedTrainFor(entry, trains.value)} />;
-    } else {
-      top = <div class="empty-state empty-state-warn">This locomotive is no longer in the Train Roster.</div>;
-    }
-  } else if (sel?.kind === 'train') {
+  if (sel?.kind === 'train') {
     const train = trains.value.find((t) => t.id === sel.trainId);
     if (train) {
       title = train.name;
-      top = <PlacedTrainDetails train={train} />;
+      top = <TrainDetails key={train.id} train={train} />;
     } else {
       top = <div class="empty-state empty-state-warn">This train is no longer on the layout.</div>;
     }
-  } else if (sel?.kind === 'profile') {
-    const picked = profiles.value.find((p) => p.profile_id === sel.profileId);
-    title = picked ? profileName(picked) : sel.profileId;
+  } else if (sel?.kind === 'set') {
+    const set = profileById(sel.profileId, profiles.value);
+    if (set && set.model_id != null) {
+      title = `${modelOf(set, models.value)?.name || 'No model'} · ${set.set_name || '—'}`;
+      top = <SetDetails key={set.profile_id} set={set} />;
+    } else {
+      top = <div class="empty-state empty-state-warn">This set is no longer stored.</div>;
+    }
+  } else if (sel?.kind === 'model') {
+    const model = models.value.find((m) => m.model_id === sel.modelId);
+    if (model) {
+      title = model.name;
+      top = <ModelDetails key={model.model_id} model={model} />;
+    } else {
+      top = <div class="empty-state empty-state-warn">This model is no longer stored.</div>;
+    }
+  } else if (sel?.kind === 'default') {
+    title = 'Default';
+    top = <DefaultDetails />;
   }
 
   return (
     <section class="nloco-main" aria-label="Locomotive">
       <div class="nloco-head">
         <h2>{title}</h2>
-        {target.profileId && (
-          <span class="nloco-head-sub">
-            Speed Profile panel · <span class="font-mono">{target.profileId}</span>
-          </span>
-        )}
       </div>
       <div class="nloco-main-body">
-        {!sel && <div class="empty-state">Pick a locomotive or a profile on the left.</div>}
+        {!sel && <div class="empty-state">Pick a train, a set or a model on the left.</div>}
         {top}
-        {(sel?.kind === 'roster' || sel?.kind === 'train') && top && !target.profileId && (
-          <div class="empty-state">This locomotive has no speed profile yet. It gets one when it is placed on the layout.</div>
-        )}
         <div ref={slot} class="nloco-panel-slot" />
       </div>
     </section>
@@ -123,12 +119,12 @@ export function mountLocomotivesScreen(host: LocomotivesHost, reveal: () => void
   // Show the picked locomotive's profile in the panel. The panel is asked
   // again only when the profile or the train to name changes, so a poll that
   // changes a train's speed does not reopen it (which would end its run).
-  let applied: { profileId: string | null; trainId?: string | null } = { profileId: null };
+  let applied: { profileId: number | null; trainId?: string | null } = { profileId: null };
   const stopShowing = effect(() => {
     const sel = selection.value;
-    const target = panelTarget(sel, roster.value, trains.value);
+    const target = panelTarget(sel, trains.value);
     if (!panel) return;
-    if (sel?.kind === 'profile' && sel.fromPanel) {
+    if (sel?.kind === 'set' && sel.fromPanel) {
       applied = { profileId: sel.profileId };
       return;
     }

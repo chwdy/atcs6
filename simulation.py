@@ -2993,7 +2993,8 @@ class SimulationController(SwitchOutputOwner):
         name: Optional[str] = None,
         initial_cab: Optional[Literal["A", "B"]] = None,
         start_tile: Optional[Tuple[int, int]] = None,
-        roster_entry_id: Optional[str] = None,
+        speed_profile_id: Optional[int] = None,
+        source_profile=None,
     ) -> Train:
         """Sole entry point for adding a train at runtime.
 
@@ -3019,6 +3020,14 @@ class SimulationController(SwitchOutputOwner):
                 to spawn a long train whose body extends along the rail in
                 a direction that requires choosing a specific tile in a
                 multi-tile platform block.
+            speed_profile_id: The Default profile or the set the train's
+                instance profile is copied from; None copies the Default
+                profile (design_new.md "SpeedProfile", Giving a train a
+                profile).
+            source_profile: A scene's own profile record to copy instead; only
+                a scene passes it, and it is never registered (design_new.md
+                "SpeedProfile", Where models, sets and instance profiles are
+                kept, A scene adds no models or sets).
 
         Returns:
             The freshly created and registered ``Train``.
@@ -3032,22 +3041,12 @@ class SimulationController(SwitchOutputOwner):
         if starting_block_id not in self.network.blocks:
             raise ValueError(f"Unknown block: {starting_block_id!r}")
 
-        # Roster import (design_new.md "Train Roster"): when the placement names
-        # a roster entry, seed the placement defaults from it instead of blank
-        # values. The entry is a template; the placed Train is a separate
-        # runtime instance, so editing one after placement never changes the
-        # other. The span-length and max-speed defaults are applied here; the
-        # remaining config fields + the profile link are applied after the Train
-        # is constructed, below.
-        roster_entry = None
-        roster = getattr(self.network, "train_roster", None)
-        if roster_entry_id and roster is not None:
-            roster_entry = roster.get_entry(roster_entry_id)
-        if roster_entry is not None:
-            if roster_entry.max_speed is not None:
-                max_speed_kmh = float(roster_entry.max_speed)
-            if roster_entry.consist_length_cm is not None:
-                length_cm = float(roster_entry.consist_length_cm)
+        # The profile to copy must be the Default profile or a set; refuse
+        # anything else before anything is built (design_new.md "SpeedProfile",
+        # Giving a train a profile).
+        profiles = self.network.speed_profiles
+        if source_profile is None:
+            profiles.copy_source(speed_profile_id)
 
         # Resolve a starting tile inside the named block.
         start_positions = self.network.get_block_positions(starting_block_id)
@@ -3088,41 +3087,15 @@ class SimulationController(SwitchOutputOwner):
             car_number=(name or ""),
         )
 
-        # Roster import: seed the remaining config fields + profile link from the
-        # entry (design_new.md "Train Roster"). Setting `speed_profile_id` here
-        # (when the linked profile exists) skips the default-profile creation
-        # below, keeping the locomotive's measured curves tied to it across
-        # placements.
-        if roster_entry is not None:
-            train.roster_entry_id = roster_entry.entry_id
-            if roster_entry.min_radius_cm is not None:
-                train.min_radius_cm = float(roster_entry.min_radius_cm)
-            train.max_slope = float(roster_entry.max_slope)
-            if roster_entry.speed_profile_id and hasattr(
-                self.network, "speed_profiles"
-            ):
-                if (
-                    self.network.speed_profiles.get(roster_entry.speed_profile_id)
-                    is not None
-                ):
-                    train.speed_profile_id = roster_entry.speed_profile_id
-
-        # Seed the train's default SpeedProfile pair so `power_percent` manual
-        # mode has a defined voltage/speed mapping reaching THIS train's
-        # max_speed (design_new.md "SpeedProfile"): a model profile whose default
-        # `voltage_speed_curve` reaches the train's configured max_speed at
-        # max_voltage, plus an empty instance deriving from it, and the train names
-        # the instance. Without this the train would share the module-global
-        # DEFAULT_SPEED_PROFILE whose curve hardcodes 100% -> 100 km/h; naming an
-        # instance also keeps calibration off any other train's record.
-        if train.speed_profile_id is None and hasattr(
-            self.network, "speed_profiles"
-        ):
-            from speed_profile import seed_default_profile_pair
-
-            train.speed_profile_id = seed_default_profile_pair(
-                self.network.speed_profiles, train_id, max_speed_kmh
-            )
+        # Every train owns exactly one instance profile: a copy of the profile
+        # the placement names, or of the Default profile drawn to this train's
+        # max_speed (design_new.md "SpeedProfile", Every train owns exactly one
+        # instance profile; Copying a profile).
+        train.speed_profile_id = profiles.create_instance(
+            source_profile_id=speed_profile_id,
+            source_profile=source_profile,
+            max_speed_kmh=max_speed_kmh,
+        ).profile_id
 
         # Register and place. place_train raises ValueError if the train does
         # not fit on available track.
@@ -3221,7 +3194,7 @@ class SimulationController(SwitchOutputOwner):
         it; `SpeedCalibration.abandon(...)` discards a finished speed pass still
         held for it; the train, its controller (with every latch on it) and its
         physics instance leave their registries; and one `remove_train` event
-        names it. Its speed profiles and roster entry stay.
+        names it. Its instance profile goes with it; the models and sets stay.
         """
         from enums import TrainStatus
 
@@ -3330,8 +3303,7 @@ class SimulationController(SwitchOutputOwner):
         name: Optional[str] = None,
         min_radius_cm: Optional[float] = None,
         max_slope: Optional[float] = None,
-        speed_profile_id: Optional[str] = None,
-        roster_entry_id: Optional[str] = None,
+        speed_profile_id: Optional[int] = None,
     ) -> Train:
         """Turn an unidentified train into an ordinary, driveable train.
 
@@ -3384,10 +3356,10 @@ class SimulationController(SwitchOutputOwner):
             name: Optional display name (also used for the locomotive id).
             min_radius_cm: Optional minimum curve radius in centimetres.
             max_slope: Optional maximum climbable grade, percent.
-            speed_profile_id: Optional existing `SpeedProfile` to adopt. When
-                omitted, a fresh default profile is built for the new id.
-            roster_entry_id: Optional **Train Roster** entry to seed config from,
-                exactly as `add_train` does.
+            speed_profile_id: The Default profile or the set to copy into the
+                instance profile the unidentified train already owns; None
+                copies the Default profile again, drawn to `max_speed_kmh`
+                (design_new.md "SpeedProfile", Giving a train a profile).
 
         Returns:
             The adopted `Train` (the same object the unidentified train used, re-keyed).
@@ -3469,28 +3441,9 @@ class SimulationController(SwitchOutputOwner):
                     f"{unidentified_train_id!r} is standing on"
                 )
 
-        # Roster import (design_new.md "Train Roster"), on the same terms as
-        # `add_train`: the entry is a template, and the adopted train is a
-        # separate runtime instance.
-        roster_entry = None
-        roster = getattr(self.network, "train_roster", None)
-        if roster_entry_id and roster is not None:
-            roster_entry = roster.get_entry(roster_entry_id)
-        if roster_entry is not None:
-            if roster_entry.max_speed is not None:
-                max_speed_kmh = float(roster_entry.max_speed)
-            if roster_entry.consist_length_cm is not None:
-                length_cm = float(roster_entry.consist_length_cm)
-            if roster_entry.min_radius_cm is not None and min_radius_cm is None:
-                min_radius_cm = float(roster_entry.min_radius_cm)
-            if max_slope is None:
-                max_slope = float(roster_entry.max_slope)
-            if speed_profile_id is None and roster_entry.speed_profile_id:
-                if (
-                    self.network.speed_profiles.get(roster_entry.speed_profile_id)
-                    is not None
-                ):
-                    speed_profile_id = roster_entry.speed_profile_id
+        # The profile to copy must be the Default profile or a set; refuse
+        # anything else before anything changes.
+        self.network.speed_profiles.copy_source(speed_profile_id)
 
         old_profile_id = getattr(unidentified_train, "speed_profile_id", None)
         controller = self.get_or_create_controller(unidentified_train_id)
@@ -3571,28 +3524,18 @@ class SimulationController(SwitchOutputOwner):
         self.unidentified_trains.forget(unidentified_train_id)
         self.get_or_create_physics(new_train_id)
 
-        # The unidentified train's default profile pair was anchored to a blank
-        # train's max_speed and named after the generated id, so it is retired in
-        # favour of a pair built for the real locomotive — unless the operator
-        # named an existing instance profile (or a roster entry did) to keep
-        # measured curves attached (design_new.md "Train Entity", adoption).
-        profiles = getattr(self.network, "speed_profiles", None)
-        if speed_profile_id and profiles is not None and profiles.get(speed_profile_id):
-            train.speed_profile_id = speed_profile_id
-        elif profiles is not None:
-            from speed_profile import seed_default_profile_pair
-
-            train.speed_profile_id = seed_default_profile_pair(
-                profiles, new_train_id, max_speed_kmh
-            )
-        if (
-            profiles is not None
-            and old_profile_id
-            and old_profile_id != train.speed_profile_id
-        ):
-            # Retire the unidentified train's instance and the model it was the
-            # only deriver of; `remove_pair` keeps a shared model in place.
-            profiles.remove_pair(old_profile_id)
+        # Copy the named profile into the instance profile the unidentified
+        # train already owns, keeping its number; with none named, the Default
+        # profile again, now drawn to the declared max_speed (design_new.md
+        # "SpeedProfile", Giving a train a profile).
+        profiles = self.network.speed_profiles
+        if old_profile_id is not None and profiles.get(old_profile_id) is not None:
+            profiles.copy_into_instance(old_profile_id, speed_profile_id, max_speed_kmh)
+            train.speed_profile_id = old_profile_id
+        else:
+            train.speed_profile_id = profiles.create_instance(
+                source_profile_id=speed_profile_id, max_speed_kmh=max_speed_kmh
+            ).profile_id
 
         # ---- Give back what it does not actually stand on. ------------------
         span_blocks = set(getattr(placed_span, "occupied_blocks", None) or [])

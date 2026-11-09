@@ -10,7 +10,7 @@ from speed_profile import SpeedProfile
 
 
 def test_default_profile_has_standard_notch_tables():
-    p = SpeedProfile(profile_id="t", name="T")
+    p = SpeedProfile(profile_id="t")
     assert p.power_multipliers == POWER_MULTIPLIERS
     assert p.brake_multipliers == BRAKE_MULTIPLIERS
     # a copy, not the shared module dict
@@ -18,7 +18,7 @@ def test_default_profile_has_standard_notch_tables():
 
 
 def test_notch_tables_round_trip_and_override():
-    p = SpeedProfile(profile_id="t", name="T")
+    p = SpeedProfile(profile_id="t")
     p.brake_multipliers[HandlePosition.B8] = 2.5
     p.power_multipliers[HandlePosition.P5] = 1.2
     restored = SpeedProfile.from_dict(p.to_dict())

@@ -156,3 +156,21 @@ def skip_calibration_trials(run):
     run.trial_voltage = 0.0
     run.current_step_voltage = run.max_voltage
     return run
+
+
+def give_profile(network, train, profile):
+    """Make `profile` the train's own instance profile (design_new.md
+    "SpeedProfile", Every train owns exactly one instance profile).
+
+    A test builds a profile by hand; this numbers it from the registry, makes it
+    an instance profile (no model, no set name, no parent), registers it, and
+    points the train at it. Returns the registered record.
+    """
+    registry = network.speed_profiles
+    profile.profile_id = registry.allocate_profile_id()
+    profile.model_id = None
+    profile.set_name = ""
+    profile.parent_profile_id = None
+    registry.register(profile)
+    train.speed_profile_id = profile.profile_id
+    return profile

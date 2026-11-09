@@ -1,13 +1,12 @@
-"""Speed-profile lifecycle service.
+"""Speed-profile service: the library of models and sets, and hand edits.
 
-CRUD over the ``SpeedProfile`` records held by the shared
-``SpeedProfileRegistry``. The HTTP layer in ``routes/speed_profiles.py``
-parses JSON; this layer owns the registry mutations plus the
-duplicate / default / in-use guards.
+design_new.md "SpeedProfile": a record is the fixed Default profile `0`, a set
+under a `LocomotiveModel`, or one train's instance profile (Models, sets and
+instance profiles). The HTTP layer in ``routes/speed_profiles.py`` parses JSON;
+this layer owns the registry writes and their refusals.
 
-Like ``layout_service``, every operation takes ``state.simulation_lock``
-so a profile swap never races the simulation tick. Non-HTTP callers (CLI
-tools, journey tests) get the same lock discipline for free.
+Like ``layout_service``, every operation takes ``state.simulation_lock`` so a
+profile write never races the simulation tick.
 """
 
 from __future__ import annotations
@@ -16,317 +15,194 @@ from dataclasses import replace
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from app_state import AppState
-from services.exceptions import (
-    ConflictError,
-    NotFoundError,
-    ServiceError,
-    ValidationError,
-)
-from speed_profile import SpeedProfile, SpeedProfileRegistry, curve_problems
-
-# The one profile id that may never be deleted -- every train falls back to
-# it, so removing it would orphan the fleet.
-DEFAULT_PROFILE_ID = "default"
-
-# The fields an instance profile may carry (design_new.md "SpeedProfile",
-# Model profiles and instance profiles).
-INSTANCE_FIELDS = (
-    "lighting_voltage",
-    "starting_voltage",
-    "voltage_speed_curve",
-    "calibrated_at",
-    "ato_min_voltage",
-)
-
-# Fields a hand edit never changes (design_new.md "SpeedProfile", Editing a
-# profile by hand): the stored value always wins over the request body.
-_NOT_HAND_EDITED = ("derived_from", "calibrated_at")
-
-# What a hand edit may change on an instance profile besides its name; every
-# other field belongs to the model profile it derives from.
-_INSTANCE_HAND_EDITED = (
-    "name",
-    "lighting_voltage",
-    "starting_voltage",
-    "ato_min_voltage",
-    "voltage_speed_curve",
+from services.exceptions import ConflictError, NotFoundError, ValidationError
+from speed_profile import (
+    DEFAULT_PROFILE_ID,
+    IDENTITY_FIELDS,
+    LocomotiveModel,
+    SpeedProfile,
+    SpeedProfileRegistry,
+    as_profile_id,
+    curve_problems,
 )
 
 _VOLTAGE_EPSILON = 1e-9
 
 
-def _trial_registry(
-    registry: SpeedProfileRegistry, replacements: Dict[str, SpeedProfile]
-) -> SpeedProfileRegistry:
-    """A copy of `registry` with `replacements` in place of their records."""
-    trial = SpeedProfileRegistry()
-    for pid in registry.list_profiles():
-        record = registry.get(pid)
-        if record is not None:
-            trial.register(record)
-    for record in replacements.values():
-        trial.register(record)
-    return trial
-
-
-def _reached(
-    trial: SpeedProfileRegistry, replacements: Dict[str, SpeedProfile]
-) -> List[str]:
-    """Every profile the change reaches: each replaced record, and every
-    instance deriving from a replaced model profile."""
-    reached = set(replacements)
-    for pid in trial.list_profiles():
-        record = trial.get(pid)
-        if record is not None and record.derived_from in replacements:
-            reached.add(pid)
-    return sorted(reached)
-
-
-def resolved_problems(pid: str, resolved: SpeedProfile) -> List[str]:
-    """What breaks in one resolved profile (design_new.md "SpeedProfile"): the
-    curve's three conditions, **A lighting voltage stays below the starting
-    voltage**, **A starting voltage stays below `max_voltage`**, and **An ATO
-    minimum voltage stays on the measured part of the curve**. Plain reasons,
-    each naming the profile."""
+def profile_problems(profile: SpeedProfile) -> List[str]:
+    """What breaks in one profile (design_new.md "SpeedProfile", Editing a
+    profile by hand): the curve's three conditions, **A lighting voltage stays
+    below the starting voltage**, **A starting voltage stays below
+    `max_voltage`**, and **An ATO minimum voltage stays on the measured part of
+    the curve**. Plain reasons, each naming the profile."""
+    pid = profile.profile_id
     problems: List[str] = []
-    if resolved.voltage_speed_curve is None:
-        return problems
-    for reason in curve_problems(resolved.voltage_speed_curve, resolved.max_voltage):
-        problems.append(f"{pid}: {reason}")
-    starting = float(resolved.starting_voltage or 0.0)
+    for reason in curve_problems(profile.voltage_speed_curve, profile.max_voltage):
+        problems.append(f"profile {pid}: {reason}")
+    starting = float(profile.starting_voltage or 0.0)
     if starting < 0.0:
-        problems.append(f"{pid}: the starting voltage must not be below 0")
-    if starting >= float(resolved.max_voltage) - _VOLTAGE_EPSILON:
+        problems.append(f"profile {pid}: the starting voltage must not be below 0")
+    if starting >= float(profile.max_voltage) - _VOLTAGE_EPSILON:
         problems.append(
-            f"{pid}: starting voltage {starting:g} V is not below max_voltage "
-            f"{float(resolved.max_voltage):g} V"
+            f"profile {pid}: starting voltage {starting:g} V is not below "
+            f"max_voltage {float(profile.max_voltage):g} V"
         )
-    lighting = resolved.lighting_voltage
+    lighting = profile.lighting_voltage
     if lighting is not None and lighting >= starting:
         problems.append(
-            f"{pid}: lighting voltage {lighting:g} V is not below the "
+            f"profile {pid}: lighting voltage {lighting:g} V is not below the "
             f"starting voltage {starting:g} V"
         )
-    ato_min = resolved.ato_min_voltage
+    ato_min = profile.ato_min_voltage
     if ato_min is not None:
-        low = resolved.first_point_voltage
-        high = float(resolved.max_voltage)
+        low = profile.first_point_voltage
+        high = float(profile.max_voltage)
         if ato_min < low - _VOLTAGE_EPSILON or ato_min > high + _VOLTAGE_EPSILON:
             problems.append(
-                f"{pid}: ATO minimum voltage {ato_min:g} V must lie from the "
-                f"curve's first point above the starting voltage ({low:g} V) up "
-                f"to max_voltage ({high:g} V)"
+                f"profile {pid}: ATO minimum voltage {ato_min:g} V must lie from "
+                f"the curve's first point above the starting voltage ({low:g} V) "
+                f"up to max_voltage ({high:g} V)"
             )
     return problems
 
 
 def settle_profile_writes(
     registry: SpeedProfileRegistry,
-    replacements: Dict[str, SpeedProfile],
+    replacements: Dict[int, SpeedProfile],
     *,
-    keep_ato_min: Iterable[str] = (),
-) -> Tuple[Dict[str, SpeedProfile], List[str]]:
+    keep_ato_min: Iterable[int] = (),
+) -> Tuple[Dict[int, SpeedProfile], List[str]]:
     """The records a write actually stores, and what it would break.
 
-    Every instance whose resolved `starting_voltage` or `voltage_speed_curve`
-    the write changes loses its `ato_min_voltage` in the same write
-    (design_new.md "SpeedProfile", A changed starting voltage or curve clears
-    the ATO minimum voltage) — except an instance named in `keep_ato_min`,
-    whose own request sets a new one. Every profile the write reaches is then
-    checked by `resolved_problems`. Returns the replacements, extended with
-    each instance it cleared, and the reasons; the caller stores nothing when
-    the reasons are not empty. The hand edit, the speed calibration commit, the
-    It moves save and the ATO minimum test commit all write through here.
+    Each record whose `starting_voltage` or `voltage_speed_curve` differs from
+    the stored one loses its `ato_min_voltage` in the same write (design_new.md
+    "SpeedProfile", A changed starting voltage or curve clears the ATO minimum
+    voltage) -- except a record named in `keep_ato_min`, whose own request sets
+    a new one. Each record is then checked by `profile_problems`. Every record
+    is complete and stands alone, so a write reaches only the records it names.
+    The caller stores nothing when the reasons are not empty. The hand edit,
+    the speed calibration commit, the trial saves and the ATO minimum test
+    commit all write through here.
     """
-    keep = set(keep_ato_min)
-    final: Dict[str, SpeedProfile] = dict(replacements)
-    trial = _trial_registry(registry, final)
-    for pid in _reached(trial, final):
-        before = registry.resolve(pid)
-        after = trial.resolve(pid)
-        record = trial.get(pid)
-        if before is None or after is None or record is None:
-            continue
-        if record.derived_from is None or record.ato_min_voltage is None or pid in keep:
-            continue
-        changed = before.starting_voltage != after.starting_voltage or list(
-            before.voltage_speed_curve or []
-        ) != list(after.voltage_speed_curve or [])
-        if changed:
-            final[pid] = replace(record, ato_min_voltage=None)
-    trial = _trial_registry(registry, final)
+    keep = {as_profile_id(k) for k in keep_ato_min}
+    final: Dict[int, SpeedProfile] = {}
     problems: List[str] = []
-    for pid in _reached(trial, final):
-        resolved = trial.resolve(pid)
-        if resolved is not None:
-            problems.extend(resolved_problems(pid, resolved))
+    for pid, record in replacements.items():
+        stored = registry.get(pid)
+        if stored is not None and record.ato_min_voltage is not None and pid not in keep:
+            changed = stored.starting_voltage != record.starting_voltage or list(
+                stored.voltage_speed_curve
+            ) != list(record.voltage_speed_curve)
+            if changed:
+                record = replace(record, ato_min_voltage=None)
+        final[pid] = record
+        problems.extend(profile_problems(record))
     return final, problems
 
 
-def resolution_problems(
-    registry: SpeedProfileRegistry, replacements: Dict[str, SpeedProfile]
-) -> List[str]:
-    """What breaks when `replacements` take the place of their stored records
-    (see `settle_profile_writes`). An empty list when nothing breaks."""
-    return settle_profile_writes(registry, replacements)[1]
+# ---------------------------------------------------------------- reads ----
 
 
 def list_profiles(state: AppState) -> List[SpeedProfile]:
-    """Return every registered profile (registry order)."""
+    """Every registered profile: the Default profile, every set, and every
+    train's instance profile."""
     with state.simulation_lock:
-        return [
-            profile
-            for profile in (
-                state.speed_profile_registry.get(pid)
-                for pid in state.speed_profile_registry.list_profiles()
-            )
-            if profile is not None
-        ]
+        return state.speed_profile_registry.profiles()
 
 
-def get_profile(state: AppState, profile_id: str) -> Optional[SpeedProfile]:
+def get_profile(state: AppState, profile_id: Any) -> Optional[SpeedProfile]:
     """Return the profile, or None when not found."""
     with state.simulation_lock:
         return state.speed_profile_registry.get(profile_id)
 
 
-def resolved_view(state: AppState, profile_id: str) -> Optional[Dict[str, Any]]:
-    """The profile as the Speed Profile panel shows it, or None when absent.
-
-    Every value is the resolved one, read through
-    ``SpeedProfileRegistry.resolve(...)``, so an instance profile shows what its
-    locomotive runs on. The stored record's own ``profile_id``, ``name`` and
-    ``derived_from`` stay, and ``own_fields`` lists the instance fields the
-    record carries itself (empty on a model profile, which carries all of
-    them) -- design_new.md "SpeedProfile", Editing a profile by hand.
-    """
-    with state.simulation_lock:
-        registry = state.speed_profile_registry
-        stored = registry.get(profile_id)
-        if stored is None:
-            return None
-        view = registry.resolve(profile_id).to_dict()
-        view["profile_id"] = stored.profile_id
-        view["name"] = stored.name
-        view["derived_from"] = stored.derived_from
-        view["own_fields"] = (
-            []
-            if stored.derived_from is None
-            else [f for f in INSTANCE_FIELDS if getattr(stored, f) is not None]
-        )
-        return view
-
-
-def require_profile(state: AppState, profile_id: str) -> SpeedProfile:
+def require_profile(state: AppState, profile_id: Any) -> SpeedProfile:
     """Return the profile or raise NotFoundError."""
     profile = get_profile(state, profile_id)
     if profile is None:
-        raise NotFoundError(f"Speed profile '{profile_id}' not found")
+        raise NotFoundError(f"Speed profile {profile_id!r} not found")
     return profile
 
 
-def create_profile(state: AppState, *, data: Dict[str, Any]) -> SpeedProfile:
-    """Create and register a new profile from a request-shaped dict.
+def profile_view(state: AppState, profile_id: Any) -> Optional[Dict[str, Any]]:
+    """The profile as the Speed Profile panel shows it, or None when absent.
 
-    Args:
-        data: Profile fields. ``profile_id`` and ``name`` are required;
-            the rest are read by ``SpeedProfile.from_dict``.
-
-    Raises:
-        ValidationError when profile_id/name is missing, or the data does
-            not parse into a SpeedProfile.
-        ConflictError when a profile with that id already exists.
+    The stored record, plus which kind it is, and for an instance profile where
+    it came from by name (design_new.md "SpeedProfile", A train shows where its
+    profile came from), and for a set its model's name.
     """
-    data = dict(data or {})
-    profile_id = data.get("profile_id")
-    name = data.get("name")
-
-    if not profile_id:
-        raise ValidationError("profile_id is required")
-    if not name:
-        raise ValidationError("name is required")
-
     with state.simulation_lock:
-        if state.speed_profile_registry.get(profile_id):
-            raise ConflictError(
-                f"Speed profile with profile_id '{profile_id}' already exists"
-            )
-        try:
-            profile = SpeedProfile.from_dict(data)
-        except (ValueError, KeyError, TypeError) as exc:
-            raise ValidationError(f"Invalid profile data: {exc}") from exc
-        state.speed_profile_registry.register(profile)
+        registry = state.speed_profile_registry
+        profile = registry.get(profile_id)
+        if profile is None:
+            return None
+        view = profile.to_dict()
+        view["kind"] = (
+            "default" if profile.is_default else "set" if profile.is_set else "instance"
+        )
+        if profile.is_instance:
+            view["parent"] = registry.parent_label(profile)
+        if profile.is_set:
+            model = registry.get_model(profile.model_id)
+            view["model_name"] = model.name if model else ""
+        return view
 
-    return profile
+
+# ----------------------------------------------------------- hand edits ----
 
 
 def update_profile(
-    state: AppState, profile_id: str, *, data: Dict[str, Any]
+    state: AppState, profile_id: Any, *, data: Dict[str, Any]
 ) -> SpeedProfile:
-    """Apply a hand edit to an existing profile.
+    """Apply a hand edit to a set or to a train's instance profile.
 
     design_new.md "SpeedProfile", Editing a profile by hand:
 
-    * Every field the body leaves out keeps its stored value, so the panel
-      sends only the fields the operator changed, and an instance profile's
-      unset fields stay unset and go on reading from its model profile.
-    * ``calibrated_at`` and ``derived_from`` are never edited by hand; the
-      stored values win over the body.
-    * On an instance profile only ``name``, ``lighting_voltage``,
-      ``starting_voltage``, ``ato_min_voltage`` and ``voltage_speed_curve`` may
-      be written; a body that changes any other field is refused, because that
-      field belongs to the model profile. ``ato_min_voltage`` is refused on a
-      model profile, which has no such field.
-    * Every profile the edit reaches must still pass ``resolved_problems``, and
-      an edit that changes an instance's starting voltage or curve clears its
-      ATO minimum voltage unless the same body sets one
-      (``settle_profile_writes``).
-
-    The URL id wins: a ``profile_id`` in the body must match it or be omitted.
+    * The Default profile is not edited (The Default profile is fixed).
+    * Every field the body leaves out keeps its stored value.
+    * ``calibrated_at`` is never edited by hand; the stored value wins.
+    * ``profile_id``, ``model_id`` and ``parent_profile_id`` are never edited
+      by hand; a body that changes one is refused.
+    * ``set_name`` changes only on a set, and must not be blank there; a body
+      that sets it on an instance profile is refused.
+    * The record must still pass ``profile_problems``, and an edit that changes
+      the starting voltage or the curve clears the ATO minimum voltage unless
+      the same body sets one (``settle_profile_writes``).
 
     Raises:
-        ValidationError when the body's profile_id disagrees with the URL
-            id, the body changes a model-profile field on an instance profile,
-            a voltage is below 0, the edit breaks a profile it reaches, or the
-            data does not parse.
+        ValidationError when the body breaks one of those rules, a voltage is
+            below 0, the edit breaks the profile, or the data does not parse.
+        ConflictError when the profile is the Default profile.
         NotFoundError when no profile has that id.
     """
     data = dict(data or {})
-    if "profile_id" in data and data["profile_id"] != profile_id:
-        raise ValidationError(
-            "profile_id in body must match URL parameter or be omitted"
-        )
-    data.pop("profile_id", None)
-    for key in _NOT_HAND_EDITED:
-        data.pop(key, None)
+    data.pop("calibrated_at", None)
     curve = data.get("voltage_speed_curve")
     if curve is not None and len(curve) < 2:
         raise ValidationError("voltage_speed_curve needs at least two points")
     lighting = data.get("lighting_voltage")
     if lighting is not None and float(lighting) < 0.0:
         raise ValidationError("lighting_voltage must not be below 0")
-    if "starting_voltage" in data and data["starting_voltage"] is not None:
-        if float(data["starting_voltage"]) < 0.0:
-            raise ValidationError("starting_voltage must not be below 0")
+    if data.get("starting_voltage") is not None and float(data["starting_voltage"]) < 0.0:
+        raise ValidationError("starting_voltage must not be below 0")
 
     with state.simulation_lock:
         registry = state.speed_profile_registry
         existing = registry.get(profile_id)
-        if not existing:
-            raise NotFoundError(f"Speed profile '{profile_id}' not found")
-
-        if existing.derived_from is not None:
-            model_fields = sorted(k for k in data if k not in _INSTANCE_HAND_EDITED)
-            if model_fields:
-                raise ValidationError(
-                    f"{', '.join(model_fields)} belong to model profile "
-                    f"'{existing.derived_from}'; edit that profile instead"
-                )
-        elif data.get("ato_min_voltage") is not None:
-            raise ValidationError(
-                "ato_min_voltage belongs to a locomotive's own profile; a model "
-                "profile has none"
-            )
+        if existing is None:
+            raise NotFoundError(f"Speed profile {profile_id!r} not found")
+        if existing.is_default:
+            raise ConflictError("The Default profile cannot be changed")
+        for key in ("profile_id", "model_id", "parent_profile_id"):
+            if key in data and as_profile_id(data[key]) != getattr(existing, key):
+                raise ValidationError(f"{key} is not edited by hand")
+            data.pop(key, None)
+        if "set_name" in data:
+            if not existing.is_set:
+                raise ValidationError("set_name belongs to a set")
+            data["set_name"] = str(data["set_name"] or "").strip()
+            if not data["set_name"]:
+                raise ValidationError("A set's name must not be blank")
 
         merged = existing.to_dict()
         merged.update(data)
@@ -334,62 +210,94 @@ def update_profile(
             updated = SpeedProfile.from_dict(merged)
         except (ValueError, KeyError, TypeError) as exc:
             raise ValidationError(f"Invalid profile data: {exc}") from exc
-        keep = (profile_id,) if "ato_min_voltage" in data else ()
+        keep = (existing.profile_id,) if "ato_min_voltage" in data else ()
         final, problems = settle_profile_writes(
-            registry, {profile_id: updated}, keep_ato_min=keep
+            registry, {existing.profile_id: updated}, keep_ato_min=keep
         )
         if problems:
             raise ValidationError("; ".join(problems))
         for record in final.values():
             registry.register(record)
+        return final[existing.profile_id]
 
-    return final[profile_id]
+
+# -------------------------------------------------------------- deletes ----
 
 
-def delete_profile(state: AppState, profile_id: str) -> bool:
-    """Delete a speed profile. Returns True on success.
+def delete_profile(state: AppState, profile_id: Any) -> List[int]:
+    """Delete a set and return the numbers removed.
+
+    design_new.md "SpeedProfile", Deleting a set or a model: the Default
+    profile and an instance profile are refused -- an instance profile goes
+    only with its train. No delete is refused because a train came from the
+    set; every train runs on its own copy.
 
     Raises:
         NotFoundError when no profile has that id.
-        ConflictError when the profile is the default, or is assigned to
-            one or more trains.
+        ConflictError when the profile is the Default profile or an instance
+            profile.
     """
     with state.simulation_lock:
-        profile = state.speed_profile_registry.get(profile_id)
-        if not profile:
-            raise NotFoundError(f"Speed profile '{profile_id}' not found")
-
-        if profile_id == DEFAULT_PROFILE_ID:
-            raise ConflictError("Cannot delete default speed profile")
-
-        trains_using = [
-            train.train_id
-            for train in state.network.trains.values()
-            if getattr(train, "speed_profile_id", None) == profile_id
-        ]
-        if trains_using:
-            raise ConflictError(
-                "Cannot delete speed profile in use by trains: "
-                + ", ".join(trains_using)
-            )
-
-        # A model profile may not be deleted while any registered instance
-        # profile still derives from it (design_new.md "SpeedProfile", Model
-        # profiles and instance profiles): those instances resolve their
-        # measured fields through the model, so removing it would strand them.
         registry = state.speed_profile_registry
-        derived_instances = [
-            pid
-            for pid in registry.list_profiles()
-            if getattr(registry.get(pid), "derived_from", None) == profile_id
-        ]
-        if derived_instances:
+        profile = registry.get(profile_id)
+        if profile is None:
+            raise NotFoundError(f"Speed profile {profile_id!r} not found")
+        if profile.is_default:
+            raise ConflictError("The Default profile cannot be deleted")
+        if profile.is_instance:
             raise ConflictError(
-                "Cannot delete model speed profile still derived from by "
-                "instances: " + ", ".join(sorted(derived_instances))
+                "A train's instance profile goes only with its train; delete "
+                "the train instead"
             )
+        registry.remove(profile.profile_id)
+        return [profile.profile_id]
 
-        if not state.speed_profile_registry.remove(profile_id):
-            raise ServiceError(f"Failed to delete speed profile '{profile_id}'")
 
-    return True
+# --------------------------------------------------------------- models ----
+
+
+def list_models(state: AppState) -> List[LocomotiveModel]:
+    with state.simulation_lock:
+        return state.speed_profile_registry.models()
+
+
+def rename_model(state: AppState, model_id: Any, *, name: Any) -> LocomotiveModel:
+    """Rename a model (design_new.md "SpeedProfile", Renaming a model moves
+    nothing). Raises ValidationError for a blank name, NotFoundError for an
+    unknown model."""
+    new_name = str(name or "").strip()
+    if not new_name:
+        raise ValidationError("A model's name must not be blank")
+    with state.simulation_lock:
+        model = state.speed_profile_registry.get_model(model_id)
+        if model is None:
+            raise NotFoundError(f"Model {model_id!r} not found")
+        model.name = new_name
+        return model
+
+
+def delete_model(state: AppState, model_id: Any) -> List[int]:
+    """Delete a model and every set naming it; return the set numbers removed
+    (design_new.md "SpeedProfile", Deleting a set or a model)."""
+    with state.simulation_lock:
+        registry = state.speed_profile_registry
+        if registry.get_model(model_id) is None:
+            raise NotFoundError(f"Model {model_id!r} not found")
+        return registry.remove_model(model_id)
+
+
+__all__ = [
+    "DEFAULT_PROFILE_ID",
+    "IDENTITY_FIELDS",
+    "delete_model",
+    "delete_profile",
+    "get_profile",
+    "list_models",
+    "list_profiles",
+    "profile_problems",
+    "profile_view",
+    "rename_model",
+    "require_profile",
+    "settle_profile_writes",
+    "update_profile",
+]

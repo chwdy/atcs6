@@ -293,8 +293,6 @@ def setup_demo_train(network, path_dispatcher=None, sim_controller=None):
 
     # One shared, slow profile so a lap over the ~3.1 m loop is watchable.
     profile = SpeedProfile(
-        profile_id="loop_profile",
-        name="Loop Stock",
         voltage_speed_curve=list(DEFAULT_SPEED_PROFILE.voltage_speed_curve),
         acceleration_rate=3.0,
         deceleration_rate=4.2,
@@ -305,7 +303,6 @@ def setup_demo_train(network, path_dispatcher=None, sim_controller=None):
         drag_coefficient=0.001,
         reference_speed_kmh=100.0,
     )
-    network.speed_profiles.register(profile)
 
     # Place one 20 cm loco at the bottom of the left column, facing north so it
     # heads forward around the loop (north out of (3, 8) leads into AA866E).
@@ -318,8 +315,8 @@ def setup_demo_train(network, path_dispatcher=None, sim_controller=None):
         train_type="LOCOMOTIVE",
         initial_cab="A",
         start_tile=(3, 8),
+        source_profile=profile,
     )
-    train.speed_profile_id = profile.profile_id
 
     # Build the CIRCULAR route for the selected mode. Tasks are listed in loop
     # order so the loco keeps going one way around, and task_direction "either"

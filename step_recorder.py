@@ -370,8 +370,12 @@ class StepRecorder:
                 op["car_number"] = train.car_number
             if train.min_radius_cm is not None:
                 op["min_radius_cm"] = train.min_radius_cm
-            if train.speed_profile_id is not None:
-                op["speed_profile_id"] = train.speed_profile_id
+            # Record the profile the train's instance was copied from, so a
+            # replay gives the train the same set (design_new.md "SpeedProfile",
+            # Giving a train a profile).
+            instance = network.speed_profiles.get(train.speed_profile_id)
+            if instance is not None and instance.parent_profile_id is not None:
+                op["speed_profile_id"] = instance.parent_profile_id
 
             steps.append(
                 {

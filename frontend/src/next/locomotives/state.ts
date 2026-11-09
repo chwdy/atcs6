@@ -7,23 +7,23 @@ import { signal } from '@preact/signals';
 
 import type { CalibrationGroupSummary } from '../../editor/editor-speed-profiles';
 import {
+  modelsFromNetwork,
   profilesFromNetwork,
-  rosterFromNetwork,
   trainsFromNetwork,
+  type ModelSummary,
   type ProfileSummary,
-  type RosterEntry,
   type Selection,
   type TrainSummary,
 } from './model';
 
-/** The Train Roster (design_new.md "Train Roster"). */
-export const roster = signal<RosterEntry[]>([]);
-
 /** Every train the layout holds, placed or not. */
 export const trains = signal<TrainSummary[]>([]);
 
-/** Every stored speed profile except the built-in `default`. */
+/** Every speed profile: the Default profile, the sets, and each train's own. */
 export const profiles = signal<ProfileSummary[]>([]);
+
+/** Every locomotive model. */
+export const models = signal<ModelSummary[]>([]);
 
 /** What the left list has picked. */
 export const selection = signal<Selection>(null);
@@ -38,9 +38,9 @@ function setIfChanged<T>(target: { peek(): T; value: T }, next: T): void {
 }
 
 export function updateFromNetwork(network: any): void {
-  setIfChanged(roster, rosterFromNetwork(network));
   setIfChanged(trains, trainsFromNetwork(network));
   setIfChanged(profiles, profilesFromNetwork(network));
+  setIfChanged(models, modelsFromNetwork(network));
 }
 
 export function setCalibration(summary: CalibrationGroupSummary | null): void {

@@ -4,49 +4,44 @@ import type { CalibrationGroupSummary } from '../../editor/editor-speed-profiles
 import {
   calibrationRunShown,
   calibrationSteps,
-  modelProfiles,
+  measuredAt,
+  modelsFromNetwork,
   panelTarget,
-  profileName,
-  rosterFromNetwork,
-  rosterPayload,
-  rosterFormFrom,
+  placedTrains,
+  profilesFromNetwork,
   selectionForProfile,
   selectionForTrain,
+  setsOf,
+  trainSource,
+  trainsFrom,
   trainsFromNetwork,
-  trainsNotInRoster,
-  type RosterEntry,
+  type ProfileSummary,
   type TrainSummary,
 } from './model';
-
-const entry = (over: Partial<RosterEntry> = {}): RosterEntry => ({
-  entry_id: 'R1',
-  name: 'Class 47 #2',
-  model: 'Bachmann Class 47',
-  purchase_date: null,
-  purchase_price: null,
-  consist_length_cm: 22,
-  max_speed: null,
-  min_radius_cm: null,
-  max_slope: 0,
-  speed_profile_id: 'inst_R1',
-  ...over,
-});
 
 const train = (over: Partial<TrainSummary> = {}): TrainSummary => ({
   id: 'T1',
   name: 'T1',
-  model: '',
+  carNumber: '',
   lengthCm: 22,
-  speedProfileId: 'inst_T1',
-  rosterEntryId: null,
+  speedProfileId: 11,
   placed: true,
   status: 'MANUAL',
   stopped: true,
   ...over,
 });
 
+const profiles: ProfileSummary[] = [
+  { profile_id: 0, model_id: null, set_name: '', parent_profile_id: null, calibrated_at: null },
+  { profile_id: 1, model_id: 1, set_name: '2', parent_profile_id: null, calibrated_at: '2026-11-08T03:37:42+00:00' },
+  { profile_id: 3, model_id: 1, set_name: '1', parent_profile_id: null, calibrated_at: null },
+  { profile_id: 11, model_id: null, set_name: '', parent_profile_id: 1, calibrated_at: '2026-11-08T03:37:42+00:00' },
+  { profile_id: 12, model_id: null, set_name: '', parent_profile_id: 77, calibrated_at: null },
+];
+const models = [{ model_id: 1, name: 'H100' }];
+
 const summary = (over: Partial<CalibrationGroupSummary> = {}): CalibrationGroupSummary => ({
-  profileId: 'inst_R1',
+  profileId: 11,
   trainId: 'T1',
   view: 'none',
   ready: true,
@@ -58,94 +53,67 @@ const summary = (over: Partial<CalibrationGroupSummary> = {}): CalibrationGroupS
 });
 
 describe('reading the network snapshot', () => {
-  it('reads roster entries and trains, with train_status upper case and placement from the span', () => {
+  it('reads trains, profiles and models, with numeric ids', () => {
     const network = {
-      train_roster: [{ entry_id: 'R1', name: 'A', model: 'M', purchase_price: 10, max_slope: 0, speed_profile_id: null }],
       trains: [
-        { id: 'T1', car_number: '', speed_profile_id: 'p', roster_entry_id: 'R1' },
-        { id: 'T2', car_number: '47 102', speed_profile_id: 'q', roster_entry_id: null },
+        { id: 'T1', car_number: '', speed_profile_id: 11 },
+        { id: 'T2', car_number: '47 102', speed_profile_id: 12 },
       ],
       controllers_by_train_id: { T1: { span: { x: 1 }, train_status: 'calibrating', is_stopped: false }, T2: { span: null } },
+      speed_profiles: { '1': { profile_id: 1, model_id: 1, set_name: '1', parent_profile_id: null } },
+      locomotive_models: [{ model_id: 1, name: 'H100' }],
     };
-    expect(rosterFromNetwork(network)[0]).toMatchObject({ entry_id: 'R1', purchase_price: 10, speed_profile_id: null });
     const [t1, t2] = trainsFromNetwork(network);
-    expect(t1).toMatchObject({ name: 'T1', placed: true, status: 'CALIBRATING', stopped: false, rosterEntryId: 'R1' });
+    expect(t1).toMatchObject({ name: 'T1', placed: true, status: 'CALIBRATING', stopped: false, speedProfileId: 11 });
     expect(t2).toMatchObject({ name: '47 102', placed: false, status: 'OFF' });
+    expect(profilesFromNetwork(network)[0]).toMatchObject({ profile_id: 1, model_id: 1, set_name: '1' });
+    expect(modelsFromNetwork(network)).toEqual([{ model_id: 1, name: 'H100' }]);
   });
 });
 
 describe('the left list', () => {
-  it('lists placed trains whose roster entry is not listed, and no unplaced ones', () => {
-    const trains = [
-      train({ id: 'A', name: 'A', rosterEntryId: 'R1' }),
-      train({ id: 'B', name: 'B', rosterEntryId: 'GONE' }),
-      train({ id: 'C', name: 'C' }),
-      train({ id: 'D', name: 'D', placed: false }),
-    ];
-    expect(trainsNotInRoster(trains, [entry()]).map((t) => t.id)).toEqual(['B', 'C']);
+  it('lists only placed trains, by name', () => {
+    const trains = [train({ id: 'B', name: 'B' }), train({ id: 'A', name: 'A' }), train({ id: 'C', name: 'C', placed: false })];
+    expect(placedTrains(trains).map((t) => t.id)).toEqual(['A', 'B']);
   });
 
-  it('lists model profiles only, default first even when the snapshot leaves it out', () => {
-    const profiles = [
-      { profile_id: 'z_model', name: '', model: '', derived_from: null, calibrated_at: null },
-      { profile_id: 'inst', name: '', model: '', derived_from: 'z_model', calibrated_at: null },
-      { profile_id: 'a_model', name: '', model: '', derived_from: null, calibrated_at: null },
-    ];
-    expect(modelProfiles(profiles).map((p) => p.profile_id)).toEqual(['default', 'a_model', 'z_model']);
+  it('lists a model’s sets by set name', () => {
+    expect(setsOf(1, profiles).map((p) => p.set_name)).toEqual(['1', '2']);
   });
 
-  it('orders model profiles by the name they show, the id when they have none', () => {
-    const profiles = [
-      { profile_id: 'a_model', name: 'Zebra', model: '', derived_from: null, calibrated_at: null },
-      { profile_id: 'm_model', name: '', model: '', derived_from: null, calibrated_at: null },
-      { profile_id: 'z_model', name: 'Alpha', model: '', derived_from: null, calibrated_at: null },
-    ];
-    expect(modelProfiles(profiles).map(profileName)).toEqual(['Default', 'Alpha', 'm_model', 'Zebra']);
+  it('names where a train’s profile came from, by model and set', () => {
+    expect(trainSource(train(), profiles, models)).toBe('H100 · 2');
+    expect(trainSource(train({ speedProfileId: 12 }), profiles, models)).toBe('Set deleted');
+  });
+
+  it('dates a profile by its own curve', () => {
+    expect(measuredAt(11, profiles)).toBe('2026-11-08T03:37:42+00:00');
+    expect(measuredAt(3, profiles)).toBeNull();
+  });
+
+  it('names the trains copied from a set', () => {
+    expect(trainsFrom(1, [train({ name: 'H100' }), train({ id: 'T2', speedProfileId: 12 })], profiles).map((t) => t.name)).toEqual(['H100']);
   });
 });
 
 describe('panelTarget', () => {
-  it('shows a roster entry’s own profile and names the train placed from it', () => {
-    const trains = [train({ id: 'T9', name: 'T9', rosterEntryId: 'R1', speedProfileId: 'inst_R1' })];
-    expect(panelTarget({ kind: 'roster', entryId: 'R1' }, [entry()], trains)).toEqual({ profileId: 'inst_R1', trainId: 'T9' });
+  it('shows a train’s own profile with the train named, and a set as itself', () => {
+    expect(panelTarget({ kind: 'train', trainId: 'T1' }, [train()])).toEqual({ profileId: 11, trainId: 'T1' });
+    expect(panelTarget({ kind: 'set', profileId: 3 }, [train()])).toEqual({ profileId: 3, trainId: null });
   });
 
-  it('falls back to the placed train’s profile when the entry names none', () => {
-    const trains = [train({ id: 'T9', rosterEntryId: 'R1', speedProfileId: 'seeded' })];
-    expect(panelTarget({ kind: 'roster', entryId: 'R1' }, [entry({ speed_profile_id: null })], trains)).toEqual({
-      profileId: 'seeded',
-      trainId: 'T9',
-    });
-  });
-
-  it('names the asked train when more than one was placed from the entry', () => {
-    const trains = [
-      train({ id: 'A', name: 'A', rosterEntryId: 'R1' }),
-      train({ id: 'B', name: 'B', rosterEntryId: 'R1' }),
-    ];
-    expect(panelTarget({ kind: 'roster', entryId: 'R1' }, [entry()], trains).trainId).toBe('A');
-    expect(panelTarget({ kind: 'roster', entryId: 'R1', trainId: 'B' }, [entry()], trains).trainId).toBe('B');
-  });
-
-  it('names no train for an unplaced entry, a model profile, or the Add form', () => {
-    expect(panelTarget({ kind: 'roster', entryId: 'R1' }, [entry()], [])).toEqual({ profileId: 'inst_R1', trainId: null });
-    expect(panelTarget({ kind: 'profile', profileId: 'm' }, [], [])).toEqual({ profileId: 'm', trainId: null });
-    expect(panelTarget({ kind: 'new' }, [], [])).toEqual({ profileId: null, trainId: null });
-  });
-
-  it('opens a train through its roster entry when it came from one', () => {
-    const trains = [train({ id: 'T1', rosterEntryId: 'R1' }), train({ id: 'T2' })];
-    expect(selectionForTrain('T1', [entry()], trains)).toEqual({ kind: 'roster', entryId: 'R1', trainId: 'T1' });
-    expect(selectionForTrain('T2', [entry()], trains)).toEqual({ kind: 'train', trainId: 'T2' });
+  it('shows no panel for a model or the Default profile', () => {
+    expect(panelTarget({ kind: 'model', modelId: 1 }, [train()])).toEqual({ profileId: null, trainId: null });
+    expect(panelTarget({ kind: 'default' }, [train()])).toEqual({ profileId: null, trainId: null });
   });
 });
 
 describe('selectionForProfile', () => {
-  it('picks the locomotive a profile belongs to, and a model profile as itself', () => {
-    const trains = [train({ id: 'T1', rosterEntryId: 'R1', speedProfileId: 'inst_R1' }), train({ id: 'T2', speedProfileId: 'inst_T2' })];
-    expect(selectionForProfile('inst_R1', [entry()], trains)).toEqual({ kind: 'roster', entryId: 'R1' });
-    expect(selectionForProfile('inst_T2', [entry()], trains)).toEqual({ kind: 'train', trainId: 'T2' });
-    expect(selectionForProfile('class47', [entry()], trains)).toEqual({ kind: 'profile', profileId: 'class47', fromPanel: true });
+  it('picks the train a profile belongs to, a set as itself, and the Default', () => {
+    expect(selectionForProfile(11, [train()], profiles)).toEqual({ kind: 'train', trainId: 'T1' });
+    expect(selectionForProfile(3, [train()], profiles)).toEqual({ kind: 'set', profileId: 3, fromPanel: true });
+    expect(selectionForProfile(0, [train()], profiles)).toEqual({ kind: 'default' });
+    expect(selectionForTrain('T1')).toEqual({ kind: 'train', trainId: 'T1' });
   });
 });
 
@@ -177,29 +145,5 @@ describe('calibrationSteps', () => {
     expect(calibrationRunShown(summary({ view: 'speed-setup' }))).toBe(true);
     expect(calibrationRunShown(summary({ view: 'speed-running' }))).toBe(true);
     expect(calibrationRunShown(summary({ view: 'speed-running', trainId: null }))).toBe(false);
-  });
-});
-
-describe('rosterPayload', () => {
-  it('sends blank fields as not given and parses numbers', () => {
-    const form = { ...rosterFormFrom(entry()), purchase_price: '89.5', consist_length_cm: '', max_slope: '' };
-    const { body, errors } = rosterPayload(form, null);
-    expect(errors).toEqual([]);
-    expect(body).toMatchObject({ name: 'Class 47 #2', purchase_price: 89.5, consist_length_cm: null, max_slope: 0 });
-    expect(body).not.toHaveProperty('entry_id');
-  });
-
-  it('keeps the id and the profile link on an edit, because POST replaces the whole entry', () => {
-    const { body } = rosterPayload(rosterFormFrom(entry()), entry());
-    expect(body).toMatchObject({ entry_id: 'R1', speed_profile_id: 'inst_R1' });
-  });
-
-  it('refuses a form with neither name nor model, or a number that does not parse', () => {
-    const blank = { ...rosterFormFrom(entry()), name: ' ', model: '' };
-    expect(rosterPayload(blank, null).body).toBeNull();
-    const bad = { ...rosterFormFrom(entry()), purchase_price: 'cheap' };
-    const result = rosterPayload(bad, null);
-    expect(result.body).toBeNull();
-    expect(result.errors[0]).toContain('Purchase price');
   });
 });

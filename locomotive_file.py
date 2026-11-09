@@ -1,20 +1,22 @@
-"""The locomotive file: where speed profiles and the train roster are kept.
+"""The locomotive file: where models, sets and the id counters are kept.
 
-design_new.md "SpeedProfile", Where profiles and the roster are kept. Every
-`SpeedProfile` and every `RosterEntry` lives in one app-managed JSON file,
-`locomotives.json`, not in a layout save file, so a measured curve survives a
-restart, loading another layout, and clearing the network.
+design_new.md "SpeedProfile", Where models, sets and instance profiles are
+kept. Every `LocomotiveModel`, every set, and the two id counters live in one
+app-managed JSON file, `locomotives.json`, not in a layout save file, so a
+measured set survives a restart, loading another layout, and clearing the
+network. A train's instance profile is never written here: it lives with the
+train.
 
 The file is off until `enable(path)` names it. Only the real server does that
 (through `bootstrap_runtime(locomotive_file_path=...)`), so unit tests never
 read or write the developer's file.
 
-- `load_into(network, notification_center)` runs once, at startup, after the
-  scene and its trains exist. A file record replaces a scene record with the
-  same id.
+- `load_into(network, notification_center)` runs once, at startup, before the
+  scene is built, so scene trains' instance profiles take numbers the file has
+  not given out.
 - `save_if_changed(network, notification_center)` runs after every request that
-  can change state, and rewrites the file only when the profiles or the roster
-  differ from what it last wrote.
+  can change state, and rewrites the file only when the library differs from
+  what it last wrote.
 """
 
 from __future__ import annotations
@@ -29,7 +31,7 @@ from runtime_payloads import ErrorRecord
 
 LOCOMOTIVE_FILE_PATH = "locomotives.json"
 UNREADABLE_SUFFIX = ".unreadable"
-FILE_VERSION = 1
+FILE_VERSION = 2
 
 _SOURCE = "LocomotiveFile"
 
@@ -59,17 +61,10 @@ def enabled_path() -> Optional[str]:
 
 
 def contents(network) -> Dict[str, Any]:
-    """What the file holds for `network`: every saved profile and roster entry.
-
-    The seeded pair an unidentified train carries is left out
-    (design_new.md "Unidentified trains", Runtime only), through
-    `RailwayNetwork.saved_speed_profiles()`.
-    """
-    return {
-        "version": FILE_VERSION,
-        "speed_profiles": network.saved_speed_profiles(),
-        "train_roster": network.train_roster.to_dict(),
-    }
+    """What the file holds for `network`: every model, every set, and both id
+    counters (design_new.md "SpeedProfile", Where models, sets and instance
+    profiles are kept)."""
+    return {"version": FILE_VERSION, **network.speed_profiles.library_dict()}
 
 
 def _emit_error(notification_center, operation: str, message: str, detail: str) -> None:
@@ -87,7 +82,7 @@ def _emit_error(notification_center, operation: str, message: str, detail: str) 
 
 
 def load_into(network, notification_center=None) -> bool:
-    """Add every profile and roster entry in the file to `network`.
+    """Add every model and set in the file to `network`, and take its counters.
 
     Merges in place, so every holder of `network.speed_profiles` (the
     simulation controller keeps a reference) sees the loaded records. Returns
@@ -105,15 +100,12 @@ def load_into(network, notification_center=None) -> bool:
         data = json.loads(path.read_text())
         if not isinstance(data, dict):
             raise ValueError("the file does not hold a JSON object")
-        from speed_profile import SpeedProfile
-        from train_roster import RosterEntry
+        from speed_profile import SpeedProfileRegistry
 
-        profiles = [
-            SpeedProfile.from_dict(p)
-            for pid, p in (data.get("speed_profiles") or {}).items()
-            if pid != "default"
-        ]
-        entries = [RosterEntry.from_dict(e) for e in data.get("train_roster") or []]
+        # Parse into a scratch registry first, so a file that fails halfway
+        # adds nothing to the live one.
+        scratch = SpeedProfileRegistry()
+        scratch.load_library(data)
     except Exception as exc:  # any parse failure: keep the data, start fresh
         moved = path.with_name(path.name + UNREADABLE_SUFFIX)
         try:
@@ -125,20 +117,18 @@ def load_into(network, notification_center=None) -> bool:
             notification_center,
             "load_into",
             f"locomotive file {path.name} could not be read and was {where}; "
-            "starting from the scene's profiles and roster",
+            "starting with no models or sets",
             str(exc),
         )
         return False
-    for profile in profiles:
-        network.speed_profiles.register(profile)
-    for entry in entries:
-        network.train_roster.add_entry(entry)
+    network.speed_profiles.load_library(data)
     _last_written = contents(network)
     return True
 
 
 def save_if_changed(network, notification_center=None) -> bool:
-    """Rewrite the file when the profiles or roster differ from the last write.
+    """Rewrite the file when the models, sets or counters differ from the last
+    write.
 
     Returns True when it wrote. The write goes to a temporary file first and is
     then renamed over the old one, so a crash mid-write never leaves half a file.

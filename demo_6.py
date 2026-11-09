@@ -1064,8 +1064,6 @@ def setup_demo_train(
 
     # One shared profile for the stock (definition state only).
     profile = SpeedProfile(
-        profile_id="yard_profile",
-        name="Yard Stock",
         voltage_speed_curve=list(DEFAULT_SPEED_PROFILE.voltage_speed_curve),
         acceleration_rate=3.0,
         deceleration_rate=4.2,
@@ -1076,7 +1074,6 @@ def setup_demo_train(
         drag_coefficient=0.001,
         reference_speed_kmh=100.0,
     )
-    network.speed_profiles.register(profile)
 
     # Place the yard stock. Facing + head tile are resolved from the layout so
     # each loco sits fully inside its road (head at the throat, body in the
@@ -1092,8 +1089,8 @@ def setup_demo_train(
             train_type="LOCOMOTIVE",
             initial_cab="A",
             start_tile=head_tile,
+            source_profile=profile,
         )
-        train.speed_profile_id = profile.profile_id
 
     # Build + register the two CIRCULAR routes. start_mode=NEAREST means each
     # train heads for the stop nearest its yard rather than all racing to the

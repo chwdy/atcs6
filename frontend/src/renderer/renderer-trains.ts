@@ -86,6 +86,8 @@ export interface TrainSnap {
 
 export interface Train {
   id: string;
+  /** The locomotive's name; blank shows the id. */
+  car_number?: string;
   num_cars?: number;
   is_unidentified?: boolean;
 }
@@ -965,7 +967,8 @@ export class RendererTrainHandler {
     const s = this.scale;
     const tileSize = this.gridSize * s;
 
-    const labelText = train.id;
+    // A locomotive has one name (design_new.md "Train Entity").
+    const labelText = train.car_number || train.id;
     this.ctx.save();
     this.ctx.font = `bold ${9 * s}px sans-serif`;
     const textMetrics = this.ctx.measureText(labelText);

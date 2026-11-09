@@ -19,15 +19,24 @@ train is held at so its lamps light; `starting_voltage`, the lowest voltage at
 which the locomotive moves at all, which the curve is read from (The curve is
 read from the starting voltage up); and `ato_min_voltage`, the lowest voltage
 ATO drives a moving train at (ATO minimum voltage and ATO minimum speed).
+
+Records are organised as models, sets and instance profiles (design_new.md
+"SpeedProfile", Models, sets and instance profiles): the fixed Default profile
+`0`; sets, each belonging to one `LocomotiveModel`; and one instance profile
+per train, a copy of the profile the train was given. Every profile and model
+id is a number from a counter that never gives a number out twice
+(Profile and model ids are numbers).
 """
 
-from dataclasses import dataclass, field
-from typing import Dict, List, Tuple, Any, Optional
+import copy
+from dataclasses import dataclass, field, fields
+from typing import Dict, Iterable, List, Tuple, Any, Optional
 
 from constants import (
     DEFAULT_SEEDED_FIRST_POINT_VOLTAGE_V,
     DEFAULT_SEEDED_MAX_VOLTAGE_V,
     DEFAULT_SEEDED_STARTING_VOLTAGE_V,
+    DEFAULT_SEEDED_TOP_SPEED_KMH,
 )
 from enums import HandlePosition, POWER_MULTIPLIERS, BRAKE_MULTIPLIERS
 
@@ -96,14 +105,72 @@ def curve_problems(
     return problems
 
 
+# The fixed Default profile's number (design_new.md "SpeedProfile", Models,
+# sets and instance profiles).
+DEFAULT_PROFILE_ID = 0
+
+# The fields that say which record a profile is and where it came from. A copy,
+# a promote and a hand edit never write them as values (design_new.md
+# "SpeedProfile", Copying a profile; Editing a profile by hand).
+IDENTITY_FIELDS = ("profile_id", "model_id", "set_name", "parent_profile_id")
+
+
+def _top_speed_or_default(max_speed_kmh: Any) -> float:
+    """A usable top speed: `max_speed_kmh`, or the Default top speed when it is
+    missing, not a number, or not above 0."""
+    try:
+        top = float(max_speed_kmh)
+    except (TypeError, ValueError):
+        return float(DEFAULT_SEEDED_TOP_SPEED_KMH)
+    return top if top > 0.0 else float(DEFAULT_SEEDED_TOP_SPEED_KMH)
+
+
+def as_profile_id(value: Any) -> Optional[int]:
+    """`value` as a profile or model number, or None when it is not one. A
+    profile id is never a string (design_new.md "SpeedProfile", Profile and
+    model ids are numbers); a JSON body or a URL may still carry its digits."""
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.strip().lstrip("-").isdigit():
+        return int(value.strip())
+    return None
+
+
+@dataclass
+class LocomotiveModel:
+    """A locomotive model as written on the box (design_new.md "SpeedProfile",
+    `LocomotiveModel`). It groups the sets measured on locomotives of that
+    model; every set names it by `model_id`."""
+
+    model_id: int
+    name: str
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {"model_id": self.model_id, "name": self.name}
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "LocomotiveModel":
+        return cls(model_id=int(data["model_id"]), name=str(data.get("name", "")))
+
+
 @dataclass
 class SpeedProfile:
     """
-    One locomotive's (or one model's) measured response to track voltage.
+    A locomotive's measured response to track voltage, plus its motion rates.
+
+    A record is the Default profile (`profile_id == 0`), a set (`model_id`
+    set), or a train's instance profile (design_new.md "SpeedProfile", Models,
+    sets and instance profiles). Every record is complete: no field is read
+    from another record.
 
     Attributes:
-        profile_id: Unique identifier for this profile
-        name: Display name
+        profile_id: The profile's number.
+        model_id: On a set, the `LocomotiveModel` it belongs to.
+        set_name: On a set, its name within its model.
+        parent_profile_id: On an instance profile, the profile it was last
+            copied from (a set or the Default profile), or None.
         voltage_speed_curve: `(track_voltage, speed_kmh)` points, voltage
             ascending. The last is at `max_voltage` and carries the top speed.
             It is read from `starting_voltage` up.
@@ -112,52 +179,24 @@ class SpeedProfile:
             light only once it moves (it then stands at `0` V).
         starting_voltage: The lowest voltage at which the locomotive moves at
             all; below `max_voltage`.
-        ato_min_voltage: The ATO minimum voltage the operator set for this
-            locomotive, or None (ATO then runs from the curve's first point
-            above the starting voltage). Carried by instance profiles only.
-        acceleration_rate: Speed increase rate (km/h per second)
-        deceleration_rate: Service brake rate (km/h per second)
-        emergency_brake_rate: Emergency brake rate (km/h per second)
-        friction_rate: Coasting deceleration rate (km/h per second) when handle is N
+        ato_min_voltage: The ATO minimum voltage the operator set, or None
+            (ATO then runs from the curve's first point above the starting
+            voltage).
     """
 
-    profile_id: str
-    name: str
-    # The model profile this record overlays. None on a model profile (a full
-    # record describing a locomotive model); set to a model profile's id on an
-    # instance profile (one physical locomotive). It is the field that says
-    # which of the two kinds a record is (design_new.md "SpeedProfile", Model
-    # profiles and instance profiles). An instance profile carries only its own
-    # fields (`lighting_voltage`, `starting_voltage`, `voltage_speed_curve`,
-    # `calibrated_at`, `ato_min_voltage`) and reads every other field from the
-    # model profile it derives from (`ato_min_voltage` from the instance alone);
-    # `SpeedProfileRegistry.resolve` is the one accessor that merges the two.
-    derived_from: Optional[str] = None
-    # The locomotive model this profile describes, written the same way
-    # `RosterEntry.model` writes it (design_new.md "SpeedProfile"). Carried by
-    # model profiles only. Blank on a model profile seeded at train creation.
-    model: str = ""
+    profile_id: int = DEFAULT_PROFILE_ID
+    model_id: Optional[int] = None
+    set_name: str = ""
+    parent_profile_id: Optional[int] = None
     # Wall-clock ISO-8601 stamp of the last `voltage_speed_curve` write by a
     # speed-calibration commit; None until a commit first writes it. A hand edit
     # does not write it, so it dates the last measurement, not the last change.
-    # On an instance it is resolved from whichever record supplies the curve
-    # (see `_overlay_instance_on_model`).
     calibrated_at: Optional[str] = None
-    # An instance-eligible field. None means "unset": a MODEL profile fills the
-    # seeded default in __post_init__; an INSTANCE profile keeps None and
-    # `SpeedProfileRegistry.resolve` reads the model's curve.
+    # None at construction means "the Default curve" (filled in __post_init__).
     voltage_speed_curve: Optional[List[Tuple[float, float]]] = None
-    # An instance-eligible field. None on a model profile means the locomotive
-    # has no lighting voltage (it stands at 0 V); None on an instance profile
-    # means "read the model's value".
     lighting_voltage: Optional[float] = None
-    # An instance-eligible field. None means "unset": a MODEL profile fills
-    # DEFAULT_SEEDED_STARTING_VOLTAGE_V in __post_init__; an INSTANCE profile
-    # keeps None and reads the model's value.
+    # None at construction means "the Default starting voltage".
     starting_voltage: Optional[float] = None
-    # Instance profiles only: None means ATO runs from the curve's first point
-    # above the starting voltage (design_new.md "SpeedProfile", ATO minimum
-    # voltage and ATO minimum speed).
     ato_min_voltage: Optional[float] = None
     acceleration_rate: float = 10.0  # km/h per second
     deceleration_rate: float = 15.0  # km/h per second (service brake)
@@ -182,26 +221,43 @@ class SpeedProfile:
     )
 
     def __post_init__(self) -> None:
-        """Fill a model profile's unset curve and starting voltage, and sort the
-        curve by voltage.
-
-        A MODEL profile (`derived_from is None`) is a complete record: an unset
-        `voltage_speed_curve` gets the seeded default for a `100 km/h` top
-        speed, and an unset `starting_voltage` gets
-        `DEFAULT_SEEDED_STARTING_VOLTAGE_V`. An INSTANCE profile keeps its unset
-        fields None ("read from the model").
-        """
-        if self.derived_from is None and self.voltage_speed_curve is None:
+        """Fill an unset curve and starting voltage with the Default values,
+        and sort the curve by voltage, so every record is complete."""
+        if self.voltage_speed_curve is None:
             self.voltage_speed_curve = seeded_voltage_speed_curve(
-                100.0, self.max_voltage
+                DEFAULT_SEEDED_TOP_SPEED_KMH, self.max_voltage
             )
-        if self.derived_from is None and self.starting_voltage is None:
+        if self.starting_voltage is None:
             self.starting_voltage = float(DEFAULT_SEEDED_STARTING_VOLTAGE_V)
-        if self.voltage_speed_curve is not None:
-            self.voltage_speed_curve = sorted(
-                ((float(v), float(sp)) for v, sp in self.voltage_speed_curve),
-                key=lambda x: x[0],
-            )
+        self.voltage_speed_curve = sorted(
+            ((float(v), float(sp)) for v, sp in self.voltage_speed_curve),
+            key=lambda x: x[0],
+        )
+
+    # -- which record this is ------------------------------------------------
+
+    @property
+    def is_default(self) -> bool:
+        return self.profile_id == DEFAULT_PROFILE_ID
+
+    @property
+    def is_set(self) -> bool:
+        return self.model_id is not None
+
+    @property
+    def is_instance(self) -> bool:
+        return not self.is_default and not self.is_set
+
+    @classmethod
+    def value_fields(cls) -> Tuple[str, ...]:
+        """Every field a copy or a promote writes: all but the identity fields."""
+        return tuple(f.name for f in fields(cls) if f.name not in IDENTITY_FIELDS)
+
+    def copy_values_from(self, source: "SpeedProfile") -> None:
+        """Write every value field of `source` onto this record (design_new.md
+        "SpeedProfile", Copying a profile). Identity fields are left alone."""
+        for name in self.value_fields():
+            setattr(self, name, copy.deepcopy(getattr(source, name)))
 
     # -- the curve's landmarks ---------------------------------------------
 
@@ -341,15 +397,11 @@ class SpeedProfile:
         """Convert to dictionary for JSON serialization."""
         return {
             "profile_id": self.profile_id,
-            "name": self.name,
-            "derived_from": self.derived_from,
-            "model": self.model,
+            "model_id": self.model_id,
+            "set_name": self.set_name,
+            "parent_profile_id": self.parent_profile_id,
             "calibrated_at": self.calibrated_at,
-            "voltage_speed_curve": (
-                None
-                if self.voltage_speed_curve is None
-                else [[v, sp] for v, sp in self.voltage_speed_curve]
-            ),
+            "voltage_speed_curve": [[v, sp] for v, sp in self.voltage_speed_curve],
             "lighting_voltage": self.lighting_voltage,
             "starting_voltage": self.starting_voltage,
             "ato_min_voltage": self.ato_min_voltage,
@@ -385,12 +437,13 @@ class SpeedProfile:
         starting_voltage = None if starting_raw is None else float(starting_raw)
         ato_min_raw = data.get("ato_min_voltage")
         ato_min_voltage = None if ato_min_raw is None else float(ato_min_raw)
+        profile_id = as_profile_id(data.get("profile_id"))
 
         return cls(
-            profile_id=data.get("profile_id", ""),
-            name=data.get("name", ""),
-            derived_from=data.get("derived_from") or None,
-            model=str(data.get("model", "") or ""),
+            profile_id=DEFAULT_PROFILE_ID if profile_id is None else profile_id,
+            model_id=as_profile_id(data.get("model_id")),
+            set_name=str(data.get("set_name", "") or ""),
+            parent_profile_id=as_profile_id(data.get("parent_profile_id")),
             calibrated_at=data.get("calibrated_at") or None,
             voltage_speed_curve=curve,
             lighting_voltage=lighting_voltage,
@@ -414,263 +467,301 @@ class SpeedProfile:
         )
 
 
-DEFAULT_SPEED_PROFILE = SpeedProfile(
-    profile_id="default",
-    name="Default HO Scale",
-    acceleration_rate=10.0,
-    deceleration_rate=15.0,
-    emergency_brake_rate=30.0,
-)
+def make_default_profile() -> SpeedProfile:
+    """The fixed Default profile `0` (design_new.md "SpeedProfile", The
+    Default profile is fixed)."""
+    return SpeedProfile(profile_id=DEFAULT_PROFILE_ID)
 
 
-def make_default_speed_profile(train_id: str, max_speed_kmh: float) -> SpeedProfile:
-    """Build a train's default `SpeedProfile` (design_new.md "SpeedProfile").
-
-    Its `voltage_speed_curve` is the seeded straight line reaching the owning
-    train's configured `max_speed` at `max_voltage`. This is the single home for
-    that default: `SimulationController.add_train` registers one per train, and
-    the `_get_speed_profile` resolvers fall back to it for trains created by
-    paths that do not seed a profile (layout load, step replay, editor
-    add-without-place).
-    """
-    # `Train.from_dict` returns None for an explicit `"max_speed": null`, and
-    # `float(None)` raises; a missing / non-numeric max_speed reads as 100 km/h.
-    try:
-        top_speed = float(max_speed_kmh)
-    except (TypeError, ValueError):
-        top_speed = 100.0
-    if top_speed <= 0.0:
-        top_speed = 100.0
-    return SpeedProfile(
-        profile_id=f"default_{train_id}",
-        name=f"Default ({train_id})",
-        voltage_speed_curve=seeded_voltage_speed_curve(top_speed),
-    )
+# The Default profile as a constant, for readers that need a complete profile
+# before any registry exists. It is never written.
+DEFAULT_SPEED_PROFILE = make_default_profile()
 
 
-def make_instance_profile(
-    model_profile_id: str, *, profile_id: str, name: str = ""
+def copied_profile(
+    source: SpeedProfile, *, profile_id: int, max_speed_kmh: Any = None
 ) -> SpeedProfile:
-    """An empty instance profile deriving from `model_profile_id`.
+    """A new instance-profile record holding a copy of `source` (design_new.md
+    "SpeedProfile", Copying a profile).
 
-    It carries none of its own fields yet (design_new.md "SpeedProfile",
-    Model profiles and instance profiles): every field resolves from the model
-    profile until **Speed calibration** or a hand edit writes one onto this
-    instance.
+    Every value field comes from `source`; `parent_profile_id` names
+    `source.profile_id`. A copy of the Default profile draws its curve to
+    `max_speed_kmh` instead of the Default top speed.
     """
-    return SpeedProfile(
-        profile_id=profile_id, name=name, derived_from=model_profile_id
-    )
+    record = SpeedProfile(profile_id=int(profile_id))
+    record.copy_values_from(source)
+    record.parent_profile_id = source.profile_id
+    if source.is_default:
+        record.voltage_speed_curve = seeded_voltage_speed_curve(
+            _top_speed_or_default(max_speed_kmh), record.max_voltage
+        )
+    return record
 
 
-def seed_default_profile_pair(registry, train_id: str, max_speed_kmh) -> str:
-    """Register a default model profile plus an empty instance under it.
+def fallback_profile_for(train) -> SpeedProfile:
+    """A complete profile for a train whose instance profile cannot be found.
 
-    design_new.md "SpeedProfile": when placement seeds no profile,
-    `add_train(...)` creates a model profile whose `voltage_speed_curve` reaches
-    the train's `max_speed` at `max_voltage`, plus an empty instance deriving from
-    it, and the train names the instance. Registers both and returns the
-    instance's `profile_id`, so calibrating one locomotive never touches another
-    that shares its model curve.
+    Every train owns an instance profile (design_new.md "SpeedProfile", Every
+    train owns exactly one instance profile), so this only guards a reader that
+    runs before the instance is registered: the Default profile copied for the
+    train's `max_speed`. It is never registered.
     """
-    model = make_default_speed_profile(train_id, max_speed_kmh)
-    instance = make_instance_profile(
-        model.profile_id,
-        profile_id=f"{model.profile_id}__instance",
-        name=f"{model.name} instance",
-    )
-    registry.register(model)
-    registry.register(instance)
-    return instance.profile_id
-
-
-def _overlay_instance_on_model(
-    model: SpeedProfile, instance: SpeedProfile
-) -> SpeedProfile:
-    """The complete profile an instance resolves to over its model profile.
-
-    design_new.md "SpeedProfile", The curve and the voltages resolve on their
-    own: the instance's own fields where it carries them, the model's values
-    everywhere else, with no curve point moved or dropped. `ato_min_voltage`
-    comes from the instance alone. The result
-    carries the instance's `profile_id` (so a train that names the instance
-    still matches its resolved profile) and reads as a flattened model profile.
-    """
-    lighting = (
-        instance.lighting_voltage
-        if instance.lighting_voltage is not None
-        else model.lighting_voltage
-    )
-    starting = (
-        instance.starting_voltage
-        if instance.starting_voltage is not None
-        else model.starting_voltage
-    )
-    curve = (
-        instance.voltage_speed_curve
-        if instance.voltage_speed_curve is not None
-        else model.voltage_speed_curve
-    )
-    # `calibrated_at` follows the curve (design_new.md "SpeedProfile",
-    # `calibrated_at` follows the curve).
-    calibrated_at = (
-        instance.calibrated_at
-        if instance.voltage_speed_curve is not None
-        else model.calibrated_at
-    )
-    return SpeedProfile(
-        profile_id=instance.profile_id,
-        name=instance.name or model.name,
-        derived_from=None,
-        model=model.model,
-        calibrated_at=calibrated_at,
-        voltage_speed_curve=list(curve) if curve is not None else None,
-        lighting_voltage=lighting,
-        starting_voltage=starting,
-        ato_min_voltage=instance.ato_min_voltage,
-        acceleration_rate=model.acceleration_rate,
-        deceleration_rate=model.deceleration_rate,
-        emergency_brake_rate=model.emergency_brake_rate,
-        friction_rate=model.friction_rate,
-        operational_decel_ratio=model.operational_decel_ratio,
-        air_resistance_enabled=model.air_resistance_enabled,
-        drag_coefficient=model.drag_coefficient,
-        reference_speed_kmh=model.reference_speed_kmh,
-        max_voltage=model.max_voltage,
-        power_multipliers=dict(model.power_multipliers),
-        brake_multipliers=dict(model.brake_multipliers),
-    )
-
-
-def _instance_without_model(instance: SpeedProfile) -> SpeedProfile:
-    """A usable profile for an instance whose model profile is missing.
-
-    design_new.md keeps every instance deriving from a live model, so this only
-    guards a corrupt load (a dangling `derived_from`). It fills the instance's
-    unset fields with the model-profile defaults so a consumer still gets a
-    complete, drivable record instead of a partial one.
-    """
-    return SpeedProfile(
-        profile_id=instance.profile_id,
-        name=instance.name,
-        derived_from=None,
-        model=instance.model,
-        calibrated_at=instance.calibrated_at,
-        voltage_speed_curve=instance.voltage_speed_curve,
-        lighting_voltage=instance.lighting_voltage,
-        starting_voltage=instance.starting_voltage,
-        ato_min_voltage=instance.ato_min_voltage,
+    return copied_profile(
+        DEFAULT_SPEED_PROFILE,
+        profile_id=DEFAULT_PROFILE_ID,
+        max_speed_kmh=getattr(train, "max_speed", None),
     )
 
 
 def resolve_memoized_default_profile(cache_holder, train) -> SpeedProfile:
-    """Per-train default `SpeedProfile`, memoized on `cache_holder`.
-
-    `TrainController` and `TrainPhysics` both fall back here when a train has no
-    assigned / resolvable profile (layout load, step replay, editor
-    add-without-place). The result is cached on the holder under
-    `_default_profile_cache` and rebuilt only when the train's id or `max_speed`
-    changes, so the per-tick read does not re-allocate and re-sort a
-    `SpeedProfile` every tick. This is the single home for that fallback, so the
-    controller and physics read paths cannot drift.
-    """
+    """`fallback_profile_for(train)`, memoized on `cache_holder` and rebuilt
+    only when the train's id or `max_speed` changes, so a per-tick read does not
+    allocate a profile every tick."""
     key = (train.train_id, train.max_speed)
     cache = getattr(cache_holder, "_default_profile_cache", None)
     if cache is None or cache[0] != key:
-        cache = (key, make_default_speed_profile(train.train_id, train.max_speed))
+        cache = (key, fallback_profile_for(train))
         cache_holder._default_profile_cache = cache
     return cache[1]
 
 
 class SpeedProfileRegistry:
+    """Every `SpeedProfile` and `LocomotiveModel`, keyed by number.
+
+    design_new.md "SpeedProfile": the registry always holds the Default
+    profile `0`, gives each new profile and model the next number from its own
+    counter, and never gives a number out twice (Profile and model ids are
+    numbers). The library -- models, sets and both counters -- is what the
+    locomotive file stores; instance profiles live with their trains (Where
+    models, sets and instance profiles are kept).
+    """
+
     def __init__(self):
-        self._profiles: Dict[str, SpeedProfile] = {}
-        self._profiles["default"] = DEFAULT_SPEED_PROFILE
+        self._profiles: Dict[int, SpeedProfile] = {
+            DEFAULT_PROFILE_ID: make_default_profile()
+        }
+        self._models: Dict[int, LocomotiveModel] = {}
+        self.next_profile_id: int = 1
+        self.next_model_id: int = 1
+
+    # -- numbers ------------------------------------------------------------
+
+    def allocate_profile_id(self) -> int:
+        pid = self.next_profile_id
+        self.next_profile_id += 1
+        return pid
+
+    def allocate_model_id(self) -> int:
+        mid = self.next_model_id
+        self.next_model_id += 1
+        return mid
+
+    # -- profiles -----------------------------------------------------------
 
     def register(self, profile: SpeedProfile) -> None:
-        self._profiles[profile.profile_id] = profile
+        """Store `profile` under its own number. The counter moves past it, so
+        the number is never given out again."""
+        pid = int(profile.profile_id)
+        if pid == DEFAULT_PROFILE_ID:
+            return
+        self._profiles[pid] = profile
+        if pid >= self.next_profile_id:
+            self.next_profile_id = pid + 1
 
-    def get(self, profile_id: str) -> Optional[SpeedProfile]:
-        return self._profiles.get(profile_id)
+    def get(self, profile_id: Any) -> Optional[SpeedProfile]:
+        pid = as_profile_id(profile_id)
+        return None if pid is None else self._profiles.get(pid)
 
-    def resolve(self, profile_id: str) -> Optional[SpeedProfile]:
-        """Return a fully-filled `SpeedProfile` for `profile_id`.
-
-        For a model profile (`derived_from is None`) this is the profile itself,
-        unchanged. For an instance profile it is the overlay: the instance's
-        own fields where the instance carries them, and the model profile's
-        values everywhere else.
-
-        design_new.md "SpeedProfile", Model profiles and instance profiles: this
-        is the one accessor every consumer that drives a train reads through, so
-        a partial instance record is never consumed directly. `get(...)` still
-        returns the raw stored record, which the calibration and editor write
-        paths need.
-        """
-        profile = self._profiles.get(profile_id)
-        if profile is None:
-            return None
-        if profile.derived_from is None:
-            return profile
-        model = self._profiles.get(profile.derived_from)
-        if model is None:
-            return _instance_without_model(profile)
-        return _overlay_instance_on_model(model, profile)
-
-    def list_profiles(self) -> List[str]:
+    def list_profiles(self) -> List[int]:
         return list(self._profiles.keys())
 
-    def remove(self, profile_id: str) -> bool:
-        if profile_id == "default":
+    def profiles(self) -> List[SpeedProfile]:
+        return list(self._profiles.values())
+
+    def remove(self, profile_id: Any) -> bool:
+        pid = as_profile_id(profile_id)
+        if pid is None or pid == DEFAULT_PROFILE_ID:
             return False
-        if profile_id in self._profiles:
-            del self._profiles[profile_id]
-            return True
-        return False
+        return self._profiles.pop(pid, None) is not None
 
-    def to_dict(self) -> Dict[str, Any]:
-        """Serialize every registered profile except the built-in ``default``.
+    def create_instance(
+        self,
+        *,
+        source_profile_id: Any = None,
+        source_profile: Optional[SpeedProfile] = None,
+        max_speed_kmh: Any = None,
+    ) -> SpeedProfile:
+        """Register a new instance profile copied from a set, the Default
+        profile, or a scene's own record (design_new.md "SpeedProfile", Giving a
+        train a profile; Where models, sets and instance profiles are kept, A
+        scene adds no models or sets).
 
-        Persisted with the layout (design_new.md "SpeedProfile": a measured
-        curve and lighting voltage stay with the locomotive across placements,
-        through ordinary `SpeedProfile` persistence). ``default`` is a code
-        constant that ``__init__`` always re-seeds, so it is not written — a
-        stale persisted copy must never shadow a changed constant on reload.
+        `source_profile` is the scene's record: the copy takes its values with
+        `parent_profile_id` unset, and the record itself is not registered.
+        Otherwise `source_profile_id` names the Default profile or a set
+        (None means the Default profile).
         """
+        if source_profile is not None:
+            record = SpeedProfile(profile_id=self.allocate_profile_id())
+            record.copy_values_from(source_profile)
+            record.parent_profile_id = None
+        else:
+            source = self.copy_source(source_profile_id)
+            record = copied_profile(
+                source,
+                profile_id=self.allocate_profile_id(),
+                max_speed_kmh=max_speed_kmh,
+            )
+        self.register(record)
+        return record
+
+    def copy_source(self, profile_id: Any) -> SpeedProfile:
+        """The Default profile or set `profile_id` names (None: the Default
+        profile). Raises ValueError for an instance profile or no profile."""
+        if profile_id is None:
+            return self._profiles[DEFAULT_PROFILE_ID]
+        source = self.get(profile_id)
+        if source is None:
+            raise ValueError(f"No speed profile {profile_id!r}")
+        if source.is_instance:
+            raise ValueError(
+                f"Speed profile {profile_id!r} is a train's instance profile; a "
+                "train is given the Default profile or a set"
+            )
+        return source
+
+    def copy_into_instance(
+        self, instance_id: Any, source_profile_id: Any, max_speed_kmh: Any = None
+    ) -> SpeedProfile:
+        """Copy the Default profile or a set into an existing instance profile,
+        keeping its number (design_new.md "SpeedProfile", Copying a profile)."""
+        instance = self.get(instance_id)
+        if instance is None or not instance.is_instance:
+            raise ValueError(f"No instance profile {instance_id!r}")
+        source = self.copy_source(source_profile_id)
+        fresh = copied_profile(
+            source, profile_id=instance.profile_id, max_speed_kmh=max_speed_kmh
+        )
+        self._profiles[instance.profile_id] = fresh
+        return fresh
+
+    def remove_instances(self, keep: Iterable[Any] = ()) -> List[int]:
+        """Remove every instance profile except those in `keep`; return the
+        numbers removed. Used when the trains that own them go."""
+        kept = {as_profile_id(k) for k in keep}
+        doomed = [
+            pid for pid, p in self._profiles.items() if p.is_instance and pid not in kept
+        ]
+        for pid in doomed:
+            del self._profiles[pid]
+        return doomed
+
+    # -- models and sets ----------------------------------------------------
+
+    def models(self) -> List[LocomotiveModel]:
+        return list(self._models.values())
+
+    def get_model(self, model_id: Any) -> Optional[LocomotiveModel]:
+        mid = as_profile_id(model_id)
+        return None if mid is None else self._models.get(mid)
+
+    def add_model(self, name: str) -> LocomotiveModel:
+        name = (name or "").strip()
+        if not name:
+            raise ValueError("A model's name must not be blank")
+        model = LocomotiveModel(model_id=self.allocate_model_id(), name=name)
+        self._models[model.model_id] = model
+        return model
+
+    def register_model(self, model: LocomotiveModel) -> None:
+        self._models[int(model.model_id)] = model
+        if model.model_id >= self.next_model_id:
+            self.next_model_id = model.model_id + 1
+
+    def sets(self, model_id: Any = None) -> List[SpeedProfile]:
+        mid = as_profile_id(model_id)
+        return [
+            p
+            for p in self._profiles.values()
+            if p.is_set and (model_id is None or p.model_id == mid)
+        ]
+
+    def create_set(
+        self, model_id: int, set_name: str, source: SpeedProfile
+    ) -> SpeedProfile:
+        """Register a new set under `model_id` holding a copy of `source`'s
+        values (design_new.md "SpeedProfile", Promoting an instance profile)."""
+        if self.get_model(model_id) is None:
+            raise ValueError(f"No model {model_id!r}")
+        record = SpeedProfile(profile_id=self.allocate_profile_id())
+        record.copy_values_from(source)
+        record.model_id = int(model_id)
+        record.set_name = (set_name or "").strip()
+        self.register(record)
+        return record
+
+    def remove_model(self, model_id: Any) -> List[int]:
+        """Remove a model and every set naming it; return the set numbers
+        removed (design_new.md "SpeedProfile", Deleting a set or a model)."""
+        mid = as_profile_id(model_id)
+        if mid is None or mid not in self._models:
+            return []
+        removed = [p.profile_id for p in self.sets(mid)]
+        for pid in removed:
+            del self._profiles[pid]
+        del self._models[mid]
+        return removed
+
+    def parent_label(self, profile: SpeedProfile) -> Dict[str, Any]:
+        """Where an instance profile came from, by name (design_new.md
+        "SpeedProfile", A train shows where its profile came from)."""
+        parent_id = profile.parent_profile_id
+        if parent_id is None:
+            return {"kind": "none"}
+        if parent_id == DEFAULT_PROFILE_ID:
+            return {"kind": "default"}
+        parent = self._profiles.get(parent_id)
+        if parent is None or not parent.is_set:
+            return {"kind": "deleted"}
+        model = self._models.get(parent.model_id)
         return {
-            profile_id: profile.to_dict()
-            for profile_id, profile in self._profiles.items()
-            if profile_id != "default"
+            "kind": "set",
+            "model_name": model.name if model else "",
+            "set_name": parent.set_name,
         }
 
-    @classmethod
-    def from_dict(cls, data: Optional[Dict[str, Any]]) -> "SpeedProfileRegistry":
-        """Rebuild a registry from `to_dict(...)` output (or an absent/empty map
-        in a legacy save, which yields the default-only registry)."""
-        registry = cls()
-        for profile_id, profile_data in (data or {}).items():
-            if profile_id == "default":
-                continue
-            registry.register(SpeedProfile.from_dict(profile_data))
-        return registry
+    # -- serialization ------------------------------------------------------
 
-    def remove_pair(self, profile_id: str) -> bool:
-        """Remove `profile_id` and, when it is an instance, its now-orphaned model.
+    def to_dict(self) -> Dict[str, Any]:
+        """Every profile, keyed by its number as a string (the live snapshot's
+        `speed_profiles`)."""
+        return {str(pid): p.to_dict() for pid, p in self._profiles.items()}
 
-        The model profile an instance derives from is removed only when no other
-        registered profile still derives from it, so a model shared by several
-        instances stays in place. Returns True when the named profile was
-        removed. Used when a train is retired (adoption replaces an unidentified
-        train's seeded pair — design_new.md "Train Entity").
-        """
-        profile = self._profiles.get(profile_id)
-        if profile is None:
-            return False
-        removed = self.remove(profile_id)
-        model_id = getattr(profile, "derived_from", None)
-        if model_id and not any(
-            getattr(p, "derived_from", None) == model_id
-            for p in self._profiles.values()
-        ):
-            self.remove(model_id)
-        return removed
+    def models_to_list(self) -> List[Dict[str, Any]]:
+        return [m.to_dict() for m in self._models.values()]
+
+    def library_dict(self) -> Dict[str, Any]:
+        """The locomotive file's contents: every model, every set, and both
+        counters (design_new.md "SpeedProfile", Where models, sets and instance
+        profiles are kept)."""
+        return {
+            "models": self.models_to_list(),
+            "sets": [p.to_dict() for p in self.sets()],
+            "next_profile_id": self.next_profile_id,
+            "next_model_id": self.next_model_id,
+        }
+
+    def load_library(self, data: Dict[str, Any]) -> None:
+        """Add the locomotive file's models and sets and take its counters."""
+        for model_data in data.get("models") or []:
+            self.register_model(LocomotiveModel.from_dict(model_data))
+        for set_data in data.get("sets") or []:
+            record = SpeedProfile.from_dict(set_data)
+            if record.is_set and record.profile_id != DEFAULT_PROFILE_ID:
+                self.register(record)
+        self.next_profile_id = max(
+            self.next_profile_id, int(data.get("next_profile_id") or 1)
+        )
+        self.next_model_id = max(
+            self.next_model_id, int(data.get("next_model_id") or 1)
+        )

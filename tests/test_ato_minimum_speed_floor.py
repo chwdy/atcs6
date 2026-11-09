@@ -17,6 +17,8 @@ design_new.md:
 
 import pytest
 
+from tests.train_test_helpers import give_profile
+
 from constants import RESERVATION_STOP_ARRIVAL_TOLERANCE_CM
 from enums import Direction, HandlePosition
 from network import RailwayNetwork
@@ -38,7 +40,6 @@ STARTING_KMH = 20.0  # the ATO minimum speed of `_profile()`
 def _profile() -> SpeedProfile:
     return SpeedProfile(
         profile_id="FLOOR",
-        name="Floor",
         starting_voltage=2.0,
         voltage_speed_curve=[(3.0, STARTING_KMH), (12.0, 80.0)],
         # A gentle brake, so the plain braking curve falls below the starting
@@ -118,10 +119,9 @@ def controller():
     network = RailwayNetwork()
     for x in range(20):
         network.add_track(Tile(x=x, y=0, track_bits=TRACK_EW))
-    network.speed_profiles.register(_profile())
     car = TrainCar(car_id="CAR", car_type="LOCOMOTIVE", length_cm=30.0)
     train = Train(train_id="T_FLOOR", consist=[car], max_speed=80.0)
-    train.speed_profile_id = "FLOOR"
+    give_profile(network, train, _profile())
     network.add_train(train)
     network.place_train(train, 0, 0, Direction.EAST)
     controller = TrainController(train_id=train.train_id, network=network)

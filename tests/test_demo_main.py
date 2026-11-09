@@ -31,10 +31,12 @@ def test_demo_train_speed_profile_setup():
 
     demo_train = network.trains.get("DEMO_TRAIN")
     assert demo_train is not None
-    assert demo_train.speed_profile_id == "demo_profile"
-
-    profile = network.speed_profiles.get("demo_profile")
-    assert profile is not None
+    # The scene's own profile is copied into the train's instance profile and
+    # is not added to the library (design_new.md "SpeedProfile", A scene adds
+    # no models or sets).
+    profile = network.speed_profiles.get(demo_train.speed_profile_id)
+    assert profile is not None and profile.is_instance
+    assert profile.parent_profile_id is None
     assert profile.acceleration_rate == 3.0
     assert profile.deceleration_rate == 4.2
 

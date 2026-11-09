@@ -47,7 +47,6 @@ class _StubTrain:
 def _profile(**fields) -> SpeedProfile:
     return SpeedProfile(
         profile_id="P",
-        name="P",
         starting_voltage=2.0,
         voltage_speed_curve=[(3.0, 20.0), (12.0, 100.0)],
         **fields,

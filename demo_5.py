@@ -624,8 +624,6 @@ def setup_demo_train(
 
     # ---- Shared speed profile ----
     demo_profile = SpeedProfile(
-        profile_id="demo5_profile",
-        name="Demo 5 Profile",
         voltage_speed_curve=list(DEFAULT_SPEED_PROFILE.voltage_speed_curve),
         acceleration_rate=3.0,
         deceleration_rate=4.2,
@@ -636,7 +634,6 @@ def setup_demo_train(
         drag_coefficient=0.001,
         reference_speed_kmh=100.0,
     )
-    network.speed_profiles.register(demo_profile)
 
     # ---- Place the four trains, each phase-shifted one stop apart ----
     # (train_id, starting_block, initial_direction, route-phase-task-index, start_tile)
@@ -665,8 +662,8 @@ def setup_demo_train(
             train_type="LOCOMOTIVE",
             initial_cab="A",
             start_tile=start_tile,
+            source_profile=demo_profile,
         )
-        train.speed_profile_id = demo_profile.profile_id
         route.assign_train(train.train_id)
 
         # Pre-create the per-train RouteExecutionState with task_runs

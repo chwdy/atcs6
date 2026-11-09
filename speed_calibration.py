@@ -1363,6 +1363,21 @@ class SpeedCalibration:
         if run.overrun_seen:
             return self._fail_overrun(run)
 
+        if (
+            not run.leg_armed
+            and obs.head_block
+            and (obs.outer_block_index is None or obs.measured_block_held)
+        ):
+            # A later leg re-reads where the train stands when it arms. A train
+            # on B, or outside both ends, is first driven into the nearer end,
+            # as at opening (design_new.md "Speed calibration", The pass first
+            # moves the train into an end of the stretch).
+            run.leg_authority_seen = False
+            run.phase = PHASE_MOVING
+            run.move_target_block_id = ""
+            run.move_armed_at = None
+            return self._advance_move(run, obs)
+
         if not run.leg_armed:
             # Every leg is armed here, the opening one included: ask for a one-off
             # route to the far end, turn around if the last leg left the train
@@ -2372,27 +2387,17 @@ class SpeedCalibration:
         `voltage_speed_curve`). A failed step gives no point."""
         return sorted((s.track_voltage, s.speed_kmh) for s in run.samples)
 
-    def commit(
-        self, train_id: str, target_profile, *, clear_profile=None
-    ) -> List[Tuple[float, float]]:
-        """Write the measured curve onto `target_profile` and close the run.
+    def commit(self, train_id: str, target_profile) -> List[Tuple[float, float]]:
+        """Write the measured curve onto the train's instance profile and close
+        the run.
 
         Writes two fields and no others: `voltage_speed_curve` from the pass's
         samples and `calibrated_at` from the wall clock (design_new.md "Speed
         calibration", What commit writes). It must not write `lighting_voltage`
-        or `starting_voltage` (the It moves save wrote them), a motion rate, a
-        notch table, or `model`.
-
-        Which records arrive here is the operator's commit-target choice,
-        resolved by the caller. `target_profile` is the record the two fields are
-        written onto: the train's own instance profile for **Save to this
-        locomotive**, or the model profile the instance derives from for
-        **Promote to model**. On promote, `clear_profile` is that instance, whose
-        two measured fields are cleared in the same commit so it falls back to
-        following the freshly-written model. The caller checks every profile
-        that will run on the curve and clears the ATO minimum voltage of each
-        whose curve changes (design_new.md "A commit clears the ATO minimum
-        voltage of every locomotive whose curve it changes").
+        or `starting_voltage` (the trial saves wrote them), a motion rate or a
+        notch table. `target_profile` is the train's instance profile for both
+        **Save to this train** and **Promote**; the caller promotes afterwards
+        and clears the ATO minimum voltage the new curve invalidates.
         """
         run = self.runs.get(train_id)
         if run is None:
@@ -2411,11 +2416,6 @@ class SpeedCalibration:
         stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
         target_profile.voltage_speed_curve = curve
         target_profile.calibrated_at = stamp
-        # Promote clears the instance's two measured fields so it goes back to
-        # following the model curve just written.
-        if clear_profile is not None and clear_profile is not target_profile:
-            clear_profile.voltage_speed_curve = None
-            clear_profile.calibrated_at = None
         self.runs.pop(train_id, None)
         self._queue_give_back(run)
         self._emit_command_result(

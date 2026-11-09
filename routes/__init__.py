@@ -44,7 +44,6 @@ from routes import (
     inspector,
     settings,
     hardware,
-    roster,
 )
 
 
@@ -74,4 +73,3 @@ def register_all(app, state) -> None:
     inspector.register(app, state)
     settings.register(app, state)
     hardware.register(app, state)
-    roster.register(app, state)

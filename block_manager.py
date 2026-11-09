@@ -1168,9 +1168,9 @@ class BlockManager:
         train).
 
         `toward_index` names the far end, the end a leg or the move runs
-        toward. The near end is walked first: its outer block, then each block
-        out of its far end that the points as set lead to and `train_id`
-        stands in. The far end is walked next, with B, both outer blocks and
+        toward. The near end is walked first: its outer block, then the blocks
+        the points as set lead to out from it, up to and including the farthest
+        one `train_id` stands in. The far end is walked next, with B, both outer blocks and
         the near end's blocks taken: out of the far end of its last block so
         far it takes the block the points lead to when no train but `train_id`
         stands in it, otherwise the block another position of the switches
@@ -1216,31 +1216,41 @@ class BlockManager:
     def _near_end_runoff(
         self, measured_block_id: str, outer, index: int, train_id: Optional[str]
     ) -> Tuple[str, ...]:
-        """The near end's run-off blocks: each block out of the far end of the
-        end's last block so far that the points as set lead to and `train_id`
-        stands in."""
+        """The near end's run-off blocks: the blocks the points as set lead to
+        out from the outer block, away from B, up to and including the farthest
+        one `train_id` stands in (design_new.md "Speed calibration", The near
+        end holds only the blocks the train stands in).
+
+        A block the train has rolled past still belongs, so a train that stopped
+        wholly in a later run-off block stands in the near end. The walk ends
+        at the track's end, at a switch set the other way, at a block it has
+        already taken (on a loop it comes back to B or an outer block), or at
+        the first block past the train, because a train's blocks are one run.
+        """
         outer_block_id = outer[index]
         if not outer_block_id or train_id is None:
             return ()
         taken = {measured_block_id, *(b for b in outer if b)}
-        runoff: List[str] = []
+        walked: List[str] = []
+        farthest = 0
         previous, current = measured_block_id, outer_block_id
         while True:
             branches = self._branches_out_of_far_end(current, previous)
             if not branches:
                 break
             block_id, switch_positions = branches[0]
-            block = self.blocks.get(block_id)
-            if (
-                switch_positions
-                or block_id in taken
-                or getattr(block, "occupied_by", None) != train_id
-            ):
+            if switch_positions or block_id in taken:
                 break
-            runoff.append(block_id)
+            block = self.blocks.get(block_id)
+            stands_in = getattr(block, "occupied_by", None) == train_id
+            if not stands_in and farthest:
+                break
+            walked.append(block_id)
             taken.add(block_id)
+            if stands_in:
+                farthest = len(walked)
             previous, current = current, block_id
-        return tuple(runoff)
+        return tuple(walked[:farthest])
 
     def _far_end_runoff(
         self,

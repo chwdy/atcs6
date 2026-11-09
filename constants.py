@@ -241,18 +241,18 @@ CALIBRATION_TRIAL_STEP_V: float = 0.1
 # calibration", ATO minimum test, The panel marks a steady voltage).
 ATO_MINIMUM_TEST_ROUND_TRIPS: int = 3
 
-# Seeded model-profile defaults (design_new.md "SpeedProfile", the `max_voltage`
-# and `voltage_speed_curve` field descriptions). A model `SpeedProfile` created
-# at train creation gets these until calibration, a hand edit, or an imported
-# roster entry replaces them. `DEFAULT_SEEDED_MAX_VOLTAGE_V` is the top of the
-# usable `track_voltage` range. `DEFAULT_SEEDED_STARTING_VOLTAGE_V` is the
-# seeded `starting_voltage`. `DEFAULT_SEEDED_FIRST_POINT_VOLTAGE_V` is the first
-# point of the seeded curve, above the starting voltage, on the straight line
-# from 0 V -> 0 km/h to `max_voltage` -> the train's `max_speed`; a seeded
-# profile sets no `lighting_voltage`.
+# The Default profile's values (design_new.md "SpeedProfile", the `max_voltage`
+# and `voltage_speed_curve` field descriptions). `DEFAULT_SEEDED_MAX_VOLTAGE_V`
+# is the top of the usable `track_voltage` range. `DEFAULT_SEEDED_STARTING_VOLTAGE_V`
+# is the Default `starting_voltage`. The Default curve is the straight line from
+# 0 V -> 0 km/h to `max_voltage` -> `DEFAULT_SEEDED_TOP_SPEED_KMH`, with its
+# first point at `DEFAULT_SEEDED_FIRST_POINT_VOLTAGE_V`, above the starting
+# voltage; a copy into a train's instance profile draws the line to the train's
+# `max_speed` instead. The Default profile sets no `lighting_voltage`.
 DEFAULT_SEEDED_MAX_VOLTAGE_V: float = 12.0
 DEFAULT_SEEDED_STARTING_VOLTAGE_V: float = 1.0
 DEFAULT_SEEDED_FIRST_POINT_VOLTAGE_V: float = 1.5
+DEFAULT_SEEDED_TOP_SPEED_KMH: float = 100.0
 
 
 # Commissioning session bounds (design_new.md "Hardware REST payload schemas").

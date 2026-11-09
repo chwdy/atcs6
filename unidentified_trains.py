@@ -379,20 +379,19 @@ class UnidentifiedTrainTracker:
     def _create_unidentified(self, now: float) -> Train:
         """Build the unidentified train `Train`, its controller, and its physics instance.
 
-        Blank train configuration with the default `SpeedProfile` pair (a model
-        profile and the instance deriving from it), which an unidentified train
-        never uses because it is never powered (design_new.md "SpeedProfile").
+        Blank train configuration with an instance profile copied from the
+        Default profile, which an unidentified train never uses because it is
+        never powered (design_new.md "Unidentified trains", Creation and
+        identity).
         """
         train_id = self._fresh_id()
         train = Train(train_id=train_id, is_unidentified=True)
 
         profiles = getattr(self._network, "speed_profiles", None)
         if profiles is not None:
-            from speed_profile import seed_default_profile_pair
-
-            train.speed_profile_id = seed_default_profile_pair(
-                profiles, train_id, train.max_speed
-            )
+            train.speed_profile_id = profiles.create_instance(
+                max_speed_kmh=train.max_speed
+            ).profile_id
 
         self._network.add_train(train)
         self._create_controller(train_id)
@@ -429,17 +428,11 @@ class UnidentifiedTrainTracker:
         """Retire an unidentified train that held no blocks for the whole hold window."""
         self.forget(unidentified_id)
 
-        train = self._network.trains.get(unidentified_id)
-        profile_id = getattr(train, "speed_profile_id", None) if train else None
+        # `remove_train` also removes the instance profile the train was created
+        # with (design_new.md "Unidentified trains", Retirement teardown step 3).
         self._network.remove_train(unidentified_id)
         self._controllers.pop(unidentified_id, None)
         self._physics_instances.pop(unidentified_id, None)
-        # Remove the seeded pair: the instance and the model profile it was the
-        # only one deriving from (design_new.md "Unidentified trains", Retirement
-        # teardown step 3).
-        profiles = getattr(self._network, "speed_profiles", None)
-        if profiles is not None and profile_id:
-            profiles.remove_pair(profile_id)
 
         self._emit(
             "unidentified_train_retired",

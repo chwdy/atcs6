@@ -62,6 +62,10 @@ def state_with_train(state):
     """AppState with one train registered."""
     car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length_cm=20.0)
     train = Train(train_id="TRAIN_A", consist=[car], max_speed=80.0)
+    # Every train owns an instance profile (design_new.md "SpeedProfile").
+    train.speed_profile_id = state.network.speed_profiles.create_instance(
+        max_speed_kmh=80.0
+    ).profile_id
     state.network.add_train(train)
     return state
 
@@ -252,415 +256,135 @@ class TestRouteDefinitionValidation:
 
 
 class TestSpeedProfileService:
-    def test_list_and_get_seeded_default(self, state):
-        """A fresh registry seeds a `default` profile the service can read."""
-        assert speed_profile_service.get_profile(state, "default") is not None
-        assert len(speed_profile_service.list_profiles(state)) >= 1
+    """design_new.md "SpeedProfile", Editing a profile by hand. The rules on
+    models, sets, copies, reset and deletes are covered in
+    tests/test_models_sets_instances.py."""
 
-    def test_create_profile_registers(self, state):
-        """`create_profile` registers a profile callable without HTTP."""
-        profile = speed_profile_service.create_profile(
-            state, data={"profile_id": "P1", "name": "Profile 1"}
-        )
-        assert profile.profile_id == "P1"
-        assert speed_profile_service.get_profile(state, "P1") is not None
+    @staticmethod
+    def _set(state, **values):
+        registry = state.speed_profile_registry
+        model = registry.add_model("Kato EF66")
+        the_set = registry.create_set(model.model_id, "1", registry.get(0))
+        for key, value in values.items():
+            setattr(the_set, key, value)
+        return the_set
 
-    def test_registry_is_the_network_store(self, state):
-        """The service registry and the physics store are one object.
+    def test_the_default_profile_is_listed(self, state):
+        ids = [p.profile_id for p in speed_profile_service.list_profiles(state)]
+        assert 0 in ids
+        assert speed_profile_service.profile_view(state, 0)["kind"] == "default"
 
-        `AppState.speed_profile_registry` returns `network.speed_profiles`,
-        which is what `TrainPhysics`/`TrainController._get_speed_profile`
-        read. A profile created through the service must therefore be visible
-        on that read path immediately -- no second store to sync.
-        """
+    def test_the_registry_is_the_network_store(self, state):
         assert state.speed_profile_registry is state.network.speed_profiles
-        created = speed_profile_service.create_profile(
-            state, data={"profile_id": "P_PHYS", "name": "Physics", "acceleration_rate": 7.77}
-        )
-        seen_by_physics = state.network.speed_profiles.get("P_PHYS")
-        assert seen_by_physics is created
-        assert seen_by_physics.acceleration_rate == 7.77
-
-    def test_create_duplicate_raises_conflict(self, state):
-        """A repeated profile_id surfaces as ConflictError (HTTP 409)."""
-        speed_profile_service.create_profile(
-            state, data={"profile_id": "P1", "name": "Profile 1"}
-        )
-        with pytest.raises(ConflictError):
-            speed_profile_service.create_profile(
-                state, data={"profile_id": "P1", "name": "Dup"}
-            )
-
-    def test_create_missing_fields_raises_validation(self, state):
-        """Both profile_id and name are required."""
-        with pytest.raises(ValidationError):
-            speed_profile_service.create_profile(state, data={"name": "No id"})
-        with pytest.raises(ValidationError):
-            speed_profile_service.create_profile(state, data={"profile_id": "P2"})
-
-    def test_require_profile_raises_not_found(self, state):
-        """`require_profile` raises; `get_profile` returns None."""
-        assert speed_profile_service.get_profile(state, "MISSING") is None
-        with pytest.raises(NotFoundError):
-            speed_profile_service.require_profile(state, "MISSING")
-
-    def test_update_unknown_raises_not_found(self, state):
-        with pytest.raises(NotFoundError):
-            speed_profile_service.update_profile(state, "MISSING", data={"name": "x"})
-
-    def test_update_id_mismatch_raises_validation(self, state):
-        """A body profile_id that disagrees with the URL id is rejected."""
-        speed_profile_service.create_profile(
-            state, data={"profile_id": "P1", "name": "Profile 1"}
-        )
-        with pytest.raises(ValidationError):
-            speed_profile_service.update_profile(
-                state, "P1", data={"profile_id": "OTHER", "name": "x"}
-            )
 
     def test_update_keeps_calibrated_at(self, state):
-        """The panel's save cannot move `calibrated_at`, which only a speed
-        commit writes (design_new.md "SpeedProfile", Editing a profile by
-        hand)."""
-        speed_profile_service.create_profile(
-            state,
-            data={
-                "profile_id": "P1",
-                "name": "Profile 1",
-                "calibrated_at": "2026-10-18T10:00:00+00:00",
-            },
-        )
-
+        the_set = self._set(state, calibrated_at="2026-11-08T03:37:42+00:00")
         updated = speed_profile_service.update_profile(
-            state,
-            "P1",
+            state, the_set.profile_id,
             data={"calibrated_at": None, "acceleration_rate": 7.0},
         )
-
-        assert updated.calibrated_at == "2026-10-18T10:00:00+00:00"
+        assert updated.calibrated_at == "2026-11-08T03:37:42+00:00"
         assert updated.acceleration_rate == 7.0
 
-    def test_update_sets_a_lighting_voltage_below_the_starting_voltage(self, state):
-        """The lighting voltage is set by hand (design_new.md "SpeedProfile",
-        `lighting_voltage`)."""
-        speed_profile_service.create_profile(
-            state,
-            data={
-                "profile_id": "P1",
-                "name": "Profile 1",
-                "starting_voltage": 2.5,
-                "voltage_speed_curve": [[3.0, 20.0], [12.0, 100.0]],
-            },
-        )
+    def test_update_keeps_the_fields_the_body_leaves_out(self, state):
+        the_set = self._set(state, acceleration_rate=7.0)
         updated = speed_profile_service.update_profile(
-            state, "P1", data={"lighting_voltage": 1.9}
+            state, the_set.profile_id, data={"deceleration_rate": 9.0}
         )
-        assert updated.lighting_voltage == 1.9
-        cleared = speed_profile_service.update_profile(
-            state, "P1", data={"lighting_voltage": None}
-        )
-        assert cleared.lighting_voltage is None
+        assert updated.acceleration_rate == 7.0
+        assert updated.deceleration_rate == 9.0
 
-    def test_update_refuses_a_lighting_voltage_at_or_above_the_starting_voltage(self, state):
-        """design_new.md "A lighting voltage stays below the starting voltage":
-        a train standing at its lighting voltage must not move."""
-        speed_profile_service.create_profile(
-            state,
-            data={
-                "profile_id": "P1",
-                "name": "Profile 1",
-                "starting_voltage": 2.5,
-                "voltage_speed_curve": [[3.0, 20.0], [12.0, 100.0]],
-            },
+    def test_a_lighting_voltage_stays_below_the_starting_voltage(self, state):
+        the_set = self._set(state)
+        updated = speed_profile_service.update_profile(
+            state, the_set.profile_id, data={"lighting_voltage": 0.8}
         )
-        with pytest.raises(ValidationError, match="starting voltage"):
+        assert updated.lighting_voltage == 0.8
+        with pytest.raises(ValidationError, match="lighting voltage"):
             speed_profile_service.update_profile(
-                state, "P1", data={"lighting_voltage": 3.0}
+                state, the_set.profile_id, data={"lighting_voltage": 1.0}
             )
         with pytest.raises(ValidationError):
             speed_profile_service.update_profile(
-                state, "P1", data={"lighting_voltage": -0.5}
+                state, the_set.profile_id, data={"lighting_voltage": -0.1}
             )
-        assert speed_profile_service.require_profile(state, "P1").lighting_voltage is None
-
-    def test_a_model_starting_voltage_edit_is_refused_when_it_breaks_an_instance_lighting(self, state):
-        """An edit reaches every instance that reads the model's starting
-        voltage, so a model starting voltage at or below an instance's lighting
-        voltage is refused."""
-        speed_profile_service.create_profile(
-            state,
-            data={
-                "profile_id": "MODEL",
-                "name": "Model",
-                "starting_voltage": 2.5,
-                "voltage_speed_curve": [[3.0, 20.0], [12.0, 100.0]],
-            },
-        )
-        speed_profile_service.create_profile(
-            state,
-            data={
-                "profile_id": "INST",
-                "name": "Loco 7",
-                "derived_from": "MODEL",
-                "lighting_voltage": 2.0,
-            },
-        )
-        with pytest.raises(ValidationError, match="INST"):
-            speed_profile_service.update_profile(
-                state, "MODEL", data={"starting_voltage": 1.8}
-            )
-
-    def _model_and_instance(self, state, **instance):
-        speed_profile_service.create_profile(
-            state,
-            data={
-                "profile_id": "MODEL",
-                "name": "Model",
-                "starting_voltage": 2.0,
-                "voltage_speed_curve": [[3.0, 20.0], [6.0, 50.0], [12.0, 100.0]],
-            },
-        )
-        speed_profile_service.create_profile(
-            state,
-            data={"profile_id": "INST", "name": "Loco 7", "derived_from": "MODEL", **instance},
-        )
-
-    def test_a_starting_voltage_is_edited_by_hand_on_an_instance(self, state):
-        """design_new.md "SpeedProfile", On an instance profile only `name`,
-        `lighting_voltage`, `starting_voltage`, `ato_min_voltage` and
-        `voltage_speed_curve` may be edited by hand."""
-        self._model_and_instance(state)
-        updated = speed_profile_service.update_profile(
-            state, "INST", data={"starting_voltage": 2.4}
-        )
-        assert updated.starting_voltage == 2.4
-        assert state.speed_profile_registry.resolve("INST").starting_voltage == 2.4
-        assert state.speed_profile_registry.get("MODEL").starting_voltage == 2.0
 
     def test_a_starting_voltage_at_or_above_max_voltage_is_refused(self, state):
-        self._model_and_instance(state)
+        the_set = self._set(state)
         with pytest.raises(ValidationError, match="max_voltage"):
             speed_profile_service.update_profile(
-                state, "INST", data={"starting_voltage": 12.0}
+                state, the_set.profile_id, data={"starting_voltage": 12.0}
             )
 
     def test_an_ato_minimum_voltage_stays_on_the_measured_part_of_the_curve(self, state):
-        """design_new.md "SpeedProfile", An ATO minimum voltage stays on the
-        measured part of the curve."""
-        self._model_and_instance(state)
-        ok = speed_profile_service.update_profile(
-            state, "INST", data={"ato_min_voltage": 4.0}
-        )
-        assert ok.ato_min_voltage == 4.0
-        assert state.speed_profile_registry.resolve("INST").ato_minimum_speed_kmh == pytest.approx(30.0)
-        for bad in (2.5, 12.5):
-            with pytest.raises(ValidationError, match="ATO minimum"):
-                speed_profile_service.update_profile(
-                    state, "INST", data={"ato_min_voltage": bad}
-                )
-
-    def test_a_model_profile_carries_no_ato_minimum_voltage(self, state):
-        self._model_and_instance(state)
-        with pytest.raises(ValidationError, match="ato_min_voltage"):
+        the_set = self._set(state)
+        first = the_set.first_point_voltage
+        with pytest.raises(ValidationError, match="ATO minimum"):
             speed_profile_service.update_profile(
-                state, "MODEL", data={"ato_min_voltage": 4.0}
+                state, the_set.profile_id, data={"ato_min_voltage": first - 0.1}
             )
+        updated = speed_profile_service.update_profile(
+            state, the_set.profile_id, data={"ato_min_voltage": first + 1.0}
+        )
+        assert updated.ato_min_voltage == first + 1.0
 
     def test_a_changed_curve_or_starting_voltage_clears_the_ato_minimum_voltage(self, state):
-        """design_new.md "SpeedProfile", A changed starting voltage or curve
-        clears the ATO minimum voltage — also when the change is on the model
-        the instance reads, and unless the same save sets a new one."""
-        self._model_and_instance(state, ato_min_voltage=4.0)
+        the_set = self._set(state)
+        speed_profile_service.update_profile(
+            state, the_set.profile_id, data={"ato_min_voltage": 6.0}
+        )
         registry = state.speed_profile_registry
-        speed_profile_service.update_profile(state, "INST", data={"name": "renamed"})
-        assert registry.get("INST").ato_min_voltage == 4.0
-
-        speed_profile_service.update_profile(state, "INST", data={"starting_voltage": 2.2})
-        assert registry.get("INST").ato_min_voltage is None
-
         speed_profile_service.update_profile(
-            state, "INST", data={"starting_voltage": 2.3, "ato_min_voltage": 5.0}
+            state, the_set.profile_id, data={"lighting_voltage": 0.5}
         )
-        assert registry.get("INST").ato_min_voltage == 5.0
-
+        assert registry.get(the_set.profile_id).ato_min_voltage == 6.0
         speed_profile_service.update_profile(
-            state, "MODEL", data={"voltage_speed_curve": [[3.0, 20.0], [7.0, 60.0], [12.0, 100.0]]}
+            state, the_set.profile_id, data={"starting_voltage": 1.2}
         )
-        assert registry.get("INST").ato_min_voltage is None
+        assert registry.get(the_set.profile_id).ato_min_voltage is None
+        speed_profile_service.update_profile(
+            state, the_set.profile_id,
+            data={"starting_voltage": 1.3, "ato_min_voltage": 5.0},
+        )
+        assert registry.get(the_set.profile_id).ato_min_voltage == 5.0
 
-    def test_update_refuses_a_max_voltage_the_curve_does_not_end_at(self, state):
-        speed_profile_service.create_profile(
-            state, data={"profile_id": "P1", "name": "Profile 1"}
-        )
+    def test_max_voltage_must_match_the_curve(self, state):
+        the_set = self._set(state)
         with pytest.raises(ValidationError, match="max_voltage"):
             speed_profile_service.update_profile(
-                state, "P1", data={"max_voltage": 14.0}
+                state, the_set.profile_id, data={"max_voltage": 14.0}
             )
 
-    def test_update_keeps_an_instance_an_instance(self, state):
-        """A body that omits `derived_from` does not turn an instance profile
-        into a model profile."""
-        speed_profile_service.create_profile(
-            state, data={"profile_id": "MODEL", "name": "Model"}
-        )
-        speed_profile_service.create_profile(
-            state,
-            data={"profile_id": "INST", "name": "Loco 7", "derived_from": "MODEL"},
-        )
-
-        updated = speed_profile_service.update_profile(
-            state, "INST", data={"name": "Loco 7 renamed"}
-        )
-
-        assert updated.derived_from == "MODEL"
-        assert updated.lighting_voltage is None
-
-    def test_update_refuses_a_curve_whose_speed_falls_as_voltage_rises(self, state):
-        """design_new.md "SpeedProfile", A hand-edited curve must stay
-        invertible: physics reads the curve both ways, so the stored curve is
-        left unchanged."""
-        speed_profile_service.create_profile(
-            state, data={"profile_id": "P1", "name": "Profile 1"}
-        )
-        before = speed_profile_service.require_profile(state, "P1").voltage_speed_curve
-
-        with pytest.raises(ValidationError):
+    def test_a_curve_must_stay_invertible_and_keep_two_points(self, state):
+        the_set = self._set(state)
+        with pytest.raises(ValidationError, match="speed must not fall"):
             speed_profile_service.update_profile(
-                state,
-                "P1",
-                data={"voltage_speed_curve": [[3, 20], [6, 50], [9, 30], [12, 80]]},
+                state, the_set.profile_id,
+                data={"voltage_speed_curve": [[3, 50], [6, 40], [12, 80]]},
             )
-
-        assert speed_profile_service.require_profile(state, "P1").voltage_speed_curve == before
-
-    def test_update_accepts_a_curve_that_rises_with_voltage(self, state):
-        speed_profile_service.create_profile(
-            state, data={"profile_id": "P1", "name": "Profile 1"}
-        )
+        with pytest.raises(ValidationError, match="two points"):
+            speed_profile_service.update_profile(
+                state, the_set.profile_id, data={"voltage_speed_curve": [[12, 80]]}
+            )
         updated = speed_profile_service.update_profile(
-            state,
-            "P1",
-            data={"voltage_speed_curve": [[12, 80], [3, 20], [6, 50], [9, 50]]},
+            state, the_set.profile_id,
+            data={"voltage_speed_curve": [[3, 20], [6, 50], [9, 50], [12, 80]]},
         )
         assert updated.voltage_speed_curve == [(3, 20), (6, 50), (9, 50), (12, 80)]
 
-    def test_update_keeps_the_fields_the_body_leaves_out(self, state):
-        """A save sends only the fields the operator changed; every other
-        field keeps its stored value (design_new.md "SpeedProfile", Editing a
-        profile by hand)."""
-        speed_profile_service.create_profile(
-            state,
-            data={"profile_id": "P1", "name": "Profile 1", "acceleration_rate": 7.0},
-        )
-
+    def test_an_instance_profile_takes_every_field_by_hand(self, state_with_train):
+        train = state_with_train.network.trains["TRAIN_A"]
         updated = speed_profile_service.update_profile(
-            state, "P1", data={"deceleration_rate": 9.0}
+            state_with_train, train.speed_profile_id,
+            data={"acceleration_rate": 4.0, "lighting_voltage": 0.6},
         )
+        assert updated.acceleration_rate == 4.0
+        assert updated.is_instance
+        assert updated.parent_profile_id == 0
 
-        assert updated.acceleration_rate == 7.0
-        assert updated.deceleration_rate == 9.0
-        assert updated.name == "Profile 1"
-
-    def test_update_writes_only_the_curve_onto_an_instance(self, state):
-        """A hand-edited curve gives the locomotive its own curve and leaves
-        every other field unset, so it still reads them from its model."""
-        speed_profile_service.create_profile(
-            state,
-            data={"profile_id": "MODEL", "name": "Model", "acceleration_rate": 6.0},
-        )
-        speed_profile_service.create_profile(
-            state,
-            data={"profile_id": "INST", "name": "Loco 7", "derived_from": "MODEL"},
-        )
-
-        updated = speed_profile_service.update_profile(
-            state, "INST", data={"voltage_speed_curve": [[3, 20], [12, 60]]}
-        )
-
-        assert updated.voltage_speed_curve == [(3.0, 20.0), (12.0, 60.0)]
-        assert updated.lighting_voltage is None
-        assert updated.calibrated_at is None
-        resolved = state.speed_profile_registry.resolve("INST")
-        assert resolved.acceleration_rate == 6.0
-        assert resolved.power_percent_to_speed(50) == pytest.approx(30.0)
-
-    def test_update_refuses_a_model_field_on_an_instance(self, state):
-        """A model-profile field is edited on the model profile, never on an
-        instance."""
-        speed_profile_service.create_profile(
-            state, data={"profile_id": "MODEL", "name": "Model"}
-        )
-        speed_profile_service.create_profile(
-            state,
-            data={"profile_id": "INST", "name": "Loco 7", "derived_from": "MODEL"},
-        )
-
-        with pytest.raises(ValidationError, match="model profile 'MODEL'"):
-            speed_profile_service.update_profile(
-                state, "INST", data={"acceleration_rate": 5.0}
-            )
-        assert state.speed_profile_registry.get("INST").voltage_speed_curve is None
-
-    def test_update_refuses_a_curve_with_fewer_than_two_points(self, state):
-        speed_profile_service.create_profile(
-            state, data={"profile_id": "P1", "name": "Profile 1"}
-        )
-        with pytest.raises(ValidationError):
-            speed_profile_service.update_profile(
-                state, "P1", data={"voltage_speed_curve": []}
-            )
-
-    def test_resolved_view_shows_what_the_locomotive_runs_on(self, state):
-        """The panel's view of an instance holds the resolved values, the
-        stored `derived_from`, and the instance fields the record carries."""
-        speed_profile_service.create_profile(
-            state,
-            data={
-                "profile_id": "MODEL",
-                "name": "Model",
-                "voltage_speed_curve": [[3, 20], [12, 80]],
-            },
-        )
-        speed_profile_service.create_profile(
-            state,
-            data={
-                "profile_id": "INST",
-                "name": "Loco 7",
-                "derived_from": "MODEL",
-                "lighting_voltage": 2.0,
-            },
-        )
-
-        view = speed_profile_service.resolved_view(state, "INST")
-
-        assert view["profile_id"] == "INST"
-        assert view["derived_from"] == "MODEL"
-        assert view["voltage_speed_curve"] == [[3.0, 20.0], [12.0, 80.0]]
-        assert view["lighting_voltage"] == 2.0
-        assert view["own_fields"] == ["lighting_voltage"]
-        assert speed_profile_service.resolved_view(state, "MODEL")["own_fields"] == []
-        assert speed_profile_service.resolved_view(state, "MISSING") is None
-
-    def test_delete_default_raises_conflict(self, state):
-        """The seeded `default` profile may never be deleted."""
-        with pytest.raises(ConflictError):
-            speed_profile_service.delete_profile(state, "default")
-
-    def test_delete_in_use_raises_conflict(self, state_with_train):
-        """A profile assigned to a train cannot be deleted."""
-        speed_profile_service.create_profile(
-            state_with_train, data={"profile_id": "INUSE", "name": "In Use"}
-        )
-        state_with_train.network.trains["TRAIN_A"].speed_profile_id = "INUSE"
-        with pytest.raises(ConflictError):
-            speed_profile_service.delete_profile(state_with_train, "INUSE")
-
-    def test_delete_success(self, state):
-        speed_profile_service.create_profile(
-            state, data={"profile_id": "P9", "name": "Temp"}
-        )
-        assert speed_profile_service.delete_profile(state, "P9") is True
-        assert speed_profile_service.get_profile(state, "P9") is None
+    def test_an_unknown_profile_is_not_found(self, state):
+        with pytest.raises(NotFoundError):
+            speed_profile_service.update_profile(state, 999, data={"acceleration_rate": 1})
 
 
 # -------------------------------------------------------- switch_service ----
@@ -810,33 +534,34 @@ class TestTrainService:
                 state_with_train, "TRAIN_A", profile_id=""
             )
 
-    def test_assign_speed_profile_unknown_profile_raises_not_found(
+    def test_assign_speed_profile_unknown_profile_raises_validation(
         self, state_with_train
     ):
-        with pytest.raises(NotFoundError):
+        with pytest.raises(ValidationError):
             train_service.assign_speed_profile(
-                state_with_train, "TRAIN_A", profile_id="NOPE"
+                state_with_train, "TRAIN_A", profile_id=999
             )
 
-    def test_assign_speed_profile_success(self, state_with_train):
-        """An instance profile no other train names assigns onto the train."""
-        from speed_profile import make_instance_profile
-
-        state_with_train.speed_profile_registry.register(
-            make_instance_profile("default", profile_id="free_instance")
+    def test_assign_speed_profile_copies_a_set_into_the_trains_instance(
+        self, state_with_train
+    ):
+        registry = state_with_train.speed_profile_registry
+        model = registry.add_model("Kato EF66")
+        the_set = registry.create_set(model.model_id, "1", registry.get(0))
+        train = state_with_train.network.trains["TRAIN_A"]
+        instance_id = train.speed_profile_id
+        train_service.assign_speed_profile(
+            state_with_train, "TRAIN_A", profile_id=the_set.profile_id
         )
+        assert train.speed_profile_id == instance_id
+        assert registry.get(instance_id).parent_profile_id == the_set.profile_id
+
+    def test_assign_speed_profile_takes_the_default(self, state_with_train):
         train = train_service.assign_speed_profile(
-            state_with_train, "TRAIN_A", profile_id="free_instance"
+            state_with_train, "TRAIN_A", profile_id=0
         )
-        assert train.speed_profile_id == "free_instance"
-
-    def test_assign_speed_profile_refuses_a_model_profile(self, state_with_train):
-        """design_new.md "SpeedProfile": a train names an instance profile,
-        never a model profile such as the built-in `default`."""
-        with pytest.raises(ValidationError, match="model profile"):
-            train_service.assign_speed_profile(
-                state_with_train, "TRAIN_A", profile_id="default"
-            )
+        instance = state_with_train.speed_profile_registry.get(train.speed_profile_id)
+        assert instance.parent_profile_id == 0
 
     def test_assign_route_unknown_train_raises_not_found(self, state):
         with pytest.raises(NotFoundError):

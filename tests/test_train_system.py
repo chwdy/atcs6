@@ -74,7 +74,6 @@ class TestSpeedProfile:
         locomotive starting to move at 2.5 V."""
         return SpeedProfile(
             profile_id="test_profile",
-            name="Test Profile",
             lighting_voltage=2.0,
             starting_voltage=2.5,
             voltage_speed_curve=[(3.0, 30.0), (6.0, 90.0), (9.0, 120.0), (12.0, 120.0)],
@@ -86,7 +85,6 @@ class TestSpeedProfile:
     def test_profile_initialization(self, basic_profile: SpeedProfile):
         """Test profile is created correctly."""
         assert basic_profile.profile_id == "test_profile"
-        assert basic_profile.name == "Test Profile"
         assert basic_profile.lighting_voltage == 2.0
         assert basic_profile.acceleration_rate == 10.0
         assert basic_profile.deceleration_rate == 15.0
@@ -159,7 +157,6 @@ class TestSpeedProfile:
     def test_a_stored_point_at_or_below_the_starting_voltage_is_not_read(self):
         profile = SpeedProfile(
             profile_id="p",
-            name="p",
             starting_voltage=4.0,
             voltage_speed_curve=[(3.0, 30.0), (6.0, 90.0), (12.0, 120.0)],
         )
@@ -172,8 +169,6 @@ class TestSpeedProfile:
         data = basic_profile.to_dict()
         restored = SpeedProfile.from_dict(data)
 
-        assert restored.profile_id == basic_profile.profile_id
-        assert restored.name == basic_profile.name
         assert restored.lighting_voltage == basic_profile.lighting_voltage
         assert restored.acceleration_rate == basic_profile.acceleration_rate
         assert restored.voltage_speed_curve == basic_profile.voltage_speed_curve
@@ -182,7 +177,7 @@ class TestSpeedProfile:
         """DEFAULT_SPEED_PROFILE carries the seeded straight-line curve and no
         lighting voltage."""
         assert DEFAULT_SPEED_PROFILE is not None
-        assert DEFAULT_SPEED_PROFILE.profile_id == "default"
+        assert DEFAULT_SPEED_PROFILE.profile_id == 0
         assert DEFAULT_SPEED_PROFILE.lighting_voltage is None
         assert DEFAULT_SPEED_PROFILE.top_speed_kmh == 100.0
         assert DEFAULT_SPEED_PROFILE.voltage_speed_curve[-1][0] == 12.0
@@ -409,7 +404,9 @@ class TestTrainPhase1:
         assert train.train_id == "TRAIN_002"
         assert train.model == "Shinkansen E5"
         assert train.min_radius_cm == 50.0
-        assert train.speed_profile_id == "profile_002"
+        # The saved number is not reused: RailwayNetwork.from_dict registers
+        # the train's instance profile under a fresh one.
+        assert train.speed_profile_id is None
         # `assigned_route_id` is no longer carried on `Train`; the canonical
         # store is `RouteExecutor.assigned_route_id_for(train_id)`.
         # Per design_new.md "Train ownership", Train no longer mirrors live

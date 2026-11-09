@@ -2,36 +2,26 @@
  * The decisions behind the Locomotives screen (docs/ui-layout-rewrite-plan.md
  * §6), kept free of the DOM so they can be tested on their own.
  *
- * The screen lists the locomotives the operator owns (design_new.md "Train
- * Roster"), the placed trains that came from no roster entry, and the model
- * profiles. Picking one shows its Speed Profile panel, whose calibration
- * group walks the five steps of design_new.md "Calibrating a locomotive".
+ * design_new.md "SpeedProfile", Models, sets and instance profiles: the
+ * screen lists the trains on the layout, each running on its own instance
+ * profile, then the models with their sets, and the fixed Default profile.
+ * Picking a train or a set shows its Speed Profile panel, whose calibration
+ * group walks the seven steps of design_new.md "Calibrating a locomotive".
  */
 import type { CalibrationGroupSummary } from '../../editor/editor-speed-profiles';
-
-/** One `RosterEntry` as the server sends it (train_roster.py). */
-export interface RosterEntry {
-  entry_id: string;
-  name: string;
-  model: string;
-  purchase_date: string | null;
-  purchase_price: number | null;
-  consist_length_cm: number | null;
-  max_speed: number | null;
-  min_radius_cm: number | null;
-  max_slope: number;
-  speed_profile_id: string | null;
-}
+import { profileSourceLabel } from '../../lib/profile-choices';
 
 /** What the screen reads about one train from the network snapshot. */
 export interface TrainSummary {
   id: string;
-  /** The car number, or the id when it has none. */
+  /** The locomotive's name: its `car_number`, or the id when it has none
+   *  (design_new.md "Train Entity", A locomotive has one name). */
   name: string;
-  model: string;
+  /** The `car_number` itself, blank when the train has none. */
+  carNumber: string;
   lengthCm: number | null;
-  speedProfileId: string | null;
-  rosterEntryId: string | null;
+  /** The number of the train's own instance profile. */
+  speedProfileId: number | null;
   /** The train stands on the layout (its controller has a span). */
   placed: boolean;
   /** `train_status`, upper case as the spec writes it (`OFF`, `MANUAL`, …). */
@@ -41,46 +31,34 @@ export interface TrainSummary {
 
 /** What the screen reads about one speed profile. */
 export interface ProfileSummary {
-  profile_id: string;
-  name: string;
-  model: string;
-  derived_from: string | null;
+  profile_id: number;
+  /** On a set, its model; null on the Default profile and an instance. */
+  model_id: number | null;
+  set_name: string;
+  /** On an instance, the profile it was copied from. */
+  parent_profile_id: number | null;
   calibrated_at: string | null;
 }
 
-/** What the left list has picked. `new` is the Add locomotive form. A pick
- *  the Speed Profile panel made itself (it jumped to another profile) carries
- *  `fromPanel`, so the screen does not ask the panel to show it again. */
+/** A locomotive model (design_new.md "SpeedProfile", `LocomotiveModel`). */
+export interface ModelSummary {
+  model_id: number;
+  name: string;
+}
+
+/** What the left list has picked. A pick the Speed Profile panel made itself
+ *  carries `fromPanel`, so the screen does not ask the panel to show it again. */
 export type Selection =
-  /** `trainId`: which placed train to name when more than one came from the entry. */
-  | { kind: 'roster'; entryId: string; trainId?: string }
   | { kind: 'train'; trainId: string }
-  | { kind: 'profile'; profileId: string; fromPanel?: boolean }
-  | { kind: 'new' }
+  | { kind: 'set'; profileId: number; fromPanel?: boolean }
+  | { kind: 'model'; modelId: number }
+  | { kind: 'default' }
   | null;
 
-/** The built-in profile every layout has. The network snapshot leaves it
- *  out (it is code, not layout data), so the list adds it. */
-export const DEFAULT_PROFILE_ID = 'default';
+/** The fixed Default profile's number. */
+export const DEFAULT_PROFILE_ID = 0;
 
-const byName = (a: { name: string }, b: { name: string }) =>
-  a.name.localeCompare(b.name, undefined, { numeric: true });
-
-export function rosterFromNetwork(network: any): RosterEntry[] {
-  const list: any[] = Array.isArray(network?.train_roster) ? network.train_roster : [];
-  return list.map((e) => ({
-    entry_id: String(e.entry_id),
-    name: String(e.name ?? ''),
-    model: String(e.model ?? ''),
-    purchase_date: e.purchase_date ?? null,
-    purchase_price: typeof e.purchase_price === 'number' ? e.purchase_price : null,
-    consist_length_cm: typeof e.consist_length_cm === 'number' ? e.consist_length_cm : null,
-    max_speed: typeof e.max_speed === 'number' ? e.max_speed : null,
-    min_radius_cm: typeof e.min_radius_cm === 'number' ? e.min_radius_cm : null,
-    max_slope: Number(e.max_slope) || 0,
-    speed_profile_id: e.speed_profile_id ?? null,
-  }));
-}
+const byText = (a: string, b: string) => a.localeCompare(b, undefined, { numeric: true });
 
 export function trainsFromNetwork(network: any): TrainSummary[] {
   const controllers = network?.controllers_by_train_id || {};
@@ -89,10 +67,9 @@ export function trainsFromNetwork(network: any): TrainSummary[] {
     return {
       id: String(t.id),
       name: String(t.car_number || t.id),
-      model: String(t.model ?? ''),
+      carNumber: String(t.car_number ?? ''),
       lengthCm: typeof t.length_cm === 'number' ? t.length_cm : null,
-      speedProfileId: t.speed_profile_id ?? null,
-      rosterEntryId: t.roster_entry_id ?? null,
+      speedProfileId: t.speed_profile_id == null ? null : Number(t.speed_profile_id),
       placed: c.span != null,
       status: String(c.train_status || 'off').toUpperCase(),
       stopped: c.is_stopped !== false,
@@ -103,106 +80,99 @@ export function trainsFromNetwork(network: any): TrainSummary[] {
 export function profilesFromNetwork(network: any): ProfileSummary[] {
   const all: Record<string, any> = network?.speed_profiles || {};
   return Object.values(all).map((p: any) => ({
-    profile_id: String(p.profile_id),
-    name: String(p.name ?? ''),
-    model: String(p.model ?? ''),
-    derived_from: p.derived_from ?? null,
+    profile_id: Number(p.profile_id),
+    model_id: p.model_id == null ? null : Number(p.model_id),
+    set_name: String(p.set_name ?? ''),
+    parent_profile_id: p.parent_profile_id == null ? null : Number(p.parent_profile_id),
     calibrated_at: p.calibrated_at ?? null,
   }));
 }
 
-/** The name a roster entry shows: its name, else its model, else its id. */
-export function entryName(e: RosterEntry): string {
-  return e.name || e.model || e.entry_id;
+export function modelsFromNetwork(network: any): ModelSummary[] {
+  return ((network?.locomotive_models as any[]) || []).map((m) => ({
+    model_id: Number(m.model_id),
+    name: String(m.name ?? ''),
+  }));
 }
 
-/** The roster entries in name order. */
-export function sortedRoster(roster: RosterEntry[]): RosterEntry[] {
-  return [...roster].sort((a, b) => byName({ name: entryName(a) }, { name: entryName(b) }));
+/** The trains on the layout, in name order. */
+export function placedTrains(trains: TrainSummary[]): TrainSummary[] {
+  return trains.filter((t) => t.placed).sort((a, b) => byText(a.name, b.name));
 }
 
-/** The placed train put on the layout from this roster entry, if any. A
- *  roster entry is a template, so more than one may exist; the first by name
- *  is the one the screen names. */
-export function placedTrainFor(entry: RosterEntry, trains: TrainSummary[]): TrainSummary | null {
-  const placed = trains.filter((t) => t.placed && t.rosterEntryId === entry.entry_id).sort(byName);
-  return placed[0] ?? null;
+/** The models in name order. */
+export function sortedModels(models: ModelSummary[]): ModelSummary[] {
+  return [...models].sort((a, b) => byText(a.name, b.name));
 }
 
-/** Placed trains that came from no roster entry still listed: they can be
- *  calibrated too, so the list shows them in their own group. */
-export function trainsNotInRoster(trains: TrainSummary[], roster: RosterEntry[]): TrainSummary[] {
-  const ids = new Set(roster.map((e) => e.entry_id));
-  return trains.filter((t) => t.placed && !(t.rosterEntryId && ids.has(t.rosterEntryId))).sort(byName);
+/** A model's sets in set-name order. */
+export function setsOf(modelId: number, profiles: ProfileSummary[]): ProfileSummary[] {
+  return profiles.filter((p) => p.model_id === modelId).sort((a, b) => byText(a.set_name, b.set_name));
 }
 
-/** The name a profile shows: its name, else its id. */
-export function profileName(p: ProfileSummary): string {
-  return p.name || p.profile_id;
+export function profileById(profileId: number | null, profiles: ProfileSummary[]): ProfileSummary | null {
+  if (profileId == null) return null;
+  return profiles.find((p) => p.profile_id === profileId) ?? null;
 }
 
-/** The model profiles (those deriving from no other), `default` first, the
- *  rest in the order of the names they show. */
-export function modelProfiles(profiles: ProfileSummary[]): ProfileSummary[] {
-  const models = profiles
-    .filter((p) => !p.derived_from && p.profile_id !== DEFAULT_PROFILE_ID)
-    .sort((a, b) => profileName(a).localeCompare(profileName(b), undefined, { numeric: true }));
-  const def = profiles.find((p) => p.profile_id === DEFAULT_PROFILE_ID) ?? {
-    profile_id: DEFAULT_PROFILE_ID,
-    name: 'Default',
-    model: '',
-    derived_from: null,
-    calibrated_at: null,
-  };
-  return [def, ...models];
+/** Where a train's profile came from, by name: `model · set`, `Default`,
+ *  `Set deleted` or `Scene profile`. */
+export function trainSource(train: TrainSummary, profiles: ProfileSummary[], models: ModelSummary[]): string {
+  return profileSourceLabel(profileById(train.speedProfileId, profiles), profiles, models);
+}
+
+/** When a profile's curve was measured, or null. */
+export function measuredAt(profileId: number | null, profiles: ProfileSummary[]): string | null {
+  return profileById(profileId, profiles)?.calibrated_at ?? null;
+}
+
+/** The trains on the layout whose instance profile was copied from this
+ *  profile. */
+export function trainsFrom(profileId: number, trains: TrainSummary[], profiles: ProfileSummary[]): TrainSummary[] {
+  return placedTrains(trains).filter((t) => profileById(t.speedProfileId, profiles)?.parent_profile_id === profileId);
+}
+
+/** The model a set belongs to. */
+export function modelOf(set: ProfileSummary | null, models: ModelSummary[]): ModelSummary | null {
+  if (!set || set.model_id == null) return null;
+  return models.find((m) => m.model_id === set.model_id) ?? null;
 }
 
 /**
  * Which profile the Speed Profile panel shows for a pick, and which train its
- * locomotive row names. A roster entry shows the instance profile it names,
- * or, when it names none yet, the one its placed train runs on.
+ * locomotive row names. A train shows its own instance profile; a set shows
+ * itself. A model and the Default profile show no panel.
  */
 export function panelTarget(
   selection: Selection,
-  roster: RosterEntry[],
   trains: TrainSummary[]
-): { profileId: string | null; trainId: string | null } {
+): { profileId: number | null; trainId: string | null } {
   if (!selection) return { profileId: null, trainId: null };
-  if (selection.kind === 'roster') {
-    const entry = roster.find((e) => e.entry_id === selection.entryId);
-    if (!entry) return { profileId: null, trainId: null };
-    const asked = trains.find((t) => t.placed && t.id === selection.trainId && t.rosterEntryId === entry.entry_id);
-    const train = asked ?? placedTrainFor(entry, trains);
-    return { profileId: entry.speed_profile_id || train?.speedProfileId || null, trainId: train?.id ?? null };
-  }
   if (selection.kind === 'train') {
     const train = trains.find((t) => t.id === selection.trainId);
     return { profileId: train?.speedProfileId ?? null, trainId: train?.id ?? null };
   }
-  if (selection.kind === 'profile') return { profileId: selection.profileId, trainId: null };
+  if (selection.kind === 'set') return { profileId: selection.profileId, trainId: null };
   return { profileId: null, trainId: null };
 }
 
-/** The pick that opens a train's locomotive: its roster entry when it came
- *  from one that is still listed, otherwise the train itself. */
-export function selectionForTrain(trainId: string, roster: RosterEntry[], trains: TrainSummary[]): Selection {
-  const train = trains.find((t) => t.id === trainId);
-  const entryId = train?.rosterEntryId;
-  if (entryId && roster.some((e) => e.entry_id === entryId)) return { kind: 'roster', entryId, trainId };
+/** The pick that opens a train. */
+export function selectionForTrain(trainId: string): Selection {
   return { kind: 'train', trainId };
 }
 
 /**
- * The pick for a profile the Speed Profile panel opened on its own. A
- * locomotive's own (instance) profile picks the roster entry or the placed
- * train that names it; any other profile is picked as itself.
+ * The pick for a profile the Speed Profile panel opened on its own. A train's
+ * instance profile picks that train; a set picks itself; the Default profile
+ * picks the Default row.
  */
-export function selectionForProfile(profileId: string, roster: RosterEntry[], trains: TrainSummary[]): Selection {
-  const entry = roster.find((e) => e.speed_profile_id === profileId);
-  if (entry) return { kind: 'roster', entryId: entry.entry_id };
-  const train = trains.find((t) => t.placed && t.speedProfileId === profileId);
-  if (train) return selectionForTrain(train.id, roster, trains);
-  return { kind: 'profile', profileId, fromPanel: true };
+export function selectionForProfile(profileId: number, trains: TrainSummary[], profiles: ProfileSummary[]): Selection {
+  if (profileId === DEFAULT_PROFILE_ID) return { kind: 'default' };
+  const owner = trains.find((t) => t.speedProfileId === profileId);
+  if (owner) return { kind: 'train', trainId: owner.id };
+  const profile = profileById(profileId, profiles);
+  if (profile?.model_id != null) return { kind: 'set', profileId, fromPanel: true };
+  return null;
 }
 
 // === Calibration steps ===
@@ -215,7 +185,7 @@ export const CALIBRATION_STEPS: ReadonlyArray<{ title: string; hint: string }> =
   { title: 'Find the lighting voltage', hint: 'Raise or lower the voltage until the lamps light and the train stands still, then Keep, which saves it. A locomotive whose lamps light only once it moves gets No lamps.' },
   { title: 'Find the starting voltage', hint: 'Raise the voltage until the train just moves, then It moves. That saves the starting voltage, above the lighting voltage you kept, and starts the sweep.' },
   { title: 'Let the sweep run', hint: 'The train runs back and forth across the measured block at each voltage step above the starting voltage. Stop ends it and writes nothing.' },
-  { title: 'Commit the curve', hint: 'Save to this locomotive, or Promote to model. Nothing is written until you pick one.' },
+  { title: 'Commit the curve', hint: 'Save to this train, or Promote to keep it as a set too. Nothing is written until you pick one; Discard throws it away.' },
   { title: 'Test and commit the ATO minimum voltage', hint: 'Press Test, and raise or lower the voltage while the train runs back and forth until the speed holds steady, then Commit. You may also type it into the profile.' },
 ];
 
@@ -279,93 +249,7 @@ export function refusedReason(trainName: string): string {
   return `Refused while ${trainName} reads CALIBRATING. End the pass first with Stop.`;
 }
 
-// === Roster entry form ===
-
-/** The Add / Edit locomotive form's fields, as typed. */
-export interface RosterForm {
-  name: string;
-  model: string;
-  purchase_date: string;
-  purchase_price: string;
-  consist_length_cm: string;
-  max_speed: string;
-  min_radius_cm: string;
-  max_slope: string;
-}
-
-export function emptyRosterForm(): RosterForm {
-  return {
-    name: '',
-    model: '',
-    purchase_date: '',
-    purchase_price: '',
-    consist_length_cm: '',
-    max_speed: '',
-    min_radius_cm: '',
-    max_slope: '',
-  };
-}
-
-const typed = (n: number | null | undefined): string => (n == null ? '' : String(n));
-
-export function rosterFormFrom(entry: RosterEntry): RosterForm {
-  return {
-    name: entry.name,
-    model: entry.model,
-    purchase_date: entry.purchase_date ?? '',
-    purchase_price: typed(entry.purchase_price),
-    consist_length_cm: typed(entry.consist_length_cm),
-    max_speed: typed(entry.max_speed),
-    min_radius_cm: typed(entry.min_radius_cm),
-    max_slope: entry.max_slope ? String(entry.max_slope) : '',
-  };
-}
-
-/** A number field: blank is "not given" (null); anything else must parse. */
-function numberField(text: string, label: string, errors: string[]): number | null {
-  const t = text.trim();
-  if (!t) return null;
-  const n = Number(t);
-  if (!Number.isFinite(n) || n < 0) {
-    errors.push(`${label} must be a number of 0 or more.`);
-    return null;
-  }
-  return n;
-}
-
-/**
- * The body `POST /api/roster` takes for the form, or the errors to show.
- * POST replaces the whole entry, so an edit sends every field and keeps the
- * entry's id and its profile link.
- */
-export function rosterPayload(
-  form: RosterForm,
-  existing: RosterEntry | null
-): { body: Record<string, unknown> | null; errors: string[] } {
-  const errors: string[] = [];
-  if (!form.name.trim() && !form.model.trim()) errors.push('Give the locomotive a name or a model.');
-  const body: Record<string, unknown> = {
-    name: form.name.trim(),
-    model: form.model.trim(),
-    purchase_date: form.purchase_date.trim() || null,
-    purchase_price: numberField(form.purchase_price, 'Purchase price', errors),
-    consist_length_cm: numberField(form.consist_length_cm, 'Length', errors),
-    max_speed: numberField(form.max_speed, 'Top speed', errors),
-    min_radius_cm: numberField(form.min_radius_cm, 'Minimum curve radius', errors),
-    max_slope: numberField(form.max_slope, 'Maximum grade', errors) ?? 0,
-  };
-  if (existing) {
-    body.entry_id = existing.entry_id;
-    body.speed_profile_id = existing.speed_profile_id;
-  }
-  return { body: errors.length ? null : body, errors };
-}
-
 // === Formatting ===
-
-export function formatPrice(n: number | null): string {
-  return n == null ? '—' : n.toFixed(2);
-}
 
 export function formatNumber(n: number | null, unit: string): string {
   if (n == null) return '—';

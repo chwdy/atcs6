@@ -323,8 +323,18 @@ class StepPlayer:
             train.car_number = op["car_number"]
         if "min_radius_cm" in op:
             train.min_radius_cm = float(op["min_radius_cm"])
-        if "speed_profile_id" in op:
-            train.speed_profile_id = op["speed_profile_id"]
+        # Every train owns an instance profile: a copy of the recorded profile
+        # when it is the Default profile or a set here, else of the Default
+        # (design_new.md "SpeedProfile", Giving a train a profile).
+        registry = network.speed_profiles
+        source = op.get("speed_profile_id")
+        try:
+            registry.copy_source(source)
+        except ValueError:
+            source = None
+        train.speed_profile_id = registry.create_instance(
+            source_profile_id=source, max_speed_kmh=train.max_speed
+        ).profile_id
 
         network.add_train(train)
         return train_id

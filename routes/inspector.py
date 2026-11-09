@@ -562,7 +562,8 @@ def _build_train_inspector(train: Any, controller: Any) -> Dict[str, Any]:
     return {
         "type": "train",
         "id": getattr(train, "train_id", None),
-        "label": getattr(train, "model", "") or getattr(train, "train_id", ""),
+        # A locomotive has one name (design_new.md "Train Entity").
+        "label": getattr(train, "car_number", "") or getattr(train, "train_id", ""),
         "groups": [
             _build_train_config_group(train),
             _build_controller_live_group(controller),

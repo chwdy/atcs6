@@ -20,7 +20,7 @@ import { holdReasonText } from '../lib/hold-reason';
 import { formatSpeedReadout, formatATOEta, formatSimClock, middleTruncate } from './train-format';
 import { showToast } from '../lib/toast';
 import { copyIdButton } from '../lib/copy-id';
-import { pickableProfileChoices, type ProfileChoice } from '../lib/profile-choices';
+import { profileChoices, profileSourceLabel, type ProfileChoice } from '../lib/profile-choices';
 import type { EditorHost } from './types';
 import { showConfirmModal, getTrackExits, getNeighborPosition, formatDuration, formatDistanceCm, escapeAttr } from '../lib/helpers';
 
@@ -199,17 +199,15 @@ export class TrainEditorHandler {
       idInput.value = `TRAIN_${Date.now().toString().slice(-4)}`;
     }
 
-    // Populate the speed-profile select from the network's profiles (data-driven
-    // set → a select, per DESIGN_LANGUAGE.md §4 "Choosing a selection control").
-    // "Default" (already in the select) seeds a fresh pair; the rest are the
-    // instance profiles no train names, the only ones placement accepts
-    // (design_new.md "SpeedProfile", An operator points a train only at an
-    // instance profile no other train names).
+    // Populate the speed-profile select (DESIGN_LANGUAGE.md §4 "Choosing a
+    // selection control"). "Default" is already in the select; the rest are the
+    // sets, grouped by model. The train starts from a copy of the one picked
+    // (design_new.md "SpeedProfile", Giving a train a profile).
     try {
-      const [profiles, trains] = await Promise.all([this.api.getSpeedProfiles(), this.api.getTrains()]);
+      const { profiles, models } = await this.api.getSpeedLibrary();
       const sel = document.getElementById('train-speed-profile') as HTMLSelectElement | null;
       if (sel) {
-        for (const choice of pickableProfileChoices(profiles, trains)) {
+        for (const choice of profileChoices(profiles, models, false)) {
           const opt = document.createElement('option');
           opt.value = choice.id;
           opt.textContent = choice.label;
@@ -996,12 +994,12 @@ export class TrainEditorHandler {
     if (!idInput.value) idInput.value = `TRAIN_${Date.now().toString().slice(-4)}`;
 
     try {
-      // "Default" (already in the select) seeds a fresh pair; the rest are
-      // instance profiles no train names, so not this train's own blank pair.
-      const [profiles, trains] = await Promise.all([this.api.getSpeedProfiles(), this.api.getTrains()]);
+      // "Default" is already in the select; the rest are the sets, grouped by
+      // model (design_new.md "SpeedProfile", Giving a train a profile).
+      const { profiles, models } = await this.api.getSpeedLibrary();
       const sel = document.getElementById('unidentified-adopt-profile') as HTMLSelectElement | null;
       if (sel) {
-        for (const choice of pickableProfileChoices(profiles, trains)) {
+        for (const choice of profileChoices(profiles, models, false)) {
           const opt = document.createElement('option');
           opt.value = choice.id;
           opt.textContent = choice.label;
@@ -1422,20 +1420,23 @@ export class TrainEditorHandler {
     // placed train at an instance profile no other train names; calibration
     // then finds the train by this link. Failing to load the list is non-fatal
     // — the current profile is always offered so the select still tells the truth.
-    const currentProfileId = String(train.speed_profile_id || 'default');
-    let profileOptions: ProfileChoice[] = [{ id: currentProfileId, label: currentProfileId }];
+    // The train runs on its own instance profile; the select offers the
+    // Default profile and every set to copy into it, and keeps it as it is
+    // unless one is picked (design_new.md "SpeedProfile", Giving a train a
+    // profile). Failing to load the list is non-fatal.
+    let profileSource = 'Its own profile';
+    let profileOptions: ProfileChoice[] = [];
     try {
-      const [profiles, trains] = await Promise.all([this.api.getSpeedProfiles(), this.api.getTrains()]);
-      profileOptions = pickableProfileChoices(profiles, trains, currentProfileId);
+      const { profiles, models } = await this.api.getSpeedLibrary();
+      const own = profiles.find((p: any) => Number(p.profile_id) === Number(train.speed_profile_id));
+      profileSource = profileSourceLabel(own, profiles, models);
+      profileOptions = profileChoices(profiles, models);
     } catch (err) {
       console.debug('[TrainEditorHandler] speed profiles load failed:', err);
     }
-    const profileOptionsHtml = profileOptions
-      .map(
-        (o) =>
-          `<option value="${escapeAttr(o.id)}"${o.id === currentProfileId ? ' selected' : ''}>${escapeAttr(o.label)}</option>`
-      )
-      .join('');
+    const profileOptionsHtml =
+      `<option value="" selected>Keep (${escapeAttr(profileSource)})</option>` +
+      profileOptions.map((o) => `<option value="${escapeAttr(o.id)}">${escapeAttr(o.label)}</option>`).join('');
 
     // Get path and destination info for ATO section
     const onboardAto = controller?.ato_info;
@@ -1621,7 +1622,7 @@ export class TrainEditorHandler {
                     <div class="tc-hmi">
                         <div class="tc-hmi-header">
                             <div id="hmi-time" class="rows-1 tc-hmi-time">${simClockStr}</div>
-                            <div id="hmi-train-id" class="rows-1 tc-hmi-meta">${trainId}${train.car_number ? ` · ${train.car_number} cars` : ''}</div>
+                            <div id="hmi-train-id" class="rows-1 tc-hmi-meta">${escapeAttr(train.car_number || trainId)}</div>
                         </div>
 
                         <div id="hmi-eb-alert" class="rows-1 tc-hmi-alert tc-alert-eb ${emergencyActive ? '' : 'hidden'}">EB ACTIVE</div>
@@ -1805,8 +1806,8 @@ export class TrainEditorHandler {
                                 <div class="tc-section-subtitle">Properties (read-only)</div>
                                 <dl class="tc-status-fields">
                                     <div class="tc-field">
-                                        <dt class="tc-field-label">Car #</dt>
-                                        <dd class="tc-field-value" id="train-status-car-val">${train.car_number || '—'}</dd>
+                                        <dt class="tc-field-label">Name</dt>
+                                        <dd class="tc-field-value" id="train-status-car-val">${escapeAttr(train.car_number || '—')}</dd>
                                     </div>
                                     <div class="tc-field">
                                         <dt class="tc-field-label">Length</dt>
@@ -1819,9 +1820,9 @@ export class TrainEditorHandler {
                                     <div class="tc-field">
                                         <dt class="tc-field-label">Speed Profile</dt>
                                         <dd class="tc-field-value flex gap-8">
-                                            <span class="font-mono">${train.speed_profile_id || 'default'}</span>
+                                            <span>${escapeAttr(profileSource)}</span>
                                             <span class="flex-1"></span>
-                                            <button id="train-edit-profile-btn" class="rr-flat-btn" data-profile-id="${train.speed_profile_id || 'default'}">Edit profile →</button>
+                                            <button id="train-edit-profile-btn" class="rr-flat-btn" data-profile-id="${train.speed_profile_id ?? ''}">Edit profile →</button>
                                         </dd>
                                     </div>
                                 </dl>
@@ -1844,8 +1845,8 @@ export class TrainEditorHandler {
                         <summary>Edit Properties</summary>
                         <div class="tc-disclosure-body">
                             <div class="tc-row">
-                                <label class="tc-row-label" for="train-car-number-input">Car #</label>
-                                <input type="text" id="train-car-number-input" value="${train.car_number || ''}" placeholder="Car number">
+                                <label class="tc-row-label" for="train-car-number-input">Name</label>
+                                <input type="text" id="train-car-number-input" value="${escapeAttr(train.car_number || '')}" placeholder="${escapeAttr(trainId)}">
                             </div>
                             <div class="tc-row">
                                 <label class="tc-row-label" for="train-length-input">Length</label>
@@ -1857,7 +1858,8 @@ export class TrainEditorHandler {
                             </div>
                             <div class="tc-row">
                                 <label class="tc-row-label" for="train-speed-profile-input">Speed Profile</label>
-                                <select id="train-speed-profile-input" data-initial="${escapeAttr(currentProfileId)}">${profileOptionsHtml}</select>
+                                <select id="train-speed-profile-input">${profileOptionsHtml}</select>
+                                <button type="button" id="train-reset-profile-btn" class="rr-flat-btn" title="Copy the profile this train got back into it, throwing away its own changes">Reset</button>
                             </div>
                             <div class="tc-footer">
                                 <button id="save-train-btn" class="tc-btn tc-btn-primary">Save</button>
@@ -2203,6 +2205,20 @@ export class TrainEditorHandler {
     const carNumberInput = document.getElementById('train-car-number-input') as HTMLInputElement | null;
     const profileSelect = document.getElementById('train-speed-profile-input') as HTMLSelectElement | null;
 
+    const resetBtn = document.getElementById('train-reset-profile-btn') as HTMLButtonElement | null;
+    if (resetBtn) {
+      resetBtn.onclick = async () => {
+        try {
+          await this.api.resetTrainSpeedProfile(trainId);
+          await window.app?.refreshNetwork();
+          this.showTrainControlPanel(trainId);
+          showToast('Profile reset', 'success', 3000);
+        } catch (err: any) {
+          showToast('Reset: ' + err.message, 'error', 5000);
+        }
+      };
+    }
+
     if (saveBtn) {
       saveBtn.onclick = async () => {
         const updates: Record<string, unknown> = {};
@@ -2219,21 +2235,21 @@ export class TrainEditorHandler {
             updates.length_cm = val;
           }
         }
-        if (carNumberInput) {
+        // Send the name only when the operator changed it.
+        if (carNumberInput && carNumberInput.value.trim() !== (carNumberInput.defaultValue || '').trim()) {
           updates.car_number = carNumberInput.value;
         }
 
-        // The profile link lives behind its own validated endpoint, so it goes
-        // out as a separate call and only when the operator actually changed it.
+        // A picked profile is copied into the train's own instance profile
+        // through its own validated endpoint (design_new.md "SpeedProfile",
+        // Giving a train a profile); "Keep" sends nothing.
         const newProfileId = profileSelect?.value;
-        const profileChanged =
-          !!newProfileId && newProfileId !== (profileSelect?.dataset.initial ?? '');
 
         try {
-          await this.api.updateTrain(trainId, updates);
-          if (profileChanged) {
-            await this.api.assignTrainSpeedProfile(trainId, newProfileId!);
+          if (newProfileId) {
+            await this.api.assignTrainSpeedProfile(trainId, Number(newProfileId));
           }
+          await this.api.updateTrain(trainId, updates);
           await window.app?.refreshNetwork();
           this.showTrainControlPanel(trainId);
           showToast('Train properties saved', 'success', 5000);
@@ -2685,8 +2701,8 @@ export class TrainEditorHandler {
       }
       const trainIdEl = panel.querySelector('#hmi-train-id');
       if (trainIdEl) {
-        const carCount = train.car_number;
-        trainIdEl.textContent = carCount ? `${train.id} · ${carCount} cars` : train.id;
+        // A locomotive has one name (design_new.md "Train Entity").
+        trainIdEl.textContent = train.car_number || train.id;
       }
       const handleHmi = panel.querySelector('#hmi-handle');
       if (handleHmi) {

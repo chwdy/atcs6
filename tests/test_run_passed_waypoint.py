@@ -29,8 +29,8 @@ _BLK = [f"B{i}" for i in range(_N_BLOCKS)]
 
 def _linear_scene():
     """A straight west-to-east line of contiguous two-tile blocks, one train at
-    the west end facing east, tuned to accelerate briskly so the run covers real
-    ground within a modest tick budget."""
+    the west end facing east, on the Default profile drawn to its 40 km/h top
+    speed."""
     with contextlib.redirect_stdout(io.StringIO()):
         network, _pd, sim, _persist = bootstrap_runtime(demo=False, setup_train=False)
     for i in range(_N_BLOCKS):
@@ -53,11 +53,6 @@ def _linear_scene():
         length_cm=15.0,
         initial_cab="A",
     )
-    profile = network.speed_profiles.get(network.trains["T"].speed_profile_id)
-    profile.power_speed_curve = [(0.0, 0.0), (100.0, 40.0)]
-    profile.acceleration_rate = 500.0
-    profile.deceleration_rate = 500.0
-    profile.emergency_brake_rate = 800.0
     return network, sim
 
 

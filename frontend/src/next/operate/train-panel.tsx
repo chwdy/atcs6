@@ -20,7 +20,7 @@ import { useEffect, useState } from 'preact/hooks';
 import type { ComponentChildren, JSX } from 'preact';
 
 import { api } from '../../lib/api';
-import { pickableProfileChoices } from '../../lib/profile-choices';
+import { profileChoices, profileSourceLabel } from '../../lib/profile-choices';
 import { installCopyIdHandler } from '../../lib/copy-id';
 import { formatDistanceCm, formatDuration, showConfirmModal } from '../../lib/helpers';
 import { showToast } from '../../lib/toast';
@@ -164,11 +164,11 @@ function DeleteTrainButton({ view }: { view: TrainView }) {
       type="button"
       class="tc-btn tc-btn-danger op-delete-train-btn"
       disabled={reason !== null}
-      title={reason ?? 'Delete this train from the layout. Its speed profile and roster entry are kept.'}
+      title={reason ?? 'Delete this train from the layout. Its own profile goes with it; the models and sets are kept.'}
       onClick={() =>
         void deleteTrain(
           view.id,
-          'Its speed profile and roster entry are kept. If the locomotive is still on the track, the blocks it stands on ' +
+          'Its own profile goes with it; the models and sets are kept. If the locomotive is still on the track, the blocks it stands on ' +
             'become an unidentified train: adopt it to place the train again with the right front end.'
         )
       }
@@ -262,13 +262,12 @@ function CabDisplay({ view }: { view: TrainView }) {
   const destination =
     c?.ato_info?.destination_station_name || c?.ato_info?.destination_block_id || c?.ato_destination_block_id || null;
   const run = view.routeRun?.route_id ? `#${view.routeRun.run_number}` : null;
-  const cars = view.train?.car_number;
   return (
     <section class="tc-section tc-section-status">
       <div class="tc-hmi">
         <div class="tc-hmi-header">
           <div class="rows-1 tc-hmi-time">{Number.isFinite(t) ? formatSimClock(t, { subsecond: true }) : '—'}</div>
-          <div class="rows-1 tc-hmi-meta">{cars ? `${view.id} · ${cars} cars` : view.id}</div>
+          <div class="rows-1 tc-hmi-meta">{view.train?.car_number || view.id}</div>
         </div>
         {c?.eb_active && <div class="rows-1 tc-hmi-alert tc-alert-eb">EB ACTIVE</div>}
         <div class="tc-hmi-grid">
@@ -753,64 +752,76 @@ function DetailsSection({ host, view }: { host: OperateHost; view: TrainView }) 
   );
 }
 
-/** Car number, length, maximum speed and the linked speed profile. Saved
- *  with one button, as in today's panel. */
+/** Name, length, maximum speed and the train's speed profile. Saved with one
+ *  button, as in today's panel. The profile select copies the Default
+ *  profile or a set into the train's own instance profile, and keeps it as it
+ *  is unless one is picked (design_new.md "SpeedProfile", Giving a train a
+ *  profile); Reset copies back the profile the train last got. */
 function EditProperties({ host, view }: { host: OperateHost; view: TrainView }) {
   const t = view.train;
-  const initialProfile = String(t?.speed_profile_id || 'default');
   const [car, setCar] = useState(String(t?.car_number || ''));
   const [length, setLength] = useState(String(t?.length_cm || 0));
   const [maxSpeed, setMaxSpeed] = useState(String(t?.max_speed || 100));
-  const [profile, setProfile] = useState(initialProfile);
+  const [profile, setProfile] = useState('');
   const [profiles, setProfiles] = useState<Array<{ id: string; label: string }>>([]);
+  const [source, setSource] = useState('Its own profile');
 
   // A different train: start again from its own values.
   useEffect(() => {
     setCar(String(t?.car_number || ''));
     setLength(String(t?.length_cm || 0));
     setMaxSpeed(String(t?.max_speed || 100));
-    setProfile(initialProfile);
+    setProfile('');
   }, [view.id]);
 
-  // Offer only what the server accepts: instance profiles no other train names,
-  // plus this train's own (design_new.md "SpeedProfile", An operator points a
-  // train only at an instance profile no other train names).
   useEffect(() => {
     let stale = false;
-    Promise.all([api.getSpeedProfiles(), api.getTrains()])
-      .then(([list, trains]: [any[], any[]]) => {
+    api
+      .getSpeedLibrary()
+      .then(({ profiles: list, models }) => {
         if (stale) return;
-        setProfiles(pickableProfileChoices(list, trains, initialProfile));
+        setProfiles(profileChoices(list, models));
+        const own = list.find((p: any) => Number(p.profile_id) === Number(t?.speed_profile_id));
+        setSource(profileSourceLabel(own, list, models));
       })
       .catch(() => {});
     return () => {
       stale = true;
     };
-  }, [view.id, initialProfile]);
+  }, [view.id, t?.speed_profile_id]);
 
-  const options = profiles.some((o) => o.id === profile) ? profiles : [{ id: profile, label: profile }, ...profiles];
   const save = async () => {
-    const updates: Record<string, unknown> = { car_number: car };
+    const updates: Record<string, unknown> = {};
+    if (car.trim() !== String(t?.car_number || '').trim()) updates.car_number = car;
     const len = parseFloat(length);
     if (!isNaN(len) && len >= 0) updates.length_cm = len;
     const max = parseFloat(maxSpeed);
     if (!isNaN(max) && max > 0) updates.max_speed = max;
     try {
+      if (profile) await api.assignTrainSpeedProfile(view.id, Number(profile));
       await api.updateTrain(view.id, updates);
-      // The profile link lives behind its own validated endpoint.
-      if (profile && profile !== initialProfile) await api.assignTrainSpeedProfile(view.id, profile);
+      setProfile('');
       await host.refreshNetwork();
       showToast('Train properties saved', 'success', 5000);
     } catch (err: any) {
       showToast('Failed to save train properties: ' + err.message, 'error', 5000);
     }
   };
+  const reset = async () => {
+    try {
+      await api.resetTrainSpeedProfile(view.id);
+      await host.refreshNetwork();
+      showToast('Profile reset', 'success', 3000);
+    } catch (err: any) {
+      showToast('Reset: ' + err.message, 'error', 5000);
+    }
+  };
   return (
     <div class="op-edit-props">
       <div class="tc-section-subtitle">Edit properties</div>
       <div class="tc-row">
-        <label class="tc-row-label" for="op-train-car">Car #</label>
-        <input id="op-train-car" type="text" value={car} placeholder="Car number" onInput={(e) => setCar(e.currentTarget.value)} />
+        <label class="tc-row-label" for="op-train-car">Name</label>
+        <input id="op-train-car" type="text" value={car} placeholder={view.id} onInput={(e) => setCar(e.currentTarget.value)} />
       </div>
       <div class="tc-row">
         <label class="tc-row-label" for="op-train-length">Length</label>
@@ -823,12 +834,21 @@ function EditProperties({ host, view }: { host: OperateHost; view: TrainView }) 
       <div class="tc-row">
         <label class="tc-row-label" for="op-train-profile">Speed Profile</label>
         <select id="op-train-profile" value={profile} onChange={(e) => setProfile(e.currentTarget.value)}>
-          {options.map((o) => (
+          <option value="">Keep ({source})</option>
+          {profiles.map((o) => (
             <option key={o.id} value={o.id}>
               {o.label}
             </option>
           ))}
         </select>
+        <button
+          type="button"
+          class="rr-flat-btn"
+          title="Copy the profile this train got back into it, throwing away its own changes"
+          onClick={() => void reset()}
+        >
+          Reset
+        </button>
       </div>
       <div class="tc-footer">
         <button type="button" class="tc-btn tc-btn-primary" onClick={() => void save()}>

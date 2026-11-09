@@ -142,51 +142,37 @@ def list_trains(state: AppState) -> List[Train]:
 # ------------------------------------------------------------------ CRUD ----
 
 
-def refuse_unpickable_profile(state: AppState, train_id: str, profile_id: str) -> None:
-    """Refuse a profile the operator may not point this train at.
+def require_copy_source(state: AppState, profile_id: Any) -> Optional[int]:
+    """The profile a train may be given, as a number, or None for the Default.
 
-    design_new.md "SpeedProfile", An operator points a train only at an
-    instance profile no other train names. Refused when the profile is a model
-    profile (``derived_from`` unset, which includes the built-in ``default``) or
-    another train already names it. The profile the train names now is always
-    accepted. An id that names no profile is left to the caller.
+    design_new.md "SpeedProfile", Giving a train a profile: a request names the
+    Default profile or a set, and refuses an instance profile or a number that
+    names no profile.
 
     Raises:
         ValidationError naming why the profile was refused.
     """
-    profile = state.speed_profile_registry.get(profile_id)
-    if profile is None:
-        return
-    train = state.network.trains.get(train_id)
-    if train is not None and train.speed_profile_id == profile_id:
-        return
-    if profile.derived_from is None:
-        raise ValidationError(
-            f"Speed profile '{profile_id}' is a model profile; a train runs on "
-            "an instance profile"
-        )
-    for other_id, other in state.network.trains.items():
-        if other_id != train_id and other.speed_profile_id == profile_id:
-            raise ValidationError(
-                f"Speed profile '{profile_id}' is already used by train "
-                f"'{other_id}'; each instance profile belongs to one locomotive"
-            )
+    from speed_profile import as_profile_id
+
+    if profile_id is None or profile_id == "":
+        return None
+    pid = as_profile_id(profile_id)
+    if pid is None:
+        raise ValidationError(f"speed_profile_id must be a number, not {profile_id!r}")
+    try:
+        state.speed_profile_registry.copy_source(pid)
+    except ValueError as exc:
+        raise ValidationError(str(exc)) from exc
+    return pid
 
 
 def _apply_train_config(
-    state: AppState,
     train: Train,
-    speed_profile_id: Optional[str],
     min_radius_cm: Optional[float],
     max_slope: Optional[float],
 ) -> None:
-    """Apply optional persistent train config in place.
-
-    Covers the fields the create form sends beyond identity/length/speed:
-    speed profile, minimum curve radius, and maximum gradient. Each value is
-    None to leave the model default untouched. An unknown ``speed_profile_id``
-    is ignored — the train then falls back to its default profile.
-    """
+    """Apply optional persistent train config in place: minimum curve radius
+    and maximum gradient. Each value is None to leave the default untouched."""
     if min_radius_cm is not None:
         try:
             train.min_radius_cm = float(min_radius_cm)
@@ -197,8 +183,6 @@ def _apply_train_config(
             train.max_slope = float(max_slope)
         except (TypeError, ValueError):
             pass
-    if speed_profile_id and state.speed_profile_registry.get(speed_profile_id):
-        train.speed_profile_id = speed_profile_id
 
 
 def create_train(
@@ -210,12 +194,15 @@ def create_train(
     car_number: str = "",
     position: Optional[dict] = None,
     direction: str = "EAST",
-    speed_profile_id: Optional[str] = None,
+    speed_profile_id: Optional[Any] = None,
     min_radius_cm: Optional[float] = None,
     max_slope: Optional[float] = None,
-    roster_entry_id: Optional[str] = None,
 ) -> Train:
     """Create a train, placing it when a position is given.
+
+    The train's instance profile is a copy of the Default profile or the set
+    ``speed_profile_id`` names (design_new.md "SpeedProfile", Giving a train a
+    profile).
 
     When ``position`` is a dict and a SimulationController is available the
     train is wired through ``sim_controller.add_train`` (controller +
@@ -229,9 +216,8 @@ def create_train(
     """
     if not train_id:
         raise ValidationError("Missing train ID")
-    if speed_profile_id:
-        with _runtime_lock(state):
-            refuse_unpickable_profile(state, train_id, speed_profile_id)
+    with _runtime_lock(state):
+        speed_profile_id = require_copy_source(state, speed_profile_id)
 
     if position is not None and state.sim_controller is not None:
         try:
@@ -252,7 +238,7 @@ def create_train(
                 max_speed_kmh=max_speed_kmh,
                 length_cm=length_cm,
                 name=car_number,
-                roster_entry_id=roster_entry_id,
+                speed_profile_id=speed_profile_id,
             )
         except ValueError as exc:
             raise ValidationError(str(exc)) from exc
@@ -271,7 +257,7 @@ def create_train(
                 "Tile-precise placement failed for %s: %s", train_id, exc
             )
 
-        _apply_train_config(state, train, speed_profile_id, min_radius_cm, max_slope)
+        _apply_train_config(train, min_radius_cm, max_slope)
         state.network.update_signals_from_blocks()
         return train
 
@@ -288,7 +274,10 @@ def create_train(
         max_speed=max_speed_kmh,
         car_number=car_number,
     )
-    _apply_train_config(state, train, speed_profile_id, min_radius_cm, max_slope)
+    _apply_train_config(train, min_radius_cm, max_slope)
+    train.speed_profile_id = state.speed_profile_registry.create_instance(
+        source_profile_id=speed_profile_id, max_speed_kmh=max_speed_kmh
+    ).profile_id
     state.network.add_train(train)
     state.network.update_signals_from_blocks()
     return train
@@ -313,6 +302,9 @@ def update_train(
         ValidationError listing every field whose value did not parse.
     """
     train = require_train(state, train_id)
+    # A locomotive has one name, its `car_number` (design_new.md "Train
+    # Entity", A locomotive has one name).
+    new_name = None if car_number is None else str(car_number).strip()
 
     errors: List[str] = []
 
@@ -322,8 +314,8 @@ def update_train(
         except (ValueError, TypeError):
             errors.append("max_speed")
 
-    if car_number is not None:
-        train.car_number = str(car_number)
+    if new_name is not None:
+        train.car_number = new_name
 
     if length_cm is not None:
         try:
@@ -378,8 +370,7 @@ def adopt_unidentified_train(
     train_type: Optional[str] = None,
     min_radius_cm: Optional[float] = None,
     max_slope: Optional[float] = None,
-    speed_profile_id: Optional[str] = None,
-    roster_entry_id: Optional[str] = None,
+    speed_profile_id: Optional[Any] = None,
 ) -> Train:
     """Set an unidentified train up as a real, driveable train.
 
@@ -405,8 +396,7 @@ def adopt_unidentified_train(
 
         tile = _parse_tile(head_tile, "head_tile")
         front_end = _parse_tile(front_end_tile, "front_end_tile")
-        if speed_profile_id:
-            refuse_unpickable_profile(state, train_id, speed_profile_id)
+        speed_profile_id = require_copy_source(state, speed_profile_id)
 
         try:
             length_cm = float(length_cm)
@@ -433,7 +423,6 @@ def adopt_unidentified_train(
                 min_radius_cm=min_radius_cm,
                 max_slope=max_slope,
                 speed_profile_id=speed_profile_id,
-                roster_entry_id=roster_entry_id,
             )
         except ValueError as exc:
             raise ValidationError(str(exc)) from exc
@@ -536,30 +525,79 @@ def reposition_train(
     return train
 
 
+def _refuse_profile_change_during_calibration(state: AppState, train_id: str) -> None:
+    """Refuse a copy into the train's instance profile while a calibration run
+    is open for it or its finished pass waits (design_new.md "SpeedProfile",
+    Giving a train a profile; Resetting an instance profile): the copy would
+    replace the curve and voltages under the run."""
+    sim = getattr(state, "sim_controller", None)
+    calibration = getattr(sim, "speed_calibration", None) if sim else None
+    if calibration is not None and train_id in getattr(calibration, "runs", {}):
+        raise ConflictError(
+            f"Train {train_id!r} has a calibration run open or a finished pass "
+            "waiting; commit or discard it first"
+        )
+
+
 def assign_speed_profile(
-    state: AppState, train_id: str, *, profile_id: Optional[str]
+    state: AppState, train_id: str, *, profile_id: Optional[Any]
 ) -> Train:
-    """Assign a speed profile to a train.
+    """Give a train the Default profile or a set: copy it into the instance
+    profile the train already owns, keeping its number (design_new.md
+    "SpeedProfile", Giving a train a profile).
 
     Raises:
-        ValidationError when profile_id is blank, names a model profile, or
-            names a profile another train already names.
-        NotFoundError when the train or the profile does not exist.
+        ValidationError when profile_id is missing, not a number, names an
+            instance profile, or names no profile.
+        NotFoundError when the train does not exist.
+        ConflictError while a calibration run is open for the train or its
+            finished pass waits.
     """
-    if not profile_id:
+    if profile_id is None or profile_id == "":
         raise ValidationError("profile_id is required")
 
     with state.simulation_lock:
         train = state.network.trains.get(train_id)
         if not train:
             raise NotFoundError(f"Train '{train_id}' not found")
+        source_id = require_copy_source(state, profile_id)
+        _refuse_profile_change_during_calibration(state, train_id)
+        registry = state.speed_profile_registry
+        if registry.get(train.speed_profile_id) is None:
+            train.speed_profile_id = registry.create_instance(
+                source_profile_id=source_id, max_speed_kmh=train.max_speed
+            ).profile_id
+        else:
+            registry.copy_into_instance(train.speed_profile_id, source_id, train.max_speed)
+    return train
 
-        if not state.speed_profile_registry.get(profile_id):
-            raise NotFoundError(f"Speed profile '{profile_id}' not found")
-        refuse_unpickable_profile(state, train_id, profile_id)
 
-        train.speed_profile_id = profile_id
+def reset_speed_profile(state: AppState, train_id: str) -> Train:
+    """Copy the train's parent profile back into its instance profile
+    (design_new.md "SpeedProfile", Resetting an instance profile).
 
+    Raises:
+        NotFoundError when the train does not exist.
+        ConflictError when the instance has no parent, its parent names no
+            profile, or a calibration run is open or a finished pass waits.
+    """
+    with state.simulation_lock:
+        train = state.network.trains.get(train_id)
+        if not train:
+            raise NotFoundError(f"Train '{train_id}' not found")
+        registry = state.speed_profile_registry
+        instance = registry.get(train.speed_profile_id)
+        if instance is None:
+            raise ConflictError(f"Train {train_id!r} has no instance profile")
+        parent_id = instance.parent_profile_id
+        parent = registry.get(parent_id) if parent_id is not None else None
+        if parent is None or parent.is_instance:
+            raise ConflictError(
+                "This train's profile has no parent to reset to: its set was "
+                "deleted, or it came from a scene"
+            )
+        _refuse_profile_change_during_calibration(state, train_id)
+        registry.copy_into_instance(instance.profile_id, parent_id, train.max_speed)
     return train
 
 
@@ -848,13 +886,9 @@ def _calibration_profile(state: AppState, train_id: str):
     sim = getattr(state, "sim_controller", None)
     if sim is None:
         raise ValidationError("Calibration requires a runtime")
-    profile = (
-        state.network.speed_profiles.get(train.speed_profile_id)
-        if train.speed_profile_id
-        else None
-    )
-    if profile is None:
-        raise ValidationError("Train has no SpeedProfile to calibrate")
+    profile = state.network.speed_profiles.get(train.speed_profile_id)
+    if profile is None or not profile.is_instance:
+        raise ValidationError("Train has no instance profile to calibrate")
     return train, profile, sim
 
 
@@ -979,10 +1013,8 @@ def calibration_readiness(
         )
     if getattr(controller, "presence_unknown", False):
         unmet.append(_ghost_refusal_message(train_id))
-    if not train.speed_profile_id or state.network.speed_profiles.get(
-        train.speed_profile_id
-    ) is None:
-        unmet.append("Assign a speed profile to the train")
+    if state.network.speed_profiles.get(train.speed_profile_id) is None:
+        unmet.append("The train has no instance profile")
 
     span = controller.get_current_span()
     held = set(getattr(span, "occupied_blocks", []) or [])
@@ -1113,7 +1145,7 @@ def calibrate_train(
             state, train_id, measured_block_id=measured_block_id
         )
         train, _profile, sim = _calibration_profile(state, train_id)
-        resolved = state.speed_profile_registry.resolve(train.speed_profile_id)
+        resolved = state.speed_profile_registry.get(train.speed_profile_id)
         outer, length_cm = resolve_calibration_stretch(state, measured_block_id)
         ends = _calibration_ends(state, train, measured_block_id, outer)
         heading_to = _leg_heading(state, train_id, measured_block_id, ends)
@@ -1221,25 +1253,39 @@ def calibrate_commit(
     state: AppState,
     train_id: str,
     *,
-    target: str = "locomotive",
+    target: str = "train",
+    promote_as: Optional[str] = None,
+    model_id: Optional[Any] = None,
+    model_name: Optional[str] = None,
+    set_name: Optional[str] = None,
     **_ignored,
 ):
-    """Write a measured pass onto a profile (design_new.md "What commit writes").
+    """Write a finished pass (design_new.md "Speed calibration", What commit
+    writes).
 
-    ``target="locomotive"`` (**Save to this locomotive**) writes the two measured
-    fields onto the instance profile the calibrated train names, so that one
-    locomotive runs on the new curve and no other changes. ``target="model"``
-    (**Promote to model**) writes them onto the model profile the instance
-    derives from and clears them from the instance in the same commit, so every
-    locomotive of that model whose instance leaves them unset runs on the new
-    curve, the calibrated one included. Every locomotive whose curve the commit
-    changes loses its `ato_min_voltage` in the same commit (A commit clears the
-    ATO minimum voltage of every locomotive whose curve it changes). Returns the
-    record actually written.
+    ``target="train"`` (**Save to this train**) writes `voltage_speed_curve`
+    and `calibrated_at` onto the train's instance profile. ``target="promote"``
+    (**Promote**) does the same, then promotes the instance profile to a set
+    (design_new.md "SpeedProfile", Promoting an instance profile):
+
+    * ``promote_as="new_set"`` creates a set under ``model_id``, or under a new
+      model named ``model_name``, with ``set_name``, and makes it the
+      instance's parent;
+    * ``promote_as="current_set"`` writes over the set the instance's
+      ``parent_profile_id`` names, refused when that is the Default profile or
+      names no set.
+
+    The commit clears the instance's `ato_min_voltage` (A commit clears the
+    train's ATO minimum voltage), and a promoted set takes the cleared value.
+    Every refusal is checked before anything is written. Returns the instance
+    profile as written.
     """
     from dataclasses import replace as _replace
     from services.speed_profile_service import settle_profile_writes
+    from speed_profile import DEFAULT_PROFILE_ID, as_profile_id
 
+    if target not in ("train", "promote"):
+        raise ValidationError("target must be 'train' or 'promote'")
     _train, profile, sim = _calibration_profile(state, train_id)
     run = sim.speed_calibration.runs.get(train_id)
     if run is None or run.is_test:
@@ -1252,45 +1298,71 @@ def calibrate_commit(
 
     with state.simulation_lock:
         registry = state.speed_profile_registry
-        if target == "locomotive":
-            target_profile, clear_profile = profile, None
-        elif target == "model":
-            if profile.derived_from:
-                model_profile = registry.get(profile.derived_from)
-                if model_profile is None:
+        # Check the promote's target before writing anything.
+        promote_model = None
+        new_model_name = None
+        overwrite_set = None
+        if target == "promote":
+            if promote_as == "new_set":
+                name = str(set_name or "").strip()
+                if not name:
+                    raise ValidationError("A new set needs a set name")
+                mid = as_profile_id(model_id)
+                if mid is not None:
+                    promote_model = registry.get_model(mid)
+                    if promote_model is None:
+                        raise ValidationError(f"No model {model_id!r}")
+                else:
+                    new_model_name = str(model_name or "").strip()
+                    if not new_model_name:
+                        raise ValidationError(
+                            "A new set needs a model: pick one or name a new one"
+                        )
+            elif promote_as == "current_set":
+                parent_id = profile.parent_profile_id
+                parent = registry.get(parent_id) if parent_id is not None else None
+                if parent_id == DEFAULT_PROFILE_ID:
                     raise ConflictError(
-                        "The model profile this locomotive derives from is missing"
+                        "This train got the Default profile, which a commit cannot "
+                        "change; promote it as a new set"
                     )
-                target_profile, clear_profile = model_profile, profile
+                if parent is None or not parent.is_set:
+                    raise ConflictError(
+                        "The set this train got its profile from was deleted; "
+                        "promote it as a new set"
+                    )
+                overwrite_set = parent
             else:
-                # The train already names a model profile directly, so promoting
-                # writes that record and there is no instance to clear.
-                target_profile, clear_profile = profile, None
-        else:
-            raise ValidationError("target must be 'locomotive' or 'model'")
+                raise ValidationError("promote_as must be 'new_set' or 'current_set'")
 
         curve = sim.speed_calibration.measured_curve(run)
-        written = _replace(target_profile, voltage_speed_curve=list(curve))
-        replacements = {written.profile_id: written}
-        cleared = None
-        if clear_profile is not None and clear_profile is not target_profile:
-            cleared = _replace(clear_profile, voltage_speed_curve=None, calibrated_at=None)
-            replacements[cleared.profile_id] = cleared
-        _final, problems = settle_profile_writes(registry, replacements)
+        written = _replace(profile, voltage_speed_curve=list(curve))
+        _final, problems = settle_profile_writes(registry, {written.profile_id: written})
         if problems:
             raise ConflictError("; ".join(problems))
         try:
-            sim.speed_calibration.commit(train_id, written, clear_profile=cleared)
+            sim.speed_calibration.commit(train_id, written)
         except ValueError as exc:
             raise ConflictError(str(exc)) from exc
-        # `commit` stamped `calibrated_at` onto the copies; settle again so the
-        # records stored carry both the stamp and every cleared ATO minimum.
-        final, _problems = settle_profile_writes(registry, replacements)
-        for record in final.values():
-            registry.register(record)
+        # `commit` stamped `calibrated_at`; settle again so the stored record
+        # carries the stamp and the cleared ATO minimum voltage.
+        final, _problems = settle_profile_writes(registry, {written.profile_id: written})
+        instance = final[written.profile_id]
+        registry.register(instance)
+
+        if target == "promote":
+            if overwrite_set is not None:
+                overwrite_set.copy_values_from(instance)
+            else:
+                if promote_model is None:
+                    promote_model = registry.add_model(new_model_name)
+                new_set = registry.create_set(
+                    promote_model.model_id, str(set_name).strip(), instance
+                )
+                instance.parent_profile_id = new_set.profile_id
         # The commit ended the pass with the train at a stand: give it back.
         sim.speed_calibration.give_trains_back()
-    return final[written.profile_id]
+    return instance
 
 
 def _open_calibration_run(state: AppState, train_id: str):
@@ -1347,7 +1419,7 @@ def calibrate_keep_lighting(
             raise ConflictError("The lighting voltage must not be below 0 V")
         train, profile, _sim = _calibration_profile(state, train_id)
         registry = state.speed_profile_registry
-        resolved = registry.resolve(train.speed_profile_id)
+        resolved = registry.get(train.speed_profile_id)
         fields: Dict[str, Any] = {"lighting_voltage": held}
         if held is not None and float(resolved.starting_voltage or 0.0) <= held:
             fields["starting_voltage"] = round(held + float(CALIBRATION_TRIAL_STEP_V), 6)
@@ -1417,7 +1489,7 @@ def calibrate_ato_minimum_test(
             state, train_id, measured_block_id=measured_block_id
         )
         train, _profile, sim = _calibration_profile(state, train_id)
-        resolved = state.speed_profile_registry.resolve(train.speed_profile_id)
+        resolved = state.speed_profile_registry.get(train.speed_profile_id)
         voltage = (
             resolved.ato_minimum_voltage
             if track_voltage is None
@@ -1463,12 +1535,7 @@ def calibrate_ato_minimum_commit(state: AppState, train_id: str):
             raise NotFoundError("No ATO minimum test is open for this train")
         train, profile, _sim = _calibration_profile(state, train_id)
         registry = state.speed_profile_registry
-        if profile.derived_from is None:
-            raise ConflictError(
-                "The train names a model profile; the ATO minimum voltage belongs "
-                "to a locomotive's own profile"
-            )
-        resolved = registry.resolve(train.speed_profile_id)
+        resolved = registry.get(train.speed_profile_id)
         if profile_key(resolved) != run.test_profile_key:
             raise ConflictError(
                 "The locomotive's starting voltage or curve changed after the test "

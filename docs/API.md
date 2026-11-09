@@ -37,7 +37,7 @@ passes the current value, the reply leaves the layout out: it carries
 `layout_unchanged: true` and `live_blocks`, `live_switches` and `live_tracks`
 (only the fields that change during a run) instead of `tracks`, `blocks`,
 `switches`, `platforms`, `station_groups`, `tunnels`, `speed_profiles` and
-`train_roster`. Otherwise the reply is the full snapshot with
+`locomotive_models`. Otherwise the reply is the full snapshot with
 `layout_unchanged: false`. See design_new.md "Data Flow To UI", **Layout
 version**, and `frontend/src/lib/network-poll.ts`.
 
@@ -1854,105 +1854,82 @@ Get counts of items in the network. Useful for checking if network is empty.
 
 ## Speed Profile Endpoints
 
-Speed profiles define how trains accelerate, decelerate, and map speed to voltage for DC analog control.
+design_new.md "SpeedProfile": every profile is the fixed Default profile
+(`profile_id` 0), a **set** under a locomotive model (`model_id` set), or one
+train's **instance profile** (its own copy of the Default profile or a set,
+with `parent_profile_id` naming where it came from). Profile and model ids are
+numbers from counters that never give a number out twice. No request creates
+a profile or a model: a set, and a new model for it, come only from a finished
+speed pass's Promote (`POST /api/trains/{train_id}/calibrate/commit`).
 
 ### GET /api/speed-profiles
 
-List all registered speed profiles.
+Every profile and every model.
 
 **Response:**
 
 ```json
 {
   "profiles": [
-    {
-      "profile_id": "default",
-      "name": "Default Profile",
-      "power_speed_curve": [[0, 0], [100, 100]],
-      "voltage_power_curve": [[1.5, 0], [12, 100]],
-      "lighting_voltage": 1.5,
-      "max_voltage": 12.0,
-      "acceleration_rate": 10.0,
-      "deceleration_rate": 15.0,
-      "emergency_brake_rate": 30.0
-    }
+    {"profile_id": 0, "model_id": null, "set_name": "", "parent_profile_id": null, "voltage_speed_curve": [[1.5, 12.5], [12.0, 100.0]], "...": "..."},
+    {"profile_id": 1, "model_id": 1, "set_name": "1", "parent_profile_id": null, "calibrated_at": "2026-11-08T03:37:42+00:00", "...": "..."}
   ],
-  "count": 1
+  "models": [{"model_id": 1, "name": "H100"}],
+  "count": 2
 }
 ```
-
-### POST /api/speed-profiles
-
-Create a new speed profile.
-
-**Request:**
-
-```json
-{
-  "profile_id": "SHINKANSEN_N700",
-  "name": "Shinkansen N700",
-  "power_speed_curve": [[0, 0], [100, 270]],
-  "voltage_power_curve": [[3, 0], [12, 100]],
-  "lighting_voltage": 3.0,
-  "max_voltage": 12.0,
-  "acceleration_rate": 8.0,
-  "deceleration_rate": 12.0,
-  "emergency_brake_rate": 25.0
-}
-```
-
-| Field | Type | Required | Default | Description |
-|-------|------|----------|---------|-------------|
-| profile_id | string | Yes | - | Unique identifier |
-| name | string | Yes | - | Human-readable name |
-| power_speed_curve | array | No | [[0,0],[100,100]] | (power_percent, speed_kmh) second-stage mapping |
-| voltage_power_curve | array | No | [[1.5,0],[12,100]] | (track_voltage, power_percent) first-stage mapping |
-| lighting_voltage | float | No | 1.5 | Lit-but-stationary voltage; also the 0%-power point of voltage_power_curve and the minimum voltage that moves the train |
-| max_voltage | float | No | 12.0 | Top of the usable track_voltage range (100%-power point) |
-| acceleration_rate | float | No | 10.0 | Acceleration in km/h/s |
-| deceleration_rate | float | No | 15.0 | Normal deceleration in km/h/s |
-| emergency_brake_rate | float | No | 30.0 | Emergency brake rate in km/h/s |
-
-**Response (201):** Created profile object
-
-**Error (409):** `{"error": "Speed profile with profile_id 'X' already exists"}`
 
 ### GET /api/speed-profiles/{profile_id}
 
-Get a single speed profile by ID.
-
-**Response:** The stored profile object.
-
-**With `?resolved=true`:** the profile as the Speed Profile panel shows it. Every value is the resolved one (an instance profile's unset fields are read from its model profile, and `calibrated_at` comes from whichever record supplies `power_speed_curve`, so a hand-drawn curve reads as not measured), and the stored `profile_id`, `name` and `derived_from` stay. `own_fields` lists the instance fields (`lighting_voltage`, `power_speed_curve`, `calibrated_at`) the record carries itself; it is empty on a model profile.
-
-**Error (404):** `{"error": "Speed profile 'X' not found"}`
+One profile as the Speed Profile panel shows it: the record plus `kind`
+(`"default"`, `"set"` or `"instance"`), an instance profile's `parent`
+(`{"kind": "set", "model_name", "set_name"}`, `{"kind": "default"}`,
+`{"kind": "deleted"}` or `{"kind": "none"}`), and a set's `model_name`.
+404 when no profile has that number.
 
 ### PUT /api/speed-profiles/{profile_id}
 
-Update an existing speed profile by hand. All fields are optional; a `profile_id` in the body must match the URL.
+Hand-edit a set or a train's instance profile. Send only the fields that
+changed; the rest keep their stored values.
 
-- **Fields the body leaves out keep their stored values.** Send only the fields that changed. On an instance profile a field left out stays unset and goes on reading from the model profile.
-- **`lighting_voltage`, `calibrated_at` and `derived_from` never change here.** Lighting-voltage calibration and a speed calibration commit write the first two.
-- **On an instance profile only `name` and `power_speed_curve` may be sent.** Any other field belongs to the model profile, and the request is refused with 400.
-- **A `power_speed_curve` needs at least two points.**
-
-See design_new.md "SpeedProfile", Editing a profile by hand.
-
-**Request:** Any subset of the POST fields
-
-**Response:** Updated profile object
-
-**Error (404):** `{"error": "Speed profile 'X' not found"}`
+- **The Default profile is refused** (409).
+- **`calibrated_at` never changes here**; only a speed calibration commit writes it.
+- **`profile_id`, `model_id` and `parent_profile_id` are refused** when the body changes them (400).
+- **`set_name` changes only on a set**, and must not be blank (400 otherwise).
+- **The record must stay valid**: a curve of at least two points whose speed does not fall as voltage rises, a lighting voltage below the starting voltage, a starting voltage below `max_voltage`, an ATO minimum voltage on the measured part of the curve. A changed starting voltage or curve clears `ato_min_voltage` unless the same body sets one.
 
 ### DELETE /api/speed-profiles/{profile_id}
 
-Delete a speed profile. Cannot delete if profile is "default" or is assigned to any train.
+Delete a set. 204 on success, 404 when absent, 409 for the Default profile
+or a train's instance profile (which goes only with its train). A train
+copied from the deleted set keeps its own copy, but its reset is refused.
 
-**Response:** 204 No Content
+### GET /api/locomotive-models
 
-**Error (409):** `{"error": "Cannot delete speed profile in use by trains: train_1, train_2"}`
+`{"models": [{"model_id": 1, "name": "H100"}]}`
 
----
+### PUT /api/locomotive-models/{model_id}
+
+Rename a model: body `{"name": str}`. 400 for a blank name, 404 when absent.
+Its sets name it by number, so nothing else moves.
+
+### DELETE /api/locomotive-models/{model_id}
+
+Delete a model and every set naming it.
+`{"status": "success", "removed_profile_ids": [1, 3]}`.
+
+### PATCH /api/trains/{train_id}/speed-profile
+
+Give a train the Default profile or a set: body `{"profile_id": int}`. The
+server copies it into the train's own instance profile, keeping that
+profile's number. 400 for an instance profile or an unknown number, 409 while
+a calibration run or a finished pass is open for the train.
+
+### POST /api/trains/{train_id}/speed-profile/reset
+
+Copy the profile the train's instance profile names in `parent_profile_id`
+back into it. 409 when it has no parent, the parent was deleted, or a
+calibration run or a finished pass is open for the train.
 
 ## Switch Endpoints
 

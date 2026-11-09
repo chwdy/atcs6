@@ -46,17 +46,17 @@ def test_add_train_seeds_profile_anchored_at_max_speed():
         length_cm=20.0,
     )
 
-    # The train points at a registered, per-train instance profile (not None,
-    # not shared) that derives from a model profile seeded alongside it.
+    # The train owns its instance profile: a copy of the Default profile drawn
+    # to the train's max_speed (design_new.md "SpeedProfile", Copying a
+    # profile).
     assert train.speed_profile_id is not None
-    assert train.speed_profile_id != "default"
+    assert train.speed_profile_id != 0
     instance = net.speed_profiles.get(train.speed_profile_id)
     assert instance is not None
-    assert instance.derived_from is not None
+    assert instance.is_instance and instance.parent_profile_id == 0
 
-    # The resolved profile anchors 100% power at the train's max_speed; the curve
-    # stays linear. (Consumers read a train's calibration through resolve.)
-    profile = net.speed_profiles.resolve(train.speed_profile_id)
+    # 100% power is the train's max_speed; the curve stays linear.
+    profile = net.speed_profiles.get(train.speed_profile_id)
     assert profile.power_percent_to_speed(100.0) == 60.0
     assert profile.power_percent_to_speed(50.0) == pytest.approx(30.0)
     assert profile.power_percent_to_speed(0.0) == 0.0
@@ -90,8 +90,8 @@ def test_two_trains_get_distinct_profiles_for_distinct_max_speeds():
     )
 
     assert fast.speed_profile_id != slow.speed_profile_id
-    fast_profile = net.speed_profiles.resolve(fast.speed_profile_id)
-    slow_profile = net.speed_profiles.resolve(slow.speed_profile_id)
+    fast_profile = net.speed_profiles.get(fast.speed_profile_id)
+    slow_profile = net.speed_profiles.get(slow.speed_profile_id)
     assert fast_profile.power_percent_to_speed(100.0) == 120.0
     assert slow_profile.power_percent_to_speed(100.0) == 40.0
 
@@ -114,7 +114,7 @@ def test_profile_less_train_resolves_to_max_speed_anchored_default():
     assert resolved.power_percent_to_speed(50.0) == pytest.approx(37.5)
     assert resolved.power_percent_to_speed(0.0) == 0.0
     # Distinct from the shared module-global default (which would map 100 -> 100).
-    assert resolved.profile_id != "default"
+    assert resolved.top_speed_kmh == 75.0
 
 
 def test_profile_resolution_tolerates_none_max_speed():
@@ -124,10 +124,10 @@ def test_profile_resolution_tolerates_none_max_speed():
     missing/non-numeric max_speed to the module-global top speed instead of
     raising on `float(None)`.
     """
-    from speed_profile import make_default_speed_profile
+    from speed_profile import DEFAULT_SPEED_PROFILE, copied_profile
 
-    # The factory itself does not raise and yields a well-formed curve.
-    prof = make_default_speed_profile("TNONE", None)
+    # The copy itself does not raise and yields a well-formed curve.
+    prof = copied_profile(DEFAULT_SPEED_PROFILE, profile_id=1, max_speed_kmh=None)
     assert prof.power_percent_to_speed(0.0) == 0.0
     assert prof.power_percent_to_speed(100.0) == 100.0  # coerced fallback top speed
 
