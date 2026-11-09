@@ -2757,11 +2757,18 @@ class SimulationController(SwitchOutputOwner):
             # Latch survives until the inclusive cancel has been consumed.
             return
 
-        # `remove_train_route_run(...)` is this latch's consume-side emitter
-        # (design_new.md "Latch consumption events"); this step clears the
-        # field once that call returns.
+        # This step clears the field once the teardown call returns, then emits
+        # the latch's consume-side event itself (design_new.md "Latch
+        # consumption events"), whether or not a run was left to tear down.
         self.route_executor.remove_train_route_run(train.train_id)
         controller.route_hooks.phase_latches.clear("route_abort")
+        controller.notifications.emit(
+            f"route abort committed for {train.train_id}",
+            operation="_consume_pending_route_abort",
+            kind="info",
+            payload={"latch": "route_abort"},
+            latch_event=True,
+        )
 
     def _consume_pending_power_off(
         self, controller: TrainController, train: Train
@@ -2829,8 +2836,7 @@ class SimulationController(SwitchOutputOwner):
         # whether a RUNNING run exists when it begins.
         if self.route_executor.execution_state_for(train.train_id) is not None:
             # This consumer owns the teardown: remove the run, then re-apply
-            # any held structural-edit re-assignment. As with route-abort,
-            # `remove_train_route_run(...)` is the consume-side emitter.
+            # any held structural-edit re-assignment.
             self.route_executor.remove_train_route_run(train.train_id)
             self.route_executor.apply_pending_reassign(train.train_id)
         else:
@@ -2841,6 +2847,15 @@ class SimulationController(SwitchOutputOwner):
             # earlier consumer just committed stays assigned.
             self.route_executor.settle_deactivate_without_run(train.train_id)
         controller.route_hooks.phase_latches.clear("route_deactivate")
+        # This step emits the latch's consume-side event itself, on either
+        # branch (design_new.md "Latch consumption events").
+        controller.notifications.emit(
+            f"route deactivate committed for {train.train_id}",
+            operation="_consume_pending_route_deactivate",
+            kind="info",
+            payload={"latch": "route_deactivate"},
+            latch_event=True,
+        )
 
     def _reevaluate_calibration_run(self, train: Train) -> None:
         """Action step `26f5` — end an open calibration pass whose conditions

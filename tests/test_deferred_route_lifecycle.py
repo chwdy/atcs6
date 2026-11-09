@@ -463,3 +463,59 @@ def test_a_route_pending_deletion_accepts_no_new_assignment(state_with_train):
     with pytest.raises(ValidationError, match="being deleted"):
         train_route_service.update_route(state, "R", assigned_train_ids=["TRAIN_A"])
     assert state.sim_controller.route_executor.assigned_route_id_for("TRAIN_A") is None
+
+
+# --------------------------------------------------------------------------
+# Latch consumption events come from the Action steps
+# --------------------------------------------------------------------------
+
+
+def _record_latch_events(controller):
+    recorded = []
+    real = controller.notifications.emit
+
+    def record(message, **kwargs):
+        if kwargs.get("latch_event"):
+            recorded.append((kwargs.get("operation"), (kwargs.get("payload") or {}).get("latch")))
+        return real(message, **kwargs)
+
+    controller.notifications.emit = record
+    return recorded
+
+
+def _helper_latch_events(state):
+    nc = state.sim_controller.notification_center
+    return [
+        n for n in nc.events_for("train", "TRAIN_A")
+        if n.operation in ("remove_train_route_run", "settle_deactivate_without_run")
+    ]
+
+
+def test_an_abort_with_no_run_left_still_emits_one_consumption_event(state_with_train):
+    """design_new.md "Latch consumption events": the route-abort step emits the
+    consumption event itself after its teardown call returns, whether or not a
+    run was left to tear down; the helper emits none."""
+    state, train = state_with_train
+    _make_route(state, "R", "BLK_1").assign_train(train.train_id)
+    controller = state.sim_controller.get_or_create_controller(train.train_id)
+    controller.route_hooks.phase_latches.set_route_abort("operator abort", has_active_path=False)
+    recorded = _record_latch_events(controller)
+    state.sim_controller._consume_pending_route_abort(controller, train)
+    assert recorded == [("_consume_pending_route_abort", "route_abort")]
+    assert _helper_latch_events(state) == []
+
+
+def test_a_deactivate_emits_one_consumption_event_on_either_branch(state_with_train):
+    state, train = state_with_train
+    _route, _rex = _setup_running_run(state, train)
+    controller = state.sim_controller.get_controller("TRAIN_A")
+    controller.route_hooks.phase_latches.set_route_deactivate("route edited", has_active_path=False)
+    recorded = _record_latch_events(controller)
+    state.sim_controller._consume_pending_route_deactivate(controller, train)
+    assert recorded == [("_consume_pending_route_deactivate", "route_deactivate")]
+    # With no run left, the step still emits exactly one event.
+    controller.route_hooks.phase_latches.set_route_deactivate("route edited", has_active_path=False)
+    recorded.clear()
+    state.sim_controller._consume_pending_route_deactivate(controller, train)
+    assert recorded == [("_consume_pending_route_deactivate", "route_deactivate")]
+    assert _helper_latch_events(state) == []

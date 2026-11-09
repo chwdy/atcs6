@@ -5080,29 +5080,10 @@ class RouteExecutor:
         self._delete_if_emptied_one_off(route_id)
         self.finalize_pending_route_deletions()
 
-        # This call is the consume-side emitter for whichever of
-        # `phase_latches.route_abort` / `route_deactivate` drove the teardown
-        # (design_new.md "Latch consumption events"). The Action step that
-        # invoked it clears the field once this returns. `latch_event=True`
-        # keeps the commit half of the write/commit pair out of the
-        # unchanged-repeat suppression.
-        nc = self._notification_center
-        if nc is not None:
-            try:
-                from notification_center import train_ref as _tref, route_run_ref as _rref
-
-                nc.emit(
-                    source="RouteExecutor",
-                    operation="remove_train_route_run",
-                    kind=Kind.INFO,
-                    message=f"route run torn down for {train_id}",
-                    entities=[_tref(train_id), _rref(exec_state.run_id)],
-                    event_time=time.time(),
-                    payload={"route_id": exec_state.route_id},
-                    latch_event=True,
-                )
-            except Exception:
-                pass
+        # This method emits no latch event: each consumer step emits its own
+        # latch's consumption event after this returns (design_new.md
+        # "`RouteExecutor.remove_train_route_run(train_id)`", "Latch
+        # consumption events").
 
     def finalize_pending_route_deletions(self) -> None:
         """Archive + unregister any route whose deferred deletion is now
@@ -5205,7 +5186,8 @@ class RouteExecutor:
              power-off consumer kept it only because the re-assignment named
              it.
 
-        It is this latch's consume-side emitter on this branch.
+        It emits no latch event: the deactivate step emits the consumption
+        event after this returns.
         """
         route_id = self.assigned_route_id_for(train_id)
         if route_id is not None and route_id in self.pending_route_deletions:
@@ -5224,14 +5206,6 @@ class RouteExecutor:
         self.discard_pending_reassign(train_id)
         self._delete_if_emptied_one_off(dropped_reassign_route_id)
         self.finalize_pending_route_deletions()
-        self._emit_event(
-            "settle_deactivate_without_run",
-            f"route deactivate for {train_id} found no running run",
-            train_id=train_id,
-            payload={"latch": "route_deactivate"},
-            kind=Kind.INFO,
-            latch_event=True,
-        )
 
     def discard_pending_reassign(self, train_id: str) -> None:
         """Drop any held re-assignment for `train_id` WITHOUT applying it.
