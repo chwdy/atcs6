@@ -548,12 +548,6 @@ class SimulationController(SwitchOutputOwner):
             return
 
         self.simulation_time += delta_seconds
-        # Give back every train whose calibration run finished or was ended by
-        # the operator: the mode and power it had before opening (design_new.md
-        # "What ends a calibration run", A run the operator ends gives the train
-        # back). It runs ahead of Observe, between ticks like an operator
-        # command, once Action of the pass before has torn the leg route down.
-        self.speed_calibration.give_trains_back()
         # One running pass of the runtime loop; a stopped pass calls
         # `poll_hardware_occupancy()` instead and adds nothing, which is what
         # keeps an operator's stop from consuming a dwell (design_new.md
@@ -563,6 +557,12 @@ class SimulationController(SwitchOutputOwner):
         if operating_delta_seconds is None:
             operating_delta_seconds = delta_seconds
         self.operating_clock_advance(operating_delta_seconds)
+        # After both clocks advance and before Observe, give back every train
+        # whose calibration run stopped driving it: the mode and power it had
+        # before opening (design_new.md "What ends a calibration run", A run
+        # that finishes or that the operator ends gives the train back). Action
+        # of the pass before has already torn the leg route down.
+        self.speed_calibration.give_trains_back()
 
         # The per-train lookahead memo is a tick-local optimization: it is only
         # ever read/written while this flag is True, so every between-tick /

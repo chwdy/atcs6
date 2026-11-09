@@ -164,6 +164,58 @@ def close_idle_setup_tools(state: AppState) -> None:
         )
 
 
+def run_loop_iteration(state: AppState, delta_seconds: float) -> None:
+    """One iteration of the runtime loop: the pass `runtime_pass(state)` picks,
+    run under the simulation lock. Every branch consumes a loss-of-control
+    watchdog trip record (design_new.md "Trip-record consumption escalates a
+    failed drop to hardware failure"): a running pass inside `update(...)`, the
+    other branches directly."""
+    which = runtime_pass(state)
+    if which == PASS_TICK:
+        # The operating clock advances by the uncapped wall x speed
+        # delta (a faithful clock a schedule measures against); the
+        # physics integrator uses the same delta CLAMPED to
+        # MAX_SIM_DELTA_SECONDS so a multi-second hitch can't
+        # integrate one giant jump that spikes speed past max and
+        # trips a spurious overspeed EB (design_new.md "Clocks").
+        # Normal ticks (incl. a few-x speed multiplier) leave the two
+        # equal.
+        operating_delta = max(delta_seconds, 0.0) * state.simulation_speed
+        sim_delta = min(operating_delta, MAX_SIM_DELTA_SECONDS)
+        with state.simulation_lock:
+            state.sim_controller.update(
+                sim_delta, operating_delta_seconds=operating_delta
+            )
+    elif which == PASS_STOPPED:
+        # Stopped, but the detectors have not stopped detecting.
+        # Occupancy is what the hardware says it is, so it is read
+        # and committed on the same cadence whether or not trains
+        # are being ticked; `poll_hardware_occupancy` runs the
+        # Observe read and its commit alone, so nothing else about
+        # "stopped" changes.
+        with state.simulation_lock:
+            # A watchdog may trip while the session is stopped; its
+            # trip record is consumed on every iteration
+            # (design_new.md "Trip-record consumption escalates a
+            # failed drop to hardware failure").
+            state.sim_controller.consume_watchdog_trip()
+            state.sim_controller.poll_hardware_occupancy()
+    elif which == PASS_WATCHDOG:
+        # A failure halt runs no pass, but a watchdog trip is still
+        # consumed so the recorded voltages follow the drop and a
+        # failed drop escalates (design_new.md step `ee19`).
+        with state.simulation_lock:
+            state.sim_controller.consume_watchdog_trip()
+            state.sim_controller.mark_no_pass()
+    elif state.sim_controller is not None:
+        # No pass this iteration: the time adds nothing to
+        # `Block.occupied_seconds` (design_new.md "Maintenance
+        # counters").
+        with state.simulation_lock:
+            state.sim_controller.consume_watchdog_trip()
+            state.sim_controller.mark_no_pass()
+
+
 def create_simulation_loop(state: AppState) -> Callable[[], None]:
     """Create a simulation loop function bound to the given state.
 
@@ -184,44 +236,7 @@ def create_simulation_loop(state: AppState) -> Callable[[], None]:
                 delta_seconds = (current_time - last_update_time).total_seconds()
                 last_update_time = current_time
 
-                which = runtime_pass(state)
-                if which == PASS_TICK:
-                    # The operating clock advances by the uncapped wall x speed
-                    # delta (a faithful clock a schedule measures against); the
-                    # physics integrator uses the same delta CLAMPED to
-                    # MAX_SIM_DELTA_SECONDS so a multi-second hitch can't
-                    # integrate one giant jump that spikes speed past max and
-                    # trips a spurious overspeed EB (design_new.md "Clocks").
-                    # Normal ticks (incl. a few-x speed multiplier) leave the two
-                    # equal.
-                    operating_delta = max(delta_seconds, 0.0) * state.simulation_speed
-                    sim_delta = min(operating_delta, MAX_SIM_DELTA_SECONDS)
-                    with state.simulation_lock:
-                        state.sim_controller.update(
-                            sim_delta, operating_delta_seconds=operating_delta
-                        )
-                elif which == PASS_STOPPED:
-                    # Stopped, but the detectors have not stopped detecting.
-                    # Occupancy is what the hardware says it is, so it is read
-                    # and committed on the same cadence whether or not trains
-                    # are being ticked; `poll_hardware_occupancy` runs the
-                    # Observe read and its commit alone, so nothing else about
-                    # "stopped" changes.
-                    with state.simulation_lock:
-                        state.sim_controller.poll_hardware_occupancy()
-                elif which == PASS_WATCHDOG:
-                    # A failure halt runs no pass, but a watchdog trip is still
-                    # consumed so the recorded voltages follow the drop and a
-                    # failed drop escalates (design_new.md step `ee19`).
-                    with state.simulation_lock:
-                        state.sim_controller.consume_watchdog_trip()
-                        state.sim_controller.mark_no_pass()
-                elif state.sim_controller is not None:
-                    # No pass this iteration: the time adds nothing to
-                    # `Block.occupied_seconds` (design_new.md "Maintenance
-                    # counters").
-                    with state.simulation_lock:
-                        state.sim_controller.mark_no_pass()
+                run_loop_iteration(state, delta_seconds)
             except Exception as e:
                 faults.report(e)
             else:

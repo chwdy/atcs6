@@ -169,3 +169,43 @@ def test_a_halt_writes_no_play_pause_bit():
 
     sim.clear_failed_runtime()
     assert state.session_state().is_live
+
+
+def _recording_sim(**flags):
+    sim = _sim(**flags)
+    sim.calls = []
+    sim.consume_watchdog_trip = lambda: sim.calls.append("consume_watchdog_trip")
+    sim.poll_hardware_occupancy = lambda: sim.calls.append("poll_hardware_occupancy")
+    sim.mark_no_pass = lambda: sim.calls.append("mark_no_pass")
+    sim.update = lambda *a, **k: sim.calls.append("update")
+    return sim
+
+
+@pytest.mark.parametrize(
+    "flags,running,setup",
+    [
+        # Stopped pass: the cut-out halt in Real Hardware.
+        ({"layout_cut_out_active": True, "operation_mode": OperationMode.REAL_HARDWARE}, True, False),
+        # Failure halt.
+        ({"failed_runtime": True}, True, False),
+        # No pass: Simulation paused.
+        ({}, False, False),
+    ],
+)
+def test_every_iteration_without_a_running_pass_consumes_a_watchdog_trip(flags, running, setup):
+    """design_new.md "Trip-record consumption escalates a failed drop to
+    hardware failure": the runtime loop consumes the trip record on every
+    iteration, not only on a running pass."""
+    from runtime import run_loop_iteration
+
+    sim = _recording_sim(**flags)
+    run_loop_iteration(_app_state(sim, running=running, setup=setup), 0.1)
+    assert sim.calls[0] == "consume_watchdog_trip"
+
+
+def test_a_running_pass_consumes_the_trip_inside_update():
+    from runtime import run_loop_iteration
+
+    sim = _recording_sim()
+    run_loop_iteration(_app_state(sim, running=True, setup=False), 0.1)
+    assert sim.calls == ["update"]

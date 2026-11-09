@@ -406,7 +406,7 @@ Each row is a change to a train that no train command (see **Running a train**, 
 ### Per-train tick transaction
 
 1. Advance `simulation_time` and `operating_time` (per **Clocks**).
-   - **Before this step.** `SimulationController.update(...)` first consumes any `OutputWatchdog` trip record. It does so on every iteration, even behind a fatal gate and when no pass runs (per **Trip-record consumption escalates a failed drop to hardware failure**).
+   - **Before this step.** `SimulationController.update(...)` first consumes any `OutputWatchdog` trip record (per **Trip-record consumption escalates a failed drop to hardware failure**). The runtime loop consumes it on every other iteration too: a stopped pass, a failure halt, and an iteration with no pass.
    - **After this step, before Observe.** On a running pass, `SimulationController.update(...)` calls `SpeedCalibration.give_trains_back()` (per **A run that finishes or that the operator ends gives the train back**).
 2. **Observe every train, all together.** This runs once as a batch over every train before any train plans, so each train later plans against where every other train really is. In order:
    - Read every block's detector once and keep that one layout-wide snapshot for the rest of Observe.
@@ -565,7 +565,7 @@ Every step of the tick is either **authoring** or **observing**:
   - the de-energize drain and the signal refresh;
   - the `Block.occupied_seconds` accrual.
 
-Consuming an `OutputWatchdog` trip record is neither: it runs at the top of `SimulationController.update(...)` on every iteration, even when no pass runs (per **Trip-record consumption escalates a failed drop to hardware failure**).
+Consuming an `OutputWatchdog` trip record is neither: the runtime loop consumes it on every iteration, through `SimulationController.consume_watchdog_trip()`, even when no pass runs (per **Trip-record consumption escalates a failed drop to hardware failure**).
 
 **An observing step may remove power and must not apply it.** The de-energize drain is the one observing step that writes to the output boundary, and it belongs there only because it drives toward `0` and never away from it. No observing step may raise a block voltage, throw a point motor, or energize anything else.
 
@@ -841,7 +841,7 @@ Terminal route completion is not a latch and is not part of this rule: Plan call
 - `self.route_executor.update(delta_seconds)` is a per-tick scheduling and Plan-preparation call. It advances route-executor bookkeeping time and prepares only the route-managed scheduling state that `SimulationController` consumes this tick. It does not own the outer train loop, and it does not call `SimulationController._act_train(...)`.
 - `SimulationController._act_train(train, delta_seconds)` is the per-train Action stage — the emergency-request step, ATC/ATO/manual control, and the block track voltage — plus that train's cleanup-latch consume pass. The Observe batch has already run the train's movement calculation and occupancy commit.
 - **Loop ownership and per-tick sequence.** `SimulationController` alone runs the per-tick loop; `RouteExecutor` owns the train ordering. In one tick, `SimulationController.update(...)` does all of these, in order:
-  - consumes any `OutputWatchdog` trip record, on every iteration and even behind a fatal gate (per **Trip-record consumption escalates a failed drop to hardware failure**)
+  - consumes any `OutputWatchdog` trip record, even behind a fatal gate (per **Trip-record consumption escalates a failed drop to hardware failure**)
   - advances time
   - calls `SpeedCalibration.give_trains_back()`, before Observe (per **A run that finishes or that the operator ends gives the train back**)
   - runs the global block-occupancy detection above
@@ -4373,7 +4373,7 @@ A run is opened only while the session is running (per **Opening a run takes con
 - **A process shutdown writes the safe state before it closes the device.** When the server process exits, then it must run the safe state through the session's device while that device is still open, and must close the device only after the safe state returns. No other step of the exit may close the device. The order matters because a closed device refuses every write, the safe state included.
 - **Loss-of-control watchdog.** Real Hardware only: activation starts one safety-only daemon, `OutputWatchdog`, that reaches the safe state when the runtime thread stops refreshing the outputs. Simulation and Virtual Hardware drive no physical motor, so neither starts it. A landed ordinary output transaction refreshes the deadline; expiry runs only `OutputSafety.enter_safe_state()` under the same transport lock used by ordinary device transactions.
 - **The daemon writes only below the model.** The daemon calls `enter_safe_state()` directly, which performs its whole sequence through each controller's non-recording device write (per **Safe state / fail-safe**). Those writes go straight to the device transport, below the model, and the daemon records their transport results in its own thread-safe trip record. It must not read or mutate `SimulationController`, trains, routes, notifications, or any other runtime model state; calling only the non-recording writes, never the ordinary model-recording write, is what guarantees that.
-- **Trip-record consumption escalates a failed drop to hardware failure.** Consuming the trip record is the one step `SimulationController.update(...)` performs even behind a fatal gate, because a failed safe-state attempt must still escalate to `hardware_failure`. On the next runtime-thread tick the controller:
+- **Trip-record consumption escalates a failed drop to hardware failure.** The runtime loop consumes the trip record on every iteration, through `SimulationController.consume_watchdog_trip()`: inside `SimulationController.update(...)` on a running pass, where it is the one step performed even behind a fatal gate, and on its own on a stopped pass, a failure halt, and an iteration with no pass. A watchdog may trip while the session is stopped, and a failed safe-state attempt must still escalate to `hardware_failure`. On the next runtime-loop iteration the controller:
   - consumes that trip record
   - reconciles every block's recorded `track_voltage` to `0` (see **A watchdog-driven safe-state drop is reconciled on the next runtime-thread tick**)
   - ends every open calibration run (per **What ends a calibration run**)
