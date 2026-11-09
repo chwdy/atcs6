@@ -376,7 +376,7 @@ class DetectorReadingLog:
             self._bytes_in_file += len(text)
         except Exception as exc:  # noqa: BLE001 - logging must not fail a request
             self._close_file()
-            self._report_failure(exc)
+            self._report_failure(exc, "record_command")
             return
         if self._write_failing:
             self._write_failing = False
@@ -450,7 +450,7 @@ class DetectorReadingLog:
 
     # -- failure reporting ----------------------------------------------------
 
-    def _report_failure(self, exc: BaseException) -> None:
+    def _report_failure(self, exc: BaseException, operation: str = "record_pass") -> None:
         """Report a failed write on the event stream. Never raises.
 
         Every failure is emitted under the same condition key and the same
@@ -464,7 +464,7 @@ class DetectorReadingLog:
         try:
             nc.emit(
                 source="DetectorReadingLog",
-                operation="record_pass",
+                operation=operation,
                 kind=Kind.WARNING,
                 message=(
                     "detector reading log write failed; the session keeps running "
@@ -492,12 +492,13 @@ def start_state_of(network: Any) -> Dict[str, Any]:
       records no train position, so a replay cannot put these back.
     """
     import hardware_config
+    import locomotive_file
     import operation_environment
 
     return {
         "layout": network.to_layout_dict(),
         "hardware": hardware_config.persisted_dict(),
-        "locomotives": network.speed_profiles.library_dict(),
+        "locomotives": locomotive_file.contents(network),
         "selected_environment": operation_environment.get_selected().value,
         "trains_on_track": sorted(
             {

@@ -111,6 +111,8 @@ def fold_lines(lines: Iterable[Dict[str, Any]]) -> List[RecordedPass]:
     state: Dict[str, Dict[str, Any]] = {}
     previous: Optional[int] = None
     for line in lines:
+        if "command" in line:
+            continue  # an operator command, not a pass (see `RecordedRun`)
         pass_no = int(line["pass"])
         full = line.get("full")
         if previous is None and full is None:
@@ -264,21 +266,399 @@ class ReadingPlayer:
         return self.last_played
 
     def _play_one(self, recorded: RecordedPass) -> None:
-        self.input.load(recorded)
-        before = self.input.read_count
-        if recorded.pass_kind == PASS_STOPPED:
-            self.sim.poll_hardware_occupancy()
-        else:
-            self.sim.update(
-                recorded.delta_seconds,
-                operating_delta_seconds=recorded.operating_delta_seconds,
+        play_pass(self.sim, self.input, recorded)
+
+
+def play_pass(sim: Any, replay_input: ReplayOccupancyInput, recorded: RecordedPass) -> None:
+    """Run one recorded pass on `sim`, reading `recorded`'s readings.
+
+    A `"stopped"` pass runs `poll_hardware_occupancy()`; any other runs
+    `update(...)` with the pass's two deltas. Raises `ReplayDiverged` when the
+    pass did not read `replay_input` exactly once, as the rig's pass did.
+    """
+    replay_input.load(recorded)
+    before = replay_input.read_count
+    if recorded.pass_kind == PASS_STOPPED:
+        sim.poll_hardware_occupancy()
+    else:
+        sim.update(
+            recorded.delta_seconds,
+            operating_delta_seconds=recorded.operating_delta_seconds,
+        )
+    reads = replay_input.read_count - before
+    if reads != 1:
+        raise ReplayDiverged(
+            f"pass {recorded.pass_no} was a {recorded.pass_kind!r} pass that read "
+            f"the detectors once on the rig, but the replay read them {reads} "
+            f"time(s) (environment_active={sim.environment_active}, "
+            f"hardware_failure={sim.hardware_failure}, "
+            f"failed_runtime={sim.failed_runtime}, "
+            f"reads_the_recording={sim.input_interface is replay_input})"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Whole recorded runs: the start state, the operator commands and the readings
+# ---------------------------------------------------------------------------
+
+#: State-changing requests a replay does not send: they drive or read a device
+#: (a scan, a port test, the bench, commissioning) or poke the Virtual Hardware
+#: device, and the readings they caused are already in the recording. A
+#: hardware setup edit (`/api/hardware/config`, `/api/hardware/binding`) is
+#: data only, so it is sent.
+DEVICE_ROUTE_PREFIXES = ("/api/hardware/", "/api/virtual-hardware/", "/api/debug/hw")
+DATA_ONLY_HARDWARE_ROUTES = ("/api/hardware/config", "/api/hardware/binding")
+
+
+def sends_by_default(command: "RecordedCommand") -> bool:
+    if command.path in DATA_ONLY_HARDWARE_ROUTES:
+        return True
+    return not command.path.startswith(DEVICE_ROUTE_PREFIXES)
+
+
+@dataclass(frozen=True)
+class RecordedCommand:
+    """One operator request the server answered, from a line carrying `command`."""
+
+    command_no: int
+    after_pass: int
+    method: str
+    path: str
+    query: str
+    body: Any
+    status: int
+    wall_time: float = 0.0
+
+    @classmethod
+    def from_line(cls, line: Dict[str, Any]) -> "RecordedCommand":
+        c = line["command"]
+        return cls(
+            command_no=int(line.get("command_no", 0)),
+            after_pass=int(line["after_pass"]),
+            method=str(c["method"]),
+            path=str(c["path"]),
+            query=str(c.get("query") or ""),
+            body=c.get("body"),
+            status=int(c["status"]),
+            wall_time=float(line.get("wall_time", 0.0)),
+        )
+
+    def describe(self) -> str:
+        url = self.path + (f"?{self.query}" if self.query else "")
+        return f"command {self.command_no} ({self.method} {url}, after pass {self.after_pass})"
+
+
+@dataclass
+class RecordedRun:
+    """A run recorded from the server's boot: the state it booted with, every
+    pass's readings, and every operator command with the pass it ran after."""
+
+    start_state: Dict[str, Any]
+    passes: List[RecordedPass]
+    commands: List[RecordedCommand]
+
+
+def load_run(*paths: str | os.PathLike, to_pass: Optional[int] = None) -> RecordedRun:
+    """Read a run from its log files, oldest first.
+
+    The first pass line must be the run's `"start"` line, carrying
+    `start_state`: a replay can only start where the server started, because
+    nothing else records the runtime state a later pass depends on. Commands
+    are ordered by `command_no`; a gap in it means a command line was lost, so
+    it is an error.
+    """
+    lines: List[Dict[str, Any]] = []
+    for path in paths:
+        lines.extend(read_lines(path))
+    pass_lines = [line for line in lines if "command" not in line]
+    if not pass_lines:
+        raise ValueError("the recording has no passes")
+    first = pass_lines[0]
+    if first.get("full") != "start" or "start_state" not in first:
+        raise ValueError(
+            f"pass {first.get('pass')}: a run replays from the server's boot; the "
+            "first pass line must be the `start` line carrying `start_state` (a log "
+            "written before the start state was recorded can only be replayed with "
+            "ReadingPlayer, setting the starting state by hand)"
+        )
+    commands = sorted(
+        (RecordedCommand.from_line(line) for line in lines if "command" in line),
+        key=lambda c: c.command_no,
+    )
+    for expected, command in enumerate(commands, start=1):
+        if command.command_no != expected:
+            raise ValueError(f"command {expected} is missing from the recording")
+    passes = fold_lines(pass_lines)
+    if to_pass is not None:
+        passes = [p for p in passes if p.pass_no <= to_pass]
+        commands = [c for c in commands if c.after_pass < to_pass]
+    return RecordedRun(start_state=first["start_state"], passes=passes, commands=commands)
+
+
+class _NoDevice(RuntimeError):
+    pass
+
+
+def _refuse_device(*_args: Any, **_kwargs: Any) -> Any:
+    raise _NoDevice("a replay never opens a hardware device")
+
+
+class RunReplay:
+    """Rebuild the server from a recorded run's start state and play the run.
+
+    Use as a context manager. It points the hardware setup, the selected
+    environment and the layouts folder at `work_dir`, leaves the locomotive
+    file off, and blocks every hardware device from opening, so a replay never
+    writes the operator's files or touches a rig that happens to be plugged in.
+    Activation is given the recording's readings in place of a device.
+
+    `play_to(n)` sends each recorded command after the pass it ran after, then
+    plays the pass. A command whose answer differs from the rig's is noted in
+    `divergences`, which a test normally expects to be empty. A command
+    `send(command)` turns down is noted in `skipped`.
+
+    Between `play_to` calls the test reads `state`, `network`, `sim` and
+    `client` as it would on a live server.
+    """
+
+    def __init__(
+        self,
+        run: RecordedRun,
+        work_dir: str | os.PathLike,
+        *,
+        send: Any = sends_by_default,
+        reading_log_dir: str | os.PathLike | None = None,
+    ) -> None:
+        self.run = run
+        self.work_dir = os.fspath(work_dir)
+        self.send = send
+        self.reading_log_dir = reading_log_dir
+        self.divergences: List[str] = []
+        self.skipped: List[RecordedCommand] = []
+        self.input = ReplayOccupancyInput(run.passes)
+        self._next_pass = 0
+        self._next_command = 0
+        self._stack: Any = None
+
+    # -- set up ------------------------------------------------------------
+
+    def __enter__(self) -> "RunReplay":
+        import contextlib
+        from datetime import datetime
+        from unittest import mock
+
+        import bootstrap
+        import hardware.ch347_device
+        import hardware_config
+        import locomotive_file
+        import operation_environment
+        from app_factory import create_app
+        from app_state import AppState
+        from detector_reading_log import SimulationLock
+        from enums import OperationMode
+        from network import RailwayNetwork
+        from persistence import PersistenceManager
+
+        start = self.run.start_state
+        if start.get("trains_on_track"):
+            raise ValueError(
+                "trains held blocks at boot "
+                f"({', '.join(start['trains_on_track'])}); a layout save records no "
+                "train position, so this run cannot be replayed from its start"
             )
-        reads = self.input.read_count - before
-        if reads != 1:
-            raise ReplayDiverged(
-                f"pass {recorded.pass_no} was a {recorded.pass_kind!r} pass that read "
-                f"the detectors once on the rig, but the replay read them {reads} "
-                f"time(s) (environment_active={self.sim.environment_active}, "
-                f"hardware_failure={self.sim.hardware_failure}, "
-                f"failed_runtime={self.sim.failed_runtime})"
+
+        stack = contextlib.ExitStack()
+        self._stack = stack
+        try:
+            os.makedirs(self.work_dir, exist_ok=True)
+            stack.enter_context(mock.patch.object(
+                hardware_config, "CONFIG_PATH", os.path.join(self.work_dir, "hardware_config.json")
+            ))
+            stack.enter_context(mock.patch.object(
+                operation_environment,
+                "ENVIRONMENT_PATH",
+                os.path.join(self.work_dir, "operation_environment.json"),
+            ))
+            stack.enter_context(mock.patch.object(
+                operation_environment, "_selected", operation_environment.get_selected()
+            ))
+            stack.enter_context(mock.patch.object(
+                hardware.ch347_device, "open_ch347_device", _refuse_device
+            ))
+            replay_input = self.input
+
+            def build_session_interfaces(cfg=None, *, environment=None, track_polarity_of=None):
+                chosen = (
+                    operation_environment.get_selected()
+                    if environment is None
+                    else operation_environment.parse(environment)
+                )
+                if chosen is OperationMode.SIMULATION:
+                    return None, None, None
+                return replay_input, None, None
+
+            stack.enter_context(mock.patch.object(
+                hardware_config, "build_session_interfaces", build_session_interfaces
+            ))
+            locomotive_file.disable()
+            stack.callback(locomotive_file.disable)
+            stack.callback(hardware_config.reset_to_defaults)
+
+            # What boot read from disk, written where boot will read it.
+            hardware_config.reset_to_defaults()
+            hardware_config.apply_snapshot(start["hardware"])
+            operation_environment.select(start["selected_environment"])
+
+            network = RailwayNetwork()
+            network.from_dict(start["layout"])
+            network.speed_profiles.load_library(start.get("locomotives") or {})
+            stack.enter_context(mock.patch.object(
+                bootstrap, "create_empty_network", lambda: network
+            ))
+            network, dispatcher, sim, _pm = bootstrap.bootstrap_runtime(
+                demo=False,
+                setup_train=False,
+                detector_reading_log_dir=self.reading_log_dir,
             )
+            lock = SimulationLock()
+            self.state = AppState(
+                network=network,
+                path_dispatcher=dispatcher,
+                sim_controller=sim,
+                persistence_manager=PersistenceManager(
+                    storage_dir=os.path.join(self.work_dir, "layouts")
+                ),
+                simulation_lock=lock,
+                simulation_running=False,
+                simulation_speed=1.0,
+                last_update_time=datetime.now(),
+            )
+            lock.count_passes_with(
+                lambda: self.state.sim_controller.detector_reading_log.pass_count
+            )
+            app = create_app(self.state)
+            app.config["TESTING"] = True
+            self.client = stack.enter_context(app.test_client())
+        except BaseException:
+            stack.close()
+            raise
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        self.close()
+
+    def close(self) -> None:
+        if self._stack is not None:
+            log = getattr(getattr(self, "state", None), "sim_controller", None)
+            if log is not None:
+                log.detector_reading_log.close()
+            self._stack.close()
+            self._stack = None
+
+    # -- reading the replayed server ---------------------------------------
+
+    @property
+    def network(self) -> Any:
+        return self.state.network
+
+    @property
+    def sim(self) -> Any:
+        return self.state.sim_controller
+
+    @property
+    def last_played(self) -> Optional[RecordedPass]:
+        return self.run.passes[self._next_pass - 1] if self._next_pass > 0 else None
+
+    # -- playing -----------------------------------------------------------
+
+    def play_to(self, pass_no: Optional[int] = None) -> Optional[RecordedPass]:
+        """Play every pass up to and including `pass_no` (the whole run when
+        None), each preceded by the commands that ran before it. With None, the
+        commands that ran after the last pass are sent too."""
+        passes = self.run.passes
+        last = passes[-1].pass_no
+        target = last if pass_no is None else pass_no
+        if target > last:
+            raise ValueError(f"pass {target} is past the recording's last pass {last}")
+        while self._next_pass < len(passes) and passes[self._next_pass].pass_no <= target:
+            recorded = passes[self._next_pass]
+            self._send_commands(before_pass=recorded.pass_no)
+            with self.state.simulation_lock:
+                play_pass(self.state.sim_controller, self.input, recorded)
+            self._next_pass += 1
+        if pass_no is None:
+            self._send_commands(before_pass=None)
+        return self.last_played
+
+    def _send_commands(self, before_pass: Optional[int]) -> None:
+        commands = self.run.commands
+        while self._next_command < len(commands):
+            command = commands[self._next_command]
+            if before_pass is not None and command.after_pass >= before_pass:
+                return
+            self._next_command += 1
+            if not self.send(command):
+                self.skipped.append(command)
+                continue
+            response = self.client.open(
+                command.path,
+                method=command.method,
+                query_string=command.query or None,
+                json=command.body,
+            )
+            if response.status_code != command.status:
+                detail = response.get_json(silent=True)
+                self.divergences.append(
+                    f"{command.describe()}: the rig answered {command.status}, "
+                    f"the replay answered {response.status_code}: {detail}"
+                )
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    """Replay a recorded run and print where it went.
+
+        /opt/homebrew/anaconda3/envs/general/bin/python tools/reading_replay.py \\
+            .runtime/detector_readings/readings-20261108-101500-000000.jsonl [--to-pass N]
+
+    Prints how many passes and commands were replayed, each command whose
+    answer differed from the recorded one, the commands it did not send, and
+    which train holds which block at the end. Exits 1 when the replay diverged.
+    """
+    import argparse
+    import sys
+    import tempfile
+
+    parser = argparse.ArgumentParser(description="Replay a recorded run.")
+    parser.add_argument("files", nargs="+", help="the run's log files, oldest first")
+    parser.add_argument("--to-pass", type=int, help="stop after this pass")
+    args = parser.parse_args(argv)
+
+    run = load_run(*args.files, to_pass=args.to_pass)
+    with tempfile.TemporaryDirectory() as work_dir, RunReplay(run, work_dir) as replay:
+        try:
+            replay.play_to()
+        except ReplayDiverged as exc:
+            replay.divergences.append(str(exc))
+        last = replay.last_played
+        print(
+            f"replayed {last.pass_no if last else 0} passes and "
+            f"{len(run.commands) - len(replay.skipped)} commands "
+            f"({len(replay.skipped)} device commands not sent)"
+        )
+        for text in replay.divergences:
+            print(f"DIVERGED  {text}")
+        for train_id, train in sorted(replay.network.trains.items()):
+            blocks = sorted(
+                b for b, block in replay.network.blocks.items() if block.occupied_by == train_id
+            )
+            kind = "unidentified" if train.is_unidentified else "train"
+            print(f"{kind:12} {train_id:16} {' '.join(blocks) or '(no blocks)'}")
+        return 1 if replay.divergences else 0
+
+
+if __name__ == "__main__":
+    import sys
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    raise SystemExit(main())

@@ -195,6 +195,35 @@ API tests use Flask's in-process test client and require no separately running
 server. See [the coverage and suite-splitting plan](docs/TEST_COVERAGE_AND_SUITE_PLAN.md)
 for the planned fast/integration/journey CI structure.
 
+### Turn a rig run into a test
+
+Every run of `python server.py` writes a detector reading log to
+`.runtime/detector_readings/`. It records what every block detector read on each
+pass, every operator request with the pass it ran after, and, on the first
+line, what the server booted with. A run can be replayed from that file alone,
+with no rig attached:
+
+```bash
+/opt/homebrew/anaconda3/envs/general/bin/python tools/reading_replay.py .runtime/detector_readings/readings-<run>.jsonl
+```
+
+That prints any request the replay answered differently from the server, and
+which train holds which block at the end. To keep a stretch of the run as a
+test, cut it out (`--summary` lists the passes where a block changed):
+
+```bash
+/opt/homebrew/anaconda3/envs/general/bin/python tools/cut_reading_log.py .runtime/detector_readings/readings-<run>.jsonl --to-pass 900 -o tests/replay/<name>.jsonl
+```
+
+Then replay it in a test with `RunReplay` from `tools/reading_replay.py` (see
+`tests/test_run_replay.py`). For a log written before commands were recorded,
+use `ReadingPlayer` and set up the trains by hand (see
+`tests/test_replay_rig_2026_11_07_two_locos.py`). The readings play back as
+recorded and do not react to the replayed app, so a replay tests what the app
+decides from the readings: attribution, unidentified trains, the clear rule and
+detector noise. It does not test how a train responds to its voltage. The full
+rules are in `design_new.md`, **Detector reading log**.
+
 ---
 
 ## Driving the demo train

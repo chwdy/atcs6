@@ -559,3 +559,154 @@ def test_bootstrap_enables_the_log_only_when_given_a_directory(tmp_path):
     )
     assert on.detector_reading_log.enabled
     assert on.detector_reading_log.path.startswith(str(tmp_path / "readings"))
+
+
+# ------------------------------------------------- start state and commands
+
+
+def test_only_the_start_line_carries_the_start_state(tmp_path):
+    _network, sim, detector = build_sim(tmp_path)
+    sim.detector_reading_log.set_start_state({"layout": {"blocks": {}}})
+    sim.update(0.1)
+    sim.detector_reading_log.request_full(FULL_LAYOUT)
+    sim.update(0.1)
+    first, second = lines_of(sim)
+    assert first["full"] == FULL_START and first["start_state"] == {"layout": {"blocks": {}}}
+    assert second["full"] == FULL_LAYOUT and "start_state" not in second
+
+
+def test_bootstrap_records_what_the_server_booted_with(tmp_path):
+    from bootstrap import bootstrap_runtime
+
+    network, _d, sim, _p = bootstrap_runtime(
+        demo=True, scene="demo7_1", detector_reading_log_dir=tmp_path / "readings"
+    )
+    start = sim.detector_reading_log._start_state
+    assert start["layout"] == network.to_layout_dict()
+    assert start["selected_environment"] == "simulation"
+    assert start["trains_on_track"] == []
+    assert set(start) == {
+        "layout", "hardware", "locomotives", "selected_environment", "trains_on_track",
+    }
+
+
+def test_a_command_line_records_the_pass_it_ran_after(tmp_path):
+    _network, sim, _detector = build_sim(tmp_path)
+    sim.update(0.1)
+    sim.update(0.1)
+    sim.detector_reading_log.record_command(
+        method="POST", path="/api/trains/T/power-on", query="", body={"a": 1},
+        status=200, after_pass=2,
+    )
+    sim.update(0.1)
+    lines = lines_of(sim)
+    assert [line.get("pass") for line in lines] == [1, 2, None, 3]
+    command = lines[2]
+    assert command["command_no"] == 1 and command["after_pass"] == 2
+    assert command["command"] == {
+        "method": "POST", "path": "/api/trains/T/power-on", "query": "",
+        "body": {"a": 1}, "status": 200,
+    }
+    # A command changes no reading, so the pass after it lists only changes.
+    assert "full" not in lines[3]
+
+
+def test_a_command_before_the_first_pass_leaves_the_start_line_first_among_passes(tmp_path):
+    _network, sim, _detector = build_sim(tmp_path)
+    sim.detector_reading_log.record_command(
+        method="POST", path="/api/operation/activate", query="", body=None,
+        status=200, after_pass=0,
+    )
+    sim.update(0.1)
+    command, first_pass = lines_of(sim)
+    assert command["after_pass"] == 0
+    assert first_pass["full"] == FULL_START
+
+
+def test_the_lock_remembers_the_pass_a_request_ran_after(tmp_path):
+    import threading
+
+    from detector_reading_log import SimulationLock
+
+    passes = {"count": 3}
+    lock = SimulationLock()
+    lock.count_passes_with(lambda: passes["count"])
+    seen = {}
+
+    def request():
+        lock.forget_release()
+        with lock:
+            pass  # the request changes state after pass 3
+        tick.start()
+        tick.join()  # a pass runs before the request is answered
+        seen["after_pass"] = lock.last_release()
+
+    def runtime_pass():
+        with lock:
+            passes["count"] += 1
+
+    tick = threading.Thread(target=runtime_pass)
+    worker = threading.Thread(target=request)
+    worker.start()
+    worker.join()
+    assert passes["count"] == 4
+    assert seen["after_pass"] == 3
+
+
+def test_the_lock_has_no_release_for_a_request_that_never_took_it():
+    from detector_reading_log import SimulationLock
+
+    lock = SimulationLock()
+    lock.count_passes_with(lambda: 7)
+    with lock:
+        pass
+    lock.forget_release()
+    assert lock.last_release() is None
+
+
+def test_the_server_records_state_changing_requests_only(tmp_path):
+    from datetime import datetime
+
+    from app_factory import create_app
+    from app_state import AppState
+    from detector_reading_log import SimulationLock
+    from persistence import PersistenceManager
+
+    network, sim, _detector = build_sim(tmp_path)
+    lock = SimulationLock()
+    lock.count_passes_with(lambda: sim.detector_reading_log.pass_count)
+    state = AppState(
+        network=network, path_dispatcher=sim.path_dispatcher, sim_controller=sim,
+        persistence_manager=PersistenceManager(storage_dir=str(tmp_path / "layouts")),
+        simulation_lock=lock, simulation_running=False, simulation_speed=1.0,
+        last_update_time=datetime.now(),
+    )
+    client = create_app(state).test_client()
+    with lock:
+        sim.update(0.1)
+    client.get("/api/trains")
+    client.post("/api/trains/NOPE/power-on")
+    commands = [line for line in lines_of(sim) if "command" in line]
+    assert [(c["command"]["path"], c["command"]["status"], c["after_pass"]) for c in commands] == [
+        ("/api/trains/NOPE/power-on", 404, 1),
+    ]
+
+
+def test_a_failed_command_write_is_reported_and_the_request_carries_on(tmp_path, monkeypatch):
+    _network, sim, _detector = build_sim(tmp_path)
+    sim.update(0.1)
+    log = sim.detector_reading_log
+    log._file = _BrokenFile()
+    monkeypatch.setattr(drl, "open", _failing_open, raising=False)
+
+    log.record_command(
+        method="POST", path="/api/trains/T/power-on", query="", body=None,
+        status=200, after_pass=1,
+    )
+
+    [event] = [
+        e for e in sim.notification_center.peek_recent(50)
+        if e.source == "DetectorReadingLog"
+    ]
+    assert event.operation == "record_command"
+    assert event.kind == "warning"

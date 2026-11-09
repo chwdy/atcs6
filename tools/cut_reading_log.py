@@ -1,11 +1,15 @@
 """Cut a pass range out of a detector reading log, as a replay test fixture.
 
 A rig run's log (`.runtime/detector_readings/readings-*.jsonl`) holds every
-pass since the server started, and most of its lines list only the blocks whose
+pass since the server started, and the operator commands between them, and most of its lines list only the blocks whose
 reading changed, so a slice taken from the middle cannot be read on its own.
 This tool writes a file that can: its first line lists every block's reading at
 `--from-pass` (carrying `full`), and every line after it is copied as written,
-up to `--to-pass`. `tools/reading_replay.py` reads the result.
+up to `--to-pass`, with the operator commands sent between those passes.
+`tools/reading_replay.py` reads the result. A cut that starts at pass 1 keeps
+the run's `"start"` line, with what the server booted with, so `RunReplay` can
+replay it whole; a cut from later on is for `ReadingPlayer`, with the starting
+state set by hand.
 
     /opt/homebrew/anaconda3/envs/general/bin/python tools/cut_reading_log.py \\
         .runtime/detector_readings/readings-20261107-164742-921313.jsonl \\
@@ -49,6 +53,8 @@ def cut(lines: List[Dict[str, Any]], from_pass: int, to_pass: int) -> List[Dict[
     # The full-line fields in force at `from_pass`.
     context: Dict[str, Any] = {}
     for line in lines:
+        if "command" in line:
+            continue
         if line["pass"] > from_pass:
             break
         if "full" in line:
@@ -56,6 +62,12 @@ def cut(lines: List[Dict[str, Any]], from_pass: int, to_pass: int) -> List[Dict[
 
     out: List[Dict[str, Any]] = []
     for line in lines:
+        if "command" in line:
+            # A command sent after pass from_pass - 1 runs before the cut's
+            # first pass, so it belongs to the cut.
+            if from_pass - 1 <= line["after_pass"] < to_pass:
+                out.append(line)
+            continue
         n = line["pass"]
         if n < from_pass or n > to_pass:
             continue
@@ -117,14 +129,20 @@ def main(argv: List[str] | None = None) -> int:
     if not args.output:
         raise SystemExit("give -o OUTPUT, or --summary")
 
-    from_pass = args.from_pass if args.from_pass is not None else lines[0]["pass"]
-    to_pass = args.to_pass if args.to_pass is not None else lines[-1]["pass"]
+    pass_numbers = [line["pass"] for line in lines if "command" not in line]
+    if not pass_numbers:
+        raise SystemExit("the log has no passes")
+    from_pass = args.from_pass if args.from_pass is not None else pass_numbers[0]
+    to_pass = args.to_pass if args.to_pass is not None else pass_numbers[-1]
     out = cut(lines, from_pass, to_pass)
     Path(args.output).parent.mkdir(parents=True, exist_ok=True)
     with open(args.output, "w", encoding="utf-8") as f:
         for line in out:
             f.write(json.dumps(line, separators=(",", ":")) + "\n")
-    print(f"wrote {len(out)} passes ({from_pass}..{to_pass}) to {args.output}")
+    commands = sum(1 for line in out if "command" in line)
+    print(
+        f"wrote passes {from_pass}..{to_pass} and {commands} commands to {args.output}"
+    )
     return 0
 
 
