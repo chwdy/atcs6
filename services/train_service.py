@@ -1244,9 +1244,9 @@ def calibrate_cancel(state: AppState, train_id: str) -> None:
     sim = getattr(state, "sim_controller", None)
     if sim is not None:
         with _runtime_lock(state):
+            # A finished pass already gave the train back when it finished;
+            # discarding it gives nothing back.
             sim.speed_calibration.stop(train_id, reason="cancelled by the operator")
-            # Discarding a finished pass ends it here, so give the train back now.
-            sim.speed_calibration.give_trains_back()
 
 
 def calibrate_commit(
@@ -1360,8 +1360,6 @@ def calibrate_commit(
                     promote_model.model_id, str(set_name).strip(), instance
                 )
                 instance.parent_profile_id = new_set.profile_id
-        # The commit ended the pass with the train at a stand: give it back.
-        sim.speed_calibration.give_trains_back()
     return instance
 
 

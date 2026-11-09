@@ -120,7 +120,9 @@ def test_a_steered_trains_wedge_edges_come_from_its_chosen_walk():
     ex.meet_assignment = {"G": MeetEntry(candidate_resource_keys=keys)}
     ex.contention_snapshot = ContentionSnapshot(edges=[ContentionEdge("Q", "G", "OLD")])
     target = ResolvedRouteTarget("DEST", "forward")
-    ex.find_armed_task = lambda tid: SimpleNamespace(stored_resolved_target=target)
+    # A steered train's wedge edges aim at the target Plan's next call uses
+    # (design_new.md "Meet coordination", The next call's target).
+    ex.next_call_target = lambda tid: target
     calls = []
 
     def get_waiting_conflict(train_id, stored, manual, **kwargs):
@@ -333,3 +335,41 @@ def test_with_no_place_to_pass_neither_train_gets_an_entry_and_both_are_named():
     named = {e.entity_id for e in warnings[0].entities}
     assert named == {"TEST_TRAIN", "T2"}
     assert warnings[0].error.origin == "meet_hold"
+
+
+# --- the next call's target -----------------------------------------------
+
+
+def _stub_next_call(ex, ahead_target):
+    armed_target = ResolvedRouteTarget("W1", "forward")
+    projection = SimpleNamespace(
+        walk_position=0, task_kind="waypoint", resolved_target=armed_target
+    )
+    ahead = (
+        SimpleNamespace(walk_position=1, task_kind="waypoint", resolved_target=ahead_target)
+        if ahead_target is not None
+        else projection
+    )
+    ex.execution_state_for = lambda tid: SimpleNamespace()
+    ex._get_active_path_id = lambda tid: "P1"
+    ex.find_armed_task = lambda tid: SimpleNamespace(stored_resolved_target=armed_target)
+    ex._resolve_run_route = lambda tid: (SimpleNamespace(), SimpleNamespace(), None)
+    ex._find_next_task_target = lambda tid, **kw: projection
+    ex._apply_waypoint_lookahead = lambda train, route, state, proj: ahead
+    return armed_target
+
+
+def test_the_next_call_target_is_the_lookahead_target_when_it_arms():
+    """On the tick the reservation reaches the armed waypoint, Plan aims at the
+    next task, so meet coordination does too (design_new.md "Meet
+    coordination", The next call's target)."""
+    ex = _executor()
+    w2 = ResolvedRouteTarget("W2", "forward")
+    _stub_next_call(ex, w2)
+    assert ex.next_call_target("T1") == w2
+
+
+def test_the_next_call_target_is_the_armed_target_otherwise():
+    ex = _executor()
+    armed = _stub_next_call(ex, None)
+    assert ex.next_call_target("T1") == armed

@@ -191,13 +191,9 @@ class MeetCoordinator:
         if self._re.execution_state_for(train_id) is None:
             return None
         path = self._dispatcher.get_active_path(train_id)
-        target = None
-        if path is not None:
-            armed = self._re.find_armed_task(train_id)
-            target = getattr(armed, "stored_resolved_target", None) if armed else None
-        else:
-            projection = self._re._find_next_task_target(train_id)
-            target = getattr(projection, "resolved_target", None) if projection else None
+        # The target Plan's next create/extend call aims at (design_new.md
+        # "Meet coordination", The next call's target).
+        target = self._re.next_call_target(train_id)
         if target is None:
             return None
         candidates = self._dispatcher.next_call_walk_candidates(

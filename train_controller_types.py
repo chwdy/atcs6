@@ -142,6 +142,11 @@ class PhysicsCommand:
     every other command, so a manual train has no floor (design_new.md
     "TrainPhysics", An ATO train never runs below its ATO minimum speed).
 
+    `voltage_floor` is the lowest voltage the emitter may output while the
+    train moves: the train's ATO minimum voltage for a train in `ato` mode, and
+    `0` for every other command (design_new.md "SpeedProfile", ATO drives no
+    lower than its ATO minimum voltage).
+
     `voltage_source_track_voltage` is the exact voltage magnitude the emitter
     must put on the rails this tick, in place of a voltage derived from a speed.
     It is set under an emergency cut-out (`0`), and while a speed-calibration
@@ -156,3 +161,4 @@ class PhysicsCommand:
     voltage_source_track_voltage: Optional[float] = None
     atc_limit_kmh: Optional[float] = None
     speed_floor_kmh: float = 0.0
+    voltage_floor: float = 0.0

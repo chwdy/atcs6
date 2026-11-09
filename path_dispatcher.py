@@ -2217,13 +2217,29 @@ class PathDispatcher:
         atomic with acquisition: because every blocker is removed, the
         re-validated segment acquires cleanly on the caller's existing path.
         """
-        if validation.valid:
-            return validation
         occupancy = [e for e in validation.errors if e.type.is_occupancy_class()]
         structural = [e for e in validation.errors if not e.type.is_occupancy_class()]
-        if structural or not occupancy:
+        if structural:
             return validation
-        victims = []  # (holder_path_id, resource_sequence_index)
+        # Flank neighbours of the segment's route points are blockers too: a
+        # conflicting claim there fails `reserve_segment(...)` although the
+        # neighbour is not on the segment (design_new.md "Resource
+        # acquisition", Preemption is decided before the prefix scan).
+        flank_blockers = self._flank_neighbour_blockers(segment, path_id, train_id)
+        if flank_blockers is None:
+            # A flank blocker that cannot be taken: cut back no holder.
+            return validation
+        if not occupancy and not flank_blockers:
+            return validation
+        victims: Dict[str, int] = {}  # holder path id -> earliest blocker index
+
+        def note(holder_path_id: str, idx: int) -> None:
+            # One cut per holder, before the earliest of its blockers in its
+            # own `resource_sequence` (design_new.md "Resource acquisition",
+            # Every blocker can be taken).
+            if holder_path_id not in victims or idx < victims[holder_path_id]:
+                victims[holder_path_id] = idx
+
         for err in occupancy:
             if err.type == ValidationErrorType.BLOCK_RESERVED and err.block_id:
                 block = self.network.blocks.get(err.block_id)
@@ -2245,31 +2261,26 @@ class PathDispatcher:
                 )
                 if idx is None:
                     return validation
-                victims.append((holder_path, idx))
+                note(holder_path, idx)
             elif err.type == ValidationErrorType.SWITCH_LOCKED and err.position is not None:
                 switch = self._resolve_switch_at_position(err.position)
-                holder_path = err.locked_by_path
-                if switch is None or not holder_path or holder_path == path_id:
+                if switch is None:
                     return validation
-                holder = self.paths.get(holder_path)
-                if holder is None:
-                    return validation
-                idx = self._forward_resource_index(
-                    holder, "switch", switch.switch_id
+                required = segment.required_switches.get(err.position)
+                taken = self._takeable_switch_holders(
+                    switch, required, path_id, train_id
                 )
-                # Beyond the holder's lock end, and not already entered/protected.
-                if idx is None or idx <= self._lock_end_index(holder):
+                if taken is None:
                     return validation
-                if self._switch_committed_by_train(switch, holder.train_id):
-                    return validation
-                if not self._can_preempt(train_id, holder.train_id):
-                    return validation
-                victims.append((holder_path, idx))
+                for holder_path, idx in taken:
+                    note(holder_path, idx)
             else:
-                # An occupied block or any other occupancy conflict is committed
-                # track — not preemptible.
+                # An occupied block, a way kept for a meet, or any other
+                # occupancy conflict cannot be taken.
                 return validation
-        for holder_path, idx in victims:
+        for holder_path, idx in flank_blockers:
+            note(holder_path, idx)
+        for holder_path, idx in victims.items():
             self.truncate_path_before_resource(
                 holder_path,
                 idx,
@@ -2278,6 +2289,107 @@ class PathDispatcher:
         return self.validate_path(
             segment, path_id, train_id, manual_override=manual_override
         )
+
+    def _takeable_switch_holders(
+        self, switch, state: Optional[int], path_id: str, train_id: str
+    ) -> Optional[List[Tuple[str, int]]]:
+        """The `(holder path id, resource_sequence index)` cuts that would free
+        `switch` for a claim in `state`, or `None` when any conflicting claim
+        cannot be taken (design_new.md "Resource acquisition", Which blockers
+        can be taken).
+
+        A conflicting claim can be taken only when it is another path's main
+        claim (`source_switch_id is None`) on a switch at an index of that
+        path's `resource_sequence` beyond its lock end, the holder neither
+        occupies nor protects the switch, and the holder's priority is strictly
+        lower. A flank-only claim has no index in its holder's sequence, and a
+        train-owned protection claim is committed track, so neither is taken.
+        """
+        cuts: List[Tuple[str, int]] = []
+        for (claim_path_id, source_switch_id), (_claim_train, claim_state) in list(
+            switch.locks.items()
+        ):
+            if state is not None and claim_state == state:
+                continue
+            if claim_path_id == path_id:
+                return None
+            if source_switch_id is not None:
+                return None
+            holder = self.paths.get(claim_path_id)
+            if holder is None:
+                return None
+            idx = self._forward_resource_index(holder, "switch", switch.switch_id)
+            if idx is None or idx <= self._lock_end_index(holder):
+                return None
+            if self._switch_committed_by_train(switch, holder.train_id):
+                return None
+            if not self._can_preempt(train_id, holder.train_id):
+                return None
+            cuts.append((claim_path_id, idx))
+        for claim_train_id, _source, claim_state in (
+            getattr(switch, "train_protection_claims", []) or []
+        ):
+            if state is None or claim_state != state:
+                return None
+        return cuts
+
+    def _flank_neighbour_blockers(
+        self, segment, path_id: str, train_id: str
+    ) -> Optional[List[Tuple[str, int]]]:
+        """Cuts that would free the flank neighbours of `segment`'s route points
+        for the flank claims `SwitchManager.acquire_locks_for_segment(...)`
+        derives, or `None` when a neighbour's conflicting claim cannot be taken.
+
+        Mirrors the flank expansion's exemptions: a neighbour that is itself a
+        route point of the segment, a disabled neighbour, and a neighbour two
+        route points demand opposite states of (a switch-triangle apex) need no
+        flank claim.
+        """
+        switches = getattr(self.network, "switches", {}) or {}
+        route_points: Dict[str, int] = {}
+        for pos, state in segment.required_switches.items():
+            switch = self._resolve_switch_at_position(pos)
+            if switch is not None:
+                route_points[switch.switch_id] = state
+        demands: Dict[str, Set[int]] = {}
+        for switch_id in route_points:
+            main = switches.get(switch_id)
+            for neighbour_id, blocking_state in getattr(main, "flank_protection", []) or []:
+                if neighbour_id in route_points:
+                    continue
+                demands.setdefault(neighbour_id, set()).add(1 - int(blocking_state))
+        # States an earlier segment of this path, or this train's protection,
+        # already pinned on a neighbour count toward the apex test, as in the
+        # flank expansion.
+        for neighbour_id in list(demands):
+            neighbour = switches.get(neighbour_id)
+            if neighbour is None:
+                continue
+            for (lock_path_id, lock_source), (_lt, lock_state) in neighbour.locks.items():
+                if lock_path_id == path_id and lock_source is not None:
+                    demands[neighbour_id].add(int(lock_state))
+            for claim_train_id, _src, claim_state in (
+                getattr(neighbour, "train_protection_claims", []) or []
+            ):
+                if claim_train_id == train_id:
+                    demands[neighbour_id].add(int(claim_state))
+        cuts: List[Tuple[str, int]] = []
+        for neighbour_id, states in demands.items():
+            if len(states) != 1:
+                continue  # triangle apex: no flank claim
+            neighbour = switches.get(neighbour_id)
+            if neighbour is None or getattr(neighbour, "disabled", False):
+                continue
+            safe_state = next(iter(states))
+            if neighbour.can_lock(safe_state, manual_override=True):
+                continue
+            taken = self._takeable_switch_holders(
+                neighbour, safe_state, path_id, train_id
+            )
+            if taken is None:
+                return None
+            cuts.extend(taken)
+        return cuts
 
     def _forward_resource_index(self, path, resource_type: str, resource_id: str):
         """First `resource_sequence` index strictly ahead of the head

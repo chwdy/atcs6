@@ -1680,13 +1680,13 @@ class RouteExecutor:
             block = self.network.blocks.get(ceiling) if ceiling else None
             if block is not None and getattr(block, "occupied_by", None) == train_id:
                 continue
-            armed = self.find_armed_task(train_id)
-            if armed is None or self.path_dispatcher is None:
+            target = self.next_call_target(train_id)
+            if target is None or self.path_dispatcher is None:
                 continue
             keys = entry.candidate_resource_keys
             conflict = self.path_dispatcher.get_waiting_conflict(
                 train_id,
-                armed.stored_resolved_target,
+                target,
                 self._manual_override_for(train_id),
                 reservation_cap_block_id=ceiling,
                 required_candidate_resource_keys=list(keys) if keys else None,
@@ -1960,11 +1960,44 @@ class RouteExecutor:
             return int(getattr(route, "priority", 5))
         return 5
 
+    def next_call_target(self, train_id: str) -> Optional[ResolvedRouteTarget]:
+        """The target Plan's next create/extend call for the train aims at
+        (design_new.md "Meet coordination", The next call's target).
+
+        With no live path it is the next task's target, the one a
+        `create_path(...)` would use. With a live path it is the task the
+        **Waypoint lookahead** would arm this tick when its conditions hold, and
+        otherwise the armed target from `find_armed_task(train_id)`. Reading
+        only the armed target would trail the lookahead by one tick: on the tick
+        the reservation reaches the current target, Plan already aims at the
+        next one. The lookahead resolve may add the next walk row, the same row
+        the same tick's Plan would add.
+        """
+        exec_state = self.execution_state_for(train_id)
+        if exec_state is None:
+            return None
+        if self._get_active_path_id(train_id) is None:
+            projection = self._find_next_task_target(train_id)
+            return getattr(projection, "resolved_target", None) if projection else None
+        armed = self.find_armed_task(train_id)
+        armed_target = armed.stored_resolved_target if armed is not None else None
+        train, route, _state = self._resolve_run_route(train_id)
+        if train is None or route is None:
+            return armed_target
+        projection = self._find_next_task_target(train_id)
+        if projection is None or projection.resolved_target is None:
+            return armed_target
+        ahead = self._apply_waypoint_lookahead(train, route, exec_state, projection)
+        if ahead is not projection and ahead.resolved_target is not None:
+            return ahead.resolved_target
+        return armed_target
+
     def _waiting_conflict_for(self, train_id: str):
         """The `WaitingConflict` for this train's blocked active path, or None.
 
-        design_new.md "Contention snapshot": obtain `stored_resolved_target` from
-        `find_armed_task(train_id)`, resolve the run's manual override, and call
+        design_new.md "Contention snapshot": obtain the target pair of the next
+        call's target (`next_call_target(train_id)`, per "Meet coordination",
+        The next call's target), resolve the run's manual override, and call
         the full `PathDispatcher.get_waiting_conflict(...)` with no meet constraint
         (`reservation_cap_block_id=None`). The keys are `None` too, except for a
         route with a required walk, whose part is the train's only candidate
@@ -1972,11 +2005,12 @@ class RouteExecutor:
         """
         if self.path_dispatcher is None:
             return None
-        armed = self.find_armed_task(train_id)
-        if armed is None:
+        if self.find_armed_task(train_id) is None:
+            return None
+        target = self.next_call_target(train_id)
+        if target is None:
             return None
         manual_override = self._manual_override_for(train_id)
-        target = armed.stored_resolved_target
         return self.path_dispatcher.get_waiting_conflict(
             train_id,
             target,

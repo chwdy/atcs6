@@ -403,10 +403,13 @@ def _wired(controller):
     return cal
 
 
-def test_a_discarded_held_result_gives_the_train_back_once_it_stands():
-    """design_new.md "What ends a calibration run", A run the operator ends
-    gives the train back: the mode it had before opening, then OFF when it was
-    OFF. A moving train waits."""
+def test_a_finished_pass_gives_the_train_back_once_it_stands():
+    """design_new.md "What ends a calibration run", A run that finishes or that
+    the operator ends gives the train back: the pass finishing queues the train,
+    which gets the mode it had before opening, then OFF when it was OFF. A
+    moving train waits. Discarding the held result afterwards gives nothing."""
+    from speed_calibration import CalibrationSample
+
     controller = _StubController(mode="manual")
     cal = _wired(controller)
     run = cal.start(
@@ -418,16 +421,21 @@ def test_a_discarded_held_result_gives_the_train_back_once_it_stands():
         control_mode_before_opening="ato",
         powered_before_opening=False,
     )
-    run.phase = "measured"
-    assert not run.is_measuring
-    cal.stop("T1", reason="discarded")
-    assert "T1" not in cal.runs
+    run.samples = [
+        CalibrationSample(track_voltage=run.max_voltage * f, speed_kmh=80.0 * f)
+        for f in (0.25, 0.5, 0.75, 1.0)
+    ]
+    cal._finish_sweep(run)
+    assert run.is_measured
     controller.stopped = False
     cal.give_trains_back()
     assert controller.commands.calls == []
     controller.stopped = True
     cal.give_trains_back()
     assert controller.commands.calls == [("set_mode", "ato"), ("power_off_cmd", None)]
+    assert cal.pending_give_backs == {}
+    cal.stop("T1", reason="discarded")
+    assert "T1" not in cal.runs
     assert cal.pending_give_backs == {}
 
 

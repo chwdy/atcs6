@@ -1055,3 +1055,90 @@ def test_an_emergency_brake_ending_leaves_the_train_in_manual(state):
     assert train_id not in sim.speed_calibration.runs
     assert sim.speed_calibration.pending_give_backs == {}
     assert controller.commands.control_mode == "manual"
+
+
+def _finish_pass_now(sim, train_id, run):
+    """Close the sweep the way its last leg does: the pass finishes and asks
+    for its leg route to be torn down (design_new.md "Speed calibration", A
+    finished pass is a held result, not an open run)."""
+    from speed_calibration import CalibrationSample
+
+    run.samples = [
+        CalibrationSample(track_voltage=v, speed_kmh=v / run.max_voltage * 80.0)
+        for v in (run.max_voltage * f for f in (0.25, 0.5, 0.75, 1.0))
+    ]
+    cal = sim.speed_calibration
+    cal._finish_sweep(run)
+    cal._deactivate_leg_route(train_id, run)
+    assert run.phase == PHASE_MEASURED
+
+
+def test_a_finished_pass_gives_the_train_back_before_save(state):
+    """The train is given back as soon as the pass stops driving it; only the
+    result waits for Save or Discard (design_new.md "What ends a calibration
+    run", A run that finishes or that the operator ends gives the train back)."""
+    sim = state.sim_controller
+    train_id = _free_train(state)
+    _with_instance(state, train_id)
+    block_id = _first_calibratable_block(state, train_id)
+    controller = _ready_manual_train(sim, state.network, train_id)
+    controller.commands.set_mode("ato")
+    sim.update(0.1)
+    run = train_service.calibrate_train(state, train_id, measured_block_id=block_id)
+    assert run.control_mode_before_opening == "ato"
+    _finish_pass_now(sim, train_id, run)
+    for _ in range(5):
+        sim.update(0.1)
+    # The result still waits, but the train already reads ATO again.
+    assert sim.speed_calibration.runs[train_id].is_measured
+    assert sim.speed_calibration.pending_give_backs == {}
+    assert controller.commands.control_mode == "ato"
+    assert controller.ops.train_status == TrainStatus.ATO
+
+
+def test_save_after_a_finished_pass_gives_nothing_back(state):
+    """Save to this train writes the curve and nothing else: the train was
+    given back when the pass finished, so a mode the operator set since stays."""
+    sim = state.sim_controller
+    train_id = _free_train(state)
+    _with_instance(state, train_id)
+    block_id = _first_calibratable_block(state, train_id)
+    controller = _ready_manual_train(sim, state.network, train_id)
+    controller.commands.set_mode("ato")
+    sim.update(0.1)
+    run = train_service.calibrate_train(state, train_id, measured_block_id=block_id)
+    _finish_pass_now(sim, train_id, run)
+    for _ in range(5):
+        sim.update(0.1)
+    assert controller.commands.control_mode == "ato"
+    controller.commands.set_mode("manual")
+    train_service.calibrate_commit(state, train_id, target="train")
+    for _ in range(3):
+        sim.update(0.1)
+    assert train_id not in sim.speed_calibration.runs
+    assert controller.commands.control_mode == "manual"
+
+
+def test_an_operator_change_before_the_give_back_is_kept(state):
+    """When the operator sets a mode between the end of the run and the next
+    give-back, the train keeps what the operator set."""
+    sim = state.sim_controller
+    train_id = _free_train(state)
+    _with_instance(state, train_id)
+    block_id = _first_calibratable_block(state, train_id)
+    controller = _ready_manual_train(sim, state.network, train_id)
+    controller.commands.power_off_cmd()
+    sim.update(0.1)
+    run = train_service.calibrate_train(state, train_id, measured_block_id=block_id)
+    assert run.powered_before_opening is False
+    _finish_pass_now(sim, train_id, run)
+    # Let Action tear the leg down, then set ATO before the next give-back.
+    sim.speed_calibration.pending_give_backs.pop(train_id)
+    for _ in range(3):
+        sim.update(0.1)
+    sim.speed_calibration.pending_give_backs[train_id] = ("manual", False)
+    assert controller.commands.set_mode("ato").success
+    sim.update(0.1)
+    assert sim.speed_calibration.pending_give_backs == {}
+    assert controller.powered
+    assert controller.commands.control_mode == "ato"

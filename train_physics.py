@@ -841,8 +841,17 @@ class TrainPhysics:
             # "SpeedProfile"); a speed of 0 maps to `lighting_voltage`, or 0 V
             # when it is unset: standing, under a plain EB, under the power-off
             # ceiling, or in ATO while not engaged.
-            return speed_profile.speed_to_voltage(voltage_speed)
-        return self._linear_speed_to_voltage(voltage_speed)
+            voltage = speed_profile.speed_to_voltage(voltage_speed)
+        else:
+            voltage = self._linear_speed_to_voltage(voltage_speed)
+        # A moving ATO train is driven no lower than its ATO minimum voltage
+        # (design_new.md "SpeedProfile", ATO drives no lower than its ATO
+        # minimum voltage). The two differ only inside a flat stretch of the
+        # curve, where the backward reading returns the stretch's lowest voltage.
+        floor = float(getattr(command, "voltage_floor", 0.0) or 0.0)
+        if voltage_speed > 0.0 and floor > voltage:
+            voltage = floor
+        return voltage
 
     @staticmethod
     def _linear_speed_to_voltage(speed_kmh: float) -> float:

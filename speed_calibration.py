@@ -722,6 +722,7 @@ class SpeedCalibration:
         self._operating_clock = None
         self._notification_center = None
         self._block_holder = None
+        self._assigned_route_id = None
         # Trains whose run gave them back, waiting for the next
         # `give_trains_back()`: train id -> (control_mode, powered) before
         # opening.
@@ -734,18 +735,20 @@ class SpeedCalibration:
         operating_clock=None,
         notification_center=None,
         block_holder=None,
+        assigned_route_id=None,
     ) -> None:
         """Inject the named dependencies calibration needs: the controller
         registry, the operating clock every interval is measured against
         (design_new.md "Clocks"), the event-log sink, a call returning the
         active operating environment, and a call naming the train a block's
-        `Block.occupied_by` holds. Called once by SimulationController at
-        construction; calibration holds no SimulationController reference of
-        its own."""
+        `Block.occupied_by` holds, and a call naming the route assigned to a
+        train. Called once by SimulationController at construction; calibration
+        holds no SimulationController reference of its own."""
         self._controllers = controllers
         self._operating_clock = operating_clock
         self._notification_center = notification_center
         self._block_holder = block_holder
+        self._assigned_route_id = assigned_route_id
 
     # -- lifecycle --------------------------------------------------------
 
@@ -883,34 +886,47 @@ class SpeedCalibration:
         run.powered_before_opening = bool(powered)
 
     def give_trains_back(self) -> None:
-        """Give each train whose run finished or was ended by the operator the
-        mode and power it had before opening (design_new.md "What ends a
-        calibration run", A run the operator ends gives the train back).
+        """Give each train whose run stopped driving it the mode and power it
+        had before opening (design_new.md "What ends a calibration run", A run
+        that finishes or that the operator ends gives the train back).
 
-        Runs between ticks, like an operator command: `SimulationController`
-        calls it at the start of each pass, after Action of the pass before has
-        torn the leg route down, and the service calls it straight after an
-        ending it made itself. It calls `set_mode(...)` when the mode differs,
-        then `power_off_cmd()` when the train was `OFF` before opening. A train
-        that is moving waits for a later call. A train under EB, `OFF`, or with
-        a new run open is left as it is, because another procedure owns it.
+        `SimulationController.update(...)` calls it at the start of each running
+        pass, before Observe, so the leg route is already torn down by the Action
+        pass before. It writes as an operator command would: `set_mode(...)` when
+        the mode differs, then `power_off_cmd()` when the train was `OFF` before
+        opening, whether or not `set_mode(...)` was accepted. A moving train waits
+        for a later call. A train leaves the queue and keeps its state when EB is
+        latched, it is `OFF`, its controller is gone, a new run is open for it, or
+        the operator has taken it back since its run ended (its mode is no longer
+        `manual`, or a route is assigned to it).
         """
         for train_id in list(self.pending_give_backs):
             controller = self._controller(train_id)
-            if controller is None or train_id in self.runs:
+            run = self.runs.get(train_id)
+            if controller is None or (run is not None and not run.is_measured):
                 self.pending_give_backs.pop(train_id, None)
                 continue
             if controller.eb.active or not controller.powered:
                 self.pending_give_backs.pop(train_id, None)
                 continue
+            commands = controller.commands
+            if commands.control_mode != "manual" or self._route_assigned(train_id):
+                # The operator put the train back in service after the run left
+                # it `manual` with no route; giving it back would undo that.
+                self.pending_give_backs.pop(train_id, None)
+                continue
             if not controller.is_stopped():
                 continue
             mode, powered = self.pending_give_backs.pop(train_id)
-            commands = controller.commands
             if commands.control_mode != mode:
                 commands.report_result("set_mode", commands.set_mode(mode))
             if not powered:
                 commands.report_result("power_off_cmd", commands.power_off_cmd())
+
+    def _route_assigned(self, train_id: str) -> bool:
+        if self._assigned_route_id is None:
+            return False
+        return self._assigned_route_id(train_id) is not None
 
     def _queue_give_back(self, run: CalibrationRun) -> None:
         self.pending_give_backs[run.train_id] = (
@@ -1039,7 +1055,9 @@ class SpeedCalibration:
         if run is None:
             return
         if not run.is_measuring:
-            self.abandon(train_id, reason=reason, success=success, give_back=True)
+            # A finished pass already gave the train back when it finished;
+            # discarding it gives nothing back.
+            self.abandon(train_id, reason=reason, success=success)
             return
         if run.ending:
             return
@@ -2061,6 +2079,11 @@ class SpeedCalibration:
         # override withdraws; zero the manual fallback so the standing train
         # stays put until the operator picks a profile.
         self._stop_manual_traction(run.train_id)
+        # The train is given back as soon as the pass stops driving it; only
+        # the result waits for Save or Discard (design_new.md "What ends a
+        # calibration run", A run that finishes or that the operator ends gives
+        # the train back).
+        self._queue_give_back(run)
         self._emit_command_result(
             run.train_id,
             operation="speed_calibration",
@@ -2417,7 +2440,6 @@ class SpeedCalibration:
         target_profile.voltage_speed_curve = curve
         target_profile.calibrated_at = stamp
         self.runs.pop(train_id, None)
-        self._queue_give_back(run)
         self._emit_command_result(
             train_id,
             operation="speed_calibration",

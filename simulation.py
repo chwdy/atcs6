@@ -361,6 +361,9 @@ class SimulationController(SwitchOutputOwner):
             block_holder=lambda block_id: getattr(
                 self.network.blocks.get(block_id), "occupied_by", None
             ),
+            assigned_route_id=lambda train_id: self.route_executor.assigned_route_id_for(
+                train_id
+            ),
         )
 
         # Bumped by every safe-state entry. A `CalibrationRun` captures it when

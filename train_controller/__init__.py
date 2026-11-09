@@ -1132,6 +1132,7 @@ class TrainController:
         # **ATO driving rule**). A manual train has no floor.
         commanded_kmh = 0.0
         speed_floor_kmh = 0.0
+        voltage_floor = 0.0
         if self.commands.control_mode == "ato":
             atc_limit_kmh = None
             if self.commands.engaged:
@@ -1140,6 +1141,10 @@ class TrainController:
             speed_floor_kmh = float(
                 getattr(profile, "ato_minimum_speed_kmh", 0.0) or 0.0
             )
+            # A moving ATO train is driven no lower than its ATO minimum
+            # voltage (design_new.md "SpeedProfile", ATO drives no lower than
+            # its ATO minimum voltage).
+            voltage_floor = float(getattr(profile, "ato_minimum_voltage", 0.0) or 0.0)
         else:
             atc_limit_kmh = float(self.atc.speed_limit)
         return PhysicsCommand(
@@ -1149,6 +1154,7 @@ class TrainController:
             voltage_source_speed_kmh=voltage_speed,
             atc_limit_kmh=atc_limit_kmh,
             speed_floor_kmh=speed_floor_kmh,
+            voltage_floor=voltage_floor,
         )
 
     def _taint_calibration_crossing_on_cap(self) -> None:

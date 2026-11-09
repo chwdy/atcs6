@@ -238,3 +238,88 @@ def test_switch_committed_by_train_reads_occupancy_and_protection():
     assert disp._switch_committed_by_train(protected, "T_LOCAL") is True
     free = SimpleNamespace(physical_occupants={}, train_protection_claims=[])
     assert disp._switch_committed_by_train(free, "T_LOCAL") is False
+
+
+# --- blocker kinds and one cut per holder ----------------------------------
+
+
+def _two_reserved_conflicts(*block_ids):
+    return ValidationResult(
+        valid=False,
+        errors=[
+            ValidationError(
+                type=ValidationErrorType.BLOCK_RESERVED,
+                block_id=b,
+                locked_by_path="P_LOCAL",
+                message=f"Block {b} is reserved",
+            )
+            for b in block_ids
+        ],
+    )
+
+
+def test_a_holder_of_several_blockers_is_cut_back_once_before_the_earliest():
+    """design_new.md "Resource acquisition", Every blocker can be taken: each
+    holder is cut back once, before the earliest of its blockers."""
+    _network, disp = _setup(
+        {"T_EXPRESS": 9, "T_LOCAL": 5},
+        ["BLK_2", "BLK_3", "BLK_4"],
+        ["BLK_2"],
+        ["BLK_1", "BLK_2", "BLK_3", "BLK_4"],
+    )
+    cuts = []
+    real = disp.truncate_path_before_resource
+
+    def record(path_id, idx, reason):
+        cuts.append((path_id, idx))
+        return real(path_id, idx, reason)
+
+    disp.truncate_path_before_resource = record
+    segment = PathSegment(tiles=[(3, 0), (4, 0)], blocks=["BLK_3", "BLK_4"])
+    disp._apply_preemption(
+        _two_reserved_conflicts("BLK_4", "BLK_3"), segment,
+        "P_EXP", "T_EXPRESS", False,
+    )
+    assert cuts == [("P_LOCAL", 2)]
+
+
+def test_a_flank_only_claim_cannot_be_taken():
+    """A flank-only claim has no index in its holder's resource_sequence, so it
+    is a blocker that cannot be taken (design_new.md "Resource acquisition",
+    Which blockers can be taken)."""
+    _network, disp = _setup(
+        {"T_EXPRESS": 9, "T_LOCAL": 5}, ["BLK_2"], ["BLK_2"], ["BLK_1", "BLK_2"]
+    )
+    switch = SimpleNamespace(
+        switch_id="SW_N",
+        locks={("P_LOCAL", "SW_MAIN"): ("T_LOCAL", 1)},
+        physical_occupants={},
+        train_protection_claims=[],
+    )
+    assert disp._takeable_switch_holders(switch, 0, "P_EXP", "T_EXPRESS") is None
+
+
+def test_a_main_claim_beyond_the_lock_end_can_be_taken():
+    _network, disp = _setup(
+        {"T_EXPRESS": 9, "T_LOCAL": 5}, ["BLK_2"], ["BLK_2"], ["BLK_1", "BLK_2"]
+    )
+    disp.paths["P_LOCAL"].resource_sequence.append(
+        ResourceSequenceEntry(sequence_index=2, resource_type="switch", resource_id="SW_N")
+    )
+    switch = SimpleNamespace(
+        switch_id="SW_N",
+        locks={("P_LOCAL", None): ("T_LOCAL", 1)},
+        physical_occupants={},
+        train_protection_claims=[],
+    )
+    assert disp._takeable_switch_holders(switch, 0, "P_EXP", "T_EXPRESS") == [
+        ("P_LOCAL", 2)
+    ]
+    # Equal priority never takes it.
+    _network2, disp2 = _setup(
+        {"T_EXPRESS": 5, "T_LOCAL": 5}, ["BLK_2"], ["BLK_2"], ["BLK_1", "BLK_2"]
+    )
+    disp2.paths["P_LOCAL"].resource_sequence.append(
+        ResourceSequenceEntry(sequence_index=2, resource_type="switch", resource_id="SW_N")
+    )
+    assert disp2._takeable_switch_holders(switch, 0, "P_EXP", "T_EXPRESS") is None
