@@ -868,7 +868,11 @@ def test_the_ato_minimum_test_commits_its_voltage_onto_the_instance(state):
     assert train_id not in sim.speed_calibration.runs
 
 
-def test_the_ato_minimum_commit_is_refused_when_the_curve_changed(state):
+def test_the_profile_cannot_be_edited_while_an_ato_minimum_test_runs(state):
+    """No edit to the instance profile is accepted while the test is open, so
+    the commit is judged against the profile the test opened with
+    (design_new.md "SpeedProfile", A train's instance profile is not edited
+    while calibration holds it)."""
     from services import ConflictError, speed_profile_service
 
     sim = state.sim_controller
@@ -883,11 +887,13 @@ def test_the_ato_minimum_commit_is_refused_when_the_curve_changed(state):
         state, train_id, measured_block_id=block_id,
         track_voltage=resolved.first_point_voltage,
     )
-    speed_profile_service.update_profile(
-        state, profile_id, data={"starting_voltage": resolved.starting_voltage + 0.1}
+    with pytest.raises(ConflictError, match="calibration"):
+        speed_profile_service.update_profile(
+            state, profile_id, data={"starting_voltage": resolved.starting_voltage + 0.1}
+        )
+    assert state.speed_profile_registry.get(profile_id).starting_voltage == (
+        resolved.starting_voltage
     )
-    with pytest.raises(ConflictError, match="changed"):
-        train_service.calibrate_ato_minimum_commit(state, train_id)
 
 
 def test_a_curve_commit_clears_the_locomotives_ato_minimum_voltage(state):

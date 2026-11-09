@@ -193,6 +193,7 @@ def update_profile(
             raise NotFoundError(f"Speed profile {profile_id!r} not found")
         if existing.is_default:
             raise ConflictError("The Default profile cannot be changed")
+        _refuse_edit_while_calibration_holds(state, existing.profile_id)
         for key in ("profile_id", "model_id", "parent_profile_id"):
             if key in data and as_profile_id(data[key]) != getattr(existing, key):
                 raise ValidationError(f"{key} is not edited by hand")
@@ -219,6 +220,25 @@ def update_profile(
         for record in final.values():
             registry.register(record)
         return final[existing.profile_id]
+
+
+def _refuse_edit_while_calibration_holds(state: AppState, profile_id: int) -> None:
+    """Refuse a hand edit of a train's instance profile while a calibration run
+    is open for that train or its finished speed pass waits (design_new.md
+    "SpeedProfile", A train's instance profile is not edited while calibration
+    holds it): the edit would change the curve and voltages under the run.
+    A set belongs to no train, so it is never refused here."""
+    sim = getattr(state, "sim_controller", None)
+    calibration = getattr(sim, "speed_calibration", None) if sim else None
+    runs = getattr(calibration, "runs", {}) if calibration is not None else {}
+    if not runs:
+        return
+    for train_id, train in getattr(state.network, "trains", {}).items():
+        if getattr(train, "speed_profile_id", None) == profile_id and train_id in runs:
+            raise ConflictError(
+                f"Train {train_id!r} has a calibration run open or a finished "
+                "pass waiting; commit or discard it first"
+            )
 
 
 # -------------------------------------------------------------- deletes ----

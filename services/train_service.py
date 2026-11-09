@@ -1525,20 +1525,16 @@ def calibrate_ato_minimum_commit(state: AppState, train_id: str):
     changed after the test opened. Returns the written record."""
     from dataclasses import replace as _replace
     from services.speed_profile_service import settle_profile_writes
-    from speed_calibration import profile_key
-
     with _runtime_lock(state):
         sim, run = _open_calibration_run(state, train_id)
         if not run.is_test:
             raise NotFoundError("No ATO minimum test is open for this train")
         train, profile, _sim = _calibration_profile(state, train_id)
+        # No edit to the instance profile is accepted while the test is open,
+        # so it is judged against the starting voltage and curve the test
+        # opened with (design_new.md "Speed calibration", ATO minimum test,
+        # Commit writes `ato_min_voltage` and nothing else).
         registry = state.speed_profile_registry
-        resolved = registry.get(train.speed_profile_id)
-        if profile_key(resolved) != run.test_profile_key:
-            raise ConflictError(
-                "The locomotive's starting voltage or curve changed after the test "
-                "opened — test again"
-            )
         updated = _replace(profile, ato_min_voltage=float(run.trial_voltage))
         final, problems = settle_profile_writes(
             registry, {profile.profile_id: updated}, keep_ato_min=(profile.profile_id,)

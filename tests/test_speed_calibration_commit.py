@@ -192,3 +192,27 @@ def test_an_unfinished_pass_writes_nothing(from_set):
     with pytest.raises(ConflictError):
         train_service.calibrate_commit(state, "T1", target="train")
     assert state.network.speed_profiles.get(t1.speed_profile_id).calibrated_at is None
+
+
+def test_a_hand_edit_of_a_calibrating_trains_profile_is_refused(from_set):
+    """design_new.md "SpeedProfile", A train's instance profile is not edited
+    while calibration holds it: refused while T1's finished pass waits. A set
+    and another train's instance profile stay editable."""
+    from services import speed_profile_service
+
+    state, _model, the_set, t1, t2 = from_set
+    with pytest.raises(ConflictError):
+        speed_profile_service.update_profile(
+            state, t1.speed_profile_id, data={"lighting_voltage": 0.5}
+        )
+    speed_profile_service.update_profile(
+        state, t2.speed_profile_id, data={"lighting_voltage": 0.5}
+    )
+    speed_profile_service.update_profile(
+        state, the_set.profile_id, data={"lighting_voltage": 0.5}
+    )
+    state.sim_controller.speed_calibration.stop("T1", reason="discarded")
+    edited = speed_profile_service.update_profile(
+        state, t1.speed_profile_id, data={"lighting_voltage": 0.5}
+    )
+    assert edited.lighting_voltage == 0.5

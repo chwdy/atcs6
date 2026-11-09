@@ -317,9 +317,6 @@ class CalibrationRun:
     test_low_voltage: float = 0.0
     """For an ATO minimum test, the lowest test voltage it accepts: the curve's
     first point above the starting voltage when the test opened."""
-    test_profile_key: Tuple = ()
-    """For an ATO minimum test, the train's resolved starting voltage and curve
-    when the test opened; its commit refuses when they changed."""
     steady_legs: int = 0
     """For an ATO minimum test, legs in a row finished at the current test
     voltage with no stalled crossing (design_new.md "Speed calibration", ATO
@@ -855,7 +852,6 @@ class SpeedCalibration:
             trial_voltage=voltage,
             starting_voltage=float(profile.starting_voltage or 0.0),
             test_low_voltage=low,
-            test_profile_key=_profile_key(profile),
             max_voltage=high,
             current_step_voltage=voltage,
             measured_block_id=measured_block_id,
@@ -2572,20 +2568,6 @@ class SpeedCalibration:
             )
         except Exception:
             pass
-
-
-def _profile_key(profile) -> Tuple:
-    """A resolved profile's starting voltage and curve, which an ATO minimum
-    test was run against."""
-    return (
-        float(getattr(profile, "starting_voltage", 0.0) or 0.0),
-        tuple(tuple(map(float, p)) for p in (profile.voltage_speed_curve or [])),
-    )
-
-
-def profile_key(profile) -> Tuple:
-    """Public alias of `_profile_key`, for the commit's check."""
-    return _profile_key(profile)
 
 
 def _runoff_pair(runoff_block_ids) -> Tuple[Tuple[str, ...], Tuple[str, ...]]:
