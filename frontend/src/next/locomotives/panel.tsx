@@ -100,6 +100,8 @@ export function bindSpeedProfilePanel(panel: SpeedProfilePanel, reveal: () => vo
       unmountSteps();
       panel.close();
     },
-    shown: () => shown,
+    // The panel empties its element when it closes, and it can be closed
+    // without this binding hearing of it, so an empty element shows nothing.
+    shown: () => (el.firstChild ? shown : null),
   };
 }

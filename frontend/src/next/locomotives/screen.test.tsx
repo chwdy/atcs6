@@ -202,6 +202,45 @@ describe('Locomotives screen', () => {
     expect(panel.shows).toHaveLength(1);
   });
 
+  it('asks the panel again when a load failed and left it blank', async () => {
+    const draw = panel.showProfileEditor.bind(panel);
+    let failNext = true;
+    // The real panel shows a toast and draws nothing when the profile does not load.
+    panel.showProfileEditor = async (profileId, options = {}) => {
+      if (failNext) {
+        failNext = false;
+        panel.shows.push([Number(profileId), options.trainId]);
+        return;
+      }
+      await draw(profileId, options);
+    };
+    act(() => trainRow().click());
+    await settle();
+    expect(document.querySelector('#sp-cal-group')).toBeNull();
+
+    // A poll that changes nothing asks nothing; one that changes the train asks again.
+    act(() => updateFromNetwork(network()));
+    await settle();
+    expect(panel.shows).toHaveLength(1);
+    act(() => updateFromNetwork(network({ status: 'emergency' })));
+    await settle();
+    expect(panel.shows).toEqual([
+      [11, 'T1'],
+      [11, 'T1'],
+    ]);
+    expect(document.querySelector('#sp-cal-group')).not.toBeNull();
+  });
+
+  it('asks the panel again when the picked row is clicked while the panel is blank', async () => {
+    act(() => trainRow().click());
+    await settle();
+    act(() => panel.close());
+    act(() => trainRow().click());
+    await settle();
+    expect(panel.shows).toHaveLength(2);
+    expect(document.querySelector('#sp-cal-group')).not.toBeNull();
+  });
+
   it('shows the canvas only while a run is open, and only on this screen', () => {
     act(() => trainRow().click());
     expect(document.documentElement.dataset.locoCanvas).toBeUndefined();

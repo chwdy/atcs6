@@ -117,9 +117,15 @@ export function mountLocomotivesScreen(host: LocomotivesHost, reveal: () => void
   render(<LocomotivesScreen panel={panel} />, root);
 
   // Show the picked locomotive's profile in the panel. The panel is asked
-  // again only when the profile or the train to name changes, so a poll that
+  // again when the profile or the train to name changes, so a poll that
   // changes a train's speed does not reopen it (which would end its run).
+  // It is also asked again when it is not showing the picked profile and no
+  // load of it is on its way: a load that failed (the server restarting, a
+  // train just adopted) would otherwise leave the panel blank until another
+  // train is picked. The next network update that changes a train, or a
+  // click on the picked row, asks again.
   let applied: { profileId: number | null; trainId?: string | null } = { profileId: null };
+  let loading: number | null = null;
   const stopShowing = effect(() => {
     const sel = selection.value;
     const target = panelTarget(sel, trains.value);
@@ -128,10 +134,18 @@ export function mountLocomotivesScreen(host: LocomotivesHost, reveal: () => void
       applied = { profileId: sel.profileId };
       return;
     }
-    if (target.profileId === applied.profileId && target.trainId === applied.trainId) return;
+    const sameAsAsked = target.profileId === applied.profileId && target.trainId === applied.trainId;
+    const drawnOrOnItsWay =
+      target.profileId == null || panel.shown() === target.profileId || loading === target.profileId;
+    if (sameAsAsked && drawnOrOnItsWay) return;
     applied = target;
-    if (target.profileId) void panel.show(target.profileId, target.trainId);
-    else if (panel.shown()) panel.close();
+    if (target.profileId) {
+      const profileId = target.profileId;
+      loading = profileId;
+      void panel.show(profileId, target.trainId).finally(() => {
+        if (loading === profileId) loading = null;
+      });
+    } else if (panel.shown()) panel.close();
   });
 
   // The canvas shows on the right while a run is open or being set up. It
