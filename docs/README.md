@@ -6,7 +6,8 @@ This folder is intentionally small. The project's design discipline is to keep o
 
 | Kind of information | Where it goes |
 |---------------------|---------------|
-| Refactor contracts and changed cross-component behavior (the v1 spec) | `/design_new.md` (root) — single source of truth |
+| System behavior and design rules (the v2 spec) | `/design_v2.md` (root) — single source of truth |
+| The archived v1 spec, reference only | `/archive/design_new.md` |
 | Project rules and authoring conventions for AI agents | `/CLAUDE.md` (root) |
 | Developer-facing onboarding and conventions | `/AGENTS.md` (root), `/README.md` (root) |
 | REST endpoint reference | `docs/API.md` |
@@ -19,16 +20,16 @@ This folder is intentionally small. The project's design discipline is to keep o
 
 ## What does NOT go here
 
-- **Narrative "how the system works" docs.** They drift. Extend `design_new.md` instead. If a contract is missing, add it to the spec.
+- **Narrative "how the system works" docs.** They drift. Extend `design_v2.md` instead. If a contract is missing, add it to the spec.
 - **"Implementation status" or feature matrices.** Git history and the spec are the authority.
-- **Restating contracts in another file.** One canonical home per concept (the same rule that governs `design_new.md`).
+- **Restating contracts in another file.** One canonical home per concept (the same rule that governs `design_v2.md`).
 - **Completed plans or resolved bugs.** Once shipped, delete them — git keeps the history.
 
 ## Adding a new doc
 
 Before creating a new `.md` file, ask:
 
-1. Is this a contract or system behavior? → It belongs in `design_new.md`.
+1. Is this a contract or system behavior? → It belongs in `design_v2.md`.
 2. Is this an open issue? → `docs/bugs/`.
 3. Is this a forward plan for unbuilt work? → `docs/plans/<YYYY-MM-DD>-<slug>.md`.
 4. Is this a reference spec for an external system or convention? → `docs/reference/`.
@@ -36,4 +37,4 @@ Before creating a new `.md` file, ask:
 
 ## When a doc goes stale
 
-Delete it. Backwards compatibility is out of scope (per `CLAUDE.md`). Tombstones, "removed," and "legacy" prose are forbidden in `design_new.md` and discouraged everywhere else. Trust git history.
+Delete it. Backwards compatibility is out of scope (per `CLAUDE.md`). Tombstones, "removed," and "legacy" prose are forbidden in `design_v2.md` and discouraged everywhere else. Trust git history.

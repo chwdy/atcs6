@@ -168,5 +168,5 @@ After updating, confirm what landed where so the user can spot anything you got 
 ## Pointers
 
 - When in doubt about how a list-row or detail-page section should look, **copy the route-runs editor** as the reference implementation: `static/js/editor-route-runs.js` and the `.rr-*` rules in `static/css/features/routes-paths.css`. The patterns there are battle-tested — they're what produced §12 and the §11 "Composing a detail page top" subsection.
-- `CLAUDE.md` has authoring rules for `design_new.md` that mostly apply to `DESIGN_LANGUAGE.md` too — simple English, no dead branches, sweep cross-references, no migration shims.
+- `.claude/rules/design-v2-authoring.md` has style rules for `design_v2.md` that mostly apply to `DESIGN_LANGUAGE.md` too — simple English, no dead branches, sweep cross-references, no migration shims.
 - All Python invocations need `conda run -n general` (per `CLAUDE.md`). UI work rarely hits Python, but the preview server uses it — `mcp__Claude_Preview__preview_start` with `name: atcs6-dev` handles the conda activation via `.claude/launch.json`.

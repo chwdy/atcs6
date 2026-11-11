@@ -197,7 +197,7 @@ def report_token(lines: list[str], token: str) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("doc", nargs="?", default="design_new.md")
+    ap.add_argument("doc", nargs="?", default="design_v2.md")
     ap.add_argument("--enums", action="store_true",
                     help="list rare quoted tokens instead of closure claims")
     ap.add_argument("--threshold", type=int, default=4,

@@ -1,6 +1,6 @@
 ---
 name: journey-debug
-description: Debug train-simulation behavior by predicting from `design_new.md`, running the project's journey-test harness, comparing observed vs predicted, and finding the root cause — either a doc-clarity gap or a code bug — and proposing the fix that closes the gap. Trigger this whenever a user asks "what happens when …", "the train does X but I expect Y", "investigate why …", "is this behavior correct per the design", or otherwise reports a discrepancy between observed simulation behavior and the design contract. Also trigger when the user wants to verify how a specific operator command (set_cab, depart, ato_stop, power_off, EB, etc.) affects state at the end of a scene. Also trigger when the user wants to **tune** a control parameter or curve and see the effect — e.g. "ATO brakes too early / too gently, make it more efficient" — even when there is no bug, because validating a tuning change is the same predict→run→compare loop. Do NOT trigger for plain test-writing or test-running tasks ("run the demo journey test", "add an assertion to E5") — those belong to ordinary test work; this skill is for the predict→run→compare→diagnose loop, not for executing a known-good test.
+description: Debug train-simulation behavior by predicting from `design_v2.md`, running the project's journey-test harness, comparing observed vs predicted, and finding the root cause — either a doc-clarity gap or a code bug — and proposing the fix that closes the gap. Trigger this whenever a user asks "what happens when …", "the train does X but I expect Y", "investigate why …", "is this behavior correct per the design", or otherwise reports a discrepancy between observed simulation behavior and the design contract. Also trigger when the user wants to verify how a specific operator command (set_cab, depart, ato_stop, power_off, EB, etc.) affects state at the end of a scene. Also trigger when the user wants to **tune** a control parameter or curve and see the effect — e.g. "ATO brakes too early / too gently, make it more efficient" — even when there is no bug, because validating a tuning change is the same predict→run→compare loop. Do NOT trigger for plain test-writing or test-running tasks ("run the demo journey test", "add an assertion to E5") — those belong to ordinary test work; this skill is for the predict→run→compare→diagnose loop, not for executing a known-good test.
 ---
 
 # Journey-driven debug
@@ -25,8 +25,8 @@ Ask all three in one turn (AskUserQuestion is fine if the answers aren't already
 
 Before running anything, write down what the design says should happen. This is the falsifiable bit; you need it on the page so the comparison later is honest.
 
-- Grep `design_new.md` for the relevant area (operator command name, state name, latch name, reason code). Sweep the canonical home and every cross-reference — the doc has authoring rules forbidding drift, so contradictions you find are themselves a finding.
-- Cite line numbers. "Per `design_new.md:1730` the canonical lookahead without a path plan is …" beats "I think the design says …" because cited claims can be checked.
+- Grep `design_v2.md` for the relevant area (operator command name, state name, latch name, reason code). Sweep the canonical home and every cross-reference — the doc has authoring rules forbidding drift, so contradictions you find are themselves a finding.
+- Cite line numbers. "Per `design_v2.md:1730` the canonical lookahead without a path plan is …" beats "I think the design says …" because cited claims can be checked.
 - List the predicted state per Snapshot field: `state`, `cab`, `ato_running`, `eb_active`, `speed_kmh`, `head_tile`, `active_path_id`, `assigned_route_id`, `atc_limit_kmh`, `atc_reason_code`, `latch_*`. Include the lookahead's distance-0 anchor (`atc_limit`, `operational_limit`, `atc_limit_reason_code`) — for ATC/ATO questions that field is where the action is.
 - For each field, note WHY you predict that value (which line of the doc). The "why" is what the diagnosis later will compare against.
 
@@ -116,7 +116,7 @@ A debug session under this skill ends with one of:
 
 1. **No bug.** Predicted matches observed and the user agrees — explain why, link the design line that proves it, walk away.
 2. **Code bug + fix.** Diff in code + new/updated test that pins the corrected behavior + a one-line summary of why the doc was right.
-3. **Doc bug + fix.** Diff in `design_new.md` (with sweep of cross-references) + a one-line summary of why the code was right.
+3. **Doc bug + fix.** Diff in `design_v2.md` (with sweep of cross-references) + a one-line summary of why the code was right.
 4. **Both.** Doc was ambiguous, code interpreted it one way, intent was the other. Doc gets clarified; code gets updated to match; tests pin the resolved behavior.
 5. **Tuning change + validation.** Doc and code agree and the behavior is *correct but suboptimal* — the user wants to change the design intent itself (brake later, hold speed, smooth a curve, track a notch the design implies but the code never reaches). There is no bug. The predict→run→compare loop is identical; only the root-cause step changes — instead of naming a doc/code gap you name the current behavior, the desired behavior, and the knob (a parameter, a curve shape, a control law) that moves between them. The deliverable is that change, validated against a metric across the dt sweep, plus a journey assertion that pins the new target so it can't silently regress.
 

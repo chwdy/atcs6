@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Map design_new.md's structure and propose balanced reader partitions.
+"""Map design_v2.md's structure and propose balanced reader partitions.
 
 The point of this script is that section line ranges must never be hardcoded.
-design_new.md grows every week; a range list written last month silently stops
+design_v2.md grows every week; a range list written last month silently stops
 covering the tail of the document, and the tail is exactly where an unreviewed
 contradiction hides. Derive the ranges every run.
 
@@ -51,10 +51,10 @@ def partition(sections: list[dict], lines: list[str], n: int) -> list[list[dict]
     """Greedy contiguous split so each reader gets a roughly equal character budget.
     Sections stay whole and in order: a reader that owns half a state-machine table
     cannot judge whether the table is complete."""
-    if n <= 1 or not sections:
-        return [sections]
     for s in sections:
         s["weight"] = weight(lines, s["start"], s["end"])
+    if n <= 1 or not sections:
+        return [sections]
     total = sum(s["weight"] for s in sections)
     target = total / n
 
@@ -72,7 +72,7 @@ def partition(sections: list[dict], lines: list[str], n: int) -> list[list[dict]
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("doc", nargs="?", default="design_new.md")
+    ap.add_argument("doc", nargs="?", default="design_v2.md")
     ap.add_argument("--readers", type=int, default=6,
                     help="how many parallel section readers to plan for")
     args = ap.parse_args()

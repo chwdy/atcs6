@@ -4,7 +4,9 @@ This file collects directives for working in this repo. Every rule below is glob
 
 ## Scope
 
-- The rules that govern document edits apply ONLY to `design_new.md`, and they live in `.claude/rules/design-new-authoring.md`, which loads when you work on that file.
+- `design_v2.md` is the design doc for this project. It is the one bridge between the user, you, and the code: the code is a straight translation of it, and when they disagree the doc wins. Read its **About this document** and **The evening v2 is for** sections before any design or code work.
+- The rules that govern document edits apply ONLY to `design_v2.md`. The doc's own rules are in its **Authoring rules** section; the sentence-level style rules live in `.claude/rules/design-v2-authoring.md`, which loads when you work on that file.
+- `archive/design_new.md` is the v1 design doc, kept for reference only. Do not edit it, and do not treat it as a source of rules.
 - Other files (code, current docs, implementation index) follow their own conventions.
 - "Running Python in this repo" applies to every Python invocation.
 - "Browser preview" applies whenever you use the browser preview tools.
@@ -22,7 +24,11 @@ Say what a thing does in plain words. Do not invent a short label for an idea an
 
 ## Terminology discipline
 
-Use ONLY terms defined in design_new.md when discussing this system. Never invent paraphrases, shorthand, or jargon (e.g. 'braking cap', 'global Sense preamble', 'fuse', 'raw currents', 'safe place to stop'). If a concept has no canonical term in the doc, say so explicitly and propose adding one — do not coin one silently. Prefer plain language over buzzwords.
+Use ONLY terms listed in the **Terms** section of design_v2.md when discussing this system. Never invent paraphrases, shorthand, or jargon (e.g. 'braking cap', 'global Sense preamble', 'fuse', 'raw currents', 'safe place to stop'). If a concept has no term in the doc, say so explicitly and propose adding one — do not coin one silently. Prefer plain language over buzzwords.
+
+## Before building anything
+
+When the user raises a problem, a scope question, or a "why does this feel wrong" question, discuss it first. Do not answer with a feature to build. When you do propose a change, say which part of **The evening v2 is for** in design_v2.md it serves; if it serves none, do not propose it.
 
 ## Running Python in this repo
 
@@ -60,10 +66,11 @@ The preview pane opens at a tiny default size (around 2px wide), so the very fir
 
 - **Resize first, before the first screenshot.** As soon as you open a preview, call `resize_window` to a normal desktop size (e.g. 1440×900, or `preset: "desktop"`). Do this up front — don't take a broken sliver screenshot, notice it's wrong, and only then resize.
 
-## Editing `design_new.md`
+## Editing `design_v2.md`
 
-The authoring rules, style rules, and cross-reference sweep rules for `design_new.md` live in
-`.claude/rules/design-new-authoring.md`. They load automatically whenever you work on that file.
+The doc's own authoring rules are in its **Authoring rules** section. The sentence-level style
+and text-cutting rules live in `.claude/rules/design-v2-authoring.md`, which loads automatically
+whenever you work on that file.
 
 ## Debugging
 

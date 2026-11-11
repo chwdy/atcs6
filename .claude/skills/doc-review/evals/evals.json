@@ -4,23 +4,23 @@
     {
       "id": 0,
       "name": "full-severity-ranked-review",
-      "prompt": "can you go through design_new.md and tell me everything that would make an engineer stop and guess? i want it severity ranked, and for each one tell me exactly what the doc has to say instead. don't bother with backward-compat stuff, that's out of scope on purpose.",
-      "expected_output": "A findings report grouped HIGH/MEDIUM/LOW, each finding using the exact header format '[Severity]-[Category] — title — line(s)' with four labeled parts (canonical rule / conflicting locations / why it blocks / exact fix), followed by 'Silent Coverage Gaps' and 'External-Context Dependencies' sections. Should surface at least one closure-claim violation and at least one enum/union member that is defined but never handled downstream.",
-      "files": ["design_new.md"]
+      "prompt": "can you go through design_v2.md and tell me everything that would make an engineer stop and guess? i want it severity ranked, and for each one tell me exactly what the doc has to say instead. don't bother with backward-compat stuff, that's out of scope on purpose.",
+      "expected_output": "A findings report grouped HIGH/MEDIUM/LOW, each finding using the exact header format '[Severity]-[Category] — title — line(s)' with four labeled parts (the rule the doc must state / conflicting locations / why it blocks / exact fix), followed by 'Silent Coverage Gaps' and 'External-Context Dependencies' sections. Reviewed in one pass with no subagent fan-out, since the doc is short. Should test at least one closure claim ('never', 'only', 'from these rules alone') and check every term used against the Terms section.",
+      "files": ["design_v2.md"]
     },
     {
       "id": 1,
       "name": "post-edit-crossref-drift",
-      "prompt": "I've been rewriting design_new.md all week, mostly around TrainPhysics/SpeedProfile and the Power section at the bottom. Authoring Rule 2 says every cross-reference has to be swept in the same edit and I'm pretty sure I didn't. Can you check whether anything drifted?",
-      "expected_output": "Must grep the WHOLE doc rather than only the named sections, since a rule stated in Power is restated in the Core Runtime Loop and TrainController. Should catch drift where the same rule is described differently in two places, with line citations on both sides.",
-      "files": ["design_new.md"]
+      "prompt": "I changed how a claim ends in design_v2.md and I think I forgot to update the other places that mention it. Can you check whether anything drifted?",
+      "expected_output": "Must diff the doc first, list the changed rule and its old wording, then grep the WHOLE doc (Terms, Track power, Switches, Review checklist) for the old wording. Should report each stale site with line citations on both sides.",
+      "files": ["design_v2.md"]
     },
     {
       "id": 2,
-      "name": "handoff-readiness-gate",
-      "prompt": "is design_new.md ready to hand to a code-gen agent yet? my worry is it takes every 'the only writer is X' and 'exactly two legal cases' sentence completely literally. if the doc contradicts itself on one of those it'll happily generate the wrong thing.",
-      "expected_output": "Should specifically hunt closure claims (the only writer / exactly N cases / defined here once / trivially satisfied) and test each by counting what the rest of the doc actually names. Findings must cite both the claim site and the site that breaks it.",
-      "files": ["design_new.md"]
+      "name": "evening-test-review",
+      "prompt": "is design_v2.md drifting back toward v1? check whether any rule in it is there because a real railway has it rather than because my evening needs it.",
+      "expected_output": "Applies the doc's evening test to every rule, reports any rule that fails it as M-EVENING-TEST with the line and the plain question 'what does the evening lose if this rule is deleted?', and does not cite archive/design_new.md as a source of rules.",
+      "files": ["design_v2.md"]
     }
   ]
 }

@@ -15,7 +15,7 @@ This is the generalized companion to `journey-debug` (which covers train-sim beh
 
 What is the spec for this behavior? Candidates in this repo:
 
-- `design_new.md` — runtime contract for the simulator/server
+- `design_v2.md` — runtime contract for the simulator/server
 - `docs/DESIGN_LANGUAGE.md` — UI contract
 - A docstring or module-level comment on the function in question
 - A README or `docs/` page
@@ -28,7 +28,7 @@ If there is no written spec, **say so** and ask the user what the contract shoul
 Open the spec. For the scenario in question, write:
 
 - The predicted output, state change, or side effect.
-- For each field/value, the line in the spec that justifies it: "Per `design_new.md:1842` the response should include `assigned_route_id` when a route is locked."
+- For each field/value, the line in the spec that justifies it: "Per `design_v2.md:1842` the response should include `assigned_route_id` when a route is locked."
 - If the spec is silent or contradictory on any aspect, name it explicitly — ambiguity is itself a finding.
 
 Do not look at the implementation yet. The whole point is that the prediction is unbiased.
@@ -67,7 +67,7 @@ For each disagreement, classify as:
 ### 6. Fix in the right layer
 
 - Code-bug → patch the code, add a regression test, run the suite.
-- Spec-wrong → update the spec, sweep cross-references (per CLAUDE.md rule 2 for `design_new.md`).
+- Spec-wrong → update the spec, sweep cross-references (per the **Authoring rules** of `design_v2.md`, No cross-reference drift).
 - Spec-ambiguous → resolve the ambiguity in the spec, then either the code already complies or move to "code-bug."
 
 ## Common failure modes

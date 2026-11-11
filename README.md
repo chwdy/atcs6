@@ -222,7 +222,7 @@ use `ReadingPlayer` and set up the trains by hand (see
 recorded and do not react to the replayed app, so a replay tests what the app
 decides from the readings: attribution, unidentified trains, the clear rule and
 detector noise. It does not test how a train responds to its voltage. The full
-rules are in `design_new.md`, **Detector reading log**.
+rules are in the archived v1 doc, `archive/design_new.md`, **Detector reading log**.
 
 ---
 
@@ -265,7 +265,8 @@ The hardware backend itself is an extension point rather than a finished driver 
 
 ## Where to read more
 
-- **`design_new.md`** — the canonical, exhaustive design model for the control system (the train computer, blocks, dispatcher, paths, routes, ATO/ATC contracts). This is the source of truth for behavior.
+- **`design_v2.md`** — the design doc. The code is a straight translation of it, and it is the source of truth for behavior.
+- **`archive/design_new.md`** — the v1 design doc (train computer, dispatcher, paths, routes, ATO/ATC), kept for reference only.
 - **`docs/`** — focused references:
   - `docs/reference/Reference_6Bit_Track_System.md` — the tile geometry encoding
   - `docs/reference/Reference_Signals_and_Blocks.md` — signals and block sections

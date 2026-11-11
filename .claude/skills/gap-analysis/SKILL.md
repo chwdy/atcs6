@@ -1,6 +1,6 @@
 ---
 name: gap-analysis
-description: Audit an area of the codebase against the design doc (design_new.md, DESIGN_LANGUAGE.md, or another canonical spec). Produce a severity-ranked gap report with file:line citations, propose a phased remediation plan, wait for user confirmation, then execute phase-by-phase with the test suite green between phases. Trigger when the user asks for a "gap analysis," "design vs implementation audit," "pre-v1 legacy cleanup," "doc/code reconciliation," "find leftovers from the old design," or otherwise wants to compare a documented contract to what the code actually does. Also trigger when the user asks to "clean up X" or "remove legacy Y" in a way that needs a survey-first approach. Do NOT trigger for narrow bug fixes or single-file edits — those are ordinary work; this skill is for the survey → plan → phased-execute loop where the design doc is the source of truth.
+description: Audit an area of the codebase against the design doc (design_v2.md, DESIGN_LANGUAGE.md, or another canonical spec). Produce a severity-ranked gap report with file:line citations, propose a phased remediation plan, wait for user confirmation, then execute phase-by-phase with the test suite green between phases. Trigger when the user asks for a "gap analysis," "design vs implementation audit," "pre-v1 legacy cleanup," "doc/code reconciliation," "find leftovers from the old design," or otherwise wants to compare a documented contract to what the code actually does. Also trigger when the user asks to "clean up X" or "remove legacy Y" in a way that needs a survey-first approach. Do NOT trigger for narrow bug fixes or single-file edits — those are ordinary work; this skill is for the survey → plan → phased-execute loop where the design doc is the source of truth.
 ---
 
 # Design-vs-code gap analysis
@@ -13,7 +13,7 @@ The point of this skill is to turn an "everything's drifted" suspicion into a st
 
 The user's framing is almost always too broad ("audit pre-v1 leftovers," "find divergences"). Pin down three things:
 
-- **Which doc is canonical?** `design_new.md` for behavior, `docs/DESIGN_LANGUAGE.md` for UI, sometimes both. Ask if it's not obvious.
+- **Which doc is canonical?** `design_v2.md` for behavior, `docs/DESIGN_LANGUAGE.md` for UI, sometimes both. Ask if it's not obvious. `archive/design_new.md` is the archived v1 doc and is never the canonical doc.
 - **Which code area?** A subsystem (route executor, ATO, train monitor), a file glob, or "everything" — push back on "everything" unless the user really means it.
 - **What counts as a gap?** Missing-in-code, missing-in-doc, semantic divergence, naming drift, stale legacy fields, or all of these. Ask if any are out of scope.
 
@@ -23,6 +23,11 @@ One AskUserQuestion turn if the answers aren't already in conversation. Don't re
 
 Read the canonical doc section(s) fully before grepping code. The doc tells you what to look for; reading code first biases you toward "what the code happens to do is fine."
 
+For `design_v2.md`, the code is a straight translation of the doc (see its **About this document**). That gives two kinds of gap, both real:
+
+- **The doc says it, the code doesn't do it** — missing or wrong implementation.
+- **The code does it, no section of the doc describes it** — code to remove, not a rule the doc forgot. Most of v1's code (routes, reservations past one block, ATO/ATC, calibration as a precondition) falls here. Report it as a legacy leftover. If you think the behavior passes the doc's evening test and is worth keeping, say so and propose the doc text, but never treat the code as the source of the rule.
+
 For each documented concept, find its implementation site(s) in code. For each implementation site, check it matches the doc. Cite `file.py:line` for every claim. Don't summarize until the survey is complete — premature summarizing hides the gaps that turn out to be load-bearing.
 
 ### 3. Produce the gap report — severity-ranked, with citations
@@ -31,10 +36,10 @@ Render a table the user can read in under a minute:
 
 | # | Severity | Gap | Doc cite | Code cite | Cause |
 |---|---|---|---|---|---|
-| 1 | Critical | `latch_X` not cleared in no-op path | `design_new.md:1730` | `route_executor.py:412` | code bug |
-| 2 | High | Field `foo` documented but not implemented | `design_new.md:842` | — | missing impl |
+| 1 | Critical | Block voltage set outside **Track power** rules | `design_v2.md:120` | `block_power.py:412` | code bug |
+| 2 | High | Claim release after 5 s empty not implemented | `design_v2.md:80` | — | missing impl |
 | 3 | Medium | `bar` exists in code but not in doc | — | `block_manager.py:88` | doc gap or legacy |
-| 4 | Low | Naming: `cab_letter` vs `cab_id` | `design_new.md:200` | various | naming drift |
+| 4 | Low | Naming: code says `reservation`, doc says claim | `design_v2.md:47` | various | naming drift |
 
 Severity rules:
 - **Critical**: violates a documented invariant, could cause incorrect behavior in a normal scenario.
@@ -59,9 +64,9 @@ Output the plan as a numbered list with the gaps each phase closes. **Then wait.
 After confirmation:
 
 - Implement one phase at a time.
-- Run the full test suite with `conda run -n general --no-capture-output python -m pytest tests/ -q` after each phase. Don't move on if anything fails.
+- Run the completion gate from `README.md` after each phase: `./run_all_tests.sh` under the `general` env (see CLAUDE.md, Running Python in this repo). Don't move on if anything fails.
 - For UI phases, also verify in the preview (use the verify skill or preview tools per the project's verification workflow).
-- After every phase, sweep cross-references — for `design_new.md` work, the cross-reference drift rule (CLAUDE.md, rule 2) means a patch that updates one section and leaves another stale is incomplete.
+- After every phase, sweep cross-references — for `design_v2.md` work, the doc's **Authoring rules**, No cross-reference drift, means a patch that updates one section and leaves another stale is incomplete.
 
 ### 6. Close the loop — update the doc if the fix was code-side only
 

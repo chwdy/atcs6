@@ -217,8 +217,4 @@ This is the right shape for "I want to see what the canonical lookahead looks li
 
 ## Pointers
 
-- Canonical lookahead payload schema: `design_new.md:1694`–`1714` ("canonical lookahead payload" + reason taxonomy).
-- Controller tick order: `design_new.md:1715`–`1748`.
-- `(state, cab)` legality: `design_new.md:1582`–`1606`.
-- Phase boundaries and the entity that owns each phase: `design_new.md:296`–`298` (the "Phase table").
-- Latch writers + consumers: `design_new.md:334`–`345` ("Latch table"). Any latch-related debug needs that table loaded.
+- The journey harness was built for v1 (routes, paths, ATO, latches). `design_v2.md` has none of those, so a v1 journey has no v2 prediction to compare against. Predict from these `design_v2.md` sections instead: **When a train stops**, **Claiming the next block**, **Switches**, **When a train overruns**, and **Track power**. Run `doc_map.py` from the doc-review skill for their current line ranges.
