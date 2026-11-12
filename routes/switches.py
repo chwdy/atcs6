@@ -9,6 +9,7 @@ through SwitchManager so BlockManager notifications stay paired with
 position writes.
 """
 
+from routes import running_trains
 from flask import jsonify, request
 
 from app_state import AppState
@@ -132,6 +133,17 @@ def register(app, state: AppState) -> None:
         data = request.get_json(silent=True) or {}
         if "state" not in data:
             return jsonify({"error": "Missing 'state' in request body"}), 400
+        if running_trains.switch_is_held(state, switch_id):
+            return (
+                jsonify(
+                    {
+                        "success": False,
+                        "reason": "switch_held",
+                        "error": "A train may be on this switch, so it is not thrown.",
+                    }
+                ),
+                409,
+            )
         try:
             command_id = switch_service.request_position_change(
                 state,

@@ -164,6 +164,16 @@ def close_idle_setup_tools(state: AppState) -> None:
         )
 
 
+def runs_train_step(controller) -> bool:
+    """Whether this controller runs the v2 runtime step (design_v2.md
+    "Runtime step"): it has a train runtime and a Virtual Hardware or Real
+    Hardware environment. The v1 Simulation environment keeps the v1 tick
+    until v1 is removed."""
+    return getattr(controller, "train_runtime", None) is not None and getattr(
+        controller, "operation_mode", None
+    ) in (OperationMode.VIRTUAL_HARDWARE, OperationMode.REAL_HARDWARE)
+
+
 def run_loop_iteration(state: AppState, delta_seconds: float) -> None:
     """One iteration of the runtime loop: the pass `runtime_pass(state)` picks,
     run under the simulation lock. Every branch consumes a loss-of-control
@@ -171,6 +181,19 @@ def run_loop_iteration(state: AppState, delta_seconds: float) -> None:
     failed drop to hardware failure"): a running pass inside `update(...)`, the
     other branches directly."""
     which = runtime_pass(state)
+    controller = state.sim_controller
+    if runs_train_step(controller):
+        with state.simulation_lock:
+            controller.note_session_live(which == PASS_TICK)
+            if which == PASS_TICK:
+                controller.run_train_step(live=True)
+            elif which == PASS_STOPPED:
+                controller.consume_watchdog_trip()
+                controller.run_train_step(live=False)
+            else:
+                controller.consume_watchdog_trip()
+                controller.mark_no_pass()
+        return
     if which == PASS_TICK:
         # The operating clock advances by the uncapped wall x speed
         # delta (a faithful clock a schedule measures against); the

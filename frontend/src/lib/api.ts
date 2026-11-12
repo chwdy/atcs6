@@ -426,6 +426,45 @@ export class API implements LayoutDataClient, SimClient {
   }
 
   /** Hold all: ATO stop on every ATO train. Returns `stopped_train_ids`. */
+  // === v2 trains (design_v2.md "Running a train") ===
+  // A refused request answers `{ success: false, reason }` with status 400;
+  // these return that body instead of throwing, so the caller can show the
+  // reason.
+
+  async _trainRequest(path: string, method: string, body?: unknown): Promise<{ success: boolean; reason: string | null }> {
+    const response = await fetch(`${this.baseUrl}${path}`, {
+      method,
+      headers: body === undefined ? {} : { 'Content-Type': 'application/json' },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    try {
+      const data = await response.json();
+      return { success: !!data.success, reason: data.reason ?? data.error ?? null };
+    } catch {
+      return { success: false, reason: `HTTP ${response.status}` };
+    }
+  }
+
+  setTrainKnob(trainId: string, volts: number) {
+    return this._trainRequest(`/trains/${encodeURIComponent(trainId)}/knob`, 'PUT', { volts });
+  }
+
+  stopRunningTrain(trainId: string) {
+    return this._trainRequest(`/trains/${encodeURIComponent(trainId)}/stop`, 'POST');
+  }
+
+  reverseRunningTrain(trainId: string) {
+    return this._trainRequest(`/trains/${encodeURIComponent(trainId)}/reverse`, 'POST');
+  }
+
+  removeRunningTrain(trainId: string) {
+    return this._trainRequest(`/trains/${encodeURIComponent(trainId)}`, 'DELETE');
+  }
+
+  stopAllTrains() {
+    return this._trainRequest('/trains/stop-all', 'POST');
+  }
+
   async holdAll(): Promise<any> {
     return this._request('/simulation/hold-all', { method: 'POST', body: {} }, 'holdAll');
   }
@@ -541,9 +580,11 @@ export class API implements LayoutDataClient, SimClient {
    * Pulse one output port ('595 bit / PCA9685 pair) or read one input port
    * ('165 bit) so a single wire can be confirmed before binding.
    *
-   * The pulse is held long enough to read on a multimeter (the server's
-   * PORT_TEST_PULSE_S, currently 1 s). `pulseS` overrides that width for a
-   * slower instrument; the server clamps it and echoes back the width used.
+   * On a PWM output the pulse is held long enough to read on a multimeter (the
+   * server's PORT_TEST_PULSE_S, currently 1 s), and `pulseS` overrides that
+   * width. On a '595 bit the pulse is the switch-coil width (10 ms), and the
+   * server refuses a `pulseS` above its coil limit (200 ms), because the bit may
+   * be wired to a coil. The server echoes back the width used.
    */
   async runHardwarePortTest(
     config: any,
@@ -805,9 +846,8 @@ export class API implements LayoutDataClient, SimClient {
    *
    * The default width is the runtime throw (10 ms), so a throw test reproduces
    * an operating throw. Pass `pulseS` only for a bit no switch binding names
-   * (the output sweep does, so an LED on the pin visibly lights) or to measure
-   * a bit with a meter — on a coil bit it holds the coil far longer than a
-   * throw does. */
+   * (the output sweep does, so an LED on the pin visibly lights). The server
+   * refuses any width above its coil limit (200 ms). */
   async commissionPulse(
     chipId: string,
     port: number,

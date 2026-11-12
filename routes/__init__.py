@@ -35,6 +35,7 @@ from routes import (
     stations,
     platforms,
     trains,
+    running_trains,
     paths,
     train_routes,
     route_runs,
@@ -64,6 +65,7 @@ def register_all(app, state) -> None:
     stations.register(app, state)
     platforms.register(app, state)
     trains.register(app, state)
+    running_trains.register(app, state)
     paths.register(app, state)
     train_routes.register(app, state)
     route_runs.register(app, state)

@@ -44,7 +44,7 @@ from typing import (
 from unidentified_trains import UnidentifiedTrainTracker
 from network import RailwayNetwork
 from train import Train, TrainCar
-from enums import CommandResult, Direction, OperationMode, PathStatus
+from enums import BlockState, CommandResult, Direction, OperationMode, PathStatus
 import operation_environment
 from block_power import BlockPowerController
 from switch_power import (
@@ -74,6 +74,7 @@ from notification_center import (
     train_ref,
 )
 from route_executor import RouteExecutor
+from train_runtime import TrainRuntime
 
 from train_controller import TrainController, create_controller_for_train
 from train_physics import TrainPhysics, create_physics_for_train
@@ -301,6 +302,17 @@ class SimulationController(SwitchOutputOwner):
         # retires the unidentified train `Train` records; their block commits then run through
         # the ordinary per-train chain like any other train's.
         self.unidentified_trains = UnidentifiedTrainTracker(network)
+        # The v2 trains and runtime step (design_v2.md "Runtime step"). It
+        # writes block voltages through whichever `power_controller` is bound
+        # at the time, because activation builds a fresh one.
+        self.train_runtime = TrainRuntime(
+            network,
+            set_block_voltage=lambda block_id, volts: self.power_controller.set_block_voltage(
+                block_id, volts
+            ),
+            emit=self._emit_train_event,
+        )
+        self._train_step_was_live = False
         # Attribution needs the tracker's undetected-track walk to decide whether
         # a train could physically be standing on a block it reserved, so the
         # detector gets it as soon as the tracker exists (design_new.md "Power",
@@ -694,6 +706,82 @@ class SimulationController(SwitchOutputOwner):
             net.bump_lookahead_world_version()
         finally:
             net._lookahead_memo_active = False
+
+    # ------------------------------------------------------------------
+    # The v2 runtime step (design_v2.md "Runtime step")
+    # ------------------------------------------------------------------
+
+    def _emit_train_event(
+        self,
+        operation: str,
+        kind: str,
+        train_id: str,
+        message: str,
+        payload: Dict[str, Any],
+    ) -> None:
+        """Put one train event on the event stream (design_v2.md "Event
+        log", Train events)."""
+        self.notification_center.emit(
+            source="SimulationController",
+            operation=operation,
+            kind=Kind.WARNING if kind == "warning" else Kind.INFO,
+            message=message,
+            entities=[train_ref(train_id)],
+            payload=payload,
+        )
+
+    def note_session_live(self, live: bool) -> None:
+        """Tell the train runtime whether the session state is Live. The
+        runtime loop calls this on every iteration, so the step on which the
+        session leaves Live stops every train and ends every claim
+        (design_v2.md "Trains", Leaving Live stops every train)."""
+        if self._train_step_was_live and not live:
+            self.train_runtime.leave_live(time.time())
+        self._train_step_was_live = live
+
+    def run_train_step(self, live: bool) -> None:
+        """One runtime step: read the detectors, write the reading to the
+        detector reading log, then hand the blocks that read occupied to the
+        train runtime (design_v2.md "Runtime step").
+
+        While `live` is False the step updates each train's blocks only, so
+        trains still appear and disappear on the page, and nothing is claimed
+        or powered.
+        """
+        self._pass_started_wall_time = time.time()
+        if live:
+            self.consume_watchdog_trip()
+        if self.runtime_halted or not self.occupancy_is_real:
+            return
+        if live and not self.environment_active:
+            return
+
+        detector = self.block_occupancy_detector
+        try:
+            detector.step()
+        except Exception as exc:  # noqa: BLE001 - a failed detector read is fatal
+            self.enter_hardware_failure(
+                HardwareFailure(
+                    component="block_occupancy",
+                    operation="read",
+                    message=(
+                        f"block detector read failed: {type(exc).__name__}: {exc}"
+                    ),
+                )
+            )
+            return
+        self.detector_reading_log.record_pass(
+            pass_kind="tick" if live else "stopped",
+            wall_time=self._pass_started_wall_time,
+            simulation_time=self.simulation_time,
+            delta_seconds=0.0,
+            operating_delta_seconds=0.0,
+            detector=detector,
+            environment=self.operation_mode.value if self.environment_active else None,
+        )
+        self.train_runtime.step(
+            detector.confirmed_occupied, self._pass_started_wall_time, live
+        )
 
     def _advance_local_operating_time(self, delta_seconds: float) -> None:
         """Advance the fallback operating clock for a controller with no
@@ -1576,6 +1664,10 @@ class SimulationController(SwitchOutputOwner):
         """
         if self.operation_mode is not OperationMode.SIMULATION and self.switch_manager is not None:
             self.switch_manager.throw_all_to_layout()
+        # An activation starts with no trains; the runtime step finds them
+        # again from the detectors (design_v2.md "Trains", Trains are not
+        # saved).
+        self.train_runtime.clear()
         self.layout_cut_out_active = False
         if self.hardware_failure and self.operation_mode is not OperationMode.SIMULATION:
             self.hardware_failure = False
@@ -4213,6 +4305,53 @@ def build_train_runtime_maps(
     return maps
 
 
+def add_train_runtime_fields(
+    payload: Dict[str, Any], sim_controller: "SimulationController"
+) -> None:
+    """Add the v2 live fields to a snapshot (design_v2.md "Live fields").
+
+    - each block gets `reads_occupied`, `train_id`, `claimed_by_train_id` and
+      `voltage`;
+    - each switch gets `held`;
+    - `running_trains` is the map from `train_id` to a train entry. The
+      document calls this map `trains`; that key still carries the v1 train
+      list until v1 is removed.
+
+    Every field is worked out here on each read from the train runtime;
+    nothing stores a second copy.
+    """
+    runtime = sim_controller.train_runtime
+    held = runtime.held_switch_ids()
+    # The map still colours a block from the v1 `state` and `occupied_by`
+    # fields. In a session that runs the v2 step and holds no v1 train, those
+    # are written here from the v2 trains, so the map shows them.
+    draws_from_trains = (
+        sim_controller.operation_mode is not OperationMode.SIMULATION
+        and not sim_controller.network.trains
+    )
+    for block_id, entry in (payload.get("blocks") or {}).items():
+        owner = runtime.train_of_block(block_id)
+        claimer = runtime.claimer_of_block(block_id)
+        if draws_from_trains:
+            if owner is not None or block_id in runtime.occupied:
+                entry["state"] = BlockState.OCCUPIED.value
+                entry["occupied_by"] = owner.train_id if owner is not None else None
+            elif claimer is not None:
+                entry["state"] = BlockState.RESERVED.value
+            else:
+                entry["state"] = BlockState.FREE.value
+        entry["reads_occupied"] = block_id in runtime.occupied
+        entry["train_id"] = owner.train_id if owner is not None else None
+        entry["claimed_by_train_id"] = claimer.train_id if claimer is not None else None
+        entry["voltage"] = float(
+            sim_controller.power_controller.get_recorded_voltage(block_id)
+        )
+    switches = payload.get("switches") or {}
+    for switch_id, entry in (switches.items() if isinstance(switches, dict) else ()):
+        entry["held"] = switch_id in held
+    payload["running_trains"] = runtime.trains_payload()
+
+
 def build_network_payload(
     network: RailwayNetwork,
     sim_controller: Optional["SimulationController"],
@@ -4257,6 +4396,7 @@ def build_network_payload(
         return payload
 
     payload["simulation_time"] = float(sim_controller.simulation_time)
+    add_train_runtime_fields(payload, sim_controller)
 
     # Run mode (design_new.md "Session mode and operating environment"). The UI reads these to stop calling a
     # railway with real hardware on it a simulation, and to decide whether the

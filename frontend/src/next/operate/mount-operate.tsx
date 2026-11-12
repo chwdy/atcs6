@@ -13,14 +13,22 @@ import type { ComponentChildren } from 'preact';
 import { combinePanelHosts } from '../panel-hosts';
 import { screen } from '../state';
 import { OperateLists } from './left-list';
-import { watchLiveState } from './live';
+import { liveVersion, usesRunningTrains, watchLiveState } from './live';
 import type { OperateHost } from './operate-state';
 import { operatePanelHost } from './panel-host';
 import { RightPanel } from './right-panel';
+import { RunningTrainsRow } from './running-trains';
 import { TrainCardsRow } from './train-cards';
 
 function OnOperate({ children }: { children: ComponentChildren }) {
   return screen.value === 'operate' ? <>{children}</> : null;
+}
+
+/** The cards along the bottom: v2 trains in a Virtual Hardware or Real
+ *  Hardware session, the v1 cards in the v1 Simulation environment. */
+function CardsRow({ host }: { host: OperateHost }) {
+  liveVersion.value;
+  return usesRunningTrains() ? <RunningTrainsRow /> : <TrainCardsRow host={host} />;
 }
 
 function slot(className: string): HTMLDivElement {
@@ -50,5 +58,5 @@ export function mountOperateScreen(host: OperateHost): void {
 
   render(<OnOperate><OperateLists host={host} /></OnOperate>, listSlot);
   render(<OnOperate><RightPanel host={host} /></OnOperate>, panelSlot);
-  render(<OnOperate><TrainCardsRow host={host} /></OnOperate>, cardsSlot);
+  render(<OnOperate><CardsRow host={host} /></OnOperate>, cardsSlot);
 }

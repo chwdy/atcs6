@@ -34,6 +34,8 @@ export class StateManager {
   _pendingNotifications: PendingNotification[];
   simulationTime: number;
   _clockSubscribers: Set<ClockSubscriber>;
+  /** The operating environment the last snapshot named, or null before one. */
+  operationMode: string | null = null;
 
   constructor() {
     // ═══════════════════════════════════════════════════════════════
@@ -53,6 +55,7 @@ export class StateManager {
       assignedRoutes: new Map(), // trainId → assigned route_id | null
       routeRuns: new Map(), // trainId → {route_id, run_number, state, display_state, last_error} | null
       operatorStatus: new Map(), // trainId → {ato_status, pending_actions, hold_reason}
+      runningTrains: new Map(), // trainId → v2 train entry (design_v2.md "Live fields")
       blocks: new Map(), // blockId → block data object
       signals: new Map(), // signalId → signal data object
       switches: new Map(), // switchId → switch data object
@@ -74,6 +77,7 @@ export class StateManager {
       assignedRoutes: new Map(),
       routeRuns: new Map(),
       operatorStatus: new Map(),
+      runningTrains: new Map(),
       blocks: new Map(),
       signals: new Map(),
       switches: new Map(),
@@ -418,6 +422,21 @@ export class StateManager {
       }
       for (const deletedId of currentOperatorStatusIds) {
         this.removeEntity('operatorStatus', deletedId);
+      }
+
+      // ─────────────────────────────────────────────────────────
+      // UPDATE RUNNING TRAINS (design_v2.md "Live fields", A train entry)
+      // ─────────────────────────────────────────────────────────
+      if (typeof network.operation_mode === 'string') {
+        this.operationMode = network.operation_mode;
+      }
+      const currentRunningIds = new Set(this.state.runningTrains.keys());
+      for (const [tid, entry] of Object.entries(network.running_trains || {})) {
+        this.updateEntity('runningTrains', tid, entry);
+        currentRunningIds.delete(tid);
+      }
+      for (const deletedId of currentRunningIds) {
+        this.removeEntity('runningTrains', deletedId);
       }
 
       // ─────────────────────────────────────────────────────────

@@ -15,6 +15,7 @@ from flask import jsonify, request
 from app_state import AppState
 from services import ConflictError, NotFoundError, ValidationError
 from services import train_service
+from routes import running_trains
 from simulation import build_train_runtime_maps, train_runtime_entry
 
 
@@ -159,6 +160,8 @@ def register(app, state: AppState) -> None:
         still holding a path or a running route run, or one still drawing
         current — returns 400 with the reason and changes nothing.
         """
+        if running_trains.holds_train(state, train_id):
+            return running_trains.remove_running_train(state, train_id)
         try:
             train_service.delete_train(state, train_id)
         except NotFoundError:
@@ -251,6 +254,8 @@ def register(app, state: AppState) -> None:
     @app.route("/api/trains/<train_id>/stop", methods=["POST"])
     def train_stop(train_id):
         """Controlled stop - bring train to standby state (ATO stop)."""
+        if running_trains.holds_train(state, train_id):
+            return running_trains.stop_running_train(state, train_id)
         train = train_service.get_train(state, train_id)
         if not train:
             return jsonify({"error": "Train not found"}), 404

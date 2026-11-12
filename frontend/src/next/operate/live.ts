@@ -17,6 +17,7 @@ const WATCHED = [
   'trains',
   'controllers',
   'operatorStatus',
+  'runningTrains',
   'assignedRoutes',
   'routeRuns',
   'dispatcherProgress',
@@ -100,4 +101,39 @@ export function trainsOnTile(x: number, y: number, sm: StateManager = stateManag
       const tiles = sm.getController(id)?.span?.occupied_tiles;
       return Array.isArray(tiles) && tiles.some((tile: any) => tile[0] === x && tile[1] === y);
     });
+}
+
+/** One v2 train entry from the snapshot (design_v2.md "Live fields", A train
+ *  entry). */
+export interface RunningTrain {
+  train_id: string;
+  name: string;
+  direction: 'forward' | 'reverse';
+  knob_volts: number;
+  lost: boolean;
+  blocks: { block_id: string; reads_occupied: boolean }[];
+  state: 'stopped' | 'moving' | 'waiting' | 'lost';
+  waiting_reason: string | null;
+  next_block_id: string | null;
+  claimed_block_id: string | null;
+}
+
+/** Whether this session runs v2 trains: a Virtual Hardware or Real Hardware
+ *  environment. The v1 Simulation environment keeps the v1 train cards. */
+export function usesRunningTrains(sm: StateManager = stateManager): boolean {
+  return sm.operationMode !== null && sm.operationMode !== 'simulation';
+}
+
+/** Every v2 train, oldest first, so the cards keep their places. */
+export function runningTrains(sm: StateManager = stateManager): RunningTrain[] {
+  const number = (id: string) => Number(id.replace(/\D/g, '')) || 0;
+  return (sm.getAll('runningTrains') as unknown as RunningTrain[])
+    .slice()
+    .sort((a, b) => number(a.train_id) - number(b.train_id));
+}
+
+/** A block's name for a card line, or its id when it has none. */
+export function blockName(blockId: string | null, sm: StateManager = stateManager): string {
+  if (!blockId) return '';
+  return (sm.get('blocks', blockId) as any)?.name || blockId;
 }
