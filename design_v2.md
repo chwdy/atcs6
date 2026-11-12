@@ -60,7 +60,7 @@ These are the terms this document uses for v2's own ideas. Names of code (classe
 - **The way**: the blocks and switches a train with a destination will pass to reach it. See **Switches**, The way to a destination.
 - **Held switch**: a switch a train may be on or about to cross, which is therefore not thrown. See **Switches**.
 - **Destination**: a block the operator picks for a train to run to and stop in. Optional.
-- **Hold time**: 5 seconds (the runtime setting `hold_time_s`). A block that reads empty stays a train's block for this long. See **Trains**.
+- **Hold time**: 5 seconds (the runtime setting `hold_time_s`). A block that reads empty while no block further forward in its train reads occupied stays the train's block for this long. See **Trains**.
 - **Pass**: one turn of the runtime loop that reads the detectors. While the session is Live a pass is a whole runtime step; in Setup it is the stopped pass; in Halted the loop makes no pass. See **Runtime loop**.
 - **Safe state**: every block at 0 V and every point motor switched off. See **Safe state, watchdog and hardware failure**.
 - **Setup tool**: one of the Hardware Setup test tools, which may hold the outputs while the session is in Setup. See **Setup tools**.
@@ -203,9 +203,12 @@ A train is a label the runtime puts on blocks that read occupied. It is not a mo
   2. **A lost train it belongs to.** When the block is a lost train's block, or can be reached from that block across switches as currently set with no other block between, the block becomes that train's only block and the train is no longer lost. The train stays stopped, keeps its direction when the block is the same one, and otherwise faces away from the end it came in by. The runtime emits the event `"train_found"`.
   3. **A train that just overran.** When the block is the next block ahead of a train that stopped or began waiting less than the hold time ago, the block becomes that train's new front block (see **When a train overruns**).
   4. **A new train.** Otherwise the runtime makes a new train with this one block, `direction = forward`, and the knob at 0 V.
-- **A block that reads empty stays the train's block for the hold time.** When one of a train's blocks starts to read empty, it stays one of the train's blocks until it has read empty for the hold time (5 seconds, the runtime setting `hold_time_s`, measured as **Clocks**, The hold time is measured on pass wall time, says). Then the runtime takes it off the train's blocks and the other blocks keep their order. When it reads occupied again before that, the count is dropped.
-  - A train keeps reaching forward while this runs: a block ahead it has claimed gets its voltage, and when that block reads occupied it joins the train as rule 1 says.
-  - This is what carries a train across a switch, where for a moment it may read on no block at all, and across a short loss of wheel contact.
+- **A train that is not moving keeps its blocks.** While a train is stopped or waiting, and at least one of its blocks reads occupied, a block of its that reads empty stays its block and no count runs for it. A train at 0 V does not move, so it cannot have left a block. The reason this matters: a block at 0 V is read by the '165 detector, which sees a motor car and does not see a car that only has lights, so the block under the lit cars of a standing train reads empty while the train is in it. When every one of the train's blocks reads empty, the rules below apply, and a standing train that was lifted off is removed.
+- **A block that reads empty is taken off at once or after the hold time.** For a moving train, and for a train none of whose blocks reads occupied, when one of its blocks reads empty, which of the two applies depends on what the detectors see ahead of it:
+  - **The rear block, while a block further forward reads occupied, is taken off at once.** When the train's rear block reads empty and another of the train's blocks reads occupied, the runtime takes the rear block off the train's blocks on that pass, and repeats this for the new rear block. The detectors see the train further forward, so the block behind it is free. "At once" still follows the detector's own delay: a block takes about 1 second to read empty (see **Occupancy detection**).
+  - **Any other block stays for the hold time.** A block that reads empty and is not taken off by the rule above stays one of the train's blocks until it has read empty for the hold time (5 seconds, the runtime setting `hold_time_s`, measured as **Clocks**, The hold time is measured on pass wall time, says). Then the runtime takes it off and the other blocks keep their order. When it reads occupied again before that, the count is dropped. This is the case where the detectors have lost sight of the front of the train: it is on a switch and reads on no block, or its wheels lost contact for a moment.
+  - **A train keeps reaching forward while a block is held.** A block ahead it has claimed gets its voltage, and when that block reads occupied it joins the train as rule 1 says.
+  - **Every train's last car must be seen by the detector.** A train whose last car draws no current leaves its rear block reading empty while that car is still in it, and the block is then free for the train behind.
 - **A train with no blocks left is lost or removed.** When the runtime takes the last block off a train:
   - if the train was running when that block started to read empty, or had stopped less than the hold time before, the train becomes a **lost train**: `lost` is set, its knob goes to 0 V, its claim ends, the block stays its one block, and the runtime emits the warning event `"train_lost"`. When several of its blocks reach the hold time on the same pass, the block it keeps is its front block;
   - otherwise the train is removed. A train that had been standing still and then reads empty was lifted off the track.
@@ -254,6 +257,7 @@ Two trains are never let into the same block. To make sure, a train claims a blo
 - **A claim ends in one of these ways:**
   - the block reads occupied, and becomes the train's front block (see **Trains**, An occupied block with no train gets one);
   - the train has been stopped for the hold time without entering it;
+  - the train's front block is taken off its blocks, so the claim was made from a block the train is no longer in; the train asks again from its new front block;
   - the train becomes a lost train, or is removed;
   - the session state leaves Live.
 - **A stopped train keeps its claim for the hold time.** A train the operator stops may still be rolling. Keeping the claim, with the block at 0 V, means a train that rolls into it has entered a block it holds.
@@ -276,9 +280,10 @@ How a switch is thrown, and what a throw does on the rig, is under **Switch**. T
 - **A held switch is not thrown.** While the session is Live, a switch is held, and neither the runtime nor the operator throws it, while **any of these holds**:
   - it lies on the way between a train's front block and the block that train has claimed;
   - it lies between two blocks of the same train, so the train stands across it;
-  - it can be reached from one of a train's blocks that reads empty, across switches with no other block between. This covers the tail of a train that has just left a block, a train that is on the switch and reads on no block, and a lost train.
+  - it can be reached from one of a train's blocks that reads empty, across switches with no other block between. This covers a train that is on the switch and reads on no block, and a lost train.
 
   The reason: a switch has no detector, so these are the only signs that a train may be on it. The activation throw and a Setup switch throw test are not bound by this rule (see **Switch**, Two throws do not check for a train).
+- **The runtime does not throw a switch a train has just left.** When a train's rear block is taken off at once (see **Trains**, A block that reads empty is taken off at once or after the hold time), the train's last car may still be on a switch next to that block. For the hold time after that pass, the runtime does not throw any switch that can be reached from that block across switches with no other block between; a train with a destination that needs it thrown waits with `switch_held`. The operator may throw it during that time: it is not a held switch, and its `held` field stays `false`.
 
 ## When a train waits
 
@@ -316,7 +321,7 @@ Apart from the operator's own Stop and Stop all, the runtime sets a train's knob
 A train runs on a voltage knob, not a speed curve, so it will often roll past the block it was stopped or made to wait in. The runtime treats this as ordinary.
 
 - **Rolling into an empty block.** When a block that reads empty and belongs to no train starts to read occupied, and it is the next block ahead of a train that stopped or began waiting less than the hold time ago, the block becomes that train's front block (see **Trains**, An occupied block with no train gets one). The block is at 0 V, so the train stops there. The runtime sets the train's knob to 0 V, clears its destination, and emits the warning event `"train_overran"`, for example "Train A stopped one block past where it was held." The operator can turn the knob up again straight away.
-- **Rolling into a block another train has claimed, or has just left.** The block reads empty, so the detector does see the overrunning train arrive, but the block is not free. A block another train has claimed goes to that train (rule 1 of **Trains**, An occupied block with no train gets one), and a block another train left less than the hold time ago stays that train's. Either way the overrunning train is not given the block. Its own blocks then read empty, and it becomes a lost train with the warning `"train_lost"`.
+- **Rolling into a block another train has claimed, or has just left.** The block reads empty, so the detector does see the overrunning train arrive, but the block is not free. A block another train has claimed goes to that train (rule 1 of **Trains**, An occupied block with no train gets one), and a block another train still holds for the hold time stays that train's. Either way the overrunning train is not given the block. Its own blocks then read empty, and it becomes a lost train with the warning `"train_lost"`.
 - **Rolling into a block another train stands in cannot be seen.** That block already reads occupied, so the detector reports nothing (see **Occupancy detection**, A second train on an occupied block is not detected). What the runtime does see is the overrunning train's own blocks reading empty, and it becomes a lost train. This is why a train that cannot claim the next block loses its voltage as soon as it is wholly in its front block: it has the rest of that block to come to rest in.
 
 A train that rolls a whole block past its stop is a reason to turn its knob down, not to leave a bigger gap between trains.
@@ -325,13 +330,13 @@ A train that rolls a whole block past its stop is a reason to turn its knob down
 
 Each block gets one voltage at a time, signed for direction (see **Direction**). Item 6 of **Runtime step** decides every block's voltage on every step from these rules alone, and `BlockPowerController` is the one place that sends a block's voltage while the session is Live:
 
-- **A moving train's blocks, and the block it has claimed, get its knob voltage.** Each block is signed by the train's line of travel through it. A block still counts as the train's while it reads empty for less than the hold time, so it keeps its voltage through a short loss of contact.
+- **A moving train's blocks, and the block it has claimed, get its knob voltage.** Each block is signed by the train's line of travel through it. A block the train still holds for the hold time (see **Trains**, A block that reads empty is taken off at once or after the hold time) counts as the train's, so it keeps its voltage through a short loss of contact.
 - **Every other block gets 0 V.** That covers an empty block, a stopped train's blocks, a waiting train's blocks, and a lost train's block. At or below `idle_deadband_v` the '165 detector decides whether the block reads occupied, and it sees a train standing on rails that carry no voltage (see **Occupancy source follows drive state**). A stopped train therefore stays visible, and a train put on an empty block shows up straight away.
 - **A switch has no voltage of its own.** Its rails carry its feed block's voltage (see **Block and switch power controllers**, A switch's rails are fed from one block). A train crossing a switch from the toe stands on the feed block; a train crossing toward the toe is entering the feed block, which it has claimed. Either way the feed block already carries the train's voltage.
 - **A block is never asked for two voltages.** A block is one train's block or one train's claim, never two, so each block has one answer.
 - **When the hardware fails**, the outputs go to the safe state and the session reads Halted for `hardware_failure` until an activation succeeds (see **Hardware I/O failure is fatal to the session**).
 
-Keeping a block's voltage for the hold time after it reads empty is what lets a train ride through a short loss of wheel contact, for example on a switch. While the wheels have no contact the detector cannot see the train, and only the voltage still on the rails can bring it back.
+Keeping a held block's voltage for the hold time is what lets a train ride through a short loss of wheel contact, for example on a switch. While the wheels have no contact the detector cannot see the train, and only the voltage still on the rails can bring it back.
 
 ## Runtime step
 
@@ -340,7 +345,7 @@ While the session state is Live, the runtime loop runs one runtime step ten time
 1. **Read the detectors.** One read of every block, then the debounce (see **Occupancy detection**). The result is which blocks read occupied and which read empty. The read is written to the **Detector reading log** before anything else uses it.
 2. **Update each train's blocks.** In this order:
    1. give a train to each block that reads occupied and has none (see **Trains**, An occupied block with no train gets one);
-   2. take off each block that has read empty for the hold time, except the last block of a train that is about to become a lost train;
+   2. leaving alone each train that is not moving while one of its blocks reads occupied (see **Trains**, A train that is not moving keeps its blocks): take off each rear block that reads empty while a block further forward in its train reads occupied, then each block that has read empty for the hold time, except the last block of a train that is about to become a lost train;
    3. make each train whose blocks have all read empty for the hold time a lost train, or remove it.
 3. **Stop trains.** Apply **When the runtime stops a train** to every running train.
 4. **End claims.** End every claim that **Claiming the next block** says is over.
@@ -1434,7 +1439,7 @@ The event log is the operator-facing record of what happened during a run. It is
 | --- | --- | --- |
 | `"train_appeared"` | a new train is made for a newly occupied block | `info` |
 | `"train_block_added"` | a block becomes a train's front block | `info` |
-| `"train_block_removed"` | a block is taken off a train's blocks after the hold time | `info` |
+| `"train_block_removed"` | a block is taken off a train's blocks, at once or after the hold time | `info` |
 | `"claim_given"` | a train is given a claim; the payload names the block and any switch thrown for it | `info` |
 | `"train_waiting"` | a train begins to wait, or its waiting reason changes; the payload carries the reason | `info` |
 | `"train_arrived"` | the runtime stops a train at its destination | `info` |
@@ -1600,7 +1605,7 @@ Every field is a top-level key in the `GET` / `PUT /api/settings` payload, named
 
 | Field | Type | Default | Controls |
 | --- | --- | --- | --- |
-| `hold_time_s` | `float` | `5.0` | The hold time: how long a block that reads empty stays its train's block — see **Trains**, A block that reads empty stays the train's block for the hold time. Raising it carries a train across a longer loss of contact, and keeps the block behind a train taken for longer. Lowering it does the opposite. |
+| `hold_time_s` | `float` | `5.0` | The hold time: how long a block that reads empty stays its train's block while no block further forward reads occupied — see **Trains**, A block that reads empty is taken off at once or after the hold time. Raising it carries a train across a longer loss of contact. Lowering it does the opposite. |
 
 *Event stream (`notification_center.py`):*
 
@@ -1667,7 +1672,7 @@ A reviewer checks each of these against the code:
 - Does every block's voltage, while the session is Live, come from **Track power** or from Stop all, and go out through `BlockPowerController`?
 - Does a train's voltage reach a block only when the block is one of its blocks or its claim, and does a train never hold more than one claim?
 - Does a claim end only in the ways listed under **Claiming the next block**, A claim ends in one of these ways?
-- Does a block that reads empty stay its train's block for the hold time and no longer, a lost train's block apart, and keep its voltage for that time while the train is moving?
+- Is a train's rear block taken off at once when it reads empty and a block further forward reads occupied, and does any other block that reads empty stay for the hold time and no longer, a lost train's block apart, keeping its voltage for that time while the train is moving?
 - Is a train that rolls into an empty block that belongs to no train given that block with a warning, and able to run again as soon as its knob is turned up?
 - While the session is Live, does the runtime throw a switch only for a train with a destination, only once every condition for the claim holds, only when the switch is not already set for the way, and never while the switch is held?
 - Is a held switch refused to the operator too, with `switch_held`?

@@ -142,6 +142,11 @@ class TrainRuntime:
         self._step_count = 0
         self.occupied: Set[str] = set()
         """The blocks that read occupied on the last step."""
+        self._now = 0.0
+        self._left_at: Dict[str, float] = {}
+        """For each block a train's rear has just left, when it was taken
+        off. The runtime does not throw a switch next to such a block for the
+        hold time."""
 
     # ------------------------------------------------------------------
     # Reading
@@ -255,8 +260,10 @@ class TrainRuntime:
         nothing is claimed and no voltage is written.
         """
         self._step_count += 1
+        self._now = now
         self.occupied = {b for b in occupied if b in self._network.blocks}
         self._give_trains_to_occupied_blocks(now)
+        self._take_off_rear_blocks(now)
         self._note_empty_blocks(now)
         self._take_off_empty_blocks(now)
         if not live:
@@ -388,11 +395,55 @@ class TrainRuntime:
             {"block_id": block_id},
         )
 
+    def _take_off_rear_blocks(self, now: float) -> None:
+        """Take off each rear block that reads empty while a block further
+        forward in its train reads occupied (design_v2.md "Trains", A block
+        that reads empty is taken off at once or after the hold time)."""
+        for train in sorted(self.trains.values(), key=lambda t: t.seq):
+            if train.lost or self._keeps_its_blocks(train):
+                continue
+            while (
+                len(train.blocks) > 1
+                and train.blocks[0] not in self.occupied
+                and any(b in self.occupied for b in train.blocks[1:])
+            ):
+                rear = train.blocks[0]
+                self._take_off_block(train, rear)
+                self._left_at[rear] = now
+        for block_id, left_at in list(self._left_at.items()):
+            if now - left_at >= self.hold_time_s:
+                del self._left_at[block_id]
+
+    def switches_just_left(self) -> Set[str]:
+        """Every switch next to a block a train's rear left less than the
+        hold time ago. The runtime does not throw these; the operator may
+        (design_v2.md "Switches", The runtime does not throw a switch a train
+        has just left)."""
+        found: Set[str] = set()
+        for block_id, left_at in self._left_at.items():
+            if self._now - left_at < self.hold_time_s:
+                found |= switches_next_to(self._network, block_id)
+        return found
+
+    def _keeps_its_blocks(self, train: RunningTrain) -> bool:
+        """Whether the train is not moving while one of its blocks reads
+        occupied. Such a train keeps every block: at 0 V it cannot have left
+        one, and a block under cars that only have lights reads empty at 0 V
+        (design_v2.md "Trains", A train that is not moving keeps its
+        blocks)."""
+        return self.state_of(train) != "moving" and any(
+            b in self.occupied for b in train.blocks
+        )
+
     def _note_empty_blocks(self, now: float) -> None:
         """Start the hold-time count for each block that began to read empty,
         and drop it for each block that reads occupied again."""
         for train in self.trains.values():
             if train.lost:
+                continue
+            if self._keeps_its_blocks(train):
+                train.empty_since.clear()
+                train.empty_while_moving.clear()
                 continue
             for block_id in train.blocks:
                 if block_id in self.occupied:
@@ -451,6 +502,12 @@ class TrainRuntime:
                 self._remove(train)
 
     def _take_off_block(self, train: RunningTrain, block_id: str) -> None:
+        if block_id == train.front_block and len(train.blocks) > 1:
+            # The claim was made from a block the train is no longer in; it
+            # asks again from its new front block.
+            self._end_claim(train)
+            self._clear_asking(train)
+            train.end_of_track_block = None
         train.blocks.remove(block_id)
         train.directions.pop(block_id, None)
         train.empty_since.pop(block_id, None)
@@ -707,6 +764,7 @@ class TrainRuntime:
         """Start with no trains, as an activation does."""
         self.trains.clear()
         self.occupied = set()
+        self._left_at.clear()
 
     # ------------------------------------------------------------------
 
