@@ -6,18 +6,20 @@
  * While it shows, static/css/next/operate.css keeps the Train Monitor window
  * hidden: the train panel's Look-ahead section shows its graph.
  */
+import { effect, signal } from '@preact/signals';
+import { RunningTrainOverlay } from '../../renderer/running-train-overlay';
 import { render } from 'preact';
 
 import type { ComponentChildren } from 'preact';
 
 import { combinePanelHosts } from '../panel-hosts';
-import { screen } from '../state';
+import { screen, sessionState } from '../state';
 import { OperateLists } from './left-list';
-import { liveVersion, usesRunningTrains, watchLiveState } from './live';
+import { liveVersion, runningTrains, usesRunningTrains, watchLiveState } from './live';
 import type { OperateHost } from './operate-state';
 import { operatePanelHost } from './panel-host';
 import { RightPanel } from './right-panel';
-import { RunningTrainsRow } from './running-trains';
+import { RunningTrainsRow, type TrainCardInteraction } from './running-trains';
 import { TrainCardsRow } from './train-cards';
 
 function OnOperate({ children }: { children: ComponentChildren }) {
@@ -26,9 +28,9 @@ function OnOperate({ children }: { children: ComponentChildren }) {
 
 /** The cards along the bottom: v2 trains in a Virtual Hardware or Real
  *  Hardware session, the v1 cards in the v1 Simulation environment. */
-function CardsRow({ host }: { host: OperateHost }) {
+function CardsRow({ host, interaction }: { host: OperateHost; interaction: TrainCardInteraction }) {
   liveVersion.value;
-  return usesRunningTrains() ? <RunningTrainsRow /> : <TrainCardsRow host={host} />;
+  return usesRunningTrains() ? <RunningTrainsRow interaction={interaction} /> : <TrainCardsRow host={host} />;
 }
 
 function slot(className: string): HTMLDivElement {
@@ -58,5 +60,51 @@ export function mountOperateScreen(host: OperateHost): void {
 
   render(<OnOperate><OperateLists host={host} /></OnOperate>, listSlot);
   render(<OnOperate><RightPanel host={host} /></OnOperate>, panelSlot);
-  render(<OnOperate><CardsRow host={host} /></OnOperate>, cardsSlot);
+  const hovered = signal<string | null>(null);
+  const focused = signal<string | null>(null);
+  const selected = signal<string | null>(null);
+  const renderer = host.editor.renderer as import('../../renderer/renderer').Renderer;
+  const trainsOnMap = () => screen.value === 'operate' && usesRunningTrains() ? runningTrains() : [];
+  const overlay = new RunningTrainOverlay(() => ({
+    trains: trainsOnMap(),
+    emphasized: hovered.value ?? focused.value ?? selected.value,
+  }));
+  renderer.registerOverlay(overlay);
+  let lastLayout = renderer.currentNetwork?.layout_version;
+  let wasLive = sessionState.value?.value === 'live';
+  effect(() => {
+    liveVersion.value;
+    const layout = renderer.currentNetwork?.layout_version;
+    const live = sessionState.value?.value === 'live';
+    const reset = layout !== lastLayout || (live && !wasLive);
+    lastLayout = layout;
+    wasLive = live;
+    const ids = new Set(trainsOnMap().map((train) => train.train_id));
+    for (const state of [hovered, focused, selected]) {
+      if (reset || (state.value && !ids.has(state.value))) state.value = null;
+    }
+    renderer.requestRedraw({ world: false, live: true, reason: 'running-trains' });
+  });
+  const interaction: TrainCardInteraction = {
+    selected,
+    hover: (id) => { hovered.value = id; },
+    focus: (id) => { focused.value = id; },
+    select: (id) => { selected.value = selected.value === id ? null : id; },
+  };
+  host.editor.operateTrainClick = (x, y) => {
+    if (screen.value !== 'operate' || !usesRunningTrains()) return false;
+    const tile = renderer.screenToGrid(x, y);
+    const onSwitch = Boolean(renderer.trackMap[`${tile.x},${tile.y}`]?.is_switch);
+    const id = overlay.trainAt(x, y, onSwitch);
+    if (!id || !trainsOnMap().some((train) => train.train_id === id)) {
+      selected.value = null;
+      return false;
+    }
+    selected.value = id;
+    Array.from(cardsSlot.querySelectorAll<HTMLElement>('[data-train-id]'))
+      .find((card) => card.dataset.trainId === id)
+      ?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    return true;
+  };
+  render(<OnOperate><CardsRow host={host} interaction={interaction} /></OnOperate>, cardsSlot);
 }

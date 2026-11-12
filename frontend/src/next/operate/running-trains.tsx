@@ -8,6 +8,7 @@
  * Stop all. A train appears here by being put on the track; nothing is
  * created by hand.
  */
+import type { Signal } from '@preact/signals';
 import { useState } from 'preact/hooks';
 
 import { api } from '../../lib/api';
@@ -64,7 +65,14 @@ export function cardLine(train: RunningTrain): string {
   return ahead ? `${where} → ${blockName(ahead)}` : `${where} · track ends`;
 }
 
-export function RunningTrainsRow() {
+export interface TrainCardInteraction {
+  selected: Signal<string | null>;
+  hover(id: string | null): void;
+  focus(id: string | null): void;
+  select(id: string): void;
+}
+
+export function RunningTrainsRow({ interaction }: { interaction?: TrainCardInteraction } = {}) {
   liveVersion.value;
   const trains = runningTrains();
   return (
@@ -73,7 +81,7 @@ export function RunningTrainsRow() {
         <div class="empty-state op-cards-empty">No trains yet. Put one on the track and it appears here.</div>
       )}
       {trains.map((train) => (
-        <RunningTrainCard key={train.train_id} train={train} />
+        <RunningTrainCard key={train.train_id} train={train} interaction={interaction} />
       ))}
       <div class="op-cards-actions">
         <button
@@ -89,18 +97,32 @@ export function RunningTrainsRow() {
   );
 }
 
-export function RunningTrainCard({ train }: { train: RunningTrain }) {
+export function RunningTrainCard({ train, interaction }: { train: RunningTrain; interaction?: TrainCardInteraction }) {
   const id = train.train_id;
   const [drag, setDrag] = useState<number | null>(null);
   const volts = drag ?? train.knob_volts;
   const lost = train.state === 'lost';
   const line = cardLine(train);
+  const selected = interaction?.selected.value === id;
+  const identity = train.name === id ? id : `${id} · ${train.name}`;
   return (
-    <div class="op-card rt-card" data-tone={cardTone(train.state)} aria-label={`Train ${train.name}`}>
+    <div
+      class={selected ? 'op-card rt-card row-selected' : 'op-card rt-card'}
+      data-tone={cardTone(train.state)}
+      data-train-id={id}
+      aria-label={`Train ${train.name}`}
+      onMouseEnter={() => interaction?.hover(id)}
+      onMouseLeave={() => interaction?.hover(null)}
+      onFocusIn={() => interaction?.focus(id)}
+      onFocusOut={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) interaction?.focus(null);
+      }}
+    >
       <div class="op-card-head">
-        <span class="op-card-name" title={id}>
-          {train.name}
-        </span>
+        {interaction ? (
+          <button type="button" class="op-card-name rt-card-identity" aria-pressed={selected}
+            title={identity} onClick={() => interaction.select(id)}>{identity}</button>
+        ) : <span class="op-card-name" title={identity}>{identity}</span>}
         <span class={`chip chip-state ${stateChip(train.state)}`}>{train.state.toUpperCase()}</span>
       </div>
       <div class="rt-card-line" title={line}>

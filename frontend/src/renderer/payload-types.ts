@@ -68,6 +68,8 @@ export function segmentsFromBlocks(
 
 /** The simulation half: the runtime overlay the sim plugin draws on top. */
 export interface SimState {
+  operation_mode?: string;
+  layout_version?: string;
   trains?: Array<{ id: string; num_cars?: number }>;
 }
 

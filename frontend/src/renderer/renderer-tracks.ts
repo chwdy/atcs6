@@ -59,12 +59,20 @@ export interface Track {
 }
 
 /** The slice of the Renderer the track handler reads through its back-reference. */
+interface TrackBlock {
+  state?: string;
+  disabled?: boolean;
+  manual?: boolean;
+  reads_occupied?: boolean;
+  claimed_by_train_id?: string | null;
+}
+
 export interface TrackHandlerRenderer {
   ctx: CanvasRenderingContext2D;
   scale: number;
   gridSize: number;
-  currentBlocks?: Record<string, { state?: string; disabled?: boolean; manual?: boolean } | undefined> | null;
-  currentNetwork?: { switches?: Record<string, SwitchEntity | undefined> } | null;
+  currentBlocks?: Record<string, TrackBlock | undefined> | null;
+  currentNetwork?: { switches?: Record<string, SwitchEntity | undefined>; operation_mode?: string } | null;
   // "x,y" -> track, used by drawTileExtentHighlight to read each selected
   // tile's track_bits so it can light the real stroke (not just the cell).
   trackMap?: Record<string, { track_bits?: number; block_section_id?: string | null } | undefined>;
@@ -84,7 +92,8 @@ export interface TrackHandlerRenderer {
  * state is unrecognized, so the caller keeps its default track color.
  */
 export function blockTrackColor(
-  block: { state?: string; disabled?: boolean; manual?: boolean } | undefined | null,
+  block: TrackBlock | undefined | null,
+  detectorColor = false,
 ): string | null {
   if (!block) return null;
   // Consume the --block-* design tokens via the canonical resolver, the same
@@ -93,7 +102,9 @@ export function blockTrackColor(
   // site"). Availability (disabled/manual) overrides live state.
   if (block.disabled) return getBlockStateColor('disabled');
   if (block.manual) return getBlockStateColor('manual');
-  const state = (block.state || 'free').toLowerCase();
+  const state = detectorColor && typeof block.reads_occupied === 'boolean'
+    ? block.reads_occupied ? 'occupied' : block.claimed_by_train_id ? 'reserved' : 'free'
+    : (block.state || 'free').toLowerCase();
   if (state === 'occupied' || state === 'reserved' || state === 'free' || state === 'caution') {
     return getBlockStateColor(state);
   }
@@ -116,10 +127,10 @@ export class RendererTrackHandler {
   get gridSize(): number {
     return this.renderer.gridSize;
   }
-  get currentBlocks(): Record<string, { state?: string; disabled?: boolean; manual?: boolean } | undefined> | null | undefined {
+  get currentBlocks(): Record<string, TrackBlock | undefined> | null | undefined {
     return this.renderer.currentBlocks;
   }
-  get currentNetwork(): { switches?: Record<string, SwitchEntity | undefined> } | null | undefined {
+  get currentNetwork(): { switches?: Record<string, SwitchEntity | undefined>; operation_mode?: string } | null | undefined {
     return this.renderer.currentNetwork;
   }
 
@@ -159,7 +170,8 @@ export class RendererTrackHandler {
 
     let trackColor = p.track;
     if (track.block_section_id && this.currentBlocks) {
-      const resolved = blockTrackColor(this.currentBlocks[track.block_section_id]);
+      const mode = this.currentNetwork?.operation_mode;
+      const resolved = blockTrackColor(this.currentBlocks[track.block_section_id], !!mode && mode !== 'simulation');
       if (resolved) trackColor = resolved;
     } else if (track.occupied_by) {
       trackColor = p.danger;

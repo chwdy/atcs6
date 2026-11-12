@@ -568,3 +568,13 @@ html[data-screen="operate"] #train-monitor-bar {
     padding-right: var(--space-4);
     white-space: nowrap;
 }
+
+.rt-card-identity {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}

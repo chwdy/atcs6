@@ -31,6 +31,10 @@ export class SimRendererOverlay implements RendererOverlay {
         break;
 
       case 'afterBlockDirection':
+        if (network.operation_mode && network.operation_mode !== 'simulation') {
+          renderer.currentSnapshot = undefined;
+          break;
+        }
         // Build the per-frame sim snapshot so trains read one coherent view,
         // then draw the trains on top of the route wash. The span endpoints are
         // richer at runtime than render-snapshot types them, hence the widen.

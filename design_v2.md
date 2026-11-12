@@ -183,6 +183,24 @@ These are all the things the operator can do to trains and switches from the Ope
 - **Save the Hardware Setup.** `PUT /api/hardware/config` is accepted in every session state, so a wiring fix can be saved while trains run (see **A binding is read per write**). The setup is the operator's to get right: a save that takes away a binding the running session needs makes the next write to it fail, and that is a hardware failure like any other.
 - **Manage trains.** Rename, note a length, mark two trains as one, split, and remove are defined under **Trains**.
 
+### Seeing trains on the layout
+
+The Operate screen draws a line along the track of each train's blocks, using
+one style from the layout theme. The line stays on blocks the train still
+holds when they read empty. A claim ahead is shown separately from the line.
+The line breaks at tunnel mouths and joins across switches only when the
+layout shows one connection between consecutive blocks.
+
+The train ID on the layout matches the ID on the card. An arrow at the outgoing
+end of the front block shows **Direction**, including while stopped or waiting.
+A successful Reverse updates the arrow from the next snapshot. A lost train
+shows its retained block with a dashed line and a question mark beside its ID.
+
+Hovering or focusing a card highlights the train's line, arrow and ID. Clicking
+the card's ID or the train on the map selects it. Temporary highlighting takes
+precedence over selection and the selected train is highlighted again when it
+ends. The card remains the place to turn the knob or reverse the train.
+
 ## Trains
 
 A train is a label the runtime puts on blocks that read occupied. It is not a model of a locomotive: it has no position inside a block and no speed.

@@ -206,6 +206,7 @@ export class Editor {
   // opens on the screen showing; it returns false to fall back to today's
   // behavior (see updateSecondaryEditorForTile).
   onToolChange: ((toolId: string) => void) | null = null;
+  operateTrainClick: ((x: number, y: number) => boolean) | null = null;
   tileClickPanel: ((tile: any) => boolean) | null = null;
 
   constructor(renderer: any, api: FullDataClient) {
@@ -1279,6 +1280,8 @@ export class Editor {
       const rect = canvas.getBoundingClientRect();
       const x = e.clientX - rect.left;
       const y = e.clientY - rect.top;
+
+      if (this.operateTrainClick?.(x, y)) return;
 
       // Station labels float above the grid — give them first shot.
       const stationId = this.renderer.stationHandler?.stationAt?.(x, y);

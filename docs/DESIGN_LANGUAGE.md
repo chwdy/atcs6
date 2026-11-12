@@ -2709,6 +2709,13 @@ leg reads as the only continuous path. Lock rings around the badge:
 brown (`--canvas-hold`) = a train physically holds the switch, orange
 (`--canvas-lock`) = a path holds it for an upcoming move.
 
+### V2 trains on the layout
+
+The [v2 train display](../design_v2.md#seeing-trains-on-the-layout) uses one
+track-aligned line style, a direction arrow and an ID. Use the canvas palette's
+train body, background, label and accent colors. The emphasis changes line weight and
+the label border as well as color, so it remains visible across layout themes.
+
 ### Train mode
 
 The train body is a white polyline with a dark outline; the head is a

@@ -1,4 +1,5 @@
 // @vitest-environment happy-dom
+import { signal } from '@preact/signals';
 import { render } from 'preact';
 import { act } from 'preact/test-utils';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -58,6 +59,24 @@ describe('RunningTrainsRow', () => {
     expect(runningTrains().map((t) => t.train_id)).toEqual(['T1', 'T2', 'T10']);
     const names = [...root.querySelectorAll('.op-card-name')].map((n) => n.textContent?.trim());
     expect(names).toEqual(['T1', 'T2', 'T10']);
+  });
+
+  it('keeps the train emphasized when focus moves between its controls', async () => {
+    const selected = signal<string | null>(null);
+    const focus = vi.fn();
+    await act(() => render(<RunningTrainsRow interaction={{
+      selected, focus, hover: vi.fn(), select: (id) => { selected.value = id; },
+    }} />, root));
+    const identity = buttonNamed(root, 'T1')[0];
+    const knob = root.querySelector('input[type=range]') as HTMLInputElement;
+    identity.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
+    expect(focus).toHaveBeenLastCalledWith('T1');
+    identity.dispatchEvent(new FocusEvent('focusout', { bubbles: true, relatedTarget: knob }));
+    expect(focus).toHaveBeenCalledTimes(1);
+    knob.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
+    expect(focus).toHaveBeenLastCalledWith(null);
+    await act(() => identity.click());
+    expect(identity.getAttribute('aria-pressed')).toBe('true');
   });
 
   it('says where a train is and what it is doing', () => {

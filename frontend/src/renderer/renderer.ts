@@ -31,7 +31,7 @@ import { canvasLayers, type LayerId } from '../lib/canvas-layers';
 
 // Compass heading of one grid step. Matches block.py `_compass_from_delta`
 // (Y positive is north): a +Y step reads N, +X reads E.
-function compassFromDelta(dx: number, dy: number): string | null {
+export function compassFromDelta(dx: number, dy: number): string | null {
   if (dx === 0 && dy > 0) return 'N';
   if (dx === 0 && dy < 0) return 'S';
   if (dy === 0 && dx > 0) return 'E';
@@ -70,7 +70,7 @@ function segmentPartner(trackBits: number, edge: string, preferDir: string | nul
 // block_geometry_manager._external_entry_edge only derives entry_edge for the
 // first tile and can name an edge the tile doesn't have, or "".) `arrivalDir`
 // is the step in from the previous ordered tile, `departDir` the step to the next.
-function forwardArrowEdges(
+export function forwardArrowEdges(
   trackBits: number,
   storedEntry: string,
   arrivalDir: string | null,
@@ -111,7 +111,7 @@ function forwardArrowEdges(
 // ordered tile). The exit edge is the terminal tile's track edge facing outside
 // the block; entry is its segment partner — all from track geometry, so the
 // arrow lies on the track like the per-tile ones.
-function blockTerminalArrowSpec(
+export function blockTerminalArrowSpec(
   orderedTiles: Array<[number, number, string]>,
   trackMap: Record<string, any>,
   end: 'forward' | 'reverse'
