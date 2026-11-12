@@ -177,8 +177,10 @@ let sweepAbort = false;
 // Switch bits).
 let switchPorts: Record<string, number[]> = {};
 // How long the sweep holds every other shift-out bit: long enough to see an LED
-// on the pin light. The switch-coil width (10 ms) is too short to see.
-export const SWEEP_VISIBLE_PULSE_S = 0.3;
+// on the pin light. The switch-coil width (10 ms) is too short to see. It is the
+// server's coil limit (MAX_COIL_PULSE_S, 200 ms), which no shift-out bit may
+// exceed: a bit no switch binding names yet may still be wired to a coil.
+export const SWEEP_VISIBLE_PULSE_S = 0.2;
 
 /** The pulse width the output sweep asks for on one shift-out bit: `undefined`
  *  (the server's switch-coil width) for a bit a switch binding names, because a

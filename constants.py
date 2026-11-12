@@ -268,16 +268,8 @@ DEFAULT_SEEDED_TOP_SPEED_KMH: float = 100.0
 # `hardware/commission.py` (IDLE_TIMEOUT_S).
 COMMISSION_MAX_SESSION_SECONDS: float = 3600.0
 
-# The commissioning `pulse` action drives one shift-out bit for a pulse width
-# (design_new.md: the pulse "must be no greater than COMMISSION_MAX_PULSE_MS").
-# The runtime throw is SWITCH_THROW_PULSE_S (10 ms) and a bench caller measuring
-# the bit on a meter widens it; this is the ceiling that widening may not cross.
-# It is set to the existing hardware pulse-hold ceiling — MAX_PORT_TEST_PULSE_S
-# (5.0 s) in hardware/catalog.py, expressed here in milliseconds — so the bound
-# the commissioning surface enforces is exactly the longest hold the port-test
-# path already permits, rather than a second, conflicting figure. The doc names
-# the constant as the bound but gives no number; this is the defensible pick.
-COMMISSION_MAX_PULSE_MS: float = 5000.0
+# The longest the commissioning `pulse` action may drive a shift-out bit is
+# MAX_COIL_PULSE_S in hardware/catalog.py: any such bit may be wired to a coil.
 
 
 # Hard ceiling on a single per-tick sim delta. Normal operation — including a

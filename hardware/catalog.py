@@ -76,6 +76,16 @@ SWITCH_THROW_PULSE_S = 0.01
 PORT_TEST_PULSE_S = 1.0
 MAX_PORT_TEST_PULSE_S = 5.0
 
+# Longest any request may drive a shift-out ('595) bit, in seconds. A solenoid
+# point-motor coil burns out when it is held, and any '595 bit may be wired to
+# one, whether or not a switch binding names it yet. So this binds every way a
+# '595 bit is driven: an operating throw, the switch throw test, the
+# commissioning `pulse`, and a port-test output pulse. A request for a longer
+# pulse is refused, never shortened and driven (design_v2.md "Hardware setup",
+# No shift-out bit is driven for longer than 200 ms). The measurable widths
+# above apply to PWM outputs only.
+MAX_COIL_PULSE_S = 0.2
+
 # Longest any '595 output bit may stay high, in seconds, *without being
 # refreshed*. Nothing in this design parks a shift-out bit: a coil bit is pulsed
 # for SWITCH_THROW_PULSE_S, a driver standby bit drops with it, and a PCA9685 /OE

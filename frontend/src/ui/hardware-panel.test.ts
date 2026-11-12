@@ -242,7 +242,8 @@ describe('sweepPulseS', () => {
     expect(sweepPulseS(0, new Set())).toBe(SWEEP_VISIBLE_PULSE_S);
   });
 
-  it('is visible: well above the 10 ms coil width', () => {
-    expect(SWEEP_VISIBLE_PULSE_S).toBeGreaterThanOrEqual(0.2);
+  it('is visible, and never past the 200 ms coil limit', () => {
+    expect(SWEEP_VISIBLE_PULSE_S).toBeGreaterThan(0.01 * 10);
+    expect(SWEEP_VISIBLE_PULSE_S).toBeLessThanOrEqual(0.2);
   });
 });

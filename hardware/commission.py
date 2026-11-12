@@ -19,8 +19,8 @@ import threading
 import time
 from typing import Any, Callable, Dict, List, Optional
 
-from constants import COMMISSION_MAX_PULSE_MS, COMMISSION_MAX_SESSION_SECONDS
-from hardware.catalog import SWITCH_THROW_PULSE_S
+from constants import COMMISSION_MAX_SESSION_SECONDS
+from hardware.catalog import MAX_COIL_PULSE_S, SWITCH_THROW_PULSE_S
 from hardware.chips.hc595 import sleep_holding
 from hardware.interfaces import build_chip
 
@@ -195,13 +195,11 @@ class CommissionSession:
         therefore the drive the runtime issues.
 
         `pulse_s` therefore defaults to the runtime throw width and should stay
-        there for a "watch the switch throw" test. A caller measuring the bit
-        rather than watching the points (a meter on the pin) passes a longer
-        width; the sleep re-latches inside the guard window so the hold survives,
-        and it is the caller's business that a coil can be on the other end. That
-        longer width may not cross COMMISSION_MAX_PULSE_MS (design_new.md: the
-        commissioning pulse "must be no greater than COMMISSION_MAX_PULSE_MS");
-        a request past the ceiling is rejected rather than driven.
+        there for a "watch the switch throw" test. A caller may pass a longer
+        width so an LED on the pin visibly lights, but never past
+        MAX_COIL_PULSE_S: any '595 bit may be wired to a coil, bound or not, so a
+        request past the ceiling is rejected rather than driven (design_v2.md
+        "Hardware setup", No shift-out bit is driven for longer than 200 ms).
 
         The Hardware Setup output sweep also runs through here rather than
         `set_output`, because a bit it walks across may be wired to a coil; it
@@ -209,11 +207,10 @@ class CommissionSession:
         in a `finally` so a failure leaves nothing driven."""
         with self._lock:
             self._require_open()
-            pulse_ms = float(pulse_s) * 1000.0
-            if pulse_ms > COMMISSION_MAX_PULSE_MS:
+            if float(pulse_s) > MAX_COIL_PULSE_S:
                 raise ValueError(
-                    f"pulse width {pulse_ms:g} ms exceeds "
-                    f"COMMISSION_MAX_PULSE_MS ({COMMISSION_MAX_PULSE_MS:g} ms)"
+                    f"pulse width {float(pulse_s):g} s exceeds "
+                    f"MAX_COIL_PULSE_S ({MAX_COIL_PULSE_S:g} s)"
                 )
             chip = self._chips.get(chip_id)
             if chip is None:

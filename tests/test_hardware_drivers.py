@@ -27,6 +27,7 @@ from hardware import self_test
 from hardware.catalog import (
     CHIP_CATALOG,
     MAX_OUTPUT_HIGH_S,
+    MAX_COIL_PULSE_S,
     MAX_PORT_TEST_PULSE_S,
     PORT_TEST_PULSE_S,
     SWITCH_THROW_PULSE_S,
@@ -1183,8 +1184,6 @@ def test_port_test_read_current_returns_ma():
 def test_port_test_pulse_output():
     dev = FakeCh347Device()
     cfg = _cfg(ChipConfig("sw1", "hc595", spi_select="cs0"))
-    # The default hold is a full second (measurable on a meter); ask for the
-    # shortest one so the test does not wait on it.
     result = self_test.run_port_test(
         cfg, "sw1", 3, "pulse_output", device=dev, pulse_s=0.0
     )
@@ -1193,10 +1192,44 @@ def test_port_test_pulse_output():
 
 
 def test_port_test_pulse_is_long_enough_to_measure():
-    """The bench pulse answers "is this the wire I think it is", read off a
-    multimeter — so the default width has to be measurable, not a throw blip."""
+    """On a PWM output the bench pulse answers "is this the wire I think it is",
+    read off a multimeter — so that default has to be measurable."""
     assert PORT_TEST_PULSE_S >= 1.0
     assert PORT_TEST_PULSE_S > SWITCH_THROW_PULSE_S * 50
+
+
+def test_port_test_never_holds_a_shift_out_bit_past_the_coil_limit(monkeypatch):
+    """design_v2.md "Hardware setup", No shift-out bit is driven for longer than
+    200 ms: a '595 bit may be wired to a coil, so the port test defaults to the
+    throw width there and refuses a longer request without driving the bit."""
+    assert MAX_COIL_PULSE_S == 0.2
+    held = []
+    monkeypatch.setattr(self_test, "sleep_holding", lambda chip, s: held.append(s))
+    dev = FakeCh347Device()
+    cfg = _cfg(ChipConfig("sw1", "hc595", spi_select="cs0"))
+
+    default = self_test.run_port_test(cfg, "sw1", 3, "pulse_output", device=dev)
+    assert default["ok"] is True
+    assert default["pulse_s"] == SWITCH_THROW_PULSE_S
+    assert held == [SWITCH_THROW_PULSE_S]
+
+    at_limit = self_test.run_port_test(
+        cfg, "sw1", 3, "pulse_output", device=dev, pulse_s=MAX_COIL_PULSE_S
+    )
+    assert at_limit["ok"] is True
+
+    held.clear()
+    for too_long in (MAX_COIL_PULSE_S + 0.001, 1.0, 9_999.0):
+        refused = self_test.run_port_test(
+            cfg, "sw1", 3, "pulse_output", device=dev, pulse_s=too_long
+        )
+        assert refused["ok"] is False
+        assert "MAX_COIL_PULSE_S" in refused["error"]
+    assert held == []                              # nothing was driven
+    assert dev.latched_bit("cs0", 3) is False
+
+    with pytest.raises(ValueError):
+        self_test._pulse("hc595", object(), 3, hold_s=MAX_COIL_PULSE_S + 0.001)
 
 
 def test_port_test_reports_the_width_it_held():
@@ -1386,10 +1419,10 @@ def test_commission_open_bounds_the_session_timeout():
 
 
 def test_commission_pulse_bounds_the_pulse_width(monkeypatch):
-    """design_new.md "Hardware REST payload schemas": the commissioning `pulse`
-    "must be no greater than COMMISSION_MAX_PULSE_MS". A width just under the
-    ceiling drives the bit; one just over is rejected before any bit is driven."""
-    from constants import COMMISSION_MAX_PULSE_MS
+    """design_v2.md "Hardware setup", No shift-out bit is driven for longer than
+    200 ms: the commissioning `pulse` may not exceed MAX_COIL_PULSE_S. A width
+    just under the ceiling drives the bit; one just over is rejected before any
+    bit is driven."""
     from hardware import commission as commission_mod
     from hardware.commission import CommissionSession
 
@@ -1401,7 +1434,7 @@ def test_commission_pulse_bounds_the_pulse_width(monkeypatch):
     sess = CommissionSession()
     sess.open(cfg, open_device=lambda: FakeCh347Device())
 
-    ceiling_s = COMMISSION_MAX_PULSE_MS / 1000.0
+    ceiling_s = MAX_COIL_PULSE_S
     # Just under the ceiling: accepted (no raise).
     sess.pulse_output("sw1", 1, pulse_s=ceiling_s - 0.001)
     # Just over the ceiling: rejected before any bit is driven.

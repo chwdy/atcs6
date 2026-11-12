@@ -24,9 +24,11 @@ from block_power import MAX_TRACK_VOLTAGE
 
 from hardware.catalog import (
     CHIP_CATALOG,
+    MAX_COIL_PULSE_S,
     MAX_PORT_TEST_PULSE_S,
     PORT_CURRENT_SENSE,
     PORT_TEST_PULSE_S,
+    SWITCH_THROW_PULSE_S,
 )
 from hardware.chips.hc595 import sleep_holding
 from hardware.interfaces import (
@@ -176,7 +178,21 @@ def run_port_test(
                 }
             return {"ok": True, "value": bool(chip.read_bit(port))}
         if action == "pulse_output":
-            hold_s = clamp_pulse_s(pulse_s)
+            if spec.kind == "hc595":
+                # A '595 bit may be wired to a coil: the default is the throw
+                # width, and a longer request than the coil limit is refused.
+                hold_s = clamp_pulse_s(pulse_s, default=SWITCH_THROW_PULSE_S)
+                if hold_s > MAX_COIL_PULSE_S:
+                    return {
+                        "ok": False,
+                        "error": (
+                            f"pulse width {hold_s:g} s exceeds MAX_COIL_PULSE_S "
+                            f"({MAX_COIL_PULSE_S:g} s): a shift-out bit may be "
+                            "wired to a switch coil"
+                        ),
+                    }
+            else:
+                hold_s = clamp_pulse_s(pulse_s)
             try:
                 _pulse(spec.kind, chip, port, hold_s=hold_s)
                 result: Dict[str, Any] = {"ok": True, "pulse_s": hold_s}
@@ -196,15 +212,15 @@ def run_port_test(
                 pass
 
 
-def _pulse(kind: str, chip: Any, line: int, hold_s: float = PORT_TEST_PULSE_S) -> None:
+def _pulse(kind: str, chip: Any, line: int, hold_s: Optional[float] = None) -> None:
     """Drive one output line for `hold_s`, then return it to the off state — the
     port picker's double-click "does this wire respond" pulse.
 
     `line` is the raw channel/bit: a single PWM channel on a PCA9685 (0..15, not
-    a pair), a single output bit on a '595. Both kinds get the same width, long
-    enough to read on a meter (`PORT_TEST_PULSE_S`) rather than the switch-coil
-    throw width, which is unmeasurable by design — see there for why holding a
-    coil-bound bit this long is a bench-only activity.
+    a pair), a single output bit on a '595. A PWM channel defaults to a width
+    long enough to read on a meter (`PORT_TEST_PULSE_S`). A '595 bit defaults to
+    the switch-coil throw width and is refused past `MAX_COIL_PULSE_S`, because
+    it may be wired to a coil and a held coil burns out.
 
     A '595 hold longer than the chain's guard ceiling sleeps through
     `sleep_holding`, which re-latches inside the window so the guard does not
@@ -213,7 +229,14 @@ def _pulse(kind: str, chip: Any, line: int, hold_s: float = PORT_TEST_PULSE_S) -
     De-energizing runs in a `finally`: `run_port_test` reports a raised exception
     as a failed test, so without it a bridge that dropped mid-pulse would answer
     "port test failed" while leaving the coil energized."""
+    if hold_s is None:
+        hold_s = SWITCH_THROW_PULSE_S if kind == "hc595" else PORT_TEST_PULSE_S
     if kind == "hc595":
+        if hold_s > MAX_COIL_PULSE_S:
+            raise ValueError(
+                f"pulse width {hold_s:g} s exceeds MAX_COIL_PULSE_S "
+                f"({MAX_COIL_PULSE_S:g} s)"
+            )
         try:
             chip.set_output(line, True)
             sleep_holding(chip, hold_s)
