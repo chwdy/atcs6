@@ -9,7 +9,6 @@ from app_factory import create_app
 from app_state import AppState
 from enums import OperationMode
 from network import RailwayNetwork
-from path_dispatcher import PathDispatcher
 from persistence import PersistenceManager
 from simulation import SimulationController
 
@@ -47,11 +46,9 @@ def test_environment_api_reports_selected_separately_from_active(
     )
     operation_environment.reset_to_defaults()
     network = RailwayNetwork()
-    dispatcher = PathDispatcher(network)
-    sim = SimulationController(network, dispatcher)
+    sim = SimulationController(network)
     state = AppState(
         network=network,
-        path_dispatcher=dispatcher,
         sim_controller=sim,
         persistence_manager=PersistenceManager(storage_dir=str(tmp_path / "layouts")),
         simulation_lock=threading.Lock(),
@@ -124,11 +121,9 @@ def test_incomplete_virtual_setup_is_not_activated(tmp_path, monkeypatch):
     )
     network = RailwayNetwork()
     network.blocks["B1"] = type("BlockStub", (), {"current_voltage": 0.0})()
-    dispatcher = PathDispatcher(network)
-    sim = SimulationController(network, dispatcher)
+    sim = SimulationController(network)
     state = AppState(
         network=network,
-        path_dispatcher=dispatcher,
         sim_controller=sim,
         persistence_manager=PersistenceManager(storage_dir=str(tmp_path / "layouts")),
         simulation_lock=threading.Lock(),

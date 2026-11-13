@@ -245,7 +245,6 @@ def test_sigint_safes_the_outputs_of_a_session_activated_after_boot(
     from block import Block
     from enums import OperationMode
     from network import RailwayNetwork
-    from path_dispatcher import PathDispatcher
     from persistence import PersistenceManager
     from simulation import SimulationController
 
@@ -279,14 +278,11 @@ def test_sigint_safes_the_outputs_of_a_session_activated_after_boot(
     # Boot: the session's device opens before shutdown reporting is installed.
     network = RailwayNetwork()
     network.blocks["B1"] = Block(block_id="B1")
-    dispatcher = PathDispatcher(network)
     interfaces = hardware_config.build_session_interfaces(
         environment=OperationMode.VIRTUAL_HARDWARE,
         track_polarity_of=hardware_config.track_polarity_reversed,
     )
-    sim = SimulationController(
-        network,
-        dispatcher,
+    sim = SimulationController(network,
         operation_mode=OperationMode.VIRTUAL_HARDWARE,
         input_interface=interfaces[0],
         block_output_interface=interfaces[1],
@@ -298,7 +294,6 @@ def test_sigint_safes_the_outputs_of_a_session_activated_after_boot(
     )
     state = AppState(
         network=network,
-        path_dispatcher=dispatcher,
         sim_controller=sim,
         persistence_manager=PersistenceManager(storage_dir=str(tmp_path / "layouts")),
         simulation_lock=threading.Lock(),

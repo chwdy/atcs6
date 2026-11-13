@@ -1,6 +1,6 @@
 """DetectorReadingLog - the per-pass record of what every block detector read.
 
-design_new.md "Event log", Detector reading log. The event log records what the
+design_v2.md "Detector reading log". The event log records what the
 runtime decided; this file records what the detectors told it, pass by pass, so
 a rig run that went wrong can be read back as the exact readings the runtime
 acted on and when it read them.
@@ -8,7 +8,7 @@ acted on and when it read them.
 One JSON object per line. Every pass that reads the detectors writes one line:
 
     {"pass": 812, "pass_kind": "tick", "wall_time": 1761745392.48,
-     "simulation_time": 81.2, "delta_seconds": 0.1, "operating_delta_seconds": 0.1,
+     "operating_delta_seconds": 0.1,
      "readings": {"B_7": {"present": true, "source": "current", "zone": "driven",
                           "current_ma": 34.5, "threshold_ma": 10.0}}}
 
@@ -25,7 +25,7 @@ A block's reading is what `OccupancyInput.read_block_currents()` returned for it
 which source answered, the drive zone, the measured mA (to 0.1 mA) or the raw
 '165 bit, the threshold the mA was judged against, and whether the lighting hold
 kept the block present. It is the read as the driver returned it, before the
-debounce; the line is written before attribution runs.
+debounce; the line is written before the runtime updates any train.
 
 Writing never stops the session: every failure is caught here and reported as a
 `warning` on the `NotificationCenter` stream under one condition key, which the
@@ -217,8 +217,6 @@ class DetectorReadingLog:
         *,
         pass_kind: str,
         wall_time: Optional[float],
-        simulation_time: float,
-        delta_seconds: float,
         operating_delta_seconds: float,
         detector: "BlockOccupancyDetector",
         environment: Optional[str],
@@ -236,8 +234,6 @@ class DetectorReadingLog:
             self._write_pass(
                 pass_kind=pass_kind,
                 wall_time=time.time() if wall_time is None else wall_time,
-                simulation_time=simulation_time,
-                delta_seconds=delta_seconds,
                 operating_delta_seconds=operating_delta_seconds,
                 detector=detector,
                 environment=environment,
@@ -262,8 +258,6 @@ class DetectorReadingLog:
         *,
         pass_kind: str,
         wall_time: float,
-        simulation_time: float,
-        delta_seconds: float,
         operating_delta_seconds: float,
         detector: "BlockOccupancyDetector",
         environment: Optional[str],
@@ -295,8 +289,6 @@ class DetectorReadingLog:
             "pass": self._pass_count,
             "pass_kind": pass_kind,
             "wall_time": wall_time,
-            "simulation_time": simulation_time,
-            "delta_seconds": delta_seconds,
             "operating_delta_seconds": operating_delta_seconds,
         }
         if reason is not None:
@@ -485,28 +477,19 @@ def start_state_of(network: Any) -> Dict[str, Any]:
     """What the server holds at the end of boot, for the `"start"` line.
 
     - `layout` — the layout as a layout save holds it (`to_layout_dict()`);
-    - `hardware` — the hardware setup as a layout save holds it;
-    - `locomotives` — the models, sets and counters, as the locomotive file holds them;
-    - `selected_environment` — the environment selected at boot;
-    - `trains_on_track` — the trains that hold a block at boot. A layout save
-      records no train position, so a replay cannot put these back.
+    - `hardware` — the Hardware Setup as a layout save holds it;
+    - `selected_environment` — the environment selected at boot.
+
+    (design_v2.md "Detector reading log", The run starts from what the server
+    held at boot.)
     """
     import hardware_config
-    import locomotive_file
     import operation_environment
 
     return {
         "layout": network.to_layout_dict(),
         "hardware": hardware_config.persisted_dict(),
-        "locomotives": locomotive_file.contents(network),
         "selected_environment": operation_environment.get_selected().value,
-        "trains_on_track": sorted(
-            {
-                block.occupied_by
-                for block in network.blocks.values()
-                if block.occupied_by is not None
-            }
-        ),
     }
 
 

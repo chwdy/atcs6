@@ -84,17 +84,6 @@ def pytest_runtest_setup(item):
 
 
 @pytest.fixture(autouse=True)
-def _locomotive_file_off_after_each_test():
-    """The locomotive file is module state that `bootstrap_runtime` turns on
-    when given a path. Turn it off after every test so one test that enables it
-    (at a temp path) never makes a later test write a file."""
-    yield
-    import locomotive_file
-
-    locomotive_file.disable()
-
-
-@pytest.fixture(autouse=True)
 def _hardware_config_file_off_limits(tmp_path, monkeypatch):
     """Point the hardware-configuration store's file at a per-test temp path, so
     no test can write the developer's real `hardware_config.json`.

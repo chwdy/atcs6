@@ -50,6 +50,7 @@ instead of losing a race to open a second handle. That fight used to be reported
 as "the controller is unreachable", on a bridge that was plugged in and working.
 """
 
+import time
 from contextlib import contextmanager
 
 from flask import jsonify, request
@@ -508,16 +509,10 @@ def register(app, state: AppState) -> None:
             # operating throw IS the test. The operator explicitly asked for
             # this alignment, so a `manual` switch participates — the same
             # override the manual throw controls send.
-            from services.switch_service import runtime_halt_refusal
-
             with state.simulation_lock:
-                refusal = runtime_halt_refusal(state)
-                if refusal is not None:
-                    ok, message = False, refusal
-                else:
-                    ok, message = switch_manager.request_position_change(
-                        switch_id, position, manual_override=True
-                    )
+                ok, message = switch_manager.request_position_change(
+                    switch_id, position, manual_override=True
+                )
         else:
             # Commissioning: pulse the coils ourselves so there is something to
             # watch, then record that alignment on the model.
@@ -1366,15 +1361,13 @@ def register(app, state: AppState) -> None:
 
     @app.route("/api/operation/setup", methods=["POST"])
     def enter_setup():
-        """Enter Setup for the selected environment (design_new.md "Hardware
-        setup", Setup; "Session state").
+        """Enter Setup for the selected environment (design_v2.md "Setup
+        tools", Entering Setup; "Session state").
 
-        Refused with 409 when Simulation is selected, while the session is
-        Halted for `runtime_failure`, and while it is already in Setup. In
-        order it:
+        Refused with 409 while the session is already in Setup. In order it:
 
-          1. from Live or Paused, performs the layout emergency cut-out, so
-             every train is stopped and holds no reservation;
+          1. from Live, stops every train and ends every claim (design_v2.md
+             "Trains", Leaving Live stops every train);
           2. drives the outputs to their safe state through
              `SimulationController.enter_output_safe_state()`;
           3. deactivates the environment and makes the selected environment the
@@ -1389,7 +1382,7 @@ def register(app, state: AppState) -> None:
         hardware failure so the event and the banner say the outputs were never
         proven safe.
         """
-        from enums import HaltReason, SessionStateValue
+        from enums import SessionStateValue
 
         selected = operation_environment.get_selected()
         sim = state.sim_controller
@@ -1397,13 +1390,8 @@ def register(app, state: AppState) -> None:
             session = state.session_state()
             if session.value is SessionStateValue.SETUP:
                 return jsonify({"status": "error", "error": "already in Setup"}), 409
-            if session.halt_reason is HaltReason.RUNTIME_FAILURE:
-                return jsonify({
-                    "status": "error",
-                    "error": "clear the runtime failure before entering Setup",
-                }), 409
             if session.value is SessionStateValue.LIVE:
-                sim.layout_emergency_cut_out()
+                sim.train_runtime.leave_live(time.time())
             from hardware.safety import SafeStateError
 
             safe_state_failures = []
@@ -1445,28 +1433,11 @@ def register(app, state: AppState) -> None:
         return jsonify(body)
 
     def _readiness():
-        # Resolve every placed train's lighting_voltage so the evaluator can
-        # check it against current_sense_min_drive_v (design_new.md "Power":
-        # the shared readiness evaluator enforces that bound at activation).
-        lighting_voltages = {}
-        registry = getattr(state.network, "speed_profiles", None)
-        for train_id, train in state.network.trains.items():
-            profile_id = getattr(train, "speed_profile_id", None)
-            resolved = (
-                registry.get(profile_id)
-                if registry is not None and profile_id is not None
-                else None
-            )
-            if resolved is not None:
-                lighting_voltages[train_id] = getattr(
-                    resolved, "lighting_voltage", None
-                )
         return hardware_config.activation_report(
             hardware_config.get_hardware_config(),
             operation_environment.get_selected(),
             state.network.blocks.keys(),
             state.network.switches.keys(),
-            lighting_voltages=lighting_voltages,
             unavailable_switch_motors=(
                 switch_id for switch_id, switch in state.network.switches.items()
                 if switch.motor_unavailable
@@ -1553,19 +1524,15 @@ def register(app, state: AppState) -> None:
 
     @app.route("/api/operation/activate", methods=["POST"])
     def activate_operation_environment():
-        """Activate the selected environment and go Live (design_new.md
-        "Activation starts the railway over"; "Session state").
+        """Activate the selected environment and go Live (design_v2.md
+        "Operating environment and activation"; "Session state").
 
-        Refused with 409 while the session is Live, and while it is Halted for
-        `runtime_failure`, which the operator clears first. Otherwise it builds
-        the interfaces, verifies the environment, starts the railway over, and
-        writes the flags of a successful activation: it leaves Setup, clears the
-        layout emergency cut-out, and clears a latched hardware failure. A
-        refused or failed activation leaves no environment active and changes
-        nothing else.
+        Refused with 409 while the session is Live. Otherwise it builds the
+        interfaces, verifies the environment, removes every train, throws every
+        switch, and writes the flags of a successful activation: it leaves
+        Setup and clears a latched hardware failure. A refused or failed
+        activation leaves no environment active and changes nothing else.
         """
-        from enums import HaltReason
-
         selected = operation_environment.get_selected()
         with state.simulation_lock:
             session = state.session_state()
@@ -1574,17 +1541,8 @@ def register(app, state: AppState) -> None:
                     "status": "error",
                     "error": "the session is live; enter Setup or stop it before activating",
                 }), 409
-            if session.halt_reason is HaltReason.RUNTIME_FAILURE:
-                return jsonify({
-                    "status": "error",
-                    "error": "clear the runtime failure before activating",
-                }), 409
             blocked = _activate_locked(selected)
             if blocked is None:
-                # design_new.md "Activation starts the railway over": before the
-                # new environment's first tick, drop live paths, running runs,
-                # and train power; keep the layout, setup, trains, and routes.
-                state.sim_controller.start_railway_over()
                 state.sim_controller.finish_activation()
                 state.setup_active = False
         if blocked is not None:

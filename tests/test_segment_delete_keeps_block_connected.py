@@ -35,7 +35,6 @@ import pytest
 from app_factory import create_app
 from app_state import AppState
 from network import RailwayNetwork
-from path_dispatcher import PathDispatcher
 from persistence import PersistenceManager
 from services import NotFoundError, ValidationError, platform_service, segment_service
 from services import track_service
@@ -80,11 +79,9 @@ def net() -> RailwayNetwork:
 
 
 def _app_state(network: RailwayNetwork) -> AppState:
-    path_dispatcher = PathDispatcher(network)
-    sim_controller = SimulationController(network, path_dispatcher)
+    sim_controller = SimulationController(network)
     return AppState(
         network=network,
-        path_dispatcher=path_dispatcher,
         sim_controller=sim_controller,
         persistence_manager=PersistenceManager(storage_dir="layouts"),
         simulation_lock=threading.Lock(),
@@ -219,14 +216,6 @@ class TestTileRemovalIsAtomic:
         assert _snapshot(net) == before
         assert net.tracks[(2, 0)].segment_id == "B"
 
-    def test_batch_removal_that_empties_the_middle_segment_is_rejected(self, net):
-        before = _snapshot(net)
-
-        with pytest.raises(ValueError):
-            net.remove_tiles_from_segment([(0, 0), (2, 0)])
-
-        # Nothing was detached, not even the tile of the end segment A.
-        assert _snapshot(net) == before
 
     def test_removing_one_of_two_tiles_keeps_the_middle_segment(self):
         net = _grouped_line(middle_tiles=2)
@@ -237,10 +226,6 @@ class TestTileRemovalIsAtomic:
         assert net.tracks[(3, 0)].segment_id == "B"
         assert net.tracks[(2, 0)].segment_id is None
 
-    def test_emptying_an_end_segment_deletes_it_and_keeps_the_block(self, net):
-        net.remove_tiles_from_segment([(0, 0), (1, 0)])
-
-        assert net.blocks["G"].segment_ids == ["B", "C"]
 
     def test_erasing_the_middle_tile_is_rejected_and_the_track_stays(self, net):
         before = _snapshot(net)

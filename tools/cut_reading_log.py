@@ -99,7 +99,7 @@ def summary(lines: List[Dict[str, Any]]) -> str:
             ]
             if changes:
                 rows.append(
-                    f"pass {p.pass_no:>6}  t={p.simulation_time:8.1f}  {p.pass_kind:7}  "
+                    f"pass {p.pass_no:>6}  wall={p.wall_time:14.2f}  {p.pass_kind:7}  "
                     + " ".join(changes)
                 )
         previous = present

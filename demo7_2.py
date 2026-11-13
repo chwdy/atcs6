@@ -5,8 +5,7 @@ layout instead. Layout only: 43 tracks, 2 switches,
 0 platforms (0 station groups),
 5 blocks (0 auto-created platform blocks),
 0 block groups, 0 tunnels,
-0 signals. Trains/routes are not
-part of the layout JSON, so setup_demo_train() is a stub.
+0 signals.
 """
 
 import logging
@@ -286,14 +285,4 @@ def create_comprehensive_demo() -> RailwayNetwork:
     _add_block_groups(network)
     _add_tunnels(network)
     _add_signals(network)
-    network.recompute_all_flank_protection()
     return network
-
-
-def setup_demo_train(network, path_dispatcher=None, sim_controller=None):
-    """No trains/routes are stored in the layout JSON, so this is a stub.
-
-    Add scene-specific train placement + routes here by hand if the scene needs
-    rolling stock (see demo_6.py for an example).
-    """
-    return

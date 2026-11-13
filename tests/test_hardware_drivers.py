@@ -1001,18 +1001,6 @@ def test_deciding_source_precedence(zone, has_digital, has_current, source):
     assert deciding_source(zone, has_digital, has_current) == source
 
 
-def test_lighting_voltage_default_stays_below_the_current_sense_floor():
-    # A seeded profile sets no lighting voltage, so a standing train sits at
-    # 0 V in the idle zone, where its digital detector reads it; the readiness
-    # bound against the current-sense floor applies only to a set lighting
-    # voltage (design_new.md "`current_sense_min_drive_v` must sit above
-    # `lighting_voltage`").
-    from speed_profile import DEFAULT_SPEED_PROFILE, SpeedProfile, copied_profile
-
-    assert DEFAULT_SPEED_PROFILE.lighting_voltage is None
-    assert SpeedProfile(profile_id="t").lighting_voltage is None
-    assert copied_profile(DEFAULT_SPEED_PROFILE, profile_id=1, max_speed_kmh=80.0).lighting_voltage is None
-
 
 def test_current_only_block_reads_ina_regardless_of_drive():
     # A block with only a current binding uses the INA even when idle (best effort:

@@ -23,7 +23,6 @@ from app_factory import create_app
 from app_state import AppState
 from block import Block
 from network import RailwayNetwork
-from path_dispatcher import PathDispatcher
 from persistence import PersistenceManager
 from simulation import SimulationController
 from switch import Switch
@@ -152,11 +151,9 @@ def client():
         network.add_track(Tile(x=x, y=0, track_bits=TRACK_EW))
         network.blocks[block_id] = Block(block_id=block_id, length_cm=100.0)
     network.switches["SW_A"] = Switch(switch_id="SW_A", x=0, y=0)
-    path_dispatcher = PathDispatcher(network)
     state = AppState(
         network=network,
-        path_dispatcher=path_dispatcher,
-        sim_controller=SimulationController(network, path_dispatcher),
+        sim_controller=SimulationController(network),
         persistence_manager=PersistenceManager(storage_dir="layouts"),
         simulation_lock=threading.Lock(),
     )

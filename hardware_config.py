@@ -1020,7 +1020,6 @@ def activation_report(
     environment: OperationMode,
     block_ids: Iterable[str],
     switch_ids: Iterable[str],
-    lighting_voltages: Optional[Dict[str, float]] = None,
     *,
     unavailable_switch_motors: Iterable[str] = (),
 ) -> Dict[str, Any]:
@@ -1104,27 +1103,6 @@ def activation_report(
         issue("stale_block_binding", "Bindings name blocks not in the loaded layout", stale)
     if stale_switches:
         issue("stale_switch_binding", "Bindings name switches not in the loaded layout", stale_switches)
-
-    # Every placed train's resolved lighting_voltage, when it is set, must sit
-    # below the setup's current_sense_min_drive_v, so a train standing at it
-    # lands in the middle zone rather than reading as driven (design_new.md
-    # "Power", `current_sense_min_drive_v` must sit above `lighting_voltage`).
-    # Checked here at activation the same way a missing binding is, whatever set
-    # the value (a hand edit, a copied set, a save that never evaluated this
-    # bound).
-    over_floor = sorted(
-        train_id
-        for train_id, lighting_voltage in (lighting_voltages or {}).items()
-        if lighting_voltage is not None
-        and lighting_voltage >= cfg.current_sense_min_drive_v
-    )
-    if over_floor:
-        issue(
-            "lighting_voltage_over_current_floor",
-            "Trains have a lighting_voltage at or above current_sense_min_drive_v "
-            "(a lit stopped train would read as driven)",
-            over_floor,
-        )
 
     # A rig that loses its host mid-run keeps whatever the PCA9685 and '595
     # were last told to hold: safe state is a write, and a dead process

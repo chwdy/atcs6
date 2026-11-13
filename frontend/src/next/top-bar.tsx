@@ -26,9 +26,7 @@ export interface TopBarActions {
   showScreen(screen: Screen): void;
   openHardwareSetup(): void;
   activate(): Promise<void>;
-  resetLayout(): Promise<void>;
-  clearConflict(): Promise<void>;
-  emergencyStop(): Promise<void>;
+  stopAll(): Promise<void>;
   openSettings(): void;
   restartServer(): Promise<void>;
 }
@@ -37,7 +35,6 @@ const SCREENS: { id: Screen; label: string }[] = [
   { id: 'editor', label: 'Editor' },
   { id: 'hardware', label: 'Hardware Setup' },
   { id: 'operate', label: 'Operate' },
-  { id: 'locomotives', label: 'Locomotives' },
   { id: 'logs', label: 'Logs' },
 ];
 
@@ -71,10 +68,10 @@ export function TopBar({ actions }: { actions: TopBarActions }) {
           <button
             type="button"
             class="btn ntb-estop"
-            title="Cut power to every block and stop every train"
-            onClick={() => void actions.emergencyStop()}
+            title="Stop every train at once"
+            onClick={() => void actions.stopAll()}
           >
-            <i class="ti ti-hand-stop" aria-hidden="true" /> Emergency stop
+            <i class="ti ti-hand-stop" aria-hidden="true" /> Stop all
           </button>
         </div>
         <div>
@@ -128,8 +125,6 @@ function StatusControl({ actions }: { actions: TopBarActions }) {
 
   const stepAction: Record<NextStep, () => Promise<void>> = {
     activate: actions.activate,
-    reset: actions.resetLayout,
-    'clear-conflict': actions.clearConflict,
   };
   const runStep = async (s: NextStep) => {
     setBusy(true);
@@ -156,7 +151,7 @@ function StatusControl({ actions }: { actions: TopBarActions }) {
       {step && (
         <button
           type="button"
-          class={step === 'clear-conflict' ? 'btn' : 'btn btn-primary'}
+          class="btn btn-primary"
           title={NEXT_STEP_BUTTON[step].title}
           disabled={busy}
           onClick={() => void runStep(step)}

@@ -35,7 +35,6 @@ class StepPlayer:
         """
         if clear_first:
             network.tracks.clear()
-            network.trains.clear()
             network.blocks.clear()
             network.signals.clear()
             network.platforms.clear()
@@ -85,7 +84,6 @@ class StepPlayer:
         """
         if clear_first:
             network.tracks.clear()
-            network.trains.clear()
             network.blocks.clear()
             network.signals.clear()
             network.platforms.clear()
@@ -155,7 +153,10 @@ class StepPlayer:
         elif op_type == "extend_platform":
             return self._op_extend_platform(op, network)
         elif op_type == "add_train":
-            return self._op_add_train(op, network)
+            # Trains are not saved (design_v2.md "Trains"); an older file's
+            # train step is skipped, as the loader skips any field it does not
+            # know.
+            return None
         else:
             raise ValueError(f"Unknown operation type: {op_type}")
 
@@ -300,44 +301,6 @@ class StepPlayer:
         network.extend_platform(platform_id, positions)
 
         return platform_id
-
-    def _op_add_train(self, op: dict, network: "RailwayNetwork") -> str:
-        """Execute add_train operation (config-only).
-
-        Per design_new.md, train placement is a run-time concern handled by
-        `SimulationController.add_train(...)`. Steps only restore Train
-        config; legacy `position` / `direction` keys in older snapshots are
-        ignored.
-        """
-        from train import Train
-
-        train_id = op["train_id"]
-        train = Train(
-            train_id=train_id,
-            max_speed=op.get("max_speed", 100.0),
-            num_cars=int(op.get("num_cars", 1)),
-        )
-        if "model" in op:
-            train.model = op["model"]
-        if "car_number" in op:
-            train.car_number = op["car_number"]
-        if "min_radius_cm" in op:
-            train.min_radius_cm = float(op["min_radius_cm"])
-        # Every train owns an instance profile: a copy of the recorded profile
-        # when it is the Default profile or a set here, else of the Default
-        # (design_new.md "SpeedProfile", Giving a train a profile).
-        registry = network.speed_profiles
-        source = op.get("speed_profile_id")
-        try:
-            registry.copy_source(source)
-        except ValueError:
-            source = None
-        train.speed_profile_id = registry.create_instance(
-            source_profile_id=source, max_speed_kmh=train.max_speed
-        ).profile_id
-
-        network.add_train(train)
-        return train_id
 
     def _verify_result(
         self, network: "RailwayNetwork", verification: dict

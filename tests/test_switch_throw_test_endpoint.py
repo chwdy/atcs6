@@ -22,7 +22,6 @@ import hardware_config
 from app_factory import create_app
 from app_state import AppState
 from network import RailwayNetwork
-from path_dispatcher import PathDispatcher
 from persistence import PersistenceManager
 from simulation import SimulationController
 from switch import Switch
@@ -67,13 +66,11 @@ def client():
     network.switches["SW_1_0"] = switch
     network.switch_manager = SwitchManager(switches=network.switches, network=network)
 
-    path_dispatcher = PathDispatcher(network)
     # SimulationController.__init__ injects the narrow callbacks (including the
     # environment-active gate the tests below flip) onto this pre-built manager.
-    sim_controller = SimulationController(network, path_dispatcher)
+    sim_controller = SimulationController(network)
     state = AppState(
         network=network,
-        path_dispatcher=path_dispatcher,
         sim_controller=sim_controller,
         persistence_manager=PersistenceManager(storage_dir="layouts"),
         simulation_lock=threading.Lock(),

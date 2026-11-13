@@ -24,7 +24,7 @@ import pytest
 
 import hardware_config
 import operation_environment
-from block_occupancy import SimulatedOccupancyDriver
+from block_occupancy import InactiveOccupancyInput
 from block_power import SimulatedTrackDriver
 from enums import OperationMode
 from hardware.fake import FakeCh347Device
@@ -700,16 +700,13 @@ def client():
     from app_factory import create_app
     from app_state import AppState
     from network import RailwayNetwork
-    from path_dispatcher import PathDispatcher
     from persistence import PersistenceManager
     from simulation import SimulationController
 
     network = RailwayNetwork()
-    path_dispatcher = PathDispatcher(network)
-    sim_controller = SimulationController(network, path_dispatcher)
+    sim_controller = SimulationController(network)
     state = AppState(
         network=network,
-        path_dispatcher=path_dispatcher,
         sim_controller=sim_controller,
         persistence_manager=PersistenceManager(storage_dir="layouts"),
         simulation_lock=threading.Lock(),
@@ -1018,12 +1015,12 @@ def test_bootstrap_keeps_real_environment_inactive_when_device_unavailable(monke
         block_track={}, switch_output={}, switch_track_source={}, block_occupancy={}
     ))
     operation_environment.select(OperationMode.REAL_HARDWARE)
-    _network, _dispatcher, sim, _persistence = bootstrap.bootstrap_runtime(
-        demo=False, setup_train=False
+    _network, sim, _persistence = bootstrap.bootstrap_runtime(
+        demo=False
     )
     assert sim.operation_mode == OperationMode.REAL_HARDWARE
     assert sim.environment_active is False
-    assert isinstance(sim.input_interface, SimulatedOccupancyDriver)
+    assert isinstance(sim.input_interface, InactiveOccupancyInput)
     assert isinstance(sim.power_controller.output_interface, SimulatedTrackDriver)
     assert isinstance(
         sim.switch_output_interface, SimulatedSwitchDriver
@@ -1042,12 +1039,12 @@ def test_bootstrap_activates_no_hardware_environment(monkeypatch):
         block_track={}, switch_output={}, switch_track_source={}, block_occupancy={}
     ))
     operation_environment.select(OperationMode.REAL_HARDWARE)
-    _network, _dispatcher, sim, _persistence = bootstrap.bootstrap_runtime(
-        demo=False, setup_train=False
+    _network, sim, _persistence = bootstrap.bootstrap_runtime(
+        demo=False
     )
     assert sim.operation_mode == OperationMode.REAL_HARDWARE
     assert sim.environment_active is False
-    assert isinstance(sim.input_interface, SimulatedOccupancyDriver)
+    assert isinstance(sim.input_interface, InactiveOccupancyInput)
     assert [issue["code"] for issue in sim.activation_issues] == ["not_activated"]
 
 

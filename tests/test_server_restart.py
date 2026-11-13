@@ -33,7 +33,6 @@ import shutdown
 from app_factory import create_app
 from app_state import AppState
 from network import RailwayNetwork
-from path_dispatcher import PathDispatcher
 from persistence import PersistenceManager
 from simulation import SimulationController
 
@@ -80,11 +79,9 @@ def isolated_runtime_dir(tmp_path, monkeypatch):
 @pytest.fixture
 def client(tmp_path):
     network = RailwayNetwork()
-    path_dispatcher = PathDispatcher(network)
     state = AppState(
         network=network,
-        path_dispatcher=path_dispatcher,
-        sim_controller=SimulationController(network, path_dispatcher),
+        sim_controller=SimulationController(network),
         persistence_manager=PersistenceManager(storage_dir=str(tmp_path)),
         simulation_lock=threading.Lock(),
     )

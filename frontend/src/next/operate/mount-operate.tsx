@@ -20,17 +20,15 @@ import type { OperateHost } from './operate-state';
 import { operatePanelHost } from './panel-host';
 import { RightPanel } from './right-panel';
 import { RunningTrainsRow, type TrainCardInteraction } from './running-trains';
-import { TrainCardsRow } from './train-cards';
 
 function OnOperate({ children }: { children: ComponentChildren }) {
   return screen.value === 'operate' ? <>{children}</> : null;
 }
 
-/** The cards along the bottom: v2 trains in a Virtual Hardware or Real
- *  Hardware session, the v1 cards in the v1 Simulation environment. */
-function CardsRow({ host, interaction }: { host: OperateHost; interaction: TrainCardInteraction }) {
+/** The cards along the bottom: one per train. */
+function CardsRow({ interaction }: { interaction: TrainCardInteraction }) {
   liveVersion.value;
-  return usesRunningTrains() ? <RunningTrainsRow interaction={interaction} /> : <TrainCardsRow host={host} />;
+  return <RunningTrainsRow interaction={interaction} />;
 }
 
 function slot(className: string): HTMLDivElement {
@@ -106,5 +104,5 @@ export function mountOperateScreen(host: OperateHost): void {
       ?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
     return true;
   };
-  render(<OnOperate><CardsRow host={host} interaction={interaction} /></OnOperate>, cardsSlot);
+  render(<OnOperate><CardsRow interaction={interaction} /></OnOperate>, cardsSlot);
 }

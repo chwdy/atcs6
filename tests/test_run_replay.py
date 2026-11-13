@@ -58,13 +58,12 @@ class Server:
         network.from_dict(rig["snapshot"])
         monkeypatch.setattr(bootstrap, "create_empty_network", lambda: network)
         self.log_dir = tmp_path / "readings"
-        network, dispatcher, sim, _pm = bootstrap.bootstrap_runtime(
-            demo=False, setup_train=False, detector_reading_log_dir=self.log_dir
+        network, sim, _pm = bootstrap.bootstrap_runtime(
+            demo=False, detector_reading_log_dir=self.log_dir
         )
         lock = SimulationLock()
         self.state = AppState(
             network=network,
-            path_dispatcher=dispatcher,
             sim_controller=sim,
             persistence_manager=PersistenceManager(storage_dir=str(tmp_path / "layouts")),
             simulation_lock=lock,
@@ -123,7 +122,6 @@ def test_the_log_records_the_start_and_every_command(recorded):
     assert first_pass["full"] == "start"
     start = first_pass["start_state"]
     assert start["selected_environment"] == "virtual_hardware"
-    assert start["trains_on_track"] == []
     assert set(start["layout"]["blocks"]) >= {WEST_BLOCK, EAST_BLOCK}
     assert start["hardware"]["block_occupancy"]
 

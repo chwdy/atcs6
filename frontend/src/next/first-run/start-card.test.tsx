@@ -19,7 +19,7 @@ describe('StartCard', () => {
   beforeEach(() => {
     root = document.createElement('div');
     document.body.appendChild(root);
-    actions = { startFromLoop: vi.fn(async () => {}), openLayout: vi.fn(), drawFromScratch: vi.fn() };
+    actions = { openLayout: vi.fn(), drawFromScratch: vi.fn() };
     startCardDismissed.value = false;
     screen.value = 'operate';
     operationEnvironment.value = 'virtual_hardware';
@@ -32,12 +32,10 @@ describe('StartCard', () => {
     root.remove();
   });
 
-  it('offers the three starts while the layout has no track', () => {
+  it('offers the two starts while the layout has no track', () => {
     expect(root.querySelector('.first-run-card')).not.toBeNull();
-    buttonStarting(root, 'Start from a loop').click();
     buttonStarting(root, 'Open a layout').click();
     buttonStarting(root, 'Draw from scratch').click();
-    expect(actions.startFromLoop).toHaveBeenCalledTimes(1);
     expect(actions.openLayout).toHaveBeenCalledTimes(1);
     expect(actions.drawFromScratch).toHaveBeenCalledTimes(1);
   });

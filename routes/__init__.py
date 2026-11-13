@@ -7,7 +7,7 @@ registered until ``register_all`` is called from the app factory.
 
 Module map:
 - static_files: ``/`` index + ``/<path:path>`` SPA fallback
-- simulation: server lifecycle, simulation control, /api/network*, /api/scale*
+- simulation: server lifecycle, /api/network*, /api/event-log
 - layouts: /api/layouts/* save/load/list/delete
 - tracks: /api/track* and /api/tracks/* CRUD and bulk operations
 - segments: /api/segments/* geometry CRUD, tiles, extend, can_extend, end_tiles
@@ -15,13 +15,8 @@ Module map:
 - signals: /api/signal/* CRUD and validation
 - stations: /api/stations/*
 - platforms: /api/platforms/*
-- trains: /api/trains/* CRUD and control
-- paths: /api/paths/* pathfinding and management
-- train_routes: /api/train-routes/* route definitions + lifecycle + viability
-- route_runs: /api/route-runs/* read-only live + historical run records
-- speed_profiles: /api/speed-profiles/*
+- running_trains: /api/trains/* — the trains' requests (design_v2.md "Running a train")
 - switches: /api/switches/* and /api/tracks/<x>/<y>/switch
-- inspector: debug / inspector endpoints
 """
 
 from routes import (
@@ -34,15 +29,9 @@ from routes import (
     signals,
     stations,
     platforms,
-    trains,
     running_trains,
-    paths,
-    train_routes,
-    route_runs,
-    speed_profiles,
     switches,
     tunnels,
-    inspector,
     settings,
     hardware,
 )
@@ -64,14 +53,8 @@ def register_all(app, state) -> None:
     signals.register(app, state)
     stations.register(app, state)
     platforms.register(app, state)
-    trains.register(app, state)
     running_trains.register(app, state)
-    paths.register(app, state)
-    train_routes.register(app, state)
-    route_runs.register(app, state)
-    speed_profiles.register(app, state)
     switches.register(app, state)
     tunnels.register(app, state)
-    inspector.register(app, state)
     settings.register(app, state)
     hardware.register(app, state)

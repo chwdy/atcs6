@@ -15,11 +15,6 @@ describe('nextStep', () => {
     expect(nextStep(state('live'))).toBeNull();
   });
 
-  it('offers the way out of each halt', () => {
-    expect(nextStep(state('halted', 'layout_emergency_cut_out'))).toBe('reset');
-    expect(nextStep(state('halted', 'runtime_failure'))).toBe('clear-conflict');
-  });
-
   it('offers nothing before the first snapshot', () => {
     expect(nextStep(null)).toBeNull();
   });

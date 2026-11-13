@@ -27,7 +27,6 @@ class TestAppSmoke:
         """App factory should store state in extensions."""
         state = AppState(
             network=object(),
-            path_dispatcher=object(),
             sim_controller=object(),
             persistence_manager=object(),
             simulation_lock=threading.Lock(),
@@ -175,9 +174,9 @@ class TestAppSmoke:
             "network.py",
             "track.py",
             "block.py",
-            "railway_signal.py",
-            "station.py",
-            "train.py",
+            "switch.py",
+            "simulation.py",
+            "train_runtime.py",
         ]
 
         for filename in required_files:

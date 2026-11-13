@@ -2,8 +2,7 @@
 
 design_v2.md "Session state" transition table and "Operating environment and
 activation": Activate is accepted from Setup or Halted and refused while Live
-(and, until the v1 code is removed, while Halted for `runtime_failure`); a
-success leaves Setup, clears the layout cut-out, and goes Live.
+; a success leaves Setup and goes Live.
 """
 
 from __future__ import annotations
@@ -18,7 +17,6 @@ from block import Block
 from app_factory import create_app
 from app_state import AppState
 from network import RailwayNetwork
-from path_dispatcher import PathDispatcher
 from persistence import PersistenceManager
 from simulation import SimulationController
 
@@ -44,11 +42,9 @@ def env(tmp_path, monkeypatch):
     }, persist=False)
     network = RailwayNetwork()
     network.blocks["B1"] = Block(block_id="B1")
-    dispatcher = PathDispatcher(network)
-    sim = SimulationController(network, dispatcher)
+    sim = SimulationController(network)
     state = AppState(
         network=network,
-        path_dispatcher=dispatcher,
         sim_controller=sim,
         persistence_manager=PersistenceManager(storage_dir=str(tmp_path / "layouts")),
         simulation_lock=threading.Lock(),
@@ -78,19 +74,12 @@ def test_activate_is_refused_while_live(env):
     assert client.post("/api/operation/activate").status_code == 409
 
 
-def test_activate_is_refused_after_a_runtime_failure(env):
-    client, state = env
-    state.sim_controller.failed_runtime = True
-    assert client.post("/api/operation/activate").status_code == 409
 
-
-def test_activate_clears_setup_and_the_cut_out(env):
+def test_activate_from_setup_leaves_setup(env):
     client, state = env
     state.setup_active = True
-    state.sim_controller.layout_cut_out_active = True
 
     assert client.post("/api/operation/activate").status_code == 200
 
     assert state.setup_active is False
-    assert state.sim_controller.layout_cut_out_active is False
     assert state.session_state().is_live

@@ -22,29 +22,20 @@ from app_factory import create_app
 from app_state import AppState
 from network_poll import LAYOUT_SECTIONS
 from network_stream import NetworkStreamHub, stream_messages
-from path_dispatcher import PathDispatcher
 from persistence import PersistenceManager
 from simulation import SimulationController
 
-SIBLING_GROUPS = (
-    "trains",
-    "controllers_by_train_id",
-    "dispatcher_progress_by_train_id",
-    "assigned_routes_by_train_id",
-    "route_runs_by_train_id",
-    "operator_status_by_train_id",
-)
+# The live train map every reply carries (design_v2.md "Live fields").
+SIBLING_GROUPS = ("running_trains",)
 
 
 @pytest.fixture
 def app(tmp_path):
     with contextlib.redirect_stdout(io.StringIO()):
         network = bootstrap.create_demo_network("demo7_2")
-    path_dispatcher = PathDispatcher(network)
     state = AppState(
         network=network,
-        path_dispatcher=path_dispatcher,
-        sim_controller=SimulationController(network, path_dispatcher),
+        sim_controller=SimulationController(network),
         persistence_manager=PersistenceManager(storage_dir=str(tmp_path)),
         simulation_lock=threading.Lock(),
     )

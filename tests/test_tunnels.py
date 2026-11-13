@@ -30,12 +30,12 @@ class TestAddTunnel:
         n.add_tunnel((0, 0, "W"), (10, 0, "E"))
         assert n.tunnels[(0, 0, "W")] == (10, 0, "E")
         assert n.tunnels[(10, 0, "E")] == (0, 0, "W")
-        assert n.get_tunnel(0, 0, "W") == (10, 0, "E")
-        assert n.get_tunnel(10, 0, "E") == (0, 0, "W")
+        assert n.tunnels.get((0, 0, "W")) == (10, 0, "E")
+        assert n.tunnels.get((10, 0, "E")) == (0, 0, "W")
 
     def test_get_tunnel_returns_none_for_non_tunneled(self):
         n = _two_dead_end_tiles()
-        assert n.get_tunnel(0, 0, "E") is None
+        assert n.tunnels.get((0, 0, "E")) is None
 
     def test_edge_normalized_to_upper(self):
         n = _two_dead_end_tiles()

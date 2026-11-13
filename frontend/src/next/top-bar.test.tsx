@@ -15,9 +15,7 @@ function fakeActions(): TopBarActions {
     showScreen: vi.fn(),
     openHardwareSetup: vi.fn(),
     activate: vi.fn(async () => {}),
-    resetLayout: vi.fn(async () => {}),
-    clearConflict: vi.fn(async () => {}),
-    emergencyStop: vi.fn(async () => {}),
+    stopAll: vi.fn(async () => {}),
     openSettings: vi.fn(),
     restartServer: vi.fn(async () => {}),
   };
@@ -56,26 +54,24 @@ describe('TopBar', () => {
     expect(actions.activate).toHaveBeenCalledTimes(1);
   });
 
-  it('swaps the next-step button when the session state changes', () => {
+  it('offers no next step while Live', () => {
     act(() => {
-      sessionState.value = { value: 'halted', halt_reason: 'layout_emergency_cut_out' };
+      sessionState.value = { value: 'live', halt_reason: null };
     });
     expect(root.textContent).not.toContain('Activate');
-    buttonNamed(root, 'Reset').click();
-    expect(actions.resetLayout).toHaveBeenCalledTimes(1);
   });
 
-  it('has the five screen tabs and marks the picked one', () => {
+  it('has the four screen tabs and marks the picked one', () => {
     const tabs = [...root.querySelectorAll('[role="tab"]')].map((t) => t.textContent);
-    expect(tabs).toEqual(['Editor', 'Hardware Setup', 'Operate', 'Locomotives', 'Logs']);
+    expect(tabs).toEqual(['Editor', 'Hardware Setup', 'Operate', 'Logs']);
     expect(root.querySelector('[role="tab"][aria-selected="true"]')!.textContent).toBe('Editor');
     buttonNamed(root, 'Operate').click();
     expect(actions.showScreen).toHaveBeenCalledWith('operate');
   });
 
-  it('runs Emergency stop from the top bar', () => {
-    buttonNamed(root, 'Emergency stop').click();
-    expect(actions.emergencyStop).toHaveBeenCalledTimes(1);
+  it('runs Stop all from the top bar', () => {
+    buttonNamed(root, 'Stop all').click();
+    expect(actions.stopAll).toHaveBeenCalledTimes(1);
   });
 
   it('picks the Logs screen from its tab', () => {

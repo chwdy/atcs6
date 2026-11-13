@@ -13,9 +13,6 @@ describe('sessionLabel', () => {
   it('names each state, with the halt reason', () => {
     expect(sessionLabel({ value: 'live', halt_reason: null })).toBe('Live');
     expect(sessionLabel({ value: 'setup', halt_reason: null })).toBe('Setup');
-    expect(sessionLabel({ value: 'halted', halt_reason: 'layout_emergency_cut_out' })).toBe(
-      'Halted — Emergency stop'
-    );
     expect(sessionLabel({ value: 'halted', halt_reason: 'not_activated' })).toBe(
       'Halted — not activated'
     );
@@ -28,7 +25,6 @@ describe('sessionLabel', () => {
 
 describe('sessionHint', () => {
   it('names the way back from each halt', () => {
-    expect(sessionHint({ value: 'halted', halt_reason: 'layout_emergency_cut_out' })).toMatch(/Reset/);
     expect(sessionHint({ value: 'halted', halt_reason: 'hardware_failure' })).toMatch(/Activate/);
     expect(sessionHint({ value: 'halted', halt_reason: 'not_activated' })).toMatch(/Activate/);
   });
@@ -48,13 +44,7 @@ describe('environmentLabel', () => {
 describe('sessionControls', () => {
   it('offers nothing while Live', () => {
     const c = sessionControls({ value: 'live', halt_reason: null });
-    expect(c).toEqual({ resetVisible: false, activateVisible: false });
-  });
-
-  it('shows Reset after Emergency stop', () => {
-    const c = sessionControls({ value: 'halted', halt_reason: 'layout_emergency_cut_out' });
-    expect(c.resetVisible).toBe(true);
-    expect(c.activateVisible).toBe(false);
+    expect(c).toEqual({ activateVisible: false });
   });
 
   it('offers Activate in the header only where activating is the way to Live', () => {
@@ -64,8 +54,6 @@ describe('sessionControls', () => {
     expect(shows('halted', 'not_activated')).toBe(true);
     expect(shows('halted', 'hardware_failure')).toBe(true);
     expect(shows('live', null)).toBe(false);
-    expect(shows('halted', 'runtime_failure')).toBe(false);
-    expect(shows('halted', 'layout_emergency_cut_out')).toBe(false);
   });
 });
 
@@ -79,14 +67,13 @@ describe('setupToolsAllowed', () => {
 });
 
 describe('activateUnavailableReason', () => {
-  it('refuses Activate while Live or after a fatal track conflict', () => {
+  it('refuses Activate while Live', () => {
     expect(activateUnavailableReason({ value: 'live', halt_reason: null })).not.toBeNull();
-    expect(activateUnavailableReason({ value: 'halted', halt_reason: 'runtime_failure' })).not.toBeNull();
   });
 
   it('offers Activate from Setup and the other halts', () => {
     expect(activateUnavailableReason({ value: 'setup', halt_reason: null })).toBeNull();
-    for (const reason of ['not_activated', 'hardware_failure', 'layout_emergency_cut_out']) {
+    for (const reason of ['not_activated', 'hardware_failure']) {
       expect(activateUnavailableReason({ value: 'halted', halt_reason: reason })).toBeNull();
     }
   });

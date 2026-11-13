@@ -42,7 +42,6 @@ from detector_reading_log import (
 from entity_ids import segment_id_for_block
 from enums import OperationMode
 from network import RailwayNetwork
-from path_dispatcher import PathDispatcher
 from simulation import SimulationController
 from track import TRACK_EW, Tile
 
@@ -74,9 +73,7 @@ def build_sim(tmp_path, block_ids=("BLK_0", "BLK_1", "BLK_2"), input_interface=N
               mode=OperationMode.REAL_HARDWARE):
     network = build_network(block_ids)
     detector = input_interface if input_interface is not None else FakeDetector(block_ids)
-    sim = SimulationController(
-        network,
-        PathDispatcher(network),
+    sim = SimulationController(network,
         operation_mode=mode,
         input_interface=detector,
         environment_active=True,
@@ -96,7 +93,7 @@ def lines_of(sim):
 
 def test_the_log_is_off_until_enabled():
     network = build_network(["BLK_0"])
-    sim = SimulationController(network, PathDispatcher(network))
+    sim = SimulationController(network)
     sim.run_train_step(live=True)
     assert not sim.detector_reading_log.enabled
     assert sim.detector_reading_log.path is None
@@ -439,9 +436,7 @@ def test_a_directory_that_cannot_be_made_is_a_failed_write_that_retries(tmp_path
     blocker = tmp_path / "not_a_dir"
     blocker.write_text("a file where the directory should be")
     network = build_network(["BLK_0"])
-    sim = SimulationController(
-        network,
-        PathDispatcher(network),
+    sim = SimulationController(network,
         input_interface=FakeDetector(["BLK_0"]),
         environment_active=True,
     )
@@ -480,9 +475,8 @@ class _Detector:
 def _record(log, detector, n):
     for i in range(n):
         log.record_pass(
-            pass_kind="tick", wall_time=1000.0 + i, simulation_time=0.1 * i,
-            delta_seconds=0.1, operating_delta_seconds=0.1,
-            detector=detector, environment="simulation",
+            pass_kind="tick", wall_time=1000.0 + i, operating_delta_seconds=0.1,
+            detector=detector, environment="virtual_hardware",
         )
 
 
@@ -539,10 +533,10 @@ def test_every_line_is_one_json_object(tmp_path):
 def test_bootstrap_enables_the_log_only_when_given_a_directory(tmp_path):
     from bootstrap import bootstrap_runtime
 
-    _n, _d, off, _p = bootstrap_runtime(demo=False)
+    _n, off, _p = bootstrap_runtime(demo=False)
     assert not off.detector_reading_log.enabled
 
-    _n, _d, on, _p = bootstrap_runtime(
+    _n, on, _p = bootstrap_runtime(
         demo=False, detector_reading_log_dir=tmp_path / "readings"
     )
     assert on.detector_reading_log.enabled
@@ -566,16 +560,13 @@ def test_only_the_start_line_carries_the_start_state(tmp_path):
 def test_bootstrap_records_what_the_server_booted_with(tmp_path):
     from bootstrap import bootstrap_runtime
 
-    network, _d, sim, _p = bootstrap_runtime(
+    network, sim, _p = bootstrap_runtime(
         demo=True, scene="demo7_1", detector_reading_log_dir=tmp_path / "readings"
     )
     start = sim.detector_reading_log._start_state
     assert start["layout"] == network.to_layout_dict()
     assert start["selected_environment"] == "virtual_hardware"
-    assert start["trains_on_track"] == []
-    assert set(start) == {
-        "layout", "hardware", "locomotives", "selected_environment", "trains_on_track",
-    }
+    assert set(start) == {"layout", "hardware", "selected_environment"}
 
 
 def test_a_command_line_records_the_pass_it_ran_after(tmp_path):
@@ -664,7 +655,7 @@ def test_the_server_records_state_changing_requests_only(tmp_path):
     lock = SimulationLock()
     lock.count_passes_with(lambda: sim.detector_reading_log.pass_count)
     state = AppState(
-        network=network, path_dispatcher=sim.path_dispatcher, sim_controller=sim,
+        network=network, sim_controller=sim,
         persistence_manager=PersistenceManager(storage_dir=str(tmp_path / "layouts")),
         simulation_lock=lock,
     )
@@ -672,10 +663,10 @@ def test_the_server_records_state_changing_requests_only(tmp_path):
     with lock:
         sim.run_train_step(live=True)
     client.get("/api/trains")
-    client.post("/api/trains/NOPE/power-on")
+    client.post("/api/trains/NOPE/stop")
     commands = [line for line in lines_of(sim) if "command" in line]
     assert [(c["command"]["path"], c["command"]["status"], c["after_pass"]) for c in commands] == [
-        ("/api/trains/NOPE/power-on", 404, 1),
+        ("/api/trains/NOPE/stop", 400, 1),
     ]
 
 

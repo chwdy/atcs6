@@ -1,46 +1,47 @@
-import { describe, it, expect } from 'vitest';
-import { describeFatalConflict, resolveConflictTiles, runtimeNoun } from './fatal-banner';
+// @vitest-environment happy-dom
+import { beforeEach, describe, expect, it } from 'vitest';
 
-describe('runtimeNoun', () => {
-  it('calls a session with real detectors an Operation, not a Simulation', () => {
-    expect(runtimeNoun({ occupancy_is_real: true })).toBe('Operation');
+import { updateFatalBanner } from './fatal-banner';
+
+function banner(): HTMLElement {
+  return document.getElementById('fatal-banner')!;
+}
+
+describe('updateFatalBanner', () => {
+  beforeEach(() => {
+    document.body.innerHTML = `
+      <div id="fatal-banner" hidden>
+        <div class="fatal-banner-title"></div>
+        <div id="fatal-banner-detail"></div>
+        <div id="fatal-banner-meta"></div>
+      </div>`;
   });
 
-  it('calls a model-derived session a Simulation', () => {
-    expect(runtimeNoun({ occupancy_is_real: false })).toBe('Simulation');
-  });
-
-  it('falls back to Simulation when the payload says nothing', () => {
-    expect(runtimeNoun(null)).toBe('Simulation');
-    expect(runtimeNoun({})).toBe('Simulation');
-  });
-});
-
-describe('describeFatalConflict', () => {
-  it('names both trains and the block for an occupancy conflict', () => {
-    const text = describeFatalConflict({
-      resource_type: 'block',
-      resource_id: 'BLK_1',
-      incoming_train_id: 'T1',
-      prior_owner_train_id: 'UNIDENT_1',
-      conflict_kind: 'occupied_by_other_train',
+  it('shows the hardware failure and its detail while that halt holds', () => {
+    updateFatalBanner({
+      session_state: { value: 'halted', halt_reason: 'hardware_failure' },
+      hardware_failure_detail: {
+        component: 'block_track_output',
+        operation: 'set_voltage',
+        resource_id: 'BLK_1',
+        message: 'pwm1: bus error',
+      },
     });
-    expect(text).toBe('Train T1 tried to enter block BLK_1, but train UNIDENT_1 already occupies it.');
+    expect(banner().hidden).toBe(false);
+    expect(document.getElementById('fatal-banner-detail')!.textContent).toContain('pwm1: bus error');
+    expect(document.getElementById('fatal-banner-meta')!.textContent).toBe(
+      'block_track_output · set_voltage · BLK_1'
+    );
   });
-});
 
-describe('resolveConflictTiles', () => {
-  it('finds every tile of the conflicting block', () => {
-    const network = {
-      tracks: [
-        { x: 0, y: 0, block_section_id: 'BLK_0' },
-        { x: 1, y: 0, block_section_id: 'BLK_1' },
-        { x: 2, y: 0, block_section_id: 'BLK_1' },
-      ],
-    };
-    expect(resolveConflictTiles(network, { resource_id: 'BLK_1' })).toEqual([
-      [1, 0],
-      [2, 0],
-    ]);
+  it('stays hidden in every other session state', () => {
+    for (const session of [
+      { value: 'live', halt_reason: null },
+      { value: 'setup', halt_reason: null },
+      { value: 'halted', halt_reason: 'not_activated' },
+    ]) {
+      updateFatalBanner({ session_state: session });
+      expect(banner().hidden).toBe(true);
+    }
   });
 });

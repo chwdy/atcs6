@@ -30,7 +30,6 @@ from app_state import AppState
 from hardware import self_test
 from hardware.chips.pca9685 import PCA9685
 from network import RailwayNetwork
-from path_dispatcher import PathDispatcher
 from persistence import PersistenceManager
 from simulation import SimulationController
 from tests.segment_test_helpers import make_segment_block
@@ -69,11 +68,9 @@ def client():
     network = RailwayNetwork()
     block = make_segment_block(network, "BLK_A")
 
-    path_dispatcher = PathDispatcher(network)
-    sim_controller = SimulationController(network, path_dispatcher)
+    sim_controller = SimulationController(network)
     state = AppState(
         network=network,
-        path_dispatcher=path_dispatcher,
         sim_controller=sim_controller,
         persistence_manager=PersistenceManager(storage_dir="layouts"),
         simulation_lock=threading.Lock(),

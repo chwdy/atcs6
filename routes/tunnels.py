@@ -30,10 +30,6 @@ def register(app, state: AppState) -> None:
             return jsonify({"error": f"Malformed tunnel body: {exc}"}), 400
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
-        # Adding a tunnel changes connectivity: refresh stored switch flank
-        # protection so it cannot go stale and corrupt acquisition
-        # (design_new.md, "Flank protection computation").
-        state.network.recompute_all_flank_protection()
         return jsonify(state.network.tunnels_to_list()), 201
 
     @app.route("/api/tunnels", methods=["DELETE"])
@@ -48,7 +44,4 @@ def register(app, state: AppState) -> None:
         removed = state.network.remove_tunnel((x, y, edge))
         if not removed:
             return jsonify({"error": "No tunnel at that endpoint"}), 404
-        # Removing a tunnel changes connectivity: refresh stored switch flank
-        # protection (design_new.md, "Flank protection computation").
-        state.network.recompute_all_flank_protection()
         return jsonify(state.network.tunnels_to_list()), 200

@@ -59,13 +59,6 @@ def get_block(state: AppState, block_id: str):
     return state.network.get_block(block_id)
 
 
-def require_block(state: AppState, block_id: str):
-    """Return the block or raise NotFoundError."""
-    block = state.network.get_block(block_id)
-    if block is None:
-        raise NotFoundError("Block not found")
-    return block
-
 
 def list_blocks(state: AppState) -> List[Any]:
     """Return every block on the network."""

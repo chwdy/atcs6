@@ -2000,8 +2000,8 @@ matches data):
   group, and the row's right padding is on that group rather than on the
   scrolling row, so no card shows between the group and the edge.
 
-Reference: `TrainCardsRow` in
-[next/operate/train-cards.tsx](../frontend/src/next/operate/train-cards.tsx);
+Reference: `RunningTrainsRow` in
+[next/operate/running-trains.tsx](../frontend/src/next/operate/running-trains.tsx);
 `cardControl`, `cardHoldLine` and `trainCardTone` in
 [next/operate/train-display.ts](../frontend/src/next/operate/train-display.ts);
 `cardsFolded` in

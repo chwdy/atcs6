@@ -30,8 +30,7 @@ class StepRecorder:
 
         Order matters: tracks must come before switches (network.add_switch
         looks up the underlying tile), switches before blocks (so block
-        creation sees switch-aware tiles), and platforms before trains
-        (trains may reference platform-owned blocks). Station-owned blocks
+        creation sees switch-aware tiles). Station-owned blocks
         are created by `add_platform` itself and are skipped in
         `_generate_block_steps`.
         """
@@ -43,7 +42,6 @@ class StepRecorder:
             self._generate_block_steps,
             self._generate_signal_steps,
             self._generate_platform_steps,
-            self._generate_train_steps,
         ):
             for step in category(network):
                 step["id"] = step_id
@@ -342,46 +340,6 @@ class StepRecorder:
                     "type": "platform",
                     "description": f"Platform: {platform.name or platform_id}",
                     "operations": operations,
-                }
-            )
-
-        return steps
-
-    def _generate_train_steps(self, network: "RailwayNetwork") -> List[dict]:
-        """Generate train creation steps (config only).
-
-        Per design_new.md, Train carries only persistent/config state — live
-        position/span comes from `SimulationController.add_train(...)` at
-        run time. Steps therefore record the same fields Train.to_dict
-        writes and never emit a `position` field.
-        """
-        steps = []
-
-        for train_id, train in sorted(network.trains.items()):
-            op = {
-                "op": "add_train",
-                "train_id": train.train_id,
-                "max_speed": train.max_speed,
-                "num_cars": train.num_cars,
-            }
-            if train.model:
-                op["model"] = train.model
-            if train.car_number:
-                op["car_number"] = train.car_number
-            if train.min_radius_cm is not None:
-                op["min_radius_cm"] = train.min_radius_cm
-            # Record the profile the train's instance was copied from, so a
-            # replay gives the train the same set (design_new.md "SpeedProfile",
-            # Giving a train a profile).
-            instance = network.speed_profiles.get(train.speed_profile_id)
-            if instance is not None and instance.parent_profile_id is not None:
-                op["speed_profile_id"] = instance.parent_profile_id
-
-            steps.append(
-                {
-                    "type": "train",
-                    "description": f"Train: {train_id}",
-                    "operations": [op],
                 }
             )
 

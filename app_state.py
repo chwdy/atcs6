@@ -16,10 +16,8 @@ import threading
 from session_state import SessionState, derive_session_state
 
 from network import RailwayNetwork
-from path_dispatcher import PathDispatcher
 from persistence import PersistenceManager
 from simulation import SimulationController
-from speed_profile import SpeedProfileRegistry
 
 
 @dataclass
@@ -27,7 +25,6 @@ class AppState:
     """Shared runtime container for the server and simulation."""
 
     network: RailwayNetwork
-    path_dispatcher: PathDispatcher
     sim_controller: SimulationController
     persistence_manager: PersistenceManager
     simulation_lock: threading.Lock
@@ -38,8 +35,8 @@ class AppState:
     # fresh controller and must not reset it; only a process restart does.
     operating_time: float = 0.0
     # Set while the session is in Setup: the operator is building and testing
-    # the rig, and the Setup tools own the outputs (design_new.md "Session
-    # state", "Hardware setup", Setup).
+    # the rig, and the Setup tools own the outputs (design_v2.md "Session
+    # state").
     setup_active: bool = False
 
     def session_state(self) -> SessionState:
@@ -49,33 +46,3 @@ class AppState:
         return derive_session_state(
             self.sim_controller, setup_active=self.setup_active
         )
-
-    def __post_init__(self) -> None:
-        """Hand the runtime the seams it reaches `AppState` through.
-
-        The `operating_time` accumulator stays here — a layout load builds a
-        fresh `SimulationController` and must not reset it — so the controller
-        only ever reads the value, never owns it.
-        """
-        def _advance(delta_seconds: float) -> None:
-            self.operating_time += max(delta_seconds, 0.0)
-
-        try:
-            self.sim_controller.operating_clock = lambda: self.operating_time
-            self.sim_controller.operating_clock_advance = _advance
-        except AttributeError:
-            # A stand-in controller that accepts no attributes (a smoke-test
-            # double) keeps its own fallback clock; see
-            # `SimulationController.operating_clock`.
-            pass
-
-    @property
-    def speed_profile_registry(self) -> SpeedProfileRegistry:
-        """The single speed-profile store, owned by the network.
-
-        Returns ``network.speed_profiles`` so the REST API, the services
-        (``speed_profile_service`` / ``train_service``), and the running
-        simulation (``TrainPhysics`` / ``TrainController``) all read and
-        write one object. There is no separate copy to keep in sync.
-        """
-        return self.network.speed_profiles

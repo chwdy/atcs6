@@ -9,31 +9,25 @@ exceptions instead of returning Flask responses.
 Run with: ``conda run -n general python -m pytest tests/test_services.py -q``
 """
 
-from datetime import datetime
 import threading
 
 import pytest
 
 from app_state import AppState
 from network import RailwayNetwork
-from path_dispatcher import PathDispatcher
 from persistence import PersistenceManager
 from simulation import SimulationController
 from track import Tile
-from train import Train, TrainCar
 
 from entity_ids import block_id_for_segment, segment_id_for_block
 from services import ConflictError, GoneError, NotFoundError, ValidationError
-from tests.segment_test_helpers import make_segment_block, make_segment_block_with_tracks
+from tests.segment_test_helpers import make_segment_block
 from services import (
     block_service,
     platform_service,
     segment_service,
-    speed_profile_service,
     switch_service,
     track_service,
-    train_route_service,
-    train_service,
 )
 
 
@@ -41,347 +35,24 @@ from services import (
 def state():
     """Fresh AppState with no HTTP layer attached."""
     network = RailwayNetwork()
-    path_dispatcher = PathDispatcher(network)
-    sim_controller = SimulationController(network, path_dispatcher)
+    sim_controller = SimulationController(network)
     persistence_manager = PersistenceManager(storage_dir="layouts")
 
     return AppState(
         network=network,
-        path_dispatcher=path_dispatcher,
         sim_controller=sim_controller,
         persistence_manager=persistence_manager,
         simulation_lock=threading.Lock(),
     )
 
 
-@pytest.fixture
-def state_with_train(state):
-    """AppState with one train registered."""
-    car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length_cm=20.0)
-    train = Train(train_id="TRAIN_A", consist=[car], max_speed=80.0)
-    # Every train owns an instance profile (design_new.md "SpeedProfile").
-    train.speed_profile_id = state.network.speed_profiles.create_instance(
-        max_speed_kmh=80.0
-    ).profile_id
-    state.network.add_train(train)
-    return state
-
 
 # ---------------------------------------------------- train_route_service ----
 
 
-class TestTrainRouteService:
-    def test_create_route_no_http(self, state):
-        """`create_route` registers a Route and returns it. No Flask required."""
-        route = train_route_service.create_route(
-            state,
-            route_id="ROUTE_T1",
-            name="Test Route",
-            mode="one_off",
-            tasks=[{"task_kind": "stop", "task_location": "STA_X"}],
-        )
-
-        assert route.route_id == "ROUTE_T1"
-        assert route.name == "Test Route"
-        assert route.mode.value == "one_off"
-
-        registry = state.sim_controller.route_executor.route_registry
-        assert "ROUTE_T1" in registry
-        assert registry["ROUTE_T1"] is route
-
-    def test_create_route_invalid_mode_raises_validation(self, state):
-        """An unknown mode string surfaces as ValidationError."""
-        with pytest.raises(ValidationError):
-            train_route_service.create_route(
-                state, route_id="ROUTE_BAD", mode="not_a_mode"
-            )
-
-    def test_update_then_delete_route(self, state_with_train):
-        """`update_route` flips name; `delete_route` clears the registry."""
-        train_route_service.create_route(
-            state_with_train, route_id="ROUTE_T2", name="Initial",
-            tasks=[{"task_kind": "stop", "task_location": "STA_X"}],
-        )
-        updated = train_route_service.update_route(
-            state_with_train, "ROUTE_T2", name="Renamed"
-        )
-        assert updated.name == "Renamed"
-        assert updated.last_edited_at is not None
-
-        train_route_service.delete_route(state_with_train, "ROUTE_T2")
-        registry = state_with_train.sim_controller.route_executor.route_registry
-        assert "ROUTE_T2" not in registry
-
-    def test_assigning_train_to_new_route_unassigns_previous(self, state_with_train):
-        """design_new.md "Route assignment writers" — a train is assigned to
-        at most one route. A route create/update that assigns an already-
-        assigned train unassigns it from its previous route first (no
-        double-assignment across routes).
-
-        Both routes are circular: an emptied ONE_OFF route is deleted when the
-        assignment moves off it, which is a separate rule."""
-        tasks = [
-            {"task_kind": "stop", "task_location": "STA_X"},
-            {"task_kind": "stop", "task_location": "STA_Y"},
-        ]
-        r1 = train_route_service.create_route(
-            state_with_train, route_id="ROUTE_R1", name="r1", mode="circular",
-            assigned_train_ids=["TRAIN_A"], tasks=tasks,
-        )
-        assert "TRAIN_A" in r1.assigned_train_ids
-
-        # Creating a second route assigned to the same train moves the assignment.
-        r2 = train_route_service.create_route(
-            state_with_train, route_id="ROUTE_R2", name="r2", mode="circular",
-            assigned_train_ids=["TRAIN_A"], tasks=tasks,
-        )
-        assert "TRAIN_A" in r2.assigned_train_ids
-        assert "TRAIN_A" not in r1.assigned_train_ids
-
-        # Updating R1 to re-add the train moves it back (and off R2).
-        train_route_service.update_route(
-            state_with_train, "ROUTE_R1", assigned_train_ids=["TRAIN_A"],
-        )
-        assert "TRAIN_A" in r1.assigned_train_ids
-        assert "TRAIN_A" not in r2.assigned_train_ids
-
-    def test_require_route_raises_not_found(self, state):
-        """`require_route` raises NotFoundError; `get_route` returns None."""
-        assert train_route_service.get_route(state, "MISSING") is None
-        with pytest.raises(NotFoundError):
-            train_route_service.require_route(state, "MISSING")
-
-    def test_create_route_with_no_tasks_rejected(self, state):
-        """The server stores only complete routes (design_new.md
-        "Route-definition validation"): a route with no tasks is rejected at
-        creation, so no train can be assigned to an empty walk that would
-        finish on the first tick."""
-        with pytest.raises(ValidationError, match="at least one non-dwell task"):
-            train_route_service.create_route(
-                state, route_id="ROUTE_EMPTY", name="empty", mode="one_off"
-            )
-        assert train_route_service.get_route(state, "ROUTE_EMPTY") is None
-
-
-class TestRouteDefinitionValidation:
-    """design_new.md "Route-definition validation": every rule — the
-    dwell-follow rule, the CIRCULAR / ROUND_TRIP distinct-location guard, the
-    priority range, non-dwell-exists, and the terminal-task requirement — is
-    enforced at create/update, so every stored route is complete."""
-
-    def _stop(self, loc):
-        return {"task_kind": "stop", "task_location": loc}
-
-    def _dwell(self, loc):
-        return {"task_kind": "dwell", "task_location": loc, "task_time": 5.0}
-
-    def _waypoint(self, loc):
-        return {"task_kind": "waypoint", "task_location": loc}
-
-    def test_create_rejects_dwell_not_following_stop_or_run(self, state):
-        with pytest.raises(ValidationError, match="directly follow a stop or run"):
-            train_route_service.create_route(
-                state, route_id="R", mode="one_off",
-                tasks=[self._waypoint("A"), self._dwell("A")],
-            )
-
-    def test_create_rejects_dwell_at_different_location(self, state):
-        with pytest.raises(ValidationError, match="same task_location"):
-            train_route_service.create_route(
-                state, route_id="R", mode="one_off",
-                tasks=[self._stop("A"), self._dwell("B")],
-            )
-
-    def test_create_rejects_circular_with_one_location(self, state):
-        with pytest.raises(ValidationError, match="two non-dwell tasks"):
-            train_route_service.create_route(
-                state, route_id="R", mode="circular",
-                tasks=[self._stop("A"), self._stop("A")],
-            )
-
-    def test_create_rejects_round_trip_with_one_location(self, state):
-        with pytest.raises(ValidationError, match="two non-dwell tasks"):
-            train_route_service.create_route(
-                state, route_id="R", mode="round_trip",
-                tasks=[self._stop("A"), self._waypoint("A")],
-            )
-
-    def test_create_rejects_priority_out_of_range(self, state):
-        with pytest.raises(ValidationError, match="0..9"):
-            train_route_service.create_route(
-                state, route_id="R", mode="one_off",
-                tasks=[self._stop("A")], priority=15,
-            )
-
-    def test_create_accepts_valid_stop_dwell_and_distinct_circular(self, state):
-        # A terminal stop followed by a dwell at the same location is valid.
-        train_route_service.create_route(
-            state, route_id="R1", mode="one_off",
-            tasks=[self._stop("A"), self._dwell("A")],
-        )
-        # A CIRCULAR route with two distinct locations is valid.
-        train_route_service.create_route(
-            state, route_id="R2", mode="circular",
-            tasks=[self._stop("A"), self._stop("B")],
-        )
-
-    def test_create_rejects_non_circular_without_terminal_stop(self, state):
-        with pytest.raises(ValidationError, match="end in a stop or run"):
-            train_route_service.create_route(
-                state, route_id="R", mode="one_off",
-                tasks=[self._waypoint("A"), self._waypoint("B")],
-            )
-
-    def test_create_accepts_waypoint_only_circular(self, state):
-        # A CIRCULAR route never terminates, so it needs no stop.
-        train_route_service.create_route(
-            state, route_id="R", mode="circular",
-            tasks=[self._waypoint("A"), self._waypoint("B")],
-        )
-
-    def test_update_rejects_removing_the_terminal_stop(self, state):
-        train_route_service.create_route(
-            state, route_id="R", mode="one_off", tasks=[self._stop("A")],
-        )
-        with pytest.raises(ValidationError, match="end in a stop or run"):
-            train_route_service.update_route(
-                state, "R", tasks=[self._waypoint("A")],
-            )
-
 
 # ------------------------------------------------- speed_profile_service ----
 
-
-class TestSpeedProfileService:
-    """design_new.md "SpeedProfile", Editing a profile by hand. The rules on
-    models, sets, copies, reset and deletes are covered in
-    tests/test_models_sets_instances.py."""
-
-    @staticmethod
-    def _set(state, **values):
-        registry = state.speed_profile_registry
-        model = registry.add_model("Kato EF66")
-        the_set = registry.create_set(model.model_id, "1", registry.get(0))
-        for key, value in values.items():
-            setattr(the_set, key, value)
-        return the_set
-
-    def test_the_default_profile_is_listed(self, state):
-        ids = [p.profile_id for p in speed_profile_service.list_profiles(state)]
-        assert 0 in ids
-        assert speed_profile_service.profile_view(state, 0)["kind"] == "default"
-
-    def test_the_registry_is_the_network_store(self, state):
-        assert state.speed_profile_registry is state.network.speed_profiles
-
-    def test_update_keeps_calibrated_at(self, state):
-        the_set = self._set(state, calibrated_at="2026-11-08T03:37:42+00:00")
-        updated = speed_profile_service.update_profile(
-            state, the_set.profile_id,
-            data={"calibrated_at": None, "acceleration_rate": 7.0},
-        )
-        assert updated.calibrated_at == "2026-11-08T03:37:42+00:00"
-        assert updated.acceleration_rate == 7.0
-
-    def test_update_keeps_the_fields_the_body_leaves_out(self, state):
-        the_set = self._set(state, acceleration_rate=7.0)
-        updated = speed_profile_service.update_profile(
-            state, the_set.profile_id, data={"deceleration_rate": 9.0}
-        )
-        assert updated.acceleration_rate == 7.0
-        assert updated.deceleration_rate == 9.0
-
-    def test_a_lighting_voltage_stays_below_the_starting_voltage(self, state):
-        the_set = self._set(state)
-        updated = speed_profile_service.update_profile(
-            state, the_set.profile_id, data={"lighting_voltage": 0.8}
-        )
-        assert updated.lighting_voltage == 0.8
-        with pytest.raises(ValidationError, match="lighting voltage"):
-            speed_profile_service.update_profile(
-                state, the_set.profile_id, data={"lighting_voltage": 1.0}
-            )
-        with pytest.raises(ValidationError):
-            speed_profile_service.update_profile(
-                state, the_set.profile_id, data={"lighting_voltage": -0.1}
-            )
-
-    def test_a_starting_voltage_at_or_above_max_voltage_is_refused(self, state):
-        the_set = self._set(state)
-        with pytest.raises(ValidationError, match="max_voltage"):
-            speed_profile_service.update_profile(
-                state, the_set.profile_id, data={"starting_voltage": 12.0}
-            )
-
-    def test_an_ato_minimum_voltage_stays_on_the_measured_part_of_the_curve(self, state):
-        the_set = self._set(state)
-        first = the_set.first_point_voltage
-        with pytest.raises(ValidationError, match="ATO minimum"):
-            speed_profile_service.update_profile(
-                state, the_set.profile_id, data={"ato_min_voltage": first - 0.1}
-            )
-        updated = speed_profile_service.update_profile(
-            state, the_set.profile_id, data={"ato_min_voltage": first + 1.0}
-        )
-        assert updated.ato_min_voltage == first + 1.0
-
-    def test_a_changed_curve_or_starting_voltage_clears_the_ato_minimum_voltage(self, state):
-        the_set = self._set(state)
-        speed_profile_service.update_profile(
-            state, the_set.profile_id, data={"ato_min_voltage": 6.0}
-        )
-        registry = state.speed_profile_registry
-        speed_profile_service.update_profile(
-            state, the_set.profile_id, data={"lighting_voltage": 0.5}
-        )
-        assert registry.get(the_set.profile_id).ato_min_voltage == 6.0
-        speed_profile_service.update_profile(
-            state, the_set.profile_id, data={"starting_voltage": 1.2}
-        )
-        assert registry.get(the_set.profile_id).ato_min_voltage is None
-        speed_profile_service.update_profile(
-            state, the_set.profile_id,
-            data={"starting_voltage": 1.3, "ato_min_voltage": 5.0},
-        )
-        assert registry.get(the_set.profile_id).ato_min_voltage == 5.0
-
-    def test_max_voltage_must_match_the_curve(self, state):
-        the_set = self._set(state)
-        with pytest.raises(ValidationError, match="max_voltage"):
-            speed_profile_service.update_profile(
-                state, the_set.profile_id, data={"max_voltage": 14.0}
-            )
-
-    def test_a_curve_must_stay_invertible_and_keep_two_points(self, state):
-        the_set = self._set(state)
-        with pytest.raises(ValidationError, match="speed must not fall"):
-            speed_profile_service.update_profile(
-                state, the_set.profile_id,
-                data={"voltage_speed_curve": [[3, 50], [6, 40], [12, 80]]},
-            )
-        with pytest.raises(ValidationError, match="two points"):
-            speed_profile_service.update_profile(
-                state, the_set.profile_id, data={"voltage_speed_curve": [[12, 80]]}
-            )
-        updated = speed_profile_service.update_profile(
-            state, the_set.profile_id,
-            data={"voltage_speed_curve": [[3, 20], [6, 50], [9, 50], [12, 80]]},
-        )
-        assert updated.voltage_speed_curve == [(3, 20), (6, 50), (9, 50), (12, 80)]
-
-    def test_an_instance_profile_takes_every_field_by_hand(self, state_with_train):
-        train = state_with_train.network.trains["TRAIN_A"]
-        updated = speed_profile_service.update_profile(
-            state_with_train, train.speed_profile_id,
-            data={"acceleration_rate": 4.0, "lighting_voltage": 0.6},
-        )
-        assert updated.acceleration_rate == 4.0
-        assert updated.is_instance
-        assert updated.parent_profile_id == 0
-
-    def test_an_unknown_profile_is_not_found(self, state):
-        with pytest.raises(NotFoundError):
-            speed_profile_service.update_profile(state, 999, data={"acceleration_rate": 1})
 
 
 # -------------------------------------------------------- switch_service ----
@@ -431,14 +102,6 @@ class TestSwitchService:
         assert updated.name == "Renamed"
         assert updated.main_length_cm == 12.5
 
-    def test_disable_occupied_switch_raises_conflict(self, state_with_switch_track):
-        """Enabling `disabled` on an occupied switch is rejected (HTTP 409)."""
-        state = state_with_switch_track
-        switch = switch_service.create_switch_at_track(state, 5, 0, data={})
-        switch.add_route_occupant(frozenset({"N", "S"}), "TRAIN_A")
-        with pytest.raises(ConflictError):
-            switch_service.update_switch(state, "SW_5_0", data={"disabled": True})
-        assert switch.disabled is False  # rejected, not applied
 
     def test_disable_free_switch_succeeds(self, state_with_switch_track):
         """A free switch accepts the availability flags."""
@@ -479,141 +142,6 @@ class TestSwitchService:
 # --------------------------------------------------------- train_service ----
 
 
-class TestTrainService:
-    def test_require_train_raises_not_found(self, state):
-        assert train_service.get_train(state, "UNIDENTIFIED") is None
-        with pytest.raises(NotFoundError):
-            train_service.require_train(state, "UNIDENTIFIED")
-
-    def test_create_train_editor_path(self, state):
-        """No-position create builds + registers a train, no Flask required."""
-        train = train_service.create_train(state, train_id="T_NEW", max_speed_kmh=90.0)
-        assert train.train_id == "T_NEW"
-        assert state.network.trains.get("T_NEW") is train
-        assert train.max_speed == 90.0
-
-    def test_create_train_missing_id_raises_validation(self, state):
-        with pytest.raises(ValidationError):
-            train_service.create_train(state, train_id="")
-
-    def test_update_train_fields(self, state_with_train):
-        train = train_service.update_train(
-            state_with_train, "TRAIN_A", max_speed=55.0, car_number="C9"
-        )
-        assert train.max_speed == 55.0
-        assert train.car_number == "C9"
-
-    def test_update_train_length_changes_the_train_length(self, state_with_train):
-        train = train_service.update_train(state_with_train, "TRAIN_A", length_cm=14)
-        assert train.length_cm == 14.0
-
-    def test_update_train_bad_value_raises_validation(self, state_with_train):
-        with pytest.raises(ValidationError, match="max_speed"):
-            train_service.update_train(
-                state_with_train, "TRAIN_A", max_speed="not-a-number"
-            )
-
-    def test_update_train_unknown_raises_not_found(self, state):
-        with pytest.raises(NotFoundError):
-            train_service.update_train(state, "UNIDENTIFIED", max_speed=10.0)
-
-    def test_delete_train(self, state_with_train):
-        assert train_service.delete_train(state_with_train, "TRAIN_A") is True
-        assert train_service.get_train(state_with_train, "TRAIN_A") is None
-
-    def test_delete_unknown_raises_not_found(self, state):
-        with pytest.raises(NotFoundError):
-            train_service.delete_train(state, "UNIDENTIFIED")
-
-    def test_assign_speed_profile_missing_id_raises_validation(self, state_with_train):
-        with pytest.raises(ValidationError):
-            train_service.assign_speed_profile(
-                state_with_train, "TRAIN_A", profile_id=""
-            )
-
-    def test_assign_speed_profile_unknown_profile_raises_validation(
-        self, state_with_train
-    ):
-        with pytest.raises(ValidationError):
-            train_service.assign_speed_profile(
-                state_with_train, "TRAIN_A", profile_id=999
-            )
-
-    def test_assign_speed_profile_copies_a_set_into_the_trains_instance(
-        self, state_with_train
-    ):
-        registry = state_with_train.speed_profile_registry
-        model = registry.add_model("Kato EF66")
-        the_set = registry.create_set(model.model_id, "1", registry.get(0))
-        train = state_with_train.network.trains["TRAIN_A"]
-        instance_id = train.speed_profile_id
-        train_service.assign_speed_profile(
-            state_with_train, "TRAIN_A", profile_id=the_set.profile_id
-        )
-        assert train.speed_profile_id == instance_id
-        assert registry.get(instance_id).parent_profile_id == the_set.profile_id
-
-    def test_assign_speed_profile_takes_the_default(self, state_with_train):
-        train = train_service.assign_speed_profile(
-            state_with_train, "TRAIN_A", profile_id=0
-        )
-        instance = state_with_train.speed_profile_registry.get(train.speed_profile_id)
-        assert instance.parent_profile_id == 0
-
-    def test_assign_route_unknown_train_raises_not_found(self, state):
-        with pytest.raises(NotFoundError):
-            train_service.assign_route(state, "UNIDENTIFIED", route_id=None)
-
-    def test_assign_route_unknown_route_raises_not_found(self, state_with_train):
-        with pytest.raises(NotFoundError):
-            train_service.assign_route(state_with_train, "TRAIN_A", route_id="UNIDENTIFIED")
-
-    def test_assign_route_empty_route_raises_validation(self, state_with_train):
-        # The service never stores an empty route, so register one directly to
-        # exercise the assignment guard.
-        from train_route import Route
-
-        state_with_train.sim_controller.route_executor.register_route(
-            Route(route_id="R_EMPTY", name="empty")
-        )
-        with pytest.raises(ValidationError, match="no tasks"):
-            train_service.assign_route(state_with_train, "TRAIN_A", route_id="R_EMPTY")
-
-    def test_assign_route_success_replace_and_same_route(self, state_with_train):
-        """Assign succeeds; same-route is idempotent; a different route
-        replaces the current one with no extra flag (design_new.md "Route
-        assignment writers")."""
-        state = state_with_train
-        train_route_service.create_route(
-            state, route_id="R1", name="r1",
-            tasks=[{"task_kind": "stop", "task_location": "STA_X"}],
-        )
-        train_route_service.create_route(
-            state, route_id="R2", name="r2",
-            tasks=[{"task_kind": "stop", "task_location": "STA_Y"}],
-        )
-
-        train_service.assign_route(state, "TRAIN_A", route_id="R1")
-        executor = state.sim_controller.route_executor
-        assert executor.assigned_route_id_for("TRAIN_A") == "R1"
-
-        # Same-route assign is an idempotent no-op success.
-        train_service.assign_route(state, "TRAIN_A", route_id="R1")
-        assert executor.assigned_route_id_for("TRAIN_A") == "R1"
-
-        # A different route retargets to R2.
-        train_service.assign_route(state, "TRAIN_A", route_id="R2")
-        assert executor.assigned_route_id_for("TRAIN_A") == "R2"
-
-    def test_set_mode_invalid_raises_validation(self, state_with_train):
-        with pytest.raises(ValidationError):
-            train_service.set_mode(state_with_train, "TRAIN_A", mode="bogus")
-
-    def test_power_on_returns_command_result(self, state_with_train):
-        """Operator commands return the controller's CommandResult."""
-        result = train_service.power_on(state_with_train, "TRAIN_A")
-        assert hasattr(result, "success")
-
 
 # --------------------------------------------------------- block_service ----
 
@@ -629,10 +157,6 @@ def _straight_ew(state, xs):
 class TestBlockService:
     """Grouping + config surface. Geometry lives on segments (see below)."""
 
-    def test_require_block_raises_not_found(self, state):
-        assert block_service.get_block(state, "UNIDENTIFIED") is None
-        with pytest.raises(NotFoundError):
-            block_service.require_block(state, "UNIDENTIFIED")
 
     def test_create_block_groups_segments(self, state):
         _straight_ew(state, range(4))
@@ -871,10 +395,6 @@ class TestSegmentService:
 
 
 class TestTrackService:
-    def test_get_and_require_track(self, state):
-        assert track_service.get_track(state, 9, 9) is None
-        with pytest.raises(NotFoundError):
-            track_service.require_track(state, 9, 9)
 
     def test_update_missing_raises_not_found(self, state):
         with pytest.raises(NotFoundError):
@@ -928,43 +448,6 @@ class TestTrackService:
         assert result["deleted"] == [[0, 0], [1, 0]]
         assert track_service.get_track(state, 0, 0) is None
 
-    # H4: editor connectivity edits must refresh switch flank protection so it
-    # cannot go stale and corrupt acquisition (design_new.md "Flank
-    # protection computation"). Spy on the recompute to assert each edit
-    # path triggers it.
-    def _spy_flank(self, state, monkeypatch):
-        calls = []
-        monkeypatch.setattr(
-            state.network,
-            "recompute_all_flank_protection",
-            lambda: calls.append(1),
-        )
-        return calls
-
-    def test_delete_track_recomputes_flank(self, state, monkeypatch):
-        state.network.add_track(Tile(x=0, y=0, track_bits=2))
-        calls = self._spy_flank(state, monkeypatch)
-        track_service.delete_track(state, 0, 0)
-        assert calls, "delete_track must recompute switch flank protection"
-
-    def test_update_track_recomputes_flank(self, state, monkeypatch):
-        state.network.add_track(Tile(x=0, y=0, track_bits=2))
-        calls = self._spy_flank(state, monkeypatch)
-        track_service.update_track(state, 0, 0, data={"track_bits": 1})
-        assert calls, "update_track must recompute switch flank protection"
-
-    def test_add_tracks_bulk_recomputes_flank(self, state, monkeypatch):
-        calls = self._spy_flank(state, monkeypatch)
-        track_service.add_tracks_bulk(
-            state, tracks_data=[{"x": 0, "y": 0, "track_bits": 2}]
-        )
-        assert calls, "add_tracks_bulk must recompute switch flank protection"
-
-    def test_delete_tracks_bulk_recomputes_flank(self, state, monkeypatch):
-        state.network.add_track(Tile(x=0, y=0, track_bits=2))
-        calls = self._spy_flank(state, monkeypatch)
-        track_service.delete_tracks_bulk(state, positions=[[0, 0]])
-        assert calls, "delete_tracks_bulk must recompute switch flank protection"
 
 
 # ------------------------------------------------------ platform_service ----
@@ -1046,54 +529,3 @@ class TestPlatformService:
     def test_remove_tile_unknown_platform_raises_not_found(self, state):
         with pytest.raises(NotFoundError):
             platform_service.remove_tile(state, "UNIDENTIFIED", x=0, y=0)
-
-
-class TestRouteServiceLeadingDwell:
-    """design_new.md "Route-definition validation" — a route's first task must
-    not be a dwell."""
-
-    def test_create_route_rejects_leading_dwell(self, state):
-        with pytest.raises(ValidationError):
-            train_route_service.create_route(
-                state,
-                name="bad-leading-dwell",
-                tasks=[
-                    {"task_kind": "dwell", "task_location": "B1"},
-                    {"task_kind": "stop", "task_location": "B2"},
-                ],
-            )
-
-    def test_update_route_rejects_leading_dwell(self, state):
-        route = train_route_service.create_route(
-            state,
-            name="ok",
-            tasks=[{"task_kind": "stop", "task_location": "B1"}],
-        )
-        with pytest.raises(ValidationError):
-            train_route_service.update_route(
-                state,
-                route.route_id,
-                # A new name alongside the invalid task list: the rejection must
-                # not partially apply the name before validating the tasks.
-                name="renamed",
-                tasks=[
-                    {"task_kind": "dwell", "task_location": "B1"},
-                    {"task_kind": "stop", "task_location": "B2"},
-                ],
-            )
-        # Validate-then-mutate: the rejected update left the live route untouched
-        # (name and the original single stop task both unchanged).
-        assert route.name == "ok"
-        assert [t.task_kind for t in route.tasks] == ["stop"]
-
-    def test_create_route_allows_leading_stop_then_dwell(self, state):
-        route = train_route_service.create_route(
-            state,
-            name="good",
-            tasks=[
-                {"task_kind": "stop", "task_location": "B1"},
-                {"task_kind": "dwell", "task_location": "B1"},
-            ],
-        )
-        assert route.tasks[0].task_kind == "stop"
-        assert route.tasks[1].task_kind == "dwell"

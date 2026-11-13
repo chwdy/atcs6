@@ -21,7 +21,6 @@ import pytest
 
 from bootstrap import create_demo_network
 from enums import OperationMode
-from path_dispatcher import PathDispatcher
 from simulation import SimulationController
 from tools import cut_reading_log
 from tools.reading_replay import (
@@ -112,9 +111,7 @@ def test_a_cut_from_the_middle_holds_the_runs_readings(tmp_path):
 def build_replay(passes, environment_active=True):
     replay_input = ReplayOccupancyInput(passes)
     network = create_demo_network(scene="demo7_1")
-    sim = SimulationController(
-        network,
-        PathDispatcher(network),
+    sim = SimulationController(network,
         operation_mode=OperationMode.REAL_HARDWARE,
         input_interface=replay_input,
         environment_active=environment_active,
@@ -151,7 +148,7 @@ def test_a_pass_the_replay_does_not_read_is_reported():
 def test_the_player_refuses_a_controller_that_reads_something_else():
     passes = load_passes(RECORDING, to_pass=5)
     network = create_demo_network(scene="demo7_1")
-    sim = SimulationController(network, PathDispatcher(network))
+    sim = SimulationController(network)
     with pytest.raises(ValueError, match="does not read this ReplayOccupancyInput"):
         ReadingPlayer(sim, ReplayOccupancyInput(passes), passes)
 

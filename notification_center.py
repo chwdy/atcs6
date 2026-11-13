@@ -12,7 +12,6 @@ import json
 import os
 import time
 from dataclasses import dataclass, field
-from enum import Enum
 from typing import Any, Callable, Dict, List, Optional
 
 from constants import NOTIFICATION_RETENTION_ROWS
@@ -76,19 +75,7 @@ def train_ref(train_id: str) -> EntityRef:
     return EntityRef("train", str(train_id))
 
 
-def route_run_ref(run_id: str) -> EntityRef:
-    return EntityRef("route_run", str(run_id))
 
-
-def walk_position_ref(run_id: str, index: int) -> EntityRef:
-    """A task ref. Its id is the `RouteRun` id and the integer walk index
-    joined by `"#"`, so a run-level filter and a task-level filter both find an
-    event about a task."""
-    return EntityRef("walk_position", f"{run_id}#{int(index)}")
-
-
-def path_ref(path_id: str) -> EntityRef:
-    return EntityRef("path", str(path_id))
 
 
 def block_ref(block_id: str) -> EntityRef:
@@ -351,51 +338,6 @@ class NotificationCenter:
         """
         self._active_conditions.pop(condition_key, None)
 
-    def latest_error_for(
-        self,
-        entity_type: str,
-        entity_id: str,
-        operation: Optional[str] = None,
-        origin: Optional[str] = None,
-    ) -> Optional[Notification]:
-        """The most recent retained `warning`/`error` event for that entity
-        whose condition is still active, narrowed by `operation` and `origin`
-        when given, or `None` (design_new.md "Error events", Reading the
-        current reason).
-
-        This combines the retained event row with the runtime active-condition
-        map: an event is a candidate only while it is still the live occurrence
-        of an unresolved `condition_key`. It never returns a condition that its
-        owner has resolved, and it never returns an error that was emitted with
-        no condition key — those live on only as history, which the event-log
-        viewers read directly. After a restart the active map begins empty and
-        is repopulated as live predicates are re-evaluated, so a still-present
-        condition emits a fresh event and becomes current again.
-
-        The `error is not None` and `kind in ERROR_KINDS` tests keep ordinary
-        `info` traffic and level-but-diagnostic-free events out of the answer.
-        This derived read is how a surface answers "why is this train not
-        moving" or "what happened at this task".
-        """
-        if not self._active_conditions:
-            return None
-        # The events that are currently the live occurrence of some condition.
-        # Identity, not equality: each suppressible emit registers exactly one
-        # distinct Notification under its key.
-        active_events = {id(n) for n in self._active_conditions.values()}
-        for n in reversed(self._archive):
-            if id(n) not in active_events:
-                continue
-            if n.error is None or n.kind not in ERROR_KINDS:
-                continue
-            if not n.has_entity(entity_type, entity_id):
-                continue
-            if operation is not None and n.operation != operation:
-                continue
-            if origin is not None and n.error.origin != origin:
-                continue
-            return n
-        return None
 
     def events_for(
         self,

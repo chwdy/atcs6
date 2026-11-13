@@ -21,7 +21,6 @@ import pytest
 from app_factory import create_app
 from app_state import AppState
 from network import RailwayNetwork
-from path_dispatcher import PathDispatcher
 from persistence import PersistenceManager
 from services import platform_service, track_service
 from simulation import SimulationController
@@ -45,11 +44,9 @@ def net() -> RailwayNetwork:
 @pytest.fixture
 def app_state() -> AppState:
     network = _network_with_ew_tracks(4)
-    path_dispatcher = PathDispatcher(network)
-    sim_controller = SimulationController(network, path_dispatcher)
+    sim_controller = SimulationController(network)
     return AppState(
         network=network,
-        path_dispatcher=path_dispatcher,
         sim_controller=sim_controller,
         persistence_manager=PersistenceManager(storage_dir="layouts"),
         simulation_lock=threading.Lock(),

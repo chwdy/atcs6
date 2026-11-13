@@ -50,7 +50,6 @@ export interface OperateHost extends NextHost {
   };
   selectTrain(trainId: string, options?: { showMonitor?: boolean }): void;
   deselectTrain(): void;
-  holdAll(): Promise<void>;
   refreshNetwork(): Promise<void>;
   selectedTrainId: string | null;
   trainMonitor: any;

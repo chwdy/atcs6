@@ -7,25 +7,24 @@ switched mid-run; no code above the interfaces branches on the mode — it
 manifests only as which interfaces are wired.
 """
 
-from block_occupancy import SimulatedOccupancyDriver
+from block_occupancy import InactiveOccupancyInput
 from block_power import SimulatedTrackDriver
 from enums import OperationMode
 from network import RailwayNetwork
-from path_dispatcher import PathDispatcher
 from simulation import SimulationController
 from switch_power import SimulatedSwitchDriver
 
 
 def _sim(**kwargs):
     net = RailwayNetwork()
-    return SimulationController(net, PathDispatcher(net), **kwargs)
+    return SimulationController(net, **kwargs)
 
 
 def test_a_fresh_controller_is_virtual_hardware_with_placeholder_interfaces():
     sim = _sim()
     assert sim.operation_mode == OperationMode.VIRTUAL_HARDWARE
     assert sim.environment_active is False
-    assert isinstance(sim.input_interface, SimulatedOccupancyDriver)
+    assert isinstance(sim.input_interface, InactiveOccupancyInput)
     assert isinstance(sim.power_controller.output_interface, SimulatedTrackDriver)
     assert isinstance(
         sim.switch_output_interface, SimulatedSwitchDriver

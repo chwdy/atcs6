@@ -1,16 +1,12 @@
 """The session state: the one answer to "is the layout live?".
 
 design_v2.md "Session state": the session reads Setup, Live, or Halted with a
-reason, derived on every read from stored flags in this order:
+reason, derived on every read from three stored flags in this order:
 
-1. Halted, `runtime_failure`          `SimulationController.failed_runtime` (v1)
-2. Setup                              `AppState.setup_active`
-3. Halted, `hardware_failure`         `hardware_failure` and no environment active
-4. Halted, `not_activated`            no environment active
-5. Halted, `layout_emergency_cut_out` `SimulationController.layout_cut_out_active` (v1)
-6. Live                               no row above holds
-
-Rows 1 and 5 belong to v1 code that is still being removed.
+1. Setup                      `AppState.setup_active`
+2. Halted, `hardware_failure` `hardware_failure`
+3. Halted, `not_activated`    no environment active
+4. Live                       no row above holds
 
 No command, stage, or event writes the session state; each writes its own flag.
 """
@@ -47,17 +43,10 @@ LIVE = SessionState(SessionStateValue.LIVE)
 
 def derive_session_state(sim_controller, *, setup_active: bool) -> SessionState:
     """The session state for these flags, per the precedence table above."""
-    if getattr(sim_controller, "failed_runtime", False):
-        return SessionState(SessionStateValue.HALTED, HaltReason.RUNTIME_FAILURE)
     if setup_active:
         return SessionState(SessionStateValue.SETUP)
-    environment_active = bool(getattr(sim_controller, "environment_active", True))
-    if not environment_active:
-        if getattr(sim_controller, "hardware_failure", False):
-            return SessionState(SessionStateValue.HALTED, HaltReason.HARDWARE_FAILURE)
+    if getattr(sim_controller, "hardware_failure", False):
+        return SessionState(SessionStateValue.HALTED, HaltReason.HARDWARE_FAILURE)
+    if not getattr(sim_controller, "environment_active", False):
         return SessionState(SessionStateValue.HALTED, HaltReason.NOT_ACTIVATED)
-    if getattr(sim_controller, "layout_cut_out_active", False):
-        return SessionState(
-            SessionStateValue.HALTED, HaltReason.LAYOUT_EMERGENCY_CUT_OUT
-        )
     return LIVE

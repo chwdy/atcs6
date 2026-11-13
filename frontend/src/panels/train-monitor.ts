@@ -235,7 +235,6 @@ class TrainMonitor {
         this.trainId = null;
         this.currentScale = 160;
         
-        this.loadScale();
         
         this.viewDistance = 500; // Default to 5m
         this.hoveredBlock = null;
@@ -491,15 +490,6 @@ class TrainMonitor {
         const cm = this._xToCm(x);
         this.pinnedCm = Math.max(visibleStartCm, Math.min(visibleEndCm, cm));
         this.render();
-    }
-    
-    async loadScale() {
-        try {
-            const data = await api.getScale();
-            this.currentScale = data.scale || 160;
-        } catch (e) {
-            console.error('[TrainMonitor] Failed to load scale:', e);
-        }
     }
     
     resizeCanvas() {

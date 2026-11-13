@@ -27,9 +27,7 @@ export function environmentLabel(environment: string | null | undefined): string
 }
 
 const HALT_LABELS: Record<string, string> = {
-  layout_emergency_cut_out: 'Emergency stop',
   hardware_failure: 'hardware failure',
-  runtime_failure: 'track conflict',
   not_activated: 'not activated',
 };
 
@@ -56,12 +54,8 @@ export function sessionHint(state: SessionStateView | null | undefined): string 
   if (state.value === 'live') return 'Trains may be driven.';
   if (state.value === 'setup') return 'Building and testing the rig. Press Activate to go live.';
   switch (state.halt_reason) {
-    case 'layout_emergency_cut_out':
-      return 'Every train is cut out. Press Reset to release them.';
     case 'hardware_failure':
       return 'Repair the device, then press Activate.';
-    case 'runtime_failure':
-      return 'Sort the conflict out on the layout, then clear it.';
     case 'not_activated':
       return 'Press Activate to go live.';
     default:
@@ -70,8 +64,6 @@ export function sessionHint(state: SessionStateView | null | undefined): string 
 }
 
 export interface SessionControls {
-  /** Reset appears only after Emergency stop. */
-  resetVisible: boolean;
   /** Activate appears in the header when activating is the way to Live: from
    *  Setup, and from a halt for `not_activated` or `hardware_failure`. */
   activateVisible: boolean;
@@ -81,7 +73,6 @@ export interface SessionControls {
 export function sessionControls(state: SessionStateView | null | undefined): SessionControls {
   const value = state?.value;
   return {
-    resetVisible: value === 'halted' && state?.halt_reason === 'layout_emergency_cut_out',
     activateVisible:
       value === 'setup' ||
       (value === 'halted' &&
@@ -104,15 +95,12 @@ export const SETUP_TOOL_HINT = 'Runs only in Setup. Enter Setup from Hardware Se
 
 /**
  * Why Activate cannot be pressed right now, or null when it can. Activate is
- * refused while the session is Live and while it is Halted for
- * `runtime_failure` (design_new.md "Session state", the transition table).
+ * refused while the session is Live (design_v2.md "Session state", the
+ * transition table).
  */
 export function activateUnavailableReason(
   state: SessionStateView | null | undefined
 ): string | null {
   if (state?.value === 'live') return 'The session is Live. Enter Setup before activating.';
-  if (state?.value === 'halted' && state.halt_reason === 'runtime_failure') {
-    return 'Clear the track conflict first.';
-  }
   return null;
 }

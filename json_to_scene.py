@@ -7,8 +7,7 @@ Usage:
 Reads a layout file (the same JSON the editor saves under ``layouts/``) and emits
 a demo_6-style scene module: readable ``TILES`` / ``SWITCHES`` / ``STATIONS`` /
 ``BLOCKS`` / ``TUNNELS`` / ``SIGNALS`` data lists plus the standard builder
-functions, ``SCENE_ID``, ``create_comprehensive_demo()`` and a
-``setup_demo_train()`` stub.
+functions, ``SCENE_ID`` and ``create_comprehensive_demo()``.
 
 How it works
 ------------
@@ -20,9 +19,8 @@ the same JSON and asserts the two networks are equivalent.
 
 Scope / limitations
 -------------------
-* This bakes the LAYOUT only. Train placement and routes are not part of the
-  layout JSON, so ``setup_demo_train()`` is a no-op stub — add scene-specific
-  train logic by hand if needed (see demo_6.py for an example).
+* This bakes the LAYOUT only. Trains are not saved (design_v2.md "Trains");
+  the detectors find them.
 * ``dead_end_ports`` are not emitted: the network re-derives them from the full
   track geometry (verified identical to the stored values).
 * Switches are emitted as ``(switch_id, x, y)``. If a switch carries non-default
@@ -465,17 +463,8 @@ def create_comprehensive_demo() -> RailwayNetwork:
     _add_block_groups(network)
     _add_tunnels(network)
     _add_signals(network)
-    network.recompute_all_flank_protection()
     return network
 
-
-def setup_demo_train(network, path_dispatcher=None, sim_controller=None):
-    """No trains/routes are stored in the layout JSON, so this is a stub.
-
-    Add scene-specific train placement + routes here by hand if the scene needs
-    rolling stock (see demo_6.py for an example).
-    """
-    return
 '''
 
 
@@ -510,8 +499,7 @@ layout instead. Layout only: {len(net.tracks)} tracks, {len(net.switches)} switc
 {len(net.platforms)} platforms ({len(net.station_groups)} station groups),
 {len(net.blocks)} blocks ({n_platform_blocks} auto-created platform blocks),
 {sum(1 for bid, b in net.blocks.items() if _is_grouped(b, bid))} block groups, {len(net.tunnels) // 2} tunnels,
-{len(net.signals)} signals. Trains/routes are not
-part of the layout JSON, so setup_demo_train() is a stub.
+{len(net.signals)} signals.
 """
 
 import logging

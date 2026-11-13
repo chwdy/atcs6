@@ -5,8 +5,6 @@ reason, derived from stored flags in a fixed precedence order. "Runtime loop",
 Which pass runs: Live runs the whole runtime step; Setup runs the stopped pass;
 Halted runs no pass; every iteration consumes a watchdog trip.
 
-The `runtime_failure` and `layout_emergency_cut_out` rows are v1 and are still
-in the code until the v1 train code is removed.
 """
 
 from __future__ import annotations
@@ -24,10 +22,8 @@ from session_state import derive_session_state
 
 def _sim(**flags):
     base = dict(
-        failed_runtime=False,
         hardware_failure=False,
         environment_active=True,
-        layout_cut_out_active=False,
         operation_mode=OperationMode.VIRTUAL_HARDWARE,
         occupancy_is_real=True,
     )
@@ -44,17 +40,6 @@ def test_live_when_no_flag_holds():
     assert state.value is SessionStateValue.LIVE
     assert state.halt_reason is None
     assert state.is_live
-
-
-def test_a_runtime_failure_outranks_everything():
-    state = _derive(
-        _sim(failed_runtime=True, environment_active=False, layout_cut_out_active=True),
-        setup_active=True,
-    )
-    assert (state.value, state.halt_reason) == (
-        SessionStateValue.HALTED,
-        HaltReason.RUNTIME_FAILURE,
-    )
 
 
 def test_setup_outranks_a_hardware_failure():
@@ -74,11 +59,6 @@ def test_an_inactive_environment_without_a_failure_is_not_activated():
     assert state.halt_reason is HaltReason.NOT_ACTIVATED
 
 
-def test_the_cut_out_flag_halts_an_active_session():
-    state = _derive(_sim(layout_cut_out_active=True))
-    assert state.halt_reason is HaltReason.LAYOUT_EMERGENCY_CUT_OUT
-
-
 def test_to_dict():
     state = _derive(_sim(environment_active=False))
     assert state.to_dict() == {"value": "halted", "halt_reason": "not_activated"}
@@ -87,7 +67,6 @@ def test_to_dict():
 def _app_state(sim, *, setup=False):
     state = AppState(
         network=None,
-        path_dispatcher=None,
         sim_controller=sim,
         persistence_manager=None,
         simulation_lock=threading.Lock(),
@@ -100,10 +79,8 @@ def _app_state(sim, *, setup=False):
     "flags,setup,expected",
     [
         ({}, False, PASS_TICK),  # Live
-        ({"failed_runtime": True}, False, PASS_WATCHDOG),
         ({"hardware_failure": True, "environment_active": False}, False, PASS_WATCHDOG),
         ({"environment_active": False}, False, PASS_WATCHDOG),  # not activated
-        ({"layout_cut_out_active": True}, False, PASS_STOPPED),
         ({"environment_active": False}, True, PASS_STOPPED),  # Setup
         # Setup with a hardware failure latched.
         ({"environment_active": False, "hardware_failure": True}, True, PASS_WATCHDOG),
@@ -130,7 +107,7 @@ def _recording_sim(**flags):
         ({}, False, [("run_train_step", True)]),  # Live: the whole step
         ({"environment_active": False}, True, [("run_train_step", False)]),  # Setup
         ({"environment_active": False}, False, []),  # not activated: no pass
-        ({"failed_runtime": True}, False, []),
+        ({"hardware_failure": True, "environment_active": False}, False, []),
     ],
 )
 def test_every_iteration_consumes_a_watchdog_trip_first(flags, setup, step):

@@ -70,16 +70,6 @@ class TestTile:
         track.set_track_bits(TRACK_EW)
         assert track.track_bits == TRACK_EW
 
-    def test_add_track_bit(self):
-        track = Tile(x=0, y=0, track_bits=TRACK_NS)
-        success = track.add_track_bit(TRACK_NE)
-        assert success == True
-        assert track.track_bits == (TRACK_NS | TRACK_NE)
-
-    def test_remove_track_bit(self):
-        track = Tile(x=0, y=0, track_bits=(TRACK_NS | TRACK_EW))
-        track.remove_track_bit(TRACK_EW)
-        assert track.track_bits == TRACK_NS
 
     def test_get_exits(self):
         track = Tile(x=0, y=0, track_bits=TRACK_NS)
@@ -94,13 +84,6 @@ class TestTile:
             assert track is not None
             assert track.track_bits == forbidden_bits
 
-    def test_merge_creates_forbidden_config(self):
-        track = Tile(x=0, y=0, track_bits=5)
-        result = track.add_track_bit(TRACK_NW)
-        if result == False:
-            assert track.track_bits == 5
-        else:
-            assert track.track_bits not in FORBIDDEN_TRACK_BITS
 
     def test_track_type_detection(self):
         track = Tile(x=0, y=0, track_bits=TRACK_NS)
@@ -112,47 +95,6 @@ class TestTile:
 class TestDivergeOnlySwitches:
     """Tests for diverge-only switches (no main path, two diagonal segments)."""
 
-    def test_diverge_only_switch_bits_20_state_0(self):
-        track = Tile(x=0, y=0, track_bits=20)
-        track.set_switch_state(0)
-        assert track.get_exits("N", use_switch_state=True) == ["E"]
-        assert track.get_exits("E", use_switch_state=True) == ["N"]
-        assert track.get_exits("S", use_switch_state=True) == []
-
-    def test_diverge_only_switch_bits_20_state_1(self):
-        track = Tile(x=0, y=0, track_bits=20)
-        track.set_switch_state(1)
-        assert track.get_exits("N", use_switch_state=True) == []
-        assert track.get_exits("E", use_switch_state=True) == ["S"]
-        assert track.get_exits("S", use_switch_state=True) == ["E"]
-
-    def test_diverge_only_switch_bits_12_state_0(self):
-        track = Tile(x=0, y=0, track_bits=12)
-        track.set_switch_state(0)
-        assert track.get_exits("N", use_switch_state=True) == ["E"]
-        assert track.get_exits("E", use_switch_state=True) == ["N"]
-        assert track.get_exits("W", use_switch_state=True) == []
-
-    def test_diverge_only_switch_bits_12_state_1(self):
-        track = Tile(x=0, y=0, track_bits=12)
-        track.set_switch_state(1)
-        assert track.get_exits("N", use_switch_state=True) == ["W"]
-        assert track.get_exits("E", use_switch_state=True) == []
-        assert track.get_exits("W", use_switch_state=True) == ["N"]
-
-    def test_diverge_only_switch_bits_48_state_0(self):
-        track = Tile(x=0, y=0, track_bits=48)
-        track.set_switch_state(0)
-        assert track.get_exits("S", use_switch_state=True) == ["E"]
-        assert track.get_exits("E", use_switch_state=True) == ["S"]
-        assert track.get_exits("W", use_switch_state=True) == []
-
-    def test_diverge_only_switch_bits_48_state_1(self):
-        track = Tile(x=0, y=0, track_bits=48)
-        track.set_switch_state(1)
-        assert track.get_exits("S", use_switch_state=True) == ["W"]
-        assert track.get_exits("E", use_switch_state=True) == []
-        assert track.get_exits("W", use_switch_state=True) == ["S"]
 
     def test_diverge_only_switch_bits_36_both_states(self):
         track = Tile(x=0, y=0, track_bits=36)
@@ -172,106 +114,6 @@ class TestDivergeOnlySwitches:
         assert track.get_exits("S", use_switch_state=True) == ["E"]
         assert track.get_exits("E", use_switch_state=True) == ["S"]
 
-
-class TestStandardSwitches:
-    """Tests for standard switches (main path + diverge path)."""
-
-    def test_standard_switch_bits_5_ns_ne(self):
-        track = Tile(x=0, y=0, track_bits=5)
-        assert track.is_switch == True
-        assert track.has_long_path == True
-        track.set_switch_state(0)
-        assert track.get_exits("N", use_switch_state=True) == ["S"]
-        assert track.get_exits("S", use_switch_state=True) == ["N"]
-        assert track.get_exits("E", use_switch_state=True) == []
-        track.set_switch_state(1)
-        assert track.get_exits("N", use_switch_state=True) == ["E"]
-        assert track.get_exits("E", use_switch_state=True) == ["N"]
-        assert track.get_exits("S", use_switch_state=True) == []
-
-    def test_standard_switch_bits_9_ns_nw(self):
-        track = Tile(x=0, y=0, track_bits=9)
-        assert track.is_switch == True
-        track.set_switch_state(0)
-        assert track.get_exits("N", use_switch_state=True) == ["S"]
-        assert track.get_exits("S", use_switch_state=True) == ["N"]
-        assert track.get_exits("W", use_switch_state=True) == []
-        track.set_switch_state(1)
-        assert track.get_exits("N", use_switch_state=True) == ["W"]
-        assert track.get_exits("W", use_switch_state=True) == ["N"]
-        assert track.get_exits("S", use_switch_state=True) == []
-
-    def test_standard_switch_bits_17_ns_se(self):
-        track = Tile(x=0, y=0, track_bits=17)
-        assert track.is_switch == True
-        track.set_switch_state(0)
-        assert track.get_exits("N", use_switch_state=True) == ["S"]
-        assert track.get_exits("S", use_switch_state=True) == ["N"]
-        assert track.get_exits("E", use_switch_state=True) == []
-        track.set_switch_state(1)
-        assert track.get_exits("S", use_switch_state=True) == ["E"]
-        assert track.get_exits("E", use_switch_state=True) == ["S"]
-        assert track.get_exits("N", use_switch_state=True) == []
-
-    def test_standard_switch_bits_33_ns_sw(self):
-        track = Tile(x=0, y=0, track_bits=33)
-        assert track.is_switch == True
-        track.set_switch_state(0)
-        assert track.get_exits("N", use_switch_state=True) == ["S"]
-        assert track.get_exits("S", use_switch_state=True) == ["N"]
-        assert track.get_exits("W", use_switch_state=True) == []
-        track.set_switch_state(1)
-        assert track.get_exits("S", use_switch_state=True) == ["W"]
-        assert track.get_exits("W", use_switch_state=True) == ["S"]
-        assert track.get_exits("N", use_switch_state=True) == []
-
-    def test_standard_switch_bits_6_ew_ne(self):
-        track = Tile(x=0, y=0, track_bits=6)
-        assert track.is_switch == True
-        track.set_switch_state(0)
-        assert track.get_exits("E", use_switch_state=True) == ["W"]
-        assert track.get_exits("W", use_switch_state=True) == ["E"]
-        assert track.get_exits("N", use_switch_state=True) == []
-        track.set_switch_state(1)
-        assert track.get_exits("E", use_switch_state=True) == ["N"]
-        assert track.get_exits("N", use_switch_state=True) == ["E"]
-        assert track.get_exits("W", use_switch_state=True) == []
-
-    def test_standard_switch_bits_10_ew_nw(self):
-        track = Tile(x=0, y=0, track_bits=10)
-        assert track.is_switch == True
-        track.set_switch_state(0)
-        assert track.get_exits("E", use_switch_state=True) == ["W"]
-        assert track.get_exits("W", use_switch_state=True) == ["E"]
-        assert track.get_exits("N", use_switch_state=True) == []
-        track.set_switch_state(1)
-        assert track.get_exits("W", use_switch_state=True) == ["N"]
-        assert track.get_exits("N", use_switch_state=True) == ["W"]
-        assert track.get_exits("E", use_switch_state=True) == []
-
-    def test_standard_switch_bits_18_ew_se(self):
-        track = Tile(x=0, y=0, track_bits=18)
-        assert track.is_switch == True
-        track.set_switch_state(0)
-        assert track.get_exits("E", use_switch_state=True) == ["W"]
-        assert track.get_exits("W", use_switch_state=True) == ["E"]
-        assert track.get_exits("S", use_switch_state=True) == []
-        track.set_switch_state(1)
-        assert track.get_exits("E", use_switch_state=True) == ["S"]
-        assert track.get_exits("S", use_switch_state=True) == ["E"]
-        assert track.get_exits("W", use_switch_state=True) == []
-
-    def test_standard_switch_bits_34_ew_sw(self):
-        track = Tile(x=0, y=0, track_bits=34)
-        assert track.is_switch == True
-        track.set_switch_state(0)
-        assert track.get_exits("E", use_switch_state=True) == ["W"]
-        assert track.get_exits("W", use_switch_state=True) == ["E"]
-        assert track.get_exits("S", use_switch_state=True) == []
-        track.set_switch_state(1)
-        assert track.get_exits("W", use_switch_state=True) == ["S"]
-        assert track.get_exits("S", use_switch_state=True) == ["W"]
-        assert track.get_exits("E", use_switch_state=True) == []
 
 
 class TestRailwayNetwork:

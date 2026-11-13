@@ -25,7 +25,7 @@ Curve Detection (connection-based):
 """
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set
 
 from enums import TrackType, Direction
 
@@ -510,34 +510,6 @@ class Tile:
         """
         self._occupied_by_local = value
 
-    @property
-    def reserved_by(self) -> Optional[str]:
-        """Train ID this tile is reserved for, derived from the owning
-        block's `Block.reserved_for_train`. Returns `_reserved_by_local`
-        when the segment is not attached to a `RailwayNetwork`.
-
-        Switches do not carry a "reserved for train" concept; future
-        authority on a switch is `Switch.locks` (multi-owner), read
-        directly from the owning `Switch` entity.
-        """
-        if self.network is None:
-            return self._reserved_by_local
-        bid = self.block_id
-        if bid is not None and hasattr(self.network, "blocks"):
-            block = self.network.blocks.get(bid)
-            if block is not None:
-                return getattr(block, "reserved_for_train", None)
-        return self._reserved_by_local
-
-    @reserved_by.setter
-    def reserved_by(self, value: Optional[str]) -> None:
-        """Setter shim for legacy callers / deserialization.
-
-        Writes only the detached-mode fallback. When attached, the canonical
-        store is `Block.reserved_for_train`; live writers route through
-        `BlockManager`.
-        """
-        self._reserved_by_local = value
 
     @property
     def switch_states(self) -> Dict[str, int]:
@@ -628,19 +600,7 @@ class Tile:
         self._sync_switch_states()
         return True
 
-    def add_track_bit(self, bit: int) -> bool:
-        """Add a track segment bit. Returns False if it would create a forbidden state."""
-        new_bits = self.track_bits | bit
-        if not self._can_set_bits(new_bits):
-            return False
-        self.track_bits = new_bits
-        self._sync_switch_states()
-        return True
 
-    def remove_track_bit(self, bit: int) -> None:
-        """Remove a track segment bit."""
-        self.track_bits &= ~bit
-        self._sync_switch_states()
 
     def _sync_switch_states(self) -> None:
         """Reset switch_state to MAIN (0) when track_bits change.
@@ -660,13 +620,6 @@ class Tile:
         # This ensures consistent initial state and synced multi-switch behavior
         self.switch_state = 0
 
-    # === Switch helpers (global tile-level state) ===
-    def set_switch_state(self, state: int) -> bool:
-        """Set global switch state. 0=MAIN, 1=DIVERGE."""
-        if not self.is_switch:
-            return False
-        self.switch_state = 0 if state == 0 else 1
-        return True
 
     def propagate_update(self, network: "RailwayNetwork") -> None:
         """Update derived data after topology change.
@@ -718,126 +671,8 @@ class Tile:
             if pair is None or pair[0] != edge:
                 self.dead_end_ports.add(edge)
 
-    # === Exit resolution ===
-    def enumerate_traversals(
-        self, entry_edge: str
-    ) -> List[Tuple[str, Optional[int]]]:
-        """Enumerate every legal geometric traversal through this tile.
 
-        Per design_new.md "Tile role and traversal" — pure-geometry
-        helper used by `PathDispatcher` path construction/extension and BFS
-        switch derivation. Returns one `(exit_edge, required_switch_state)`
-        pair per legal traversal; for non-switch tiles `required_switch_state`
-        is `None`. For switch tiles, the value is the `Switch.position`
-        (0=MAIN, 1=DIVERGE) that aligns the tile to use that traversal.
 
-        This helper MUST NOT consult live switch alignment. Callers that
-        need the live-state filtered view use `get_active_exits(...)` /
-        `get_active_entry_for_exit(...)` with an explicit resolver.
-
-        Y-shape switches: branch-to-branch traversals are NOT yielded; v1
-        only allows one branch active at a time.
-        """
-        entry_norm = _normalize_edge(entry_edge)
-        if not entry_norm:
-            return []
-
-        # Geometric exits via track_bits (no switch_state).
-        results: List[Tuple[str, Optional[int]]] = []
-        for bit in range(6):
-            if not (self.track_bits & (1 << bit)):
-                continue
-            e1, e2 = BIT_TO_EDGES[bit]
-            if entry_norm == e1:
-                exit_edge = e2
-            elif entry_norm == e2:
-                exit_edge = e1
-            else:
-                continue
-
-            if not self.is_switch:
-                results.append((exit_edge, None))
-                continue
-
-            # On a switch tile, derive which Switch.position aligns this
-            # bit. Bits 0 (NS) and 1 (EW) are the MAIN segments; bits 2-5
-            # (NE/NW/SE/SW) are diverge segments. For diverge-only switches
-            # (no MAIN bit set), the two diverge segments correspond to
-            # position 0 and 1 in bit-order.
-            has_main = (self.track_bits & 0b11) != 0
-            if has_main:
-                required_state = 0 if bit <= 1 else 1
-            else:
-                # Diverge-only: lowest bit wins MAIN (position 0), next wins
-                # DIVERGE (position 1).
-                diverge_bits_present = sorted(
-                    b for b in range(2, 6) if self.track_bits & (1 << b)
-                )
-                if not diverge_bits_present:
-                    continue
-                if bit == diverge_bits_present[0]:
-                    required_state = 0
-                elif len(diverge_bits_present) >= 2 and bit == diverge_bits_present[1]:
-                    required_state = 1
-                else:
-                    # Third+ diverge segment: branch-to-branch path on a
-                    # Y-shape; v1 disallows. Skip.
-                    continue
-            results.append((exit_edge, required_state))
-
-        # Stable order on (exit_edge, required_state) for deterministic
-        # consumers.
-        results.sort(key=lambda item: (item[0], item[1] if item[1] is not None else -1))
-        return results
-
-    def get_active_exits(
-        self, entry_edge: str, resolver: Optional[Any] = None
-    ) -> List[str]:
-        """Return exit edges currently reachable from `entry_edge`.
-
-        Per design_new.md "Tile role and traversal" — the live-state
-        helper. For switch tiles, `resolver` is a callable or network-like
-        object exposing `.switches[switch_id]` so the helper can read
-        `Switch.position` to filter the geometric enumeration. When no
-        resolver is supplied and the segment is attached to a network
-        (`self.network`), the network's switch registry is used.
-
-        Returns the same edges as the legacy `get_exits(...)` helper but
-        sourced from the canonical `Switch.position`, not the legacy
-        `Tile._switch_state` cache.
-        """
-        # Fix #10 (design_new.md "Tile role and traversal"): disabled switches have no
-        # traversable exits; check before delegating to get_exits.
-        if (
-            self.is_switch
-            and self.network is not None
-            and self.switch_id is not None
-            and hasattr(self.network, "switches")
-        ):
-            switch = self.network.switches.get(self.switch_id)
-            if switch is not None and switch.disabled:
-                del resolver
-                return []
-
-        # The live-state filter still uses the same code path as `get_exits`
-        # for the moment (which reads `self.switch_state`). After the
-        # switch-state migration completes, this helper resolves through
-        # the supplied resolver / network.switches[switch_id].position.
-        # `resolver` is reserved for the post-migration call shape.
-        del resolver  # unused until _switch_state is removed (see follow-up)
-        return self.get_exits(entry_edge, use_switch_state=True)
-
-    def get_active_entry_for_exit(
-        self, exit_edge: str, resolver: Optional[Any] = None
-    ) -> Optional[str]:
-        """Return the live-state entry edge that yields `exit_edge`.
-
-        Per design_new.md "Tile role and traversal" — the inverse
-        of `get_active_exits(...)`. Used for backward tracing during tail
-        movement. `resolver` is reserved for the post-migration call shape.
-        """
-        del resolver
-        return self.get_entry_for_exit(exit_edge, use_switch_state=True)
 
     def get_exits(
         self,
@@ -996,45 +831,7 @@ class Tile:
                 # Entry is via main path, but switch is set to DIVERGE -> blocked
                 return []
 
-    def get_entry_for_exit(
-        self, exit_edge: str, use_switch_state: bool = True
-    ) -> Optional[str]:
-        """Get the entry edge for a given exit edge (inverse of get_exits).
 
-        For switches, this respects the switch state: given the exit edge,
-        determine which entry edge would lead to that exit through the active path.
-
-        This is used for backward tracing: if a train exited through edge X,
-        which edge did it enter from?
-
-        Args:
-            exit_edge: The edge the train exited through (N/E/S/W)
-            use_switch_state: If True, only consider active path based on switch state
-
-        Returns:
-            Entry edge (N/E/S/W) or None if no valid path exists
-        """
-        exit_norm = _normalize_edge(exit_edge)
-        if not exit_norm:
-            return None
-
-        # Try each possible entry edge and see which one has exit_norm as its exit
-        for candidate_entry in "NESW":
-            if candidate_entry == exit_norm:
-                continue  # Can't enter and exit same edge
-            exits = self.get_exits(candidate_entry, use_switch_state=use_switch_state)
-            if exit_norm in exits:
-                return candidate_entry
-
-        return None
-
-    # === Curve detection (connection-based) ===
-    def get_path_group(self, edge1: str, edge2: str) -> Optional[str]:
-        """Get orientation group for a path between two edges."""
-        e1, e2 = _normalize_edge(edge1), _normalize_edge(edge2)
-        if not e1 or not e2:
-            return None
-        return ORIENTATION_GROUPS.get(frozenset({e1, e2}))
 
     def get_path_at_edge(self, edge: str) -> Optional[tuple]:
         """Get the path (as edge pair) that uses the given edge.
@@ -1050,48 +847,6 @@ class Tile:
             return (edge_norm, exits[0])
         return None
 
-    def is_curve_connection(
-        self, exit_edge: str, neighbor_segment: "Tile"
-    ) -> bool:
-        """Check if connection to neighbor at exit_edge is a curve.
-
-        A curve occurs when the current path and the neighbor's connected path
-        are in DIFFERENT orientation groups.
-
-        Args:
-            exit_edge: The edge where this segment connects to neighbor
-            neighbor_segment: The neighbor Tile
-
-        Returns:
-            True if this is a curve connection (different orientation groups)
-        """
-        exit_norm = _normalize_edge(exit_edge)
-        if not exit_norm:
-            return False
-
-        # Get the path in this segment that uses exit_edge
-        current_path = self.get_path_at_edge(exit_norm)
-        if not current_path:
-            return False
-
-        # Get neighbor's entry edge (opposite of our exit)
-        neighbor_entry = OPPOSITE_EDGE.get(exit_norm)
-        if not neighbor_entry:
-            return False
-
-        # Get the path in neighbor that uses the entry edge
-        neighbor_path = neighbor_segment.get_path_at_edge(neighbor_entry)
-        if not neighbor_path:
-            return False
-
-        # Compare orientation groups
-        current_group = self.get_path_group(*current_path)
-        neighbor_group = neighbor_segment.get_path_group(*neighbor_path)
-
-        if not current_group or not neighbor_group:
-            return False
-
-        return current_group != neighbor_group
 
     # ========== Serialization ==========
     def to_dict(self) -> dict:
@@ -1174,36 +929,3 @@ class Tile:
         tile.length = data.get("length", 1.0)
         return tile
 
-    # ========== Utility ==========
-    def get_required_switch_state(
-        self, entry_edge: str, exit_edge: str
-    ) -> Optional[int]:
-        """
-        Determine the required switch state for a given entry→exit traversal.
-
-        This is used by route pathfinding to determine which switch state is
-        needed to traverse this switch tile in a particular direction.
-
-        Args:
-            entry_edge: Edge where the path enters (N, E, S, W)
-            exit_edge: Edge where the path exits (N, E, S, W)
-
-        Returns:
-            0 (MAIN) or 1 (DIVERGE) if this is a switch and the path exists,
-            None if not a switch or the path doesn't exist
-        """
-        if not self.is_switch:
-            return None
-
-        # Probe each state without writing it. `switch_state`'s setter writes
-        # through to the canonical `Switch.position`, which is only ever written
-        # by `SwitchManager`'s validate -> write -> notify -> throw workflow, so
-        # a pathfinding query must never assign it — not even transiently.
-        for state in [0, 1]:
-            exits = self.get_exits(
-                entry_edge, use_switch_state=True, switch_state_override=state
-            )
-            if exit_edge in exits:
-                return state
-
-        return None  # Path doesn't exist at any state

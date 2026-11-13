@@ -3,11 +3,11 @@
  * operational lists, each in its own folding section. The whole list folds
  * away to give the map room.
  *
- * Trains, blocks and switches come from the network poll. Routes, paths,
- * route runs and stations have their own endpoints, read only while their
- * section is open. A train, block or switch opens in this screen's own
- * right panel; a route, path, route run or station opens today's panel for
- * it, shown inside the right panel (panel-host.ts).
+ * Blocks and switches come from the network poll; stations have their own
+ * endpoint, read only while their section is open. A block or switch opens in
+ * this screen's own right panel; a station opens today's panel for it, shown
+ * inside the right panel (panel-host.ts). The trains are on the cards row and
+ * the map.
  */
 import { signal } from '@preact/signals';
 import { useState } from 'preact/hooks';
@@ -17,13 +17,12 @@ import type { ComponentChildren } from 'preact';
 import { api } from '../../lib/api';
 import { stateManager } from '../../lib/state-manager';
 import { usePoll } from '../poll';
-import { liveVersion, trainViews } from './live';
+import { liveVersion } from './live';
 import { listOpen, selection, type OperateHost } from './operate-state';
 import { setSelection, wrappedPanelKey } from './panel-host';
-import { speedText, trainStatus, trainStatusChip } from './train-display';
 
 /** Which sections are open; kept while the screen comes and goes. */
-const openSections = signal<Record<string, boolean>>({ trains: true, routes: true });
+const openSections = signal<Record<string, boolean>>({ blocks: true });
 
 function Section({
   id,
@@ -184,102 +183,6 @@ function showing(type: string, id: unknown): boolean {
   return selection.value?.kind === 'panel' && key.type === type && key.id === String(id);
 }
 
-// A component that reads a signal re-draws only when that signal changes or
-// its props do (@preact/signals), so each list of live entities reads
-// `liveVersion` itself rather than relying on its parent re-drawing.
-function TrainsList({ host }: { host: OperateHost }) {
-  liveVersion.value;
-  const trains = trainViews();
-  const sel = selection.value;
-  if (trains.length === 0) {
-    return (
-      <Empty action={{ label: 'Place train', run: () => host.editor.showAddTrainDialog() }}>No trains yet.</Empty>
-    );
-  }
-  return (
-    <>
-      {trains.map((v) => {
-        const status = trainStatus(v);
-        return (
-          <Row
-            key={v.id}
-            label={v.train?.car_number || v.id}
-            meta={`${speedText(v.controller?.current_speed ?? 0)} km/h`}
-            chip={<span class={`chip chip-state ${trainStatusChip(status)}`}>{status.toUpperCase()}</span>}
-            selected={sel?.kind === 'train' && sel.id === v.id}
-            onClick={() => host.selectTrain(v.id)}
-          />
-        );
-      })}
-    </>
-  );
-}
-
-function RoutesList({ host }: { host: OperateHost }) {
-  const routes = usePolledList<any>(async () => (await api.getRoutes())?.routes ?? [], 5000);
-  return (
-    <PolledBody
-      list={routes}
-      what="routes"
-      empty={
-        <Empty action={{ label: 'New route', run: () => void host.editor.routeHandler?.createNewRoute() }}>
-          No routes yet. A route is a reusable plan of stops.
-        </Empty>
-      }
-    >
-      {(items) =>
-        items.map((r) => (
-          <Row
-            key={r.route_id}
-            label={r.name || r.route_id}
-            meta={r.name ? r.route_id : undefined}
-            selected={showing('route-editor', r.route_id)}
-            onClick={() => void host.editor.routeHandler?.showRouteEditor(r.route_id)}
-          />
-        ))
-      }
-    </PolledBody>
-  );
-}
-
-function PathsList({ host }: { host: OperateHost }) {
-  const paths = usePolledList<any>(() => api.getPaths(), 3000);
-  return (
-    <PolledBody list={paths} what="paths" empty={<Empty>No paths. Draw one from a train's Route section.</Empty>}>
-      {(items) =>
-        items.map((p) => (
-          <Row
-            key={p.path_id}
-            label={p.path_id}
-            meta={[p.train_id, p.status].filter(Boolean).join(' · ')}
-            selected={showing('path', p.path_id)}
-            onClick={() => void host.editor.showPathEditor(p.path_id)}
-          />
-        ))
-      }
-    </PolledBody>
-  );
-}
-
-function RouteRunsList({ host }: { host: OperateHost }) {
-  const runs = usePolledList<any>(() => api.getRouteRuns(), 3000);
-  return (
-    <PolledBody list={runs} what="route runs" empty={<Empty>No route runs yet. Start a route to make one.</Empty>}>
-      {(items) =>
-        items.map((run) => (
-          <Row
-            key={run.run_number}
-            label={`#${run.run_number} ${run.route_id ?? ''}`.trim()}
-            meta={[run.train_id, run.display_state ?? run.state].filter(Boolean).join(' · ')}
-            selected={showing('route-run-editor', run.run_number)}
-            onClick={() => void host.editor.routeRunHandler?.showRouteRunEditor(Number(run.run_number))}
-          />
-        ))
-      }
-    </PolledBody>
-  );
-}
-
 function StationsList({ host }: { host: OperateHost }) {
   const stations = usePolledList<any>(async () => (await api.listStationGroups())?.stations ?? [], 10000);
   return (
@@ -379,22 +282,6 @@ export function OperateLists({ host }: { host: OperateHost }) {
         </button>
       </div>
       <div class="op-left-body">
-        <Section id="trains" title="Trains" count={stateManager.getAll('trains').length}>
-          <TrainsList host={host} />
-        </Section>
-        <Section
-          id="routes"
-          title="Routes"
-          action={{ label: 'New', title: 'Make a new route', run: () => void host.editor.routeHandler?.createNewRoute() }}
-        >
-          <RoutesList host={host} />
-        </Section>
-        <Section id="paths" title="Paths">
-          <PathsList host={host} />
-        </Section>
-        <Section id="runs" title="Route runs">
-          <RouteRunsList host={host} />
-        </Section>
         <Section id="stations" title="Stations">
           <StationsList host={host} />
         </Section>

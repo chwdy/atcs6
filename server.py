@@ -29,10 +29,8 @@ from bootstrap import (
     create_demo_network,
     get_current_scene_id,
     set_current_scene,
-    setup_demo_train,
 )
 from network import RailwayNetwork
-from path_dispatcher import PathDispatcher
 from persistence import PersistenceManager
 from scene_validation import validate_block_rules
 from simulation import SimulationController
@@ -125,7 +123,6 @@ def _build_state_and_app() -> tuple[AppState, Flask]:
     global app
     global state
     global network
-    global path_dispatcher
     global sim_controller
     global persistence_manager
     global simulation_lock
@@ -137,15 +134,12 @@ def _build_state_and_app() -> tuple[AppState, Flask]:
 
     network = create_demo_network()
 
-    path_dispatcher = PathDispatcher(network)
-    sim_controller = SimulationController(network, path_dispatcher)
-    setup_demo_train(network, path_dispatcher, sim_controller)
+    sim_controller = SimulationController(network)
     persistence_manager = PersistenceManager()
     simulation_lock = threading.Lock()
 
     state = AppState(
         network=network,
-        path_dispatcher=path_dispatcher,
         sim_controller=sim_controller,
         persistence_manager=persistence_manager,
         simulation_lock=simulation_lock,
@@ -269,7 +263,7 @@ def main() -> None:
         if not ensure_port_available(port=args.port):
             raise SystemExit(1)
 
-    global network, path_dispatcher, sim_controller, persistence_manager
+    global network, sim_controller, persistence_manager
     global simulation_lock
     global state, app
 
@@ -287,22 +281,17 @@ def main() -> None:
 
     from bootstrap import bootstrap_runtime
     from detector_reading_log import DETECTOR_READING_LOG_DIR
-    from locomotive_file import LOCOMOTIVE_FILE_PATH
     from runtime import start_all_threads
 
-    network, path_dispatcher, sim_controller, persistence_manager = bootstrap_runtime(
+    network, sim_controller, persistence_manager = bootstrap_runtime(
         demo=not args.no_demo,
-        setup_train=not args.no_demo,
-        # design_new.md "Event log" (Persistence): the real server persists the
+        # design_v2.md "Event log", Persistence: the real server persists the
         # NotificationCenter stream to an append-only JSONL on disk so an
         # operator can review an earlier run's incidents later.
         event_log_path="event_log.jsonl",
-        # design_new.md "Event log", Detector reading log: what every block
-        # detector read, pass by pass, in the per-machine `.runtime/` folder.
+        # design_v2.md "Detector reading log": what every block detector
+        # read, pass by pass, in the per-machine `.runtime/` folder.
         detector_reading_log_dir=DETECTOR_READING_LOG_DIR,
-        # design_new.md "SpeedProfile", Where models, sets and instance
-        # profiles are kept: models and sets survive a restart in their own file.
-        locomotive_file_path=LOCOMOTIVE_FILE_PATH,
     )
 
     # design_new.md "Detector reading log", Operator commands are written too:
@@ -317,7 +306,6 @@ def main() -> None:
 
     state = AppState(
         network=network,
-        path_dispatcher=path_dispatcher,
         sim_controller=sim_controller,
         persistence_manager=persistence_manager,
         simulation_lock=simulation_lock,

@@ -5,7 +5,7 @@
  */
 import { sessionControls, type SessionStateView } from '../lib/session-controls';
 
-export type NextStep = 'activate' | 'reset' | 'clear-conflict';
+export type NextStep = 'activate';
 
 /** The next step for this session state, or null when there is none to offer
  *  (Live, or before the first snapshot). */
@@ -13,8 +13,6 @@ export function nextStep(state: SessionStateView | null | undefined): NextStep |
   if (!state) return null;
   const controls = sessionControls(state);
   if (controls.activateVisible) return 'activate';
-  if (controls.resetVisible) return 'reset';
-  if (state.value === 'halted' && state.halt_reason === 'runtime_failure') return 'clear-conflict';
   return null;
 }
 
@@ -24,15 +22,5 @@ export const NEXT_STEP_BUTTON: Record<NextStep, { label: string; icon: string; t
     label: 'Activate',
     icon: 'ti ti-power',
     title: 'Activate the selected environment',
-  },
-  reset: {
-    label: 'Reset',
-    icon: 'ti ti-rotate',
-    title: 'Release every train after Emergency stop',
-  },
-  'clear-conflict': {
-    label: 'Clear conflict',
-    icon: 'ti ti-eraser',
-    title: 'Clear the fatal track conflict once it is sorted out on the layout',
   },
 };

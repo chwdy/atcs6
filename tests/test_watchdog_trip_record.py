@@ -14,7 +14,6 @@ emits one warning and does not end the session.
 
 from hardware.watchdog import WatchdogTripRecord
 from network import RailwayNetwork
-from path_dispatcher import PathDispatcher
 from simulation import SimulationController
 
 
@@ -56,7 +55,7 @@ def test_repeated_trips_collapse_and_a_failure_sticks():
 
 def _sim():
     network = RailwayNetwork()
-    sim = SimulationController(network, PathDispatcher(network))
+    sim = SimulationController(network)
     sim.environment_active = True
     return sim
 

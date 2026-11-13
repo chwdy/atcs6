@@ -17,7 +17,6 @@ from block_occupancy import OccupancyInput
 from block_power import BlockPowerController
 from enums import OperationMode
 from network import RailwayNetwork
-from path_dispatcher import PathDispatcher
 from entity_ids import segment_id_for_block
 from simulation import SimulationController
 from track import TRACK_EW, Tile
@@ -49,8 +48,7 @@ def build_sim(num_blocks: int = 3):
         block.ordered_tiles = [(x, 0, "W")]
         network.blocks[f"BLK_{x}"] = block
     detector = CountingDetectors(network.blocks)
-    sim = SimulationController(
-        network, PathDispatcher(network), input_interface=detector
+    sim = SimulationController(network, input_interface=detector
     )
     return network, sim, detector
 
@@ -85,7 +83,6 @@ def power_controller(unreachable, *, with_detector=False):
     )
     pc.wire_dependencies(
         notification_center=sim.notification_center,
-        controllers=sim.controllers,
         enter_hardware_failure=sim.enter_hardware_failure,
     )
     if with_detector:
@@ -98,10 +95,7 @@ def test_a_refused_write_never_claims_the_block_is_energized():
 
     assert pc.set_block_voltage("BLK_1", 10.0) is False
     assert pc.get_recorded_voltage("BLK_1") == 0.0
-    # A hardware failure latches its own flag, not the fatal-conflict one; both
-    # sit on the one halt gate (design_new.md "Power", Hardware I/O failure).
     assert sim.hardware_failure is True
-    assert sim.failed_runtime is False
     assert sim.runtime_halted is True
     # The failing block is named by the emitted event; the halt retains no payload.
     hw_event = sim.notification_center.latest_by_operation("enter_hardware_failure")
@@ -123,8 +117,6 @@ def test_a_hardware_failure_stays_latched_until_an_activation_succeeds():
     assert sim.environment_active is False
     assert sim.hardware_failure is True
     assert not hasattr(sim, "clear_hardware_failure")
-    with pytest.raises(ValueError, match="not halted"):
-        sim.clear_failed_runtime()
     assert sim.hardware_failure is True
 
 

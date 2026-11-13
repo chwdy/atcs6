@@ -45,8 +45,11 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 MAX_TRACK_VOLTAGE: float = 12.0
 """The top of the speed knob, in volts."""
 
-DEFAULT_HOLD_TIME_S: float = 5.0
-"""How long a block that reads empty stays its train's block."""
+HOLD_TIME_S: float = 5.0
+"""How long a block that reads empty stays its train's block. The runtime
+setting `hold_time_s` writes this module attribute (design_v2.md "Runtime
+settings"), and a `TrainRuntime` built without its own value reads it on every
+use."""
 
 # Why a train cannot be given a claim (design_v2.md "When a train waits").
 BLOCK_TAKEN = "block_taken"
@@ -134,7 +137,7 @@ class TrainRuntime:
         network: "RailwayNetwork",
         set_block_voltage: SetVoltageFn,
         emit: Optional[EmitFn] = None,
-        hold_time_s: float = DEFAULT_HOLD_TIME_S,
+        hold_time_s: Optional[float] = None,
         throw_switch: Optional[Callable[[str, int], bool]] = None,
         outputs_active: Callable[[], bool] = lambda: True,
     ) -> None:
@@ -150,7 +153,7 @@ class TrainRuntime:
         # the direction a train that entered it from the switch runs it in.
         self.alternate_next: Dict[str, int] = {}
         self.passing_blocks: Dict[str, Dict[str, str]] = {}
-        self.hold_time_s = float(hold_time_s)
+        self._hold_time_s = None if hold_time_s is None else float(hold_time_s)
         self.trains: Dict[str, RunningTrain] = {}
         self._next_seq = 1
         self._step_count = 0
@@ -165,6 +168,12 @@ class TrainRuntime:
     # ------------------------------------------------------------------
     # Reading
     # ------------------------------------------------------------------
+
+    @property
+    def hold_time_s(self) -> float:
+        """The hold time in seconds: this runtime's own value when it was
+        given one, else the live `HOLD_TIME_S` setting."""
+        return HOLD_TIME_S if self._hold_time_s is None else self._hold_time_s
 
     def train_of_block(self, block_id: str) -> Optional[RunningTrain]:
         """The train whose block this is, or None."""

@@ -106,31 +106,23 @@ def runtime_pass(state: AppState) -> Optional[str]:
     - Setup: the stopped pass, because the detectors go on detecting. Setup
       runs no pass while a hardware failure is latched, or while no detector
       interface is open.
-    - Halted for `hardware_failure` or `not_activated`: no pass.
-    - Halted for the v1 `runtime_failure`: no pass. Halted for the v1 layout
-      emergency cut-out: the stopped pass, as in Setup.
+    - Halted, for either reason: no pass.
 
     Every iteration consumes a watchdog trip whatever this returns.
     """
-    from enums import HaltReason, SessionStateValue
+    from enums import SessionStateValue
 
     session = state.session_state()
     if session.is_live:
         return PASS_TICK
-    if session.halt_reason in (
-        HaltReason.RUNTIME_FAILURE,
-        HaltReason.HARDWARE_FAILURE,
-        HaltReason.NOT_ACTIVATED,
-    ):
-        return PASS_WATCHDOG
     controller = state.sim_controller
-    if session.value is SessionStateValue.SETUP and getattr(
-        controller, "hardware_failure", False
+    if (
+        session.value is SessionStateValue.SETUP
+        and not getattr(controller, "hardware_failure", False)
+        and getattr(controller, "occupancy_is_real", False)
     ):
-        return PASS_WATCHDOG
-    if not getattr(controller, "occupancy_is_real", False):
-        return PASS_WATCHDOG
-    return PASS_STOPPED
+        return PASS_STOPPED
+    return PASS_WATCHDOG
 
 
 def close_idle_setup_tools(state: AppState) -> None:

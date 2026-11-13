@@ -34,4 +34,3 @@ def test_scene_module_exports_builder_contract(scene_id):
 
     assert getattr(module, "SCENE_ID", None) == scene_id
     assert callable(getattr(module, "create_comprehensive_demo", None))
-    assert callable(getattr(module, "setup_demo_train", None))

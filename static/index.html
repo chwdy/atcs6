@@ -34,12 +34,11 @@
         <div id="fatal-banner" class="fatal-banner" hidden role="alert" aria-live="assertive">
             <i class="ti ti-alert-octagon-filled fatal-banner-icon" aria-hidden="true"></i>
             <div class="fatal-banner-body">
-                <div class="fatal-banner-title">Operation halted — fatal track conflict</div>
+                <div class="fatal-banner-title">Halted — hardware failure</div>
                 <div class="fatal-banner-detail" id="fatal-banner-detail"></div>
                 <div class="fatal-banner-meta" id="fatal-banner-meta"></div>
             </div>
-            <button id="btn-clear-fatal" class="btn fatal-banner-btn" type="button">Clear Conflict</button>
-            <button id="btn-activate-fatal" class="btn fatal-banner-btn" type="button" hidden>Activate</button>
+            <button id="btn-activate-fatal" class="btn fatal-banner-btn" type="button">Activate</button>
             <button id="btn-restart-fatal" class="btn fatal-banner-btn" type="button">Restart Server</button>
         </div>
 
@@ -260,21 +259,6 @@
                                 <option value="mid" selected>Mid</option>
                                 <option value="cozy">Cozy</option>
                             </select>
-                        </div>
-                        <div class="setting-row">
-                            <span id="scale-current-display" class="setting-label-compact settings-label-inline">Current: 1:1</span>
-                            <select id="scale-select" class="setting-select setting-input-compact settings-select-fill">
-                                <option value="1">1:1 (Full)</option>
-                                <option value="22.5">1:22.5 (G)</option>
-                                <option value="43.5">1:43.5 (O)</option>
-                                <option value="64">1:64 (S)</option>
-                                <option value="87">1:87 (HO)</option>
-                                <option value="120">1:120 (TT)</option>
-                                <option value="148">1:148 (N UK)</option>
-                                <option value="160">1:160 (N)</option>
-                                <option value="220">1:220 (Z)</option>
-                            </select>
-                            <button id="scale-apply-custom" class="btn btn-sm btn-secondary">Set</button>
                         </div>
                     </div>
                 </section>

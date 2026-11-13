@@ -1,25 +1,17 @@
 /**
  * Settings panel wiring — extracted from app.ts.
  *
- * Wires the scale selector (preset + custom), the label-spacing selector, and
- * the Advanced (runtime operational tuning) section. setupSettingsPanel takes an
+ * Wires the label-spacing selector and the Advanced section (the runtime
+ * settings, design_v2.md "Runtime settings"). setupSettingsPanel takes an
  * `onLabelSpacingChange` callback (the App's refreshNetwork) — its only App
- * dependency; everything else is api + DOM. The two loaders are module-internal.
+ * dependency; everything else is api + DOM. The loader is module-internal.
  */
-import { api } from '../lib/api';
+
 import { showToast } from '../lib/toast';
 import { setLabelSpacing } from '../lib/constants';
 
 export function setupSettingsPanel(onLabelSpacingChange: () => void): void {
-  const scaleSelect = document.getElementById('scale-select') as HTMLSelectElement | null;
-  const scaleApplyBtn = document.getElementById('scale-apply-custom');
-  const scaleDisplay = document.getElementById('scale-current-display');
   const labelSpacingSelect = document.getElementById('label-spacing-select') as HTMLSelectElement | null;
-
-  if (!scaleSelect || !scaleApplyBtn || !scaleDisplay) {
-    console.warn('[App] Settings panel elements not found');
-    return;
-  }
 
   // Setup label spacing selector
   if (labelSpacingSelect) {
@@ -29,39 +21,8 @@ export function setupSettingsPanel(onLabelSpacingChange: () => void): void {
     });
   }
 
-  // Load current scale on init
-  loadCurrentScale();
   // Populate the Advanced (runtime operational tuning) section.
   loadAdvancedSettings();
-
-  const applyScale = async (scaleValue: string) => {
-    if (!scaleValue) return;
-
-    const scale = parseFloat(scaleValue);
-    if (isNaN(scale) || scale <= 0) {
-      showToast('Invalid scale value', 'error');
-      return;
-    }
-
-    try {
-      await api.setScale(scale);
-      await loadCurrentScale();
-      showToast(`Scale set to 1:${scale}`, 'success');
-    } catch (e: any) {
-      console.error('[App] Failed to set scale:', e);
-      showToast('Failed to set scale', 'error');
-    }
-  };
-
-  // Handle preset selection
-  scaleSelect.addEventListener('change', () => {
-    applyScale(scaleSelect.value);
-  });
-
-  // Handle apply button click
-  scaleApplyBtn.addEventListener('click', () => {
-    applyScale(scaleSelect.value);
-  });
 }
 
 async function loadAdvancedSettings(): Promise<void> {
@@ -81,6 +42,7 @@ async function loadAdvancedSettings(): Promise<void> {
       .replace(/_kmh$/, ' (km/h)')
       .replace(/_cm$/, ' (cm)')
       .replace(/_ticks$/, ' (ticks)')
+      .replace(/_s$/, ' (s)')
       .replace(/_/g, ' ')
       .replace(/^./, (c) => c.toUpperCase());
   container.innerHTML = '';
@@ -112,36 +74,5 @@ async function loadAdvancedSettings(): Promise<void> {
     row.appendChild(label);
     row.appendChild(input);
     container.appendChild(row);
-  }
-}
-
-async function loadCurrentScale(): Promise<void> {
-  const scaleDisplay = document.getElementById('scale-current-display')!;
-  const scaleSelect = document.getElementById('scale-select') as HTMLSelectElement;
-
-  try {
-    const data = await api.getScale();
-    const scale = data.scale;
-    const presets = data.presets || {};
-
-    // Update display
-    if (scale === 1.0) {
-      scaleDisplay.textContent = 'Current: 1:1 (Full scale)';
-    } else {
-      scaleDisplay.textContent = `Current: 1:${scale}`;
-    }
-
-    // Match dropdown value to current scale
-    // Dropdown values are numeric strings (e.g., "160")
-    const scaleOptions = Array.from(scaleSelect.options);
-    const matchingOption = scaleOptions.find(opt => parseFloat(opt.value) === scale);
-    if (matchingOption) {
-      scaleSelect.value = matchingOption.value;
-    } else {
-      scaleSelect.value = '';
-    }
-  } catch (e: any) {
-    console.error('[App] Failed to load scale:', e);
-    scaleDisplay.textContent = 'Current: Unknown';
   }
 }

@@ -129,10 +129,8 @@ class App {
 
   setupControls(): void {
     // The top bar's controls call the session action methods below
-    // (activateEnvironment, emergencyStop, …). The fatal banner keeps its own
-    // three buttons.
-    const clearFatalBtn = document.getElementById('btn-clear-fatal') as HTMLButtonElement | null;
-    clearFatalBtn?.addEventListener('click', () => void this.clearFatalConflict(clearFatalBtn));
+    // (activateEnvironment, stopAll, …). The hardware-failure banner keeps
+    // its own buttons.
 
     // Activate starts the selected environment over with the saved Hardware
     // Setup (design_new.md "Activation starts the railway over"). The banner
@@ -179,71 +177,18 @@ class App {
   // ── Session and layout actions ────────────────────────────────────────
   // The top bar (frontend/src/next/top-bar.tsx) calls these.
 
-  /** Emergency stop: the one kill switch, in every environment. It runs at
-   *  once — no confirmation — because it is the button pressed when
-   *  something is about to go wrong. */
-  async emergencyStop(): Promise<void> {
+  /** Stop all: stops every train at once, always accepted (design_v2.md
+   *  "Running a train", Stop all). It runs at once — no confirmation —
+   *  because it is the button pressed when something is about to go wrong. */
+  async stopAll(): Promise<void> {
     try {
-      const result = await api.layoutEmergencyStop();
-      showToast(result?.message || 'Emergency stop', 'warning', 4000);
+      await api.stopAllTrains();
+      showToast('Every train stopped', 'warning', 3000);
     } catch (e: any) {
-      console.error('[App] Emergency stop failed:', e);
-      showToast('Emergency stop failed: ' + (e?.message ?? e), 'error', 6000);
+      console.error('[App] Stop all failed:', e);
+      showToast('Stop all failed: ' + (e?.message ?? e), 'error', 6000);
     }
     await this.refreshNetwork();
-  }
-
-  /** Reset releases every train after Emergency stop; each ATO train then
-   *  waits for Go and each manual train for driver input. */
-  async resetLayout(): Promise<void> {
-    try {
-      const result = await api.resetLayoutCutOut();
-      showToast(result?.message || 'Reset', 'success', 4000);
-    } catch (e: any) {
-      showToast('Reset was refused: ' + (e?.message ?? e), 'warning', 5000);
-    }
-    await this.refreshNetwork();
-  }
-
-  /** Hold all: ATO stop on every ATO train, keeping its reservation. */
-  async holdAll(): Promise<void> {
-    try {
-      const result = await api.holdAll();
-      const n = (result?.stopped_train_ids || []).length;
-      showToast(`Held ${n} ATO train${n === 1 ? '' : 's'}. Press Go on each to resume.`, 'info', 4000);
-    } catch (e: any) {
-      showToast('Hold all failed: ' + (e?.message ?? e), 'error', 5000);
-    }
-    await this.refreshNetwork();
-  }
-
-  /** Clearing is the ordinary way out of a fatal conflict: the operator has
-   *  gone and sorted it out on the layout, and the session carries on rather
-   *  than losing the whole layout state to a process restart. Every train
-   *  comes back OFF, so nothing moves until it is powered up deliberately.
-   *  `btn`, when given, is disabled while it runs. */
-  async clearFatalConflict(btn?: HTMLButtonElement): Promise<void> {
-    const confirmed = await showConfirmModal({
-      title: 'Clear the conflict?',
-      message: 'Only clear this once the track is actually sorted out — two trains claimed the same place, and the app cannot see that you have fixed it.',
-      detail: 'Every train comes back powered off and stopped. Nothing moves until you power it up again.',
-      confirmText: 'Clear',
-      cancelText: 'Cancel',
-      confirmVariant: 'danger'
-    });
-    if (!confirmed) return;
-
-    if (btn) btn.disabled = true;
-    try {
-      await api.clearFatalConflict();
-      showToast('Conflict cleared — every train is off.', 'success', 4000);
-      await this.refreshNetwork();
-    } catch (e: any) {
-      console.error('[App] Clear conflict failed:', e);
-      showToast('Could not clear the conflict: ' + (e?.message ?? e), 'error', 5000);
-    } finally {
-      if (btn) btn.disabled = false;
-    }
   }
 
   /** Ask, then restart the server process; the page reloads once it is back. */
@@ -746,8 +691,8 @@ class App {
       this.recordSessionState(network);
       updateFromNetwork(network);
 
-      // Surface a fatal-conflict halt (failed_runtime) if one is active.
-      updateFatalBanner(network, this.renderer);
+      // Show the hardware-failure banner while that halt holds.
+      updateFatalBanner(network);
       noteRequestSuccess();
     } catch (e: any) {
       console.error('[App] Failed to refresh network:', e);

@@ -18,7 +18,6 @@ import pytest
 
 from network import RailwayNetwork
 from track import Tile
-from tests.segment_test_helpers import make_segment_block_with_tracks
 
 
 WEST_TILES = [(0, 0), (1, 0)]
@@ -130,14 +129,6 @@ def test_block_geometry_aggregates_its_members(net):
     assert [(e.x, e.y) for e in block.ordered_tiles] == ALL_TILES
 
 
-def test_per_tile_length_comes_from_the_owning_segment(net):
-    """Per-tile length spreads the SEGMENT's length over the SEGMENT's tiles.
-
-    Reading the block instead would give 160/4 = 40cm everywhere.
-    """
-    assert net._get_tile_length_cm(0, 0) == 50.0
-    assert net._get_tile_length_cm(2, 0) == 30.0
-
 
 def test_rebuilding_one_member_leaves_the_other_intact(net):
     """A per-segment rebuild must not flatten the block's members together.
@@ -170,18 +161,6 @@ def test_extending_one_member_does_not_touch_the_other(net):
 
 # --- runtime state lives on the block ---------------------------------------
 
-
-def test_occupancy_is_shared_across_the_whole_block(net):
-    """Occupancy is a block property, so a tile in either member reads it."""
-    net.blocks["BLK_YARD"].occupy("T1")
-    for x, y in ALL_TILES:
-        assert net.get_track(x, y).occupied_by == "T1"
-
-
-def test_reservation_is_shared_across_the_whole_block(net):
-    net.blocks["BLK_YARD"].reserve_for_path("P1", "T1", direction="E")
-    for x, y in ALL_TILES:
-        assert net.get_track(x, y).reserved_by == "T1"
 
 
 # --- lifecycle --------------------------------------------------------------

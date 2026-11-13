@@ -24,29 +24,20 @@ from network_poll import (
     layout_version,
     split_network_payload,
 )
-from path_dispatcher import PathDispatcher
 from persistence import PersistenceManager
 from simulation import SimulationController, build_network_payload
 
-SIBLING_GROUPS = (
-    "trains",
-    "controllers_by_train_id",
-    "dispatcher_progress_by_train_id",
-    "assigned_routes_by_train_id",
-    "route_runs_by_train_id",
-    "operator_status_by_train_id",
-)
+# The live train map every reply carries (design_v2.md "Live fields").
+SIBLING_GROUPS = ("running_trains",)
 
 
 @pytest.fixture
 def client(tmp_path):
     with contextlib.redirect_stdout(io.StringIO()):
         network = bootstrap.create_demo_network("demo7_2")
-    path_dispatcher = PathDispatcher(network)
     state = AppState(
         network=network,
-        path_dispatcher=path_dispatcher,
-        sim_controller=SimulationController(network, path_dispatcher),
+        sim_controller=SimulationController(network),
         persistence_manager=PersistenceManager(storage_dir=str(tmp_path)),
         simulation_lock=threading.Lock(),
     )
@@ -116,7 +107,7 @@ def _payload():
     with contextlib.redirect_stdout(io.StringIO()):
         network = bootstrap.create_demo_network("demo7_2")
     return build_network_payload(
-        network, SimulationController(network, PathDispatcher(network))
+        network, SimulationController(network)
     )
 
 
@@ -131,7 +122,6 @@ def test_live_fields_do_not_change_version():
     switch.update(position=1, occupied_by="T9")
     tile = next(t for t in changed["tracks"] if t["is_switch"])
     tile["switch_state"] = 1
-    changed["simulation_time"] = 99.0
 
     assert layout_version(split_network_payload(changed)[0]) == version
     reply = build_network_poll_reply(changed, version)

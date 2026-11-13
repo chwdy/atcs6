@@ -67,8 +67,6 @@ class RecordedPass:
     pass_no: int
     pass_kind: str
     wall_time: float
-    simulation_time: float
-    delta_seconds: float
     operating_delta_seconds: float
     readings: Dict[str, Dict[str, Any]]
     full: Optional[str] = None
@@ -136,8 +134,6 @@ def fold_lines(lines: Iterable[Dict[str, Any]]) -> List[RecordedPass]:
                 pass_no=pass_no,
                 pass_kind=str(line.get("pass_kind", PASS_TICK)),
                 wall_time=float(line.get("wall_time", 0.0)),
-                simulation_time=float(line.get("simulation_time", 0.0)),
-                delta_seconds=float(line.get("delta_seconds", 0.0)),
                 operating_delta_seconds=float(line.get("operating_delta_seconds", 0.0)),
                 readings={block_id: dict(r) for block_id, r in state.items()},
                 full=full,
@@ -291,7 +287,6 @@ def play_pass(sim: Any, replay_input: ReplayOccupancyInput, recorded: RecordedPa
             f"the detectors once on the rig, but the replay read them {reads} "
             f"time(s) (environment_active={sim.environment_active}, "
             f"hardware_failure={sim.hardware_failure}, "
-            f"failed_runtime={sim.failed_runtime}, "
             f"reads_the_recording={sim.input_interface is replay_input})"
         )
 
@@ -406,8 +401,8 @@ class RunReplay:
     """Rebuild the server from a recorded run's start state and play the run.
 
     Use as a context manager. It points the hardware setup, the selected
-    environment and the layouts folder at `work_dir`, leaves the locomotive
-    file off, and blocks every hardware device from opening, so a replay never
+    environment and the layouts folder at `work_dir`, and blocks every
+    hardware device from opening, so a replay never
     writes the operator's files or touches a rig that happens to be plugged in.
     Activation is given the recording's readings in place of a device.
 
@@ -448,7 +443,6 @@ class RunReplay:
         import bootstrap
         import hardware.ch347_device
         import hardware_config
-        import locomotive_file
         import operation_environment
         from app_factory import create_app
         from app_state import AppState
@@ -457,12 +451,6 @@ class RunReplay:
         from persistence import PersistenceManager
 
         start = self.run.start_state
-        if start.get("trains_on_track"):
-            raise ValueError(
-                "trains held blocks at boot "
-                f"({', '.join(start['trains_on_track'])}); a layout save records no "
-                "train position, so this run cannot be replayed from its start"
-            )
 
         stack = contextlib.ExitStack()
         self._stack = stack
@@ -490,8 +478,6 @@ class RunReplay:
             stack.enter_context(mock.patch.object(
                 hardware_config, "build_session_interfaces", build_session_interfaces
             ))
-            locomotive_file.disable()
-            stack.callback(locomotive_file.disable)
             stack.callback(hardware_config.reset_to_defaults)
 
             # What boot read from disk, written where boot will read it.
@@ -501,19 +487,16 @@ class RunReplay:
 
             network = RailwayNetwork()
             network.from_dict(start["layout"])
-            network.speed_profiles.load_library(start.get("locomotives") or {})
             stack.enter_context(mock.patch.object(
                 bootstrap, "create_empty_network", lambda: network
             ))
-            network, dispatcher, sim, _pm = bootstrap.bootstrap_runtime(
+            network, sim, _pm = bootstrap.bootstrap_runtime(
                 demo=False,
-                setup_train=False,
                 detector_reading_log_dir=self.reading_log_dir,
             )
             lock = SimulationLock()
             self.state = AppState(
                 network=network,
-                path_dispatcher=dispatcher,
                 sim_controller=sim,
                 persistence_manager=PersistenceManager(
                     storage_dir=os.path.join(self.work_dir, "layouts")

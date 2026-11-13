@@ -1,24 +1,19 @@
-"""Unit tests for block_occupancy.BlockOccupancyDetector.
+"""Unit tests for block_occupancy.BlockOccupancyDetector: the debounce
+(design_v2.md "Occupancy detection", Debounce with on/off thresholds; A lone
+current read pauses the clear count; Several changes in one step).
 
-Covers the debounce state machine (on/off thresholds, flicker tolerance,
-multi-block-per-tick diffing) and model-based attribution (the
-`AttributionResult` each entered block yields — held, reserved_for_train,
-touching train, conflict, unidentified — and occupied_by for vacates).
-These exercise the detector in isolation with scripted current frames — no
-simulation loop.
+These exercise the detector in isolation with scripted current frames.
 """
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Dict, List
 
-from block_occupancy import (
-    AttributionKind,
-    AttributionResult,
-    BlockOccupancyDetector,
-    OccupancyInput,
-    blocks_joined_by_train,
-    blocks_vacated_by_train,
-)
+from block_occupancy import BlockOccupancyDetector, OccupancyInput
+
+
+@dataclass
+class FakeNetwork:
+    blocks: Dict[str, object] = field(default_factory=dict)
 
 
 class ScriptedInput(OccupancyInput):
@@ -35,87 +30,17 @@ class ScriptedInput(OccupancyInput):
         return dict(frame)
 
 
-@dataclass
-class FakeBlock:
-    reserved_for_train: Optional[str] = None
-    occupied_by: Optional[str] = None
-
-
-@dataclass
-class FakeTrain:
-    is_unidentified: bool = False
-
-
-@dataclass
-class FakeNetwork:
-    blocks: Dict[str, FakeBlock] = field(default_factory=dict)
-    trains: Dict[str, FakeTrain] = field(default_factory=dict)
-
-
-@dataclass
-class FakeSpan:
-    occupied_blocks: List[str] = field(default_factory=list)
-
-
-@dataclass
-class FakePhysicsSync:
-    current_span: Optional[FakeSpan] = None
-
-
-@dataclass
-class FakePathProjection:
-    received_path_plan: Optional[object] = None
-
-
-@dataclass
-class FakeController:
-    physics_sync: FakePhysicsSync = field(default_factory=FakePhysicsSync)
-    path_projection: FakePathProjection = field(default_factory=FakePathProjection)
-
-
-def make_detector(
-    block_ids,
-    frames,
-    on=1,
-    off=3,
-    controllers=None,
-    neighbours=None,
-    directional=None,
-    head_side=None,
-):
-    """A detector over `block_ids`.
-
-    `neighbours` is the undetected-track adjacency the real
-    `UnidentifiedTrainTracker.reachable_blocks` walk supplies: block_id -> the
-    blocks reachable from it with nothing in between. Attribution needs it to
-    decide whether a train could physically be standing on a block it reserved,
-    so a test that exercises the reservation match must declare it.
-
-    `directional` and `head_side` are what `SimulationController` supplies:
-    whether a train is touched on its head side only, and which block that is.
-    These tests isolate adjacency and the reservation match, so by default no
-    train is directional and every neighbour touches;
-    `test_block_occupancy_touching.py` covers the head side against real
-    geometry.
-    """
-    network = FakeNetwork(blocks={bid: FakeBlock() for bid in block_ids})
-    adjacency = {bid: set(vals) for bid, vals in (neighbours or {}).items()}
+def make_detector(block_ids, frames, on=1, off=3):
+    """A detector over `block_ids` reading `frames` in turn."""
+    network = FakeNetwork(blocks={bid: object() for bid in block_ids})
     detector = BlockOccupancyDetector(
         network=network,
         input_interface=ScriptedInput(frames),
-        controllers=controllers or {},
         on_threshold=on,
         off_threshold=off,
-        reachable_blocks=lambda block_id: adjacency.get(block_id, set()),
-        directional=directional or (lambda train_id: False),
-        head_side=head_side,
     )
     return network, detector
 
-
-# --------------------------------------------------------------------------
-# Debounce: ON threshold
-# --------------------------------------------------------------------------
 
 def test_on_threshold_one_confirms_immediately():
     _, det = make_detector(["A"], [{"A": True}], on=1)
@@ -133,10 +58,6 @@ def test_on_threshold_two_needs_two_consecutive_reads():
     entered, _ = det.step()
     assert entered == {"A"}  # on_count == 2 >= 2
 
-
-# --------------------------------------------------------------------------
-# Debounce: OFF threshold and flicker tolerance
-# --------------------------------------------------------------------------
 
 def test_off_threshold_rides_through_single_dropout():
     # Confirm A, then a single no-current read (off=1 < 3) then current again:
@@ -201,10 +122,6 @@ def test_current_reads_in_a_row_restart_the_clear_count():
     assert vacated_at == 9  # three clears after the restart at read 6
 
 
-# --------------------------------------------------------------------------
-# Multi-block per tick (fast train)
-# --------------------------------------------------------------------------
-
 def test_multiple_blocks_enter_in_one_tick():
     _, det = make_detector(
         ["A", "B", "C"], [{"A": True, "B": True, "C": True}], on=1
@@ -227,306 +144,4 @@ def test_multiple_blocks_vacate_in_one_tick():
     entered, vacated = det.step()
     assert vacated == {"A", "B"}
     assert det.confirmed_occupied == {"C"}
-
-
-# --------------------------------------------------------------------------
-# Attribution
-# --------------------------------------------------------------------------
-
-def test_attribute_entered_uses_reserved_for_train():
-    """The train reserved A and is standing on B right next to it — this is the
-    locomotive arriving on the block it reserved."""
-    net, det = make_detector(
-        ["A", "B"], [{"A": True, "B": True}], on=1, neighbours={"A": {"B"}}
-    )
-    net.blocks["A"].reserved_for_train = "T1"
-    net.blocks["B"].occupied_by = "T1"
-    det.seed_occupied({"B"})  # the block the train is already standing on
-    entered, _ = det.step()
-    assert entered == {"A"}
-    results = det.attribute(entered, set())
-    assert results == [AttributionResult(AttributionKind.ENTRY, "A", "T1")]
-
-
-def test_reserved_block_the_train_cannot_reach_is_not_that_train():
-    """The reported bug: a foreign occupant on a reserved block far ahead.
-
-    T1 stands on C and has reserved A and B. Current appears on A with B still
-    reading clear, so the only way A could be T1 is if T1 skipped B — track no
-    detector confirmed. The reservation does not claim it; it is `unidentified`,
-    and Observe mints an unidentified train for it.
-    """
-    net, det = make_detector(
-        ["A", "B", "C"],
-        [{"A": True, "B": False, "C": True}],
-        on=1,
-        neighbours={"A": {"B"}, "B": {"A", "C"}, "C": {"B"}},
-    )
-    net.blocks["A"].reserved_for_train = "T1"
-    net.blocks["B"].reserved_for_train = "T1"
-    net.blocks["C"].occupied_by = "T1"
-    det.seed_occupied({"C"})
-    entered, _ = det.step()
-    assert entered == {"A"}
-
-    results = det.attribute(entered, set())
-
-    assert results == [AttributionResult(AttributionKind.UNIDENTIFIED, "A")]
-
-
-def test_a_train_crossing_several_blocks_in_one_read_stays_one_train():
-    """Both blocks confirm in the same diff. B is next to the train's own block,
-    and A is next to B — which the batch has just resolved — so the chain holds
-    and neither becomes an unidentified train."""
-    net, det = make_detector(
-        ["A", "B", "C"],
-        [{"A": True, "B": True, "C": True}],
-        on=1,
-        neighbours={"A": {"B"}, "B": {"A", "C"}, "C": {"B"}},
-    )
-    net.blocks["A"].reserved_for_train = "T1"
-    net.blocks["B"].reserved_for_train = "T1"
-    net.blocks["C"].occupied_by = "T1"
-    det.seed_occupied({"C"})
-    entered, _ = det.step()
-    assert entered == {"A", "B"}
-
-    results = det.attribute(entered, set())
-
-    assert results == [
-        AttributionResult(AttributionKind.ENTRY, "A", "T1"),
-        AttributionResult(AttributionKind.ENTRY, "B", "T1"),
-    ]
-
-
-def test_a_covering_span_alone_does_not_attribute_a_block():
-    """Nothing reads the span to attribute a block: a train whose calculated
-    span covers the block but that holds no block next to it is not credited
-    it (design_new.md "Block occupancy detection", The occupancy chain runs
-    one way)."""
-    controllers = {
-        "T2": FakeController(
-            physics_sync=FakePhysicsSync(current_span=FakeSpan(occupied_blocks=["A"]))
-        )
-    }
-    net, det = make_detector(["A"], [{"A": True}], on=1, controllers=controllers)
-    entered, _ = det.step()
-    results = det.attribute(entered, set())
-    assert results == [AttributionResult(AttributionKind.UNIDENTIFIED, "A")]
-
-
-def test_attribute_unresolved_entry_is_reported_as_unmatched():
-    net, det = make_detector(["A"], [{"A": True}], on=1)
-    entered, _ = det.step()
-    assert entered == {"A"}
-    # No reserving train and no covering span -> the entry belongs to an unidentified train
-    # train (design_new.md "Attribution"). `attribute()` is a pure attribution
-    # step: it reports the block as `unidentified`, names no train, writes no
-    # block state and registers no train. Observe hands it to
-    # UnidentifiedTrainTracker.
-    results = det.attribute(entered, set())
-    assert results == [AttributionResult(AttributionKind.UNIDENTIFIED, "A")]
-    assert net.blocks["A"].occupied_by is None
-    assert det.confirmed_occupied == {"A"}
-
-
-def test_attribute_vacated_uses_occupied_by():
-    net, det = make_detector(["A"], [{"A": True}, {"A": False}], on=1, off=1)
-    det.step()  # confirm
-    net.blocks["A"].occupied_by = "T1"
-    _, vacated = det.step()  # vacate (off=1)
-    assert vacated == {"A"}
-    results = det.attribute(set(), vacated)
-    # A one-block list: its only block is the rearmost, so the clear vacates.
-    assert results == [AttributionResult(AttributionKind.VACATE, "A", "T1")]
-    assert blocks_vacated_by_train(results) == {"T1": {"A"}}
-
-
-def test_attribute_vacated_already_clear_is_benign():
-    net, det = make_detector(["A"], [{"A": True}, {"A": False}], on=1, off=1)
-    det.step()
-    _, vacated = det.step()
-    # occupied_by stays None (already cleared elsewhere): no train holds the
-    # block, so nothing changes and the result says so.
-    results = det.attribute(set(), vacated)
-    assert results == [AttributionResult(AttributionKind.UNOWNED_CLEAR, "A")]
-    assert blocks_vacated_by_train(results) == {}
-
-
-# --------------------------------------------------------------------------
-# The attribution result record (design_new.md "Block occupancy detection",
-# The attribution result)
-# --------------------------------------------------------------------------
-
-def _train_holding(block_id, net, with_path):
-    """A controller for a train standing on `block_id`, with or without a path."""
-    net.blocks[block_id].occupied_by = "T1"
-    controller = FakeController(
-        physics_sync=FakePhysicsSync(current_span=FakeSpan(occupied_blocks=[block_id])),
-        path_projection=FakePathProjection(
-            received_path_plan=object() if with_path else None
-        ),
-    )
-    return {"T1": controller}
-
-
-def test_a_block_the_train_already_holds_is_held():
-    """Rank 1: current returning under a block already in a train's block list
-    resolves to that train and nothing changes."""
-    net, det = make_detector(["A"], [{"A": True}], on=1)
-    net.blocks["A"].occupied_by = "T1"
-    results = det.attribute({"A"}, set())
-    assert results == [AttributionResult(AttributionKind.HELD, "A", "T1")]
-    assert blocks_joined_by_train(results) == {}
-
-
-def test_an_unreserved_block_next_to_a_train_with_a_path_is_an_overrun_entry():
-    net, det = make_detector(
-        ["A", "B"],
-        [{"A": True, "B": True}],
-        on=1,
-        neighbours={"A": {"B"}, "B": {"A"}},
-    )
-    det.controllers.update(_train_holding("B", net, with_path=True))
-    det.seed_occupied({"B"})
-    entered, _ = det.step()
-    results = det.attribute(entered, set())
-    assert results == [AttributionResult(AttributionKind.OVERRUN_ENTRY, "A", "T1")]
-    assert blocks_joined_by_train(results) == {"T1": {"A"}}
-
-
-def _stopped_train_on_b_with_head_side_c():
-    """Line A - B - C: T1 stands on B, holds a path, and is stopped, so it is
-    touched on either side; its head side is C."""
-    net, det = make_detector(
-        ["A", "B", "C"],
-        [{"A": True, "B": True, "C": False}, {"A": False, "B": True, "C": True}],
-        on=1,
-        neighbours={"A": {"B"}, "B": {"A", "C"}, "C": {"B"}},
-        directional=lambda tid: False,
-        head_side=lambda tid, gained: "C",
-    )
-    det.controllers.update(_train_holding("B", net, with_path=True))
-    det.seed_occupied({"B"})
-    return net, det
-
-
-def test_a_block_behind_a_stopped_train_with_a_path_is_an_entry():
-    """Rank 3 (design_new.md "Block occupancy detection"): a block that touches
-    the train only on its rear side is its own body — a locomotive or lit car
-    bridging the joint behind it — so it is a plain `entry`, never an overrun
-    that would cut the train out."""
-    net, det = _stopped_train_on_b_with_head_side_c()
-    entered, _ = det.step()
-    results = det.attribute(entered, set())
-    assert results == [AttributionResult(AttributionKind.ENTRY, "A", "T1")]
-
-
-def test_a_block_in_front_of_a_stopped_train_with_a_path_is_an_overrun_entry():
-    """The same train touched on its head side has run past its authority."""
-    net, det = _stopped_train_on_b_with_head_side_c()
-    det.step()
-    entered, _ = det.step()
-    results = det.attribute(entered, set())
-    assert AttributionResult(AttributionKind.OVERRUN_ENTRY, "C", "T1") in results
-
-
-def test_an_unreserved_block_next_to_a_train_with_no_path_is_an_entry():
-    """A train with no path has no authority to run past, so the block it
-    touches is an `entry` and raises no cut-out."""
-    net, det = make_detector(
-        ["A", "B"],
-        [{"A": True, "B": True}],
-        on=1,
-        neighbours={"A": {"B"}, "B": {"A"}},
-    )
-    det.controllers.update(_train_holding("B", net, with_path=False))
-    det.seed_occupied({"B"})
-    entered, _ = det.step()
-    results = det.attribute(entered, set())
-    assert results == [AttributionResult(AttributionKind.ENTRY, "A", "T1")]
-
-
-def test_a_block_two_trains_touch_is_a_conflict_naming_both():
-    net, det = make_detector(
-        ["A", "B", "C"],
-        [{"A": True, "B": True, "C": True}],
-        on=1,
-        neighbours={"A": {"B", "C"}, "B": {"A"}, "C": {"A"}},
-    )
-    net.blocks["B"].occupied_by = "T1"
-    net.blocks["C"].occupied_by = "T2"
-    det.controllers.update({"T1": FakeController(), "T2": FakeController()})
-    det.seed_occupied({"B", "C"})
-    entered, _ = det.step()
-    results = det.attribute(entered, set())
-    assert results == [
-        AttributionResult(AttributionKind.CONFLICT, "A", candidates=("T1", "T2"))
-    ]
-    assert blocks_joined_by_train(results) == {}
-
-
-def test_the_unidentified_notice_fires_only_for_an_unidentified_block():
-    """A block the touching step gives to a train is not reported as going to
-    an unidentified train; a block no train touches is."""
-    notices = []
-    net, det = make_detector(
-        ["A", "B", "Z"],
-        [{"A": True, "B": True, "Z": True}],
-        on=1,
-        neighbours={"A": {"B"}, "B": {"A"}},
-    )
-    det.notify = lambda operation, message: notices.append(message)
-    det.controllers.update(_train_holding("B", net, with_path=False))
-    det.seed_occupied({"B"})
-    entered, _ = det.step()
-    results = det.attribute(entered, set())
-    assert [(r.kind, r.block_id) for r in results] == [
-        (AttributionKind.ENTRY, "A"),
-        (AttributionKind.UNIDENTIFIED, "Z"),
-    ]
-    assert len(notices) == 1
-    assert "block Z" in notices[0]
-
-
-
-
-def test_a_directional_train_is_credited_only_its_head_side_block():
-    net, det = make_detector(
-        ["A", "B", "C"],
-        [{"A": True, "B": True, "C": True}],
-        on=1,
-        neighbours={"A": {"B"}, "B": {"A", "C"}, "C": {"B"}},
-        directional=lambda train_id: True,
-        head_side=lambda train_id, gained: "C",
-    )
-    net.blocks["B"].occupied_by = "T1"
-    det.seed_occupied({"B"})
-    entered, _ = det.step()
-    results = det.attribute(entered, set())
-    assert [(r.kind, r.block_id, r.train_id) for r in results] == [
-        (AttributionKind.UNIDENTIFIED, "A", None),
-        (AttributionKind.ENTRY, "C", "T1"),
-    ]
-
-
-def test_a_ghosted_trains_retained_span_gets_its_block_back():
-    net, det = make_detector(["A", "B"], [{"A": True, "B": False}], on=1)
-    det.retained_span = lambda train_id: {"A"} if train_id == "T1" else set()
-    det.controllers.update({"T1": FakeController()})
-    entered, _ = det.step()
-    results = det.attribute(entered, set())
-    assert results == [AttributionResult(AttributionKind.ENTRY, "A", "T1")]
-
-
-def test_an_unidentified_train_touches_nothing():
-    net, det = make_detector(
-        ["A", "B"], [{"A": True, "B": True}], on=1, neighbours={"A": {"B"}, "B": {"A"}}
-    )
-    net.trains["UNIDENT_1"] = FakeTrain(is_unidentified=True)
-    net.blocks["B"].occupied_by = "UNIDENT_1"
-    det.seed_occupied({"B"})
-    entered, _ = det.step()
-    results = det.attribute(entered, set())
-    assert results == [AttributionResult(AttributionKind.UNIDENTIFIED, "A")]
 

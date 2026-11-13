@@ -25,10 +25,9 @@ Key concepts:
 """
 
 from dataclasses import dataclass
-from typing import List, NamedTuple, Optional, Dict, Any, Sequence, Set, Tuple
+from typing import List, NamedTuple, Optional, Dict, Any, Set
 from enums import BlockState
 from entity_ids import segment_id_for_block
-from track_resource import TrackResource
 from segment import Segment, SegmentTileEntry
 
 
@@ -42,19 +41,9 @@ _BLOCK_RELATIVE_DIRECTIONS: Set[str] = {"forward", "reverse"}
 BlockTileEntry = SegmentTileEntry
 
 
+
 class CautionState(NamedTuple):
-    """Block caution state — physical safety-margin record.
-
-    Per design_new.md "Block model" — `block.caution` is a single Optional
-    record so the all-or-nothing rule (the flag and the direction stamp are
-    written together by `BlockManager.on_block_tail_vacated()` and cleared
-    together by `_reevaluate_caution_blocks()` / `release_path_block_reservations(completed=True)`)
-    is structural rather than enforced by prose.
-
-    Convenience reads `_is_caution` (= `caution is not None`) and
-    `caution_exit_edge` (= `caution.exit_edge` or `None`) are exposed as
-    `@property` reads on `Block`.
-    """
+    """The v1 caution record; it goes with the other v1 runtime fields."""
 
     exit_edge: str  # "N" | "E" | "S" | "W"
 
@@ -91,7 +80,7 @@ class BlockReservation:
         )
 
 
-class Block(TrackResource):
+class Block:
     """
     Power + occupancy + reservation + availability unit (design_new.md "block").
 
@@ -572,103 +561,10 @@ class Block(TrackResource):
     # Predicates
     # ========================================================================
 
-    def is_free(self) -> bool:
-        """Check if block is free and available for use."""
-        return self.state == BlockState.FREE and not self.disabled
 
-    def is_reserved(self) -> bool:
-        """Check if block is reserved (and not occupied / in caution)."""
-        return self.state == BlockState.RESERVED
 
-    def can_enter(self, train_id: str) -> bool:
-        """Check if `train_id` may enter this block under the v1 state model.
 
-        A block accepts entry when it is FREE, or RESERVED for the same train,
-        or already OCCUPIED by the same train (idempotent re-entry). CAUTION
-        blocks do not block reservation but they are not freely enterable
-        until the cascade clears them.
-        """
-        if self.disabled:
-            return False
-        st = self.state
-        if st == BlockState.FREE:
-            return True
-        if st == BlockState.RESERVED and self.reserved_for_train == train_id:
-            return True
-        if st == BlockState.OCCUPIED and self.occupied_by == train_id:
-            return True
-        return False
 
-    def is_available_for_path(
-        self, path_id: str, train_id: Optional[str] = None
-    ) -> bool:
-        """Check if block is available for a path (validation helper).
-
-        A block is available when:
-        - It is FREE
-        - It is in CAUTION and is either unreserved or reserved by this same
-          path (a physically-free CAUTION block has `occupied_by is None`)
-        - It is RESERVED by this same path
-        - It is OCCUPIED by the train that will use this path
-
-        `CAUTION` by itself does not make a block unavailable. Per
-        design_new.md "`CAUTION` vs reservation independence", caution is
-        orthogonal to reservation: it caps the following train's speed via
-        `TrainController.CAUTION_SPEED_LIMIT_KMH` but does not block an
-        otherwise-legal reservation. This mirrors the eligibility predicate
-        in `BlockManager.reserve_blocks_for_path(...)`, which never rejects
-        on caution — only on occupancy or a reservation held by another path.
-        A CAUTION block reserved by a *different* path is unavailable (it
-        falls through to the reserved-by-other case).
-        """
-        if self.disabled:
-            return False
-        st = self.state
-        if st == BlockState.FREE:
-            return True
-        if st == BlockState.CAUTION and (
-            self.reserved_by_path is None or self.reserved_by_path == path_id
-        ):
-            return True
-        if st == BlockState.RESERVED and self.reserved_by_path == path_id:
-            return True
-        if (
-            st == BlockState.OCCUPIED
-            and train_id is not None
-            and self.occupied_by == train_id
-        ):
-            return True
-        return False
-
-    def excludes_opposing_traversal(self, exit_edge: Optional[str]) -> bool:
-        """True when no train coming the other way can reach this block, so a
-        train with traversal exit `exit_edge` stopped just inside it cannot
-        foul an opposing move:
-
-        - the block is one-way (`allowed_travel_directions` restricted to a
-          single direction), which structurally has no opposing traversal; or
-        - the block is in CAUTION and the train leaves it through
-          `caution.exit_edge` — it follows a leader that has just passed
-          forward through it, the corridor is committed to one-directional
-          following use, and the leader still occupies the block ahead in the
-          protect direction, so no opposing move can be routed up to it. A
-          train leaving out of the other end is not following, so the CAUTION
-          does not exempt it (design_new.md "Path And PathDispatcher",
-          best-effort truncation end rules).
-
-        Canonical home for that exemption: best-effort truncation
-        (`PathDispatcher._terminal_fouls_two_way_switch_block`) consults this
-        rather than re-checking `caution` / `allowed_travel_directions` at the
-        call site, so both exemptions travel with the block.
-        """
-        if (
-            self.caution is not None
-            and exit_edge is not None
-            and exit_edge == self.caution.exit_edge
-        ):
-            return True
-        atd = self.allowed_travel_directions
-        return atd is not None and len(atd) < 2
 
     # ========================================================================
     # Mutators - direct primitive writes only.
@@ -677,19 +573,6 @@ class Block(TrackResource):
     # write through one named call rather than poking primitives in many sites.
     # ========================================================================
 
-    def occupy(self, train_id: str) -> bool:
-        """Mark this block as physically occupied by `train_id`.
-
-        Disabled blocks reject occupancy. Idempotent for the same train.
-        """
-        if self.disabled:
-            return False
-        if self.occupied_by is not None and self.occupied_by != train_id:
-            return False
-        self.occupied_by = train_id
-        # Clean physical entry overrides any prior caution metadata.
-        self.caution = None
-        return True
 
     def release(self) -> None:
         """Clear physical occupancy without touching reservation fields.
@@ -699,24 +582,6 @@ class Block(TrackResource):
         """
         self.occupied_by = None
 
-    def set_to_caution(self, caution_exit_edge: Optional[str] = None) -> None:
-        """Mark this block as in CAUTION with the departing-train exit edge.
-
-        Per design_new.md "Block model" — caution is a single Optional record
-        carrying exactly `exit_edge`. The state machine treats CAUTION as an
-        independent safety state. When `caution_exit_edge` is None and no
-        prior caution record exists, an empty-edge placeholder is written;
-        `_reevaluate_caution_blocks()` clears any direction-less placeholder
-        on the next pass.
-        """
-        if caution_exit_edge is not None:
-            self.caution = CautionState(exit_edge=caution_exit_edge)
-        elif self.caution is None:
-            # No prior record and no direction supplied. Direction-less
-            # CAUTION is a legacy admin/test path; the placeholder empty
-            # edge keeps the composite record well-formed and is cleared
-            # by the next caution reevaluation.
-            self.caution = CautionState(exit_edge="")
 
     def clear(self) -> None:
         """Clear the CAUTION record.
@@ -733,195 +598,11 @@ class Block(TrackResource):
     # They never check or mutate physical occupancy / caution fields.
     # ========================================================================
 
-    def reserve_for_path(
-        self,
-        path_id: str,
-        train_id: str,
-        direction: Optional[str] = None,
-    ) -> None:
-        """Internal: write the path-reservation record atomically.
 
-        Called only by `BlockManager.reserve_blocks_for_path(...)`. Stores
-        a single `BlockReservation` (NOT touching `occupied_by`, which is
-        physical-only). The `direction` argument may be a compass exit_edge
-        ("N"/"E"/"S"/"W") or a block-relative "forward"/"reverse"; we
-        normalize block-relative values into the corresponding compass exit
-        edge using `ordered_tiles` adjacency.
-        """
-        exit_edge = self._resolve_reservation_direction(direction)
-        if exit_edge is None:
-            raise ValueError(
-                f"Block {self.block_id} reservation requires a non-null direction"
-            )
-        self.reservation = BlockReservation(
-            path_id=path_id, train_id=train_id, exit_edge=exit_edge
-        )
-
-    def release_path_reservation(self) -> None:
-        """Internal: clear the path-reservation record.
-
-        Called only by `BlockManager.release_path_block_reservations(...)`.
-        Clears `block.reservation` with no state guard. MUST NOT touch
-        `caution_exit_edge` or `_is_caution` (those are physical-lifecycle
-        fields owned by `BlockManager`).
-
-        Also clears `block.locked_by_path`: the braking-distance lock is the
-        reserving path's commitment on a reserved block, so releasing the
-        reservation releases the lock with it (design_new.md "Block" field
-        schema). A block can only be locked by the path whose reservation this
-        clears, so the drop is unconditional.
-        """
-        self.reservation = None
-        self.locked_by_path = None
 
     # ------------------------------------------------------------------
     # Direction normalization
     # ------------------------------------------------------------------
 
-    def block_direction_for_compass_exit(
-        self, exit_edge: Optional[str]
-    ) -> Optional[str]:
-        """Inverse of `_resolve_reservation_direction`: given a compass exit
-        edge (`"N"/"E"/"S"/"W"`), return this block's relative direction
-        (`"forward"` or `"reverse"`). Returns `None` when the input is
-        missing/unrecognized or the block lacks geometry to disambiguate.
-
-        Used by `PathDispatcher.try_complete_active_path(...)` to verify
-        that the terminal authority traversal direction matches the requested
-        terminal direction the run recorded (the run's `resolved_target`,
-        block-relative).
-
-        Known limit: on a single-tile block whose rails meet at a corner, the
-        forward exit is derived as the anchor's geometric opposite, which is the
-        tile's other rail only on a straight. A curve's real forward exit
-        therefore matches neither candidate and this returns `None`. Deciding it
-        off the anchor instead is correct in isolation but changes what the
-        pathfinder's entry-keyed companion reports for such a block, and that
-        breaks `tests/test_demo_5_throat_routing.py` — so the pair is left
-        as-is until that consumer is understood.
-        """
-        if exit_edge is None:
-            return None
-        upper = str(exit_edge).strip().upper()
-        if upper not in ("N", "E", "S", "W"):
-            return None
-        forward_compass = self._resolve_reservation_direction("forward")
-        if forward_compass is not None and upper == forward_compass:
-            return "forward"
-        reverse_compass = self._resolve_reservation_direction("reverse")
-        if reverse_compass is not None and upper == reverse_compass:
-            return "reverse"
-        return None
-
-    def block_direction_for_compass_entry(
-        self, entry_edge: Optional[str]
-    ) -> Optional[str]:
-        """Given a compass ENTRY edge (`"N"/"E"/"S"/"W"`), return this block's
-        relative direction (`"forward"` or `"reverse"`), or `None` when the
-        input is missing/unrecognized or the block lacks geometry.
-
-        The entry-keyed companion to `block_direction_for_compass_exit`: a
-        single tile entered through edge `E` exits through its opposite, so the
-        verdict equals `block_direction_for_compass_exit(opposite(E))`. For a
-        multi-tile block the entry edge alone does not fix the direction (the
-        caller decides by entry tile instead), so this returns `None` there.
-        Canonical home for the single-tile entry-edge-vs-anchor direction rule;
-        `RailwayPathfinder` routes its single-tile branches through here rather
-        than re-deriving the anchor. It inherits that helper's corner limit.
-        """
-        if entry_edge is None:
-            return None
-        upper = str(entry_edge).strip().upper()
-        if upper not in ("N", "E", "S", "W"):
-            return None
-        if not self.ordered_tiles or len(self.ordered_tiles) != 1:
-            return None
-        opposite = {"N": "S", "S": "N", "E": "W", "W": "E"}
-        return self.block_direction_for_compass_exit(opposite[upper])
-
-    def block_direction_for_tile_walk(
-        self, walk: Sequence[Tuple[int, int]]
-    ) -> Optional[str]:
-        """Block-relative direction of a directed tile walk through this block.
-
-        `walk` is an ordered run of `(x, y)` tiles in travel order; tiles that
-        are not this block's are skipped, so a caller may hand over a whole
-        train's line of travel. The verdict is which way that walk moves
-        through `ordered_tiles`: `"forward"` when it advances to higher
-        indices, `"reverse"` when it advances to lower ones.
-
-        Returns `None` when the walk touches fewer than two of this block's
-        tiles, because one tile does not fix a direction. The emission layer
-        reads this to sign a block's voltage (design_new.md "Power", A block
-        voltage carries a direction) and falls back to another source when the
-        answer is `None`.
-        """
-        ordered = self.ordered_tiles
-        if len(ordered) < 2:
-            return None
-        index_of = {(e[0], e[1]): i for i, e in enumerate(ordered)}
-        seen: List[int] = []
-        for tile in walk:
-            idx = index_of.get((int(tile[0]), int(tile[1])))
-            if idx is not None and (not seen or seen[-1] != idx):
-                seen.append(idx)
-        if len(seen) < 2:
-            return None
-        return "forward" if seen[-1] > seen[0] else "reverse"
-
-    def _resolve_reservation_direction(
-        self, direction: Optional[str]
-    ) -> Optional[str]:
-        """Normalize a reservation `direction` argument to a compass exit edge.
-
-        - None -> None
-        - Compass "N"/"E"/"S"/"W" (any case) -> uppercase compass
-        - Block-relative "forward"/"reverse" -> compass exit edge derived from
-          `ordered_tiles`. For multi-tile blocks we use adjacency between the
-          last and second-to-last entries; for single-tile blocks we use the
-          forward-entry anchor (`ordered_tiles[0].entry_edge`) and its
-          opposite. Falls back to None if geometry is missing.
-        """
-        if direction is None:
-            return None
-        d = str(direction).strip()
-        upper = d.upper()
-        if upper in ("N", "E", "S", "W"):
-            return upper
-        lower = d.lower()
-        if lower not in _BLOCK_RELATIVE_DIRECTIONS:
-            return upper if upper else None
-
-        ordered = self.ordered_tiles
-        if not ordered:
-            return None
-
-        if len(ordered) == 1:
-            entry_edge = str(ordered[0][2]).upper()
-            opposite = {"N": "S", "S": "N", "E": "W", "W": "E"}
-            if lower == "forward":
-                return opposite.get(entry_edge)
-            return entry_edge
-
-        last = ordered[-1]
-        second_last = ordered[-2]
-        first = ordered[0]
-        second = ordered[1]
-        if lower == "forward":
-            return _compass_from_delta(
-                last[0] - second_last[0], last[1] - second_last[1]
-            )
-        return _compass_from_delta(first[0] - second[0], first[1] - second[1])
 
 
-def _compass_from_delta(dx: int, dy: int) -> Optional[str]:
-    """Return the compass direction implied by a single-step (dx, dy) delta."""
-    if dx == 0 and dy > 0:
-        return "N"
-    if dx == 0 and dy < 0:
-        return "S"
-    if dy == 0 and dx > 0:
-        return "E"
-    if dy == 0 and dx < 0:
-        return "W"
-    return None

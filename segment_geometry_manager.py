@@ -288,7 +288,7 @@ class SegmentGeometryManager:
         block = Block(block_id=resolved_block_id, segment_id=segment_id)
         block.segments[0].name = name
         self._n.blocks[resolved_block_id] = block
-        self._n._ensure_resource_managers()
+        self._n._ensure_managers()
         return block
 
     def create_segment_with_tracks(
@@ -919,48 +919,6 @@ class SegmentGeometryManager:
         # Check and potentially split the segment
         return self._check_segment_connectivity(segment_id)
 
-    def remove_tiles_from_segment(self, positions: List[Tuple[int, int]]) -> List[str]:
-        """
-        Remove multiple tiles from their segment(s) and handle connectivity.
-
-        This is a batch version of remove_tile_from_segment for efficiency.
-
-        The batch is judged as one edit before anything changes (see
-        `check_tiles_removable`).
-
-        Args:
-            positions: List of (x, y) positions to remove
-
-        Returns:
-            List of affected ids
-
-        Raises:
-            ValueError: when the batch would empty a segment in the middle of
-                its block. Nothing is changed.
-        """
-        if not positions:
-            return []
-
-        self.check_tiles_removable(positions)
-
-        # Group positions by segment
-        segments_affected = {}
-        for x, y in positions:
-            track = self._n.get_track(x, y)
-            if track and track.segment_id:
-                segment_id = track.segment_id
-                if segment_id not in segments_affected:
-                    segments_affected[segment_id] = []
-                segments_affected[segment_id].append((x, y))
-                track.segment_id = None
-
-        # Check connectivity for each affected segment
-        all_affected = []
-        for segment_id in segments_affected:
-            affected = self._check_segment_connectivity(segment_id)
-            all_affected.extend(affected)
-
-        return all_affected
 
     def _check_segment_connectivity(self, segment_id: str) -> List[str]:
         """
@@ -1165,7 +1123,7 @@ class SegmentGeometryManager:
                     occupied_by=None,
                     segments=[child_segment],
                 )
-            self._n._ensure_resource_managers()
+            self._n._ensure_managers()
 
             for x, y in component_positions:
                 track = self._n.get_track(x, y)
@@ -1327,18 +1285,15 @@ class SegmentGeometryManager:
         """Reassign signals from a split block to the closest of the new
         child blocks.
 
-        Distance is measured by ``RailwayPathfinder.measure_distance`` in
-        tile hops, ignoring switch state. A signal that can't reach any
-        of the new blocks has its ``monitored_block_id`` cleared.
+        Distance is measured in tile hops, ignoring switch state. A signal
+        that can't reach any of the new blocks has its ``monitored_block_id``
+        cleared.
         """
-        from railway_pathfinder import RailwayPathfinder
-
-        pathfinder = RailwayPathfinder(self._n)
         for signal in orphaned_signals:
             best_block: Optional[str] = None
             best_dist: Optional[int] = None
             for block_id in new_block_ids:
-                dist = pathfinder.measure_distance(signal.position, block_id)
+                dist = self._tile_hops_to_block(tuple(signal.position), block_id)
                 if dist is None:
                     continue
                 if best_dist is None or dist < best_dist:
@@ -1352,6 +1307,40 @@ class SegmentGeometryManager:
                     signal.state = self._n._calculate_signal_state(signal)
                 else:
                     signal.state = SignalState.RED
+
+    def _tile_hops_to_block(
+        self, start: Tuple[int, int], block_id: str
+    ) -> Optional[int]:
+        """Fewest track-connected tile hops from `start` to any tile of
+        `block_id`, ignoring switch positions; None when none connects."""
+        from collections import deque
+
+        targets = set(self._n.get_block_positions(block_id))
+        if not targets:
+            return None
+        if start in targets:
+            return 0
+        visited = {start}
+        queue = deque([(start, 0)])
+        while queue:
+            (cx, cy), dist = queue.popleft()
+            track = self._n.get_track(cx, cy)
+            if not track:
+                continue
+            for edge in track.edges:
+                neighbor = self._n.get_neighbor(cx, cy, edge)
+                if not neighbor:
+                    continue
+                npos = (neighbor.x, neighbor.y)
+                if npos in visited:
+                    continue
+                if self._n.get_connection_edges((cx, cy), npos) is None:
+                    continue
+                if npos in targets:
+                    return dist + 1
+                visited.add(npos)
+                queue.append((npos, dist + 1))
+        return None
 
     # === Centralized Switch Management ===
 

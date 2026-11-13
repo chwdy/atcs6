@@ -68,12 +68,9 @@ def load_layout(state: AppState, name: str) -> Dict[str, Any]:
         ValidationError when the load fails for an input reason.
     """
     with state.simulation_lock:
-        # The trains are about to be replaced, so every calibration run ends
-        # and every held result is discarded first (design_new.md "What ends
-        # a calibration run").
-        state.sim_controller.speed_calibration.discard_all(
-            "calibration ended: a layout was loaded"
-        )
+        # Loading a layout removes every train (design_v2.md "Running a
+        # train", Edit the layout); the detectors find them again.
+        state.sim_controller.train_runtime.clear()
         try:
             result = state.persistence_manager.load_layout_with_fallback(
                 name, state.network

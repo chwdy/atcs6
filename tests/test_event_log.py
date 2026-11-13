@@ -8,15 +8,12 @@ order. The read-only viewer and replay layers consume the persisted records (the
 frontend panels are out of this doc's scope).
 """
 
-import pytest
 
 from notification_center import (
     Kind,
     Notification,
     NotificationCenter,
-    make_notification_emitter,
-    path_ref,
-    route_run_ref,
+    block_ref,
     train_ref,
 )
 
@@ -25,7 +22,7 @@ def test_notification_roundtrip():
     n = Notification(
         notification_id=7, event_time=12.5, source="PathDispatcher",
         operation="release_path", kind=Kind.INFO, message="path P1 completed",
-        entities=[train_ref("T1"), path_ref("P1")], payload={"x": 1},
+        entities=[train_ref("T1"), block_ref("B1")], payload={"x": 1},
     )
     assert Notification.from_dict(n.to_dict()) == n
 
@@ -47,7 +44,7 @@ def test_disk_persistence_and_readback(tmp_path):
     nc.emit(
         source="PathDispatcher", operation="release_path", kind=Kind.INFO,
         message="path P1 completed", event_time=1.0,
-        entities=[train_ref("T1"), path_ref("P1")],
+        entities=[train_ref("T1"), block_ref("B1")],
         payload={"k": "v"},
     )
     nc.emit(
@@ -72,59 +69,6 @@ def test_in_memory_unaffected_when_no_disk_log(tmp_path):
 def test_read_missing_log_is_empty():
     assert NotificationCenter.read_event_log("/nonexistent/path/events.jsonl") == []
 
-
-def _block_emitter(nc):
-    """The narrow notification callback a runtime BlockManager is handed,
-    bound to this test's NotificationCenter (design_new.md "BlockManager")."""
-    return make_notification_emitter(nc, "BlockManager")
-
-
-def test_block_manager_emits_block_entered_and_vacated():
-    """design_new.md "Event log": entering and vacating a block are
-    operational events. The *live* BlockManager — not just a hand-built
-    Notification — must emit BLOCK_ENTERED on a real occupation transition
-    and BLOCK_VACATED on a clean tail-vacate, with the exit edge on the
-    vacate payload."""
-    from block import Block
-    from block_manager import BlockManager
-
-    nc = NotificationCenter()
-    blocks = {"B1": Block("B1", ordered_tiles=[(0, 0, "W")])}
-    manager = BlockManager(blocks, notification_emitter=_block_emitter(nc))
-
-    result = manager.occupy_blocks(["B1"], "T1")
-    assert bool(result)
-    entered = [n for n in nc.peek_recent(20) if n.operation == "occupy_blocks"]
-    assert entered, "occupy_blocks must emit a block-entered event"
-    assert entered[-1].payload.get("block_id") == "B1"
-    # `entities` is the only entity routing key.
-    assert entered[-1].has_entity("train", "T1")
-    assert entered[-1].has_entity("block", "B1")
-
-    ok = manager.on_block_tail_vacated("B1", "T1", "E")
-    assert ok is True
-    vacated = [n for n in nc.peek_recent(20) if n.operation == "on_block_tail_vacated"]
-    assert vacated, "on_block_tail_vacated must emit a block-vacated event"
-    assert vacated[-1].payload.get("block_id") == "B1"
-    assert vacated[-1].payload.get("exit_edge") == "E"
-
-
-def test_block_reoccupy_does_not_re_emit_block_entered():
-    """An idempotent re-occupy of a block the train already holds must NOT
-    emit a second BLOCK_ENTERED — the event fires only on a real transition
-    into OCCUPIED."""
-    from block import Block
-    from block_manager import BlockManager
-
-    nc = NotificationCenter()
-    blocks = {"B1": Block("B1", ordered_tiles=[(0, 0, "W")])}
-    manager = BlockManager(blocks, notification_emitter=_block_emitter(nc))
-
-    manager.occupy_blocks(["B1"], "T1")
-    manager.occupy_blocks(["B1"], "T1")  # idempotent re-occupy
-
-    entered = [n for n in nc.peek_recent(20) if n.operation == "occupy_blocks"]
-    assert len(entered) == 1
 
 
 # --- Time sampling: the stream is wall-clock ---------------------------------
@@ -181,11 +125,10 @@ def test_detector_diagnostic_is_stamped_wall_clock():
     import time
 
     from network import RailwayNetwork
-    from path_dispatcher import PathDispatcher
     from simulation import SimulationController
 
     network = RailwayNetwork()
-    sim = SimulationController(network, PathDispatcher(network))
+    sim = SimulationController(network)
     sim.simulation_time = 0.1  # a small, nonzero simulation clock
 
     sim.block_occupancy_detector.notify("block_attribution_unknown", "probe")
@@ -204,19 +147,12 @@ def test_detector_diagnostic_is_stamped_wall_clock():
 # emit failure would be silent — so they are allowed and asserted separately.
 _DOMAIN_MODULES = [
     "simulation.py",
-    "route_executor.py",
-    "path_dispatcher.py",
-    "train_physics.py",
     "block_manager.py",
     "switch_manager.py",
     "switch.py",
     "block.py",
-    "meet_coordination.py",
-    "train_controller/__init__.py",
-    "train_controller/commands.py",
-    "train_controller/eb.py",
-    "train_controller/ato.py",
-    "train_controller/atc.py",
+    "train_runtime.py",
+    "next_block.py",
 ]
 
 
@@ -360,70 +296,6 @@ def test_ordinary_traffic_is_never_suppressed():
     assert len(nc.peek_recent(50)) == 3
 
 
-def test_latest_error_for_answers_the_current_reason():
-    from runtime_payloads import ErrorRecord
-
-    nc = NotificationCenter()
-    nc.emit(
-        source="RouteExecutor", operation="tick_train_plan", kind=Kind.WARNING,
-        message="blocked", entities=[train_ref("T1")],
-        error=ErrorRecord("no path", "planning_failed"),
-        condition_key="route_run:R1:planning_failed",
-    )
-    # Ordinary info traffic must not become the answer.
-    nc.emit(
-        source="BlockManager", operation="occupy_blocks", kind=Kind.INFO,
-        message="T1 entered B1", entities=[train_ref("T1")],
-    )
-
-    found = nc.latest_error_for("train", "T1")
-    assert found is not None
-    assert found.error.origin == "planning_failed"
-
-    # Narrowing by operation and origin.
-    assert nc.latest_error_for("train", "T1", operation="tick_train_plan") is not None
-    assert nc.latest_error_for("train", "T1", origin="wedge") is None
-    # A different entity has no reason of its own.
-    assert nc.latest_error_for("train", "T2") is None
-
-
-def test_latest_error_for_ignores_an_error_with_no_condition_key():
-    """`latest_error_for` combines the retained event row with the active-
-    condition map, so an error emitted with no `condition_key` is never a
-    current reason — it lives on only as history (design_new.md "Error
-    events", Reading the current reason)."""
-    from runtime_payloads import ErrorRecord
-
-    nc = NotificationCenter()
-    # No condition_key: always appended, but never active, so never current.
-    appended = nc.emit(
-        source="RouteExecutor", operation="handle_path_cancellation",
-        kind=Kind.WARNING, message="cancelled", entities=[train_ref("T1")],
-        error=ErrorRecord("operator cancelled", "operator_cancelled"),
-    )
-    assert appended is not None
-    assert nc.latest_error_for("train", "T1") is None
-
-
-def test_a_task_event_is_found_by_both_run_and_task_filters():
-    """An event about a task names both refs, so a run-level filter and a
-    task-level filter both find it while its condition is active."""
-    from notification_center import route_run_ref, walk_position_ref
-    from runtime_payloads import ErrorRecord
-
-    nc = NotificationCenter()
-    nc.emit(
-        source="RouteExecutor", operation="tick_train_plan", kind=Kind.WARNING,
-        message="task blocked",
-        entities=[route_run_ref("R1"), walk_position_ref("R1", 2)],
-        error=ErrorRecord("target missing", "task_skipped"),
-        condition_key="route_run:R1:task_skipped",
-    )
-
-    assert nc.latest_error_for("route_run", "R1") is not None
-    assert nc.latest_error_for("walk_position", "R1#2") is not None
-    assert nc.latest_error_for("walk_position", "R1#3") is None
-
 
 # ---------------------------------------------------------------------------
 # condition_key lifecycle (design_new.md "Error events", Suppression mechanism
@@ -436,7 +308,7 @@ def _blocked_emit(nc, key, origin="planning_failed", payload=None):
 
     return nc.emit(
         source="RouteExecutor", operation="tick_train_plan", kind=Kind.WARNING,
-        message="blocked", entities=[route_run_ref("R1")],
+        message="blocked", entities=[train_ref("T1")],
         error=ErrorRecord("no path", origin), payload=payload,
         condition_key=key,
     )
@@ -468,62 +340,4 @@ def test_resolve_condition_then_re_emit_is_a_fresh_event():
     second = _blocked_emit(nc, key)
     assert second is not None
     assert second.notification_id != first.notification_id
-    assert len(nc.peek_recent(50)) == 2
-
-
-def test_latest_error_for_tracks_active_and_clears_on_resolve():
-    """(c) `latest_error_for` returns the active-keyed error, and `None` once
-    its owner resolves the condition. The historical event is untouched."""
-    nc = NotificationCenter()
-    key = "route_run:R1:planning_failed"
-
-    _blocked_emit(nc, key)
-    found = nc.latest_error_for("route_run", "R1")
-    assert found is not None and found.error.origin == "planning_failed"
-
-    nc.resolve_condition(key)
-    assert nc.latest_error_for("route_run", "R1") is None
-    # Resolution does not delete or rewrite the historical event.
-    assert len(nc.peek_recent(50)) == 1
-    # Idempotent: resolving an inactive key is a no-op.
-    nc.resolve_condition(key)
-    assert nc.latest_error_for("route_run", "R1") is None
-
-
-def test_latch_event_with_error_is_never_suppressed():
-    """(d) A latch write/consume passes `latch_event=True`, so even carrying an
-    `ErrorRecord` under a condition key it is never dropped — the intent and
-    the commit must both show (design_new.md "Error events", Latch events are
-    exempt)."""
-    from runtime_payloads import ErrorRecord
-
-    nc = NotificationCenter()
-    args = dict(
-        source="TrainController", operation="set_path_cancel_request",
-        kind=Kind.WARNING, message="EB cancel", entities=[train_ref("T1")],
-        error=ErrorRecord("operator EB", "eb"), condition_key="train:T1:eb",
-        latch_event=True,
-    )
-    a = nc.emit(**args)
-    b = nc.emit(**args)
-    assert a is not None and b is not None
-    assert len(nc.peek_recent(50)) == 2
-    # A latch event never registers an active condition, so it is not a
-    # current reason for latest_error_for.
-    assert nc.latest_error_for("train", "T1") is None
-
-
-def test_changed_fingerprint_replaces_the_current_reason():
-    """A changed payload under the same key is appended and becomes the new
-    current reason (design_new.md "Error events": a meet ceiling moving to a
-    different block is a new event)."""
-    nc = NotificationCenter()
-    key = "route_run:R1:planning_failed"
-
-    _blocked_emit(nc, key, payload={"ceiling": "B2"})
-    assert nc.latest_error_for("route_run", "R1").payload == {"ceiling": "B2"}
-
-    moved = _blocked_emit(nc, key, payload={"ceiling": "B5"})
-    assert moved is not None
-    assert nc.latest_error_for("route_run", "R1").payload == {"ceiling": "B5"}
     assert len(nc.peek_recent(50)) == 2

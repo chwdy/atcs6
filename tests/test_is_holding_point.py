@@ -20,7 +20,6 @@ import pytest
 from app_state import AppState
 from block import Block
 from network import RailwayNetwork
-from path_dispatcher import PathDispatcher
 from persistence import PersistenceManager
 from simulation import SimulationController
 from services import block_service
@@ -59,12 +58,10 @@ def test_from_dict_absent_defaults_false():
 @pytest.fixture
 def state():
     network = RailwayNetwork()
-    path_dispatcher = PathDispatcher(network)
-    sim_controller = SimulationController(network, path_dispatcher)
+    sim_controller = SimulationController(network)
     persistence_manager = PersistenceManager(storage_dir="layouts")
     return AppState(
         network=network,
-        path_dispatcher=path_dispatcher,
         sim_controller=sim_controller,
         persistence_manager=persistence_manager,
         simulation_lock=threading.Lock(),

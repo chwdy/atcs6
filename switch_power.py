@@ -231,35 +231,6 @@ class SwitchPowerController:
     # Rail feed
     # ------------------------------------------------------------------
 
-    def feed_block_id(self, switch_id: str) -> Optional[str]:
-        """The block whose feed powers this switch's rails, per the
-        `switch_track_source` binding. None while an incomplete setup is being
-        edited or commissioned; that state is an activation blocker and cannot
-        occur during Virtual Hardware or Real Hardware operation."""
-        try:
-            import hardware_config
-        except ImportError:  # pragma: no cover - defensive import guard
-            return None
-        cfg = hardware_config.get_hardware_config()
-        return cfg.switch_track_source.get(switch_id)
-
-    def get_switch_voltage(self, switch_id: str) -> Optional[float]:
-        """The voltage on a switch's rails, read from its feed block.
-
-        A UI/diagnostic read: the per-switch hardware view shows which block
-        feeds the switch and whether those rails are live. No control, routing,
-        or physics decision reads it. This controller drives nothing onto the
-        rails — the bond is physical, so there is no output to write.
-        """
-        source_block_id = self.feed_block_id(switch_id)
-        if source_block_id is None:
-            return None
-        power_controller = self._power_controller
-        if power_controller is None and self.network is not None:
-            power_controller = getattr(self.network, "power_controller", None)
-        if power_controller is None:
-            return None
-        return power_controller.get_block_voltage(source_block_id)
 
     # ------------------------------------------------------------------
     # Safe state

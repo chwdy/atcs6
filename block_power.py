@@ -2,9 +2,10 @@
 Block Power Controller
 
 Definition:
-This module provides the BlockPowerController class which manages DC voltage output
-to track blocks. In DC analog control, each block is electrically isolated and
-receives independent voltage based on the trains occupying it.
+This module provides the BlockPowerController class, the software side of
+block voltage (design_v2.md "Block and switch power controllers"). It applies a
+voltage the runtime step has already decided, or the 0 V of Stop all, and owns
+nothing but sending that voltage and reading it back.
 
 The module includes:
 - TrackOutput: Abstract base for hardware voltage output
@@ -21,15 +22,9 @@ from typing import Any, Callable, Dict, Optional, Set, TYPE_CHECKING
 logger = logging.getLogger(__name__)
 
 MAX_TRACK_VOLTAGE = 12.0
-# A standing train's voltage is a per-train property: its
-# `SpeedProfile.lighting_voltage`, or 0 V when the profile sets none, emitted by
-# `TrainPhysics.compute_track_voltage`. The block power controller does not hold
-# its own lighting-voltage default.
 
 if TYPE_CHECKING:
     from network import RailwayNetwork
-    from train import Train
-    from speed_profile import SpeedProfile, SpeedProfileRegistry
 
 
 class TrackOutput(ABC):
@@ -141,13 +136,7 @@ class SimulatedTrackDriver(TrackOutput):
 @dataclass
 class BlockPowerController:
     """
-    Manages DC voltage output to track blocks.
-
-    The controller determines the appropriate voltage for each block
-    based on:
-    - Which trains occupy the block
-    - Train state (OFF, READY, RUNNING_*, etc.)
-    - Train speed profile and target speed
+    Sends each block's voltage to the track output and records what landed.
 
     Attributes:
         network: Reference to the railway network
@@ -172,14 +161,10 @@ class BlockPowerController:
     min_voltage: float = -MAX_TRACK_VOLTAGE
 
     # Named dependencies, handed in by `wire_dependencies(...)`: the event-log
-    # sink, the controller registry (for the ghost check in the de-energize
-    # sweep), and the call that latches a hardware failure when a voltage write
-    # fails. A bare admin/test controller with none wired logs its failures
-    # instead of emitting them, latches nothing, and skips the ghost check.
-    # This controller does not read controller-owned manual-mode state — it
-    # asks `TrainPhysics.compute_track_voltage(...)` for the scalar.
+    # sink, and the call that latches a hardware failure when a voltage write
+    # fails. A bare controller with none wired logs its failures instead of
+    # emitting them and latches nothing.
     _notification_center: Optional[Any] = None
-    _controllers: Optional[Dict[str, Any]] = None
     _enter_hardware_failure: Optional[Callable[[Any], None]] = None
 
     # Blocks whose voltage write the driver has already refused. Reporting is
@@ -189,27 +174,24 @@ class BlockPowerController:
 
     # The applied-output mirror: what actually reached each block's rail, keyed
     # by block id. This is `BlockPowerController`-owned runtime state, not a
-    # `Block` field — voltage's canonical home is `TrainPhysics.compute_track_
-    # voltage(...)` and this controller only records what it drove (design_new.md
-    # "Power", Block power-controller role). It is exposed on the live frontend
-    # payload but never persisted (see `RailwayNetwork.to_dict`).
+    # `Block` field: the runtime step decides each voltage (design_v2.md
+    # "Track power") and this controller only records what it drove. It is
+    # exposed on the live frontend payload but never persisted.
     _recorded_voltages: Dict[str, float] = field(default_factory=dict)
 
     def wire_dependencies(
         self,
         *,
         notification_center: Optional[Any] = None,
-        controllers: Optional[Dict[str, Any]] = None,
         enter_hardware_failure: Optional[Callable[[Any], None]] = None,
     ) -> None:
         """Inject the named dependencies this controller needs: the event-log
-        NotificationCenter, the controller registry, and
+        NotificationCenter and
         `SimulationController.enter_hardware_failure` (design_new.md "Power",
         Hardware I/O failure is fatal to the physical session). Called by
         SimulationController each time it builds a BlockPowerController; this
         controller holds no general SimulationController reference of its own."""
         self._notification_center = notification_center
-        self._controllers = controllers
         self._enter_hardware_failure = enter_hardware_failure
 
     def get_recorded_voltage(self, block_id: str) -> float:
@@ -442,72 +424,6 @@ class BlockPowerController:
         """
         return self.output_interface.get_all_voltages()
 
-    def release_block(self, block_id: str) -> None:
-        """
-        Set block to 0V (no train occupying).
-
-        Args:
-            block_id: Block to release
-        """
-        self.set_block_voltage(block_id, 0.0)
-
-    def deenergize_unheld_blocks(
-        self, skip: Optional[Set[str]] = None
-    ) -> None:
-        """Drop every block no train is standing on back to 0V (full
-        reconciliation).
-
-        A block is *held* when a train physically occupies it (``occupied_by``).
-        A reservation is not a hold: a reserved block the train has not reached
-        yet carries no voltage, because only the *next* block of a corridor is
-        pre-energized (design_new.md "Power", Only the next reserved block is
-        pre-energized). Per-tick voltage emission (TrainPhysics) drives only a
-        train's own energized set, so a block it has vacated, released, or run
-        past would otherwise keep its last commanded voltage forever.
-
-        ``skip`` names blocks to leave alone whatever this test says, and is how
-        the calculated half of the energized set reaches this sweep: the runtime
-        passes each train's calculated span, its ``pending-entry block``, and its
-        one next reserved block — none of which this scan can see from the block
-        fields alone, and all of which must stay live under or in front of a
-        locomotive (design_new.md "Power", Block power-controller role). Called
-        bare, with no ``skip``, it reconciles against physical occupancy only.
-
-        An unidentified train is excluded from that test: it commands no voltage, so a
-        block held only by an unidentified train is driven to ``0`` (design_new.md "Unidentified train
-        trains", Never energized). A ghosted train (``presence_unknown``) is
-        excluded too — it is frozen inert and commands no voltage — so a block
-        held only by a ghost is driven to ``0`` as well, mirroring the per-tick
-        drain (design_new.md "Power", Ghosted trains). The ghost check needs the
-        live `TrainController`, read from the injected controller registry; a
-        bare admin/test controller with none wired falls back to the
-        unidentified-only test.
-
-        The per-tick path is event-driven: `BlockManager` queues each block as
-        its holder clears, `TrainPhysics` reports each block that left its
-        energized set, and `SimulationController` drains both to 0V. This
-        O(all-blocks) sweep is the fallback for a runtime with no BlockManager
-        wired, plus an admin/test reconciliation primitive.
-        """
-        if not self.network:
-            return
-        exempt = skip or set()
-        trains = getattr(self.network, "trains", {}) or {}
-        controllers = self._controllers or {}
-        for block_id, block in self.network.blocks.items():
-            if block_id in exempt:
-                continue
-            occupant = getattr(block, "occupied_by", None)
-            occupant_train = trains.get(occupant) if occupant else None
-            is_unidentified = getattr(occupant_train, "is_unidentified", False)
-            ghost = (
-                bool(getattr(controllers.get(occupant), "presence_unknown", False))
-                if occupant is not None
-                else False
-            )
-            held = occupant is not None and not is_unidentified and not ghost
-            if not held and self.get_recorded_voltage(block_id) != 0.0:
-                self.set_block_voltage(block_id, 0.0)
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize current voltage state."""

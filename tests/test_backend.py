@@ -17,16 +17,8 @@ import pytest
 BACKEND_TEST_MODULES = [
     "tests.test_track",
     "tests.test_blocks",
-    "tests.test_signals",
-    "tests.test_stations",
-    "tests.test_trains_core",
-    "tests.test_trains_occupancy",
-    "tests.test_trains_cab",
-    "tests.test_trains_physics",
-    "tests.test_trains_controller",
-    "tests.test_trains_ato",
-    "tests.test_trains_lookahead",
-    "tests.test_trains_routes",
+    "tests.test_train_runtime",
+    "tests.test_running_trains_api",
 ]
 
 
@@ -37,21 +29,4 @@ def test_backend_module_imports(module_name):
 
 
 if __name__ == "__main__":
-    print("Backend Test Suite - Modular Test Files")
-    print("=" * 50)
-    print("\nRun individual test categories:")
-    print("  pytest tests/test_track.py -v")
-    print("  pytest tests/test_blocks.py -v")
-    print("  pytest tests/test_signals.py -v")
-    print("  pytest tests/test_stations.py -v")
-    print("\nTrain tests (modular):")
-    print("  pytest tests/test_trains_core.py -v")
-    print("  pytest tests/test_trains_occupancy.py -v")
-    print("  pytest tests/test_trains_cab.py -v")
-    print("  pytest tests/test_trains_physics.py -v")
-    print("  pytest tests/test_trains_controller.py -v")
-    print("  pytest tests/test_trains_ato.py -v")
-    print("  pytest tests/test_trains_lookahead.py -v")
-    print("  pytest tests/test_trains_routes.py -v")
-    print("\nOr run the whole backend suite directly:")
-    print("  pytest")
+    print("Run the whole backend suite with:  pytest")

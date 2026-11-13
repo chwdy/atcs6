@@ -27,9 +27,7 @@ export interface NextHost extends LocomotivesHost, FirstRunHost {
   openSaveLayoutDialog(): Promise<void>;
   setEditorMode(mode: 'edit' | 'sim'): void;
   activateEnvironment(): Promise<void>;
-  resetLayout(): Promise<void>;
-  clearFatalConflict(): Promise<void>;
-  emergencyStop(): Promise<void>;
+  stopAll(): Promise<void>;
   openSettings(): void;
   restartServer(): Promise<void>;
 }
@@ -58,9 +56,7 @@ export function topBarActions(host: NextHost): TopBarActions {
     // The session-state chip opens Hardware Setup at step 1, choose the environment.
     openHardwareSetup: () => showHardwareSetup(1),
     activate: () => host.activateEnvironment(),
-    resetLayout: () => host.resetLayout(),
-    clearConflict: () => host.clearFatalConflict(),
-    emergencyStop: () => host.emergencyStop(),
+    stopAll: () => host.stopAll(),
     openSettings: () => host.openSettings(),
     restartServer: () => host.restartServer(),
   };

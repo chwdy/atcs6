@@ -19,7 +19,6 @@ from app_state import AppState
 from block_occupancy import OccupancyInput
 from block_power import SimulatedTrackDriver
 from enums import OperationMode, SwitchState
-from path_dispatcher import PathDispatcher
 from persistence import PersistenceManager
 from runtime import run_loop_iteration
 from simulation import SimulationController
@@ -46,8 +45,7 @@ class Session:
         finally:
             logging.disable(logging.NOTSET)
         self.ids = {b.name: block_id for block_id, b in self.network.blocks.items()}
-        dispatcher = PathDispatcher(self.network)
-        self.sim = SimulationController(self.network, dispatcher)
+        self.sim = SimulationController(self.network)
         self.detectors = ScriptedDetectors(self.network)
         self.track = SimulatedTrackDriver()
         self.sim.activate_interfaces(
@@ -58,7 +56,6 @@ class Session:
             switch.position = SwitchState.MAIN
         self.state = AppState(
             network=self.network,
-            path_dispatcher=dispatcher,
             sim_controller=self.sim,
             persistence_manager=PersistenceManager(storage_dir=str(tmp_path / "layouts")),
             simulation_lock=threading.Lock(),

@@ -6,9 +6,7 @@ This module contains all the enumeration types used throughout the railway manag
 These enums define the possible states, types, and directions for various railway components.
 """
 
-from dataclasses import dataclass, field
 from enum import Enum, IntEnum
-from typing import Any, Dict, Optional
 
 
 class OperationMode(Enum):
@@ -23,18 +21,6 @@ class OperationMode(Enum):
     VIRTUAL_HARDWARE = "virtual_hardware"
     REAL_HARDWARE = "real_hardware"
 
-
-class PathStatus(Enum):
-    """Path lifecycle states.
-
-    A path is born ACTIVE on a successful create_path(...). It transitions to
-    COMPLETED when the train reaches the requested destination, or to
-    CANCELLED when the path is revoked. Both terminal states are sticky.
-    """
-
-    ACTIVE = "active"
-    COMPLETED = "completed"
-    CANCELLED = "cancelled"
 
 
 class SwitchState(IntEnum):
@@ -90,15 +76,6 @@ class Direction(Enum):
     SOUTH = (0, -1)
     WEST = (-1, 0)
 
-    def opposite(self):
-        """Get the opposite direction"""
-        return {
-            Direction.NORTH: Direction.SOUTH,
-            Direction.SOUTH: Direction.NORTH,
-            Direction.EAST: Direction.WEST,
-            Direction.WEST: Direction.EAST,
-        }[self]
-
 
 class SignalState(Enum):
     """Railway signal states for train control"""
@@ -130,74 +107,14 @@ class SessionStateValue(Enum):
 
 
 class HaltReason(Enum):
-    """Why a Halted session is halted (design_new.md "Session state")."""
+    """Why a Halted session is halted (design_v2.md "Session state", The two
+    halt reasons)."""
 
-    LAYOUT_EMERGENCY_CUT_OUT = "layout_emergency_cut_out"
     HARDWARE_FAILURE = "hardware_failure"
-    RUNTIME_FAILURE = "runtime_failure"
     NOT_ACTIVATED = "not_activated"
 
 
-class TrainStatus(Enum):
-    """Overall train status, derived (never stored) per design_new.md
-    "Controller state machine".
 
-    Computed each read, in precedence order, from `powered`, `eb.active`,
-    whether a calibration run is open for the train, and
-    `commands.control_mode`:
-      - OFF: not powered.
-      - EB: powered and the emergency brake is latched.
-      - CALIBRATING: powered, not under EB, a calibration run is open
-        (`SpeedCalibration.get_propulsion_override(train_id) is not None`).
-      - ATO: powered, not under EB, no run open, control_mode == "ato".
-      - MANUAL: powered, not under EB, no run open, control_mode == "manual".
-
-    The ATO-mode detail (READY / RUNNING / HELD / DWELLING) is the read-model
-    `ato_status` projection (see `AtoStatus` and design_new.md "ATO status"),
-    not part of this enum, because it needs route state the controller never
-    reads.
-    """
-
-    OFF = "off"
-    MANUAL = "manual"
-    ATO = "ato"
-    CALIBRATING = "calibrating"
-    EB = "eb"
-
-
-class AtoStatus(Enum):
-    """ATO's own status — a read-model display projection per design_new.md
-    "ATO status".
-
-    Not a controller field: assembled in the read model from the controller's
-    derived `train_status`, `commands.engaged`, and `current_speed_kmh` plus
-    the train's route-run state (whether a RUNNING run exists and whether its
-    current walk task is a started, unfinished `dwell` row). No control logic
-    reads it; it is display-only.
-    """
-
-    OFF = "OFF"
-    READY = "READY"
-    RUNNING = "RUNNING"
-    HELD = "HELD"
-    DWELLING = "DWELLING"
-
-
-class ControllerCondition(Enum):
-    """Derived projection of TrainController recovery-relevant flags.
-
-    Per design_new.md "`ControllerCondition` set" canonical home, every member
-    maps to one underlying controller field; TrainController.active_conditions
-    returns a frozenset of currently-true conditions. RouteExecutor.is_clean_for_create reads a subset of this set, so adding a new latch in the future is one enum value plus one
-    mapping line.
-    """
-
-    EB_LATCHED = "eb_latched"
-    POWER_OFF_PENDING = "power_off_pending"
-    PATH_CANCEL_PENDING = "path_cancel_pending"
-    EMERGENCY_PENDING = "emergency_pending"
-    ROUTE_ABORT_PENDING = "route_abort_pending"
-    ROUTE_DEACTIVATE_PENDING = "route_deactivate_pending"
 
 
 class PlatformSide(Enum):
@@ -208,27 +125,6 @@ class PlatformSide(Enum):
     BOTH = "both"
     EITHER = "either"  # For flexible platform selection
 
-
-def direction_from_delta(dx: int, dy: int) -> Optional[str]:
-    """
-    Get N/E/S/W direction string from coordinate delta.
-
-    Args:
-        dx: X coordinate change (positive = East)
-        dy: Y coordinate change (positive = North)
-
-    Returns:
-        Direction string ('N', 'E', 'S', 'W') or None if no movement
-    """
-    if dy > 0:
-        return "N"
-    elif dy < 0:
-        return "S"
-    elif dx > 0:
-        return "E"
-    elif dx < 0:
-        return "W"
-    return None
 
 
 # Direction offsets for coordinate calculations
@@ -247,35 +143,6 @@ OPPOSITE_DIRECTIONS = {
     "W": "E",
 }
 
-
-class AtcLimitReasonCode(Enum):
-    """Canonical reason codes for the ATC speed-limit selection.
-
-    Per design_new.md "canonical lookahead payload", every consumer that
-    inspects the reason behind the current ATC limit must use one of these
-    codes rather than a free-form string. The values here are the canonical
-    `.value` strings emitted in the lookahead payload's
-    `speed_curves[*].atc_limit_reason_code` field.
-    """
-
-    RESERVATION_STOP = "reservation_stop"
-    CAUTION = "caution"
-    NO_RESERVATION = "no_reservation"
-    EB = "eb"
-    # A posted block speed limit (`Block.speed_limit_kmh`) below the train's
-    # current maximum: a permitted-speed restriction ahead, distinct from
-    # `reservation_stop` (braking to the reservation/clearance end). Per
-    # design_new.md canonical `atc_limit_reason_code` enumeration.
-    SPEED_LIMIT = "speed_limit"
-    # Per design_new.md, the canonical `atc_limit_reason_code` enumeration: used when the train or network object is
-    # not yet wired, so the empty anchor reports a structured reason code.
-    NO_TRAIN = "no_train"
-    # Per design_new.md, the canonical `atc_limit_reason_code` enumeration: a movement-derived deviation cancel is
-    # latched (the live path stays ACTIVE), so the head is off its still-active
-    # authority. The distance-0 anchor reports `atc_limit = 0` with this reason
-    # so ATC brakes the train and the overspeed branch escalates to EB. Distinct
-    # from `no_reservation`, which is the genuinely-absent-plan case.
-    DEVIATION = "deviation"
 
 
 class HandlePosition(Enum):
@@ -376,21 +243,3 @@ BRAKE_MULTIPLIERS = {
 }
 
 
-@dataclass
-class CommandResult:
-    """Result of a TrainMover command execution.
-
-    Provides a standardized response format for command validation and execution.
-    """
-
-    success: bool
-    message: str = ""
-    data: Dict[str, Any] = field(default_factory=dict)
-
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary for JSON serialization."""
-        return {
-            "success": self.success,
-            "message": self.message,
-            "data": self.data,
-        }

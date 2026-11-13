@@ -18,17 +18,14 @@ import threading
 from app_factory import create_app
 from app_state import AppState
 from network import RailwayNetwork
-from path_dispatcher import PathDispatcher
 from simulation import SimulationController
 from persistence import PersistenceManager
 from track import Tile
 from block import Block
 from railway_signal import Signal, SignalType
 from station import Station
-from train import Train, TrainCar
 from switch import Switch
-from enums import Direction, BlockState, TrainStatus
-from tests.train_test_helpers import set_train_span
+from enums import Direction, BlockState
 from tests.segment_test_helpers import make_segment_block, make_segment_block_with_tracks
 
 
@@ -36,15 +33,13 @@ from tests.segment_test_helpers import make_segment_block, make_segment_block_wi
 def app_state(tmp_path):
     """Create a fresh AppState with initialized components for testing."""
     network = RailwayNetwork()
-    path_dispatcher = PathDispatcher(network)
-    sim_controller = SimulationController(network, path_dispatcher)
+    sim_controller = SimulationController(network)
     # Keep route tests hermetic: save/load/delete must never write into the
     # repository's real layouts directory.
     persistence_manager = PersistenceManager(storage_dir=str(tmp_path))
 
     state = AppState(
         network=network,
-        path_dispatcher=path_dispatcher,
         sim_controller=sim_controller,
         persistence_manager=persistence_manager,
         simulation_lock=threading.Lock(),
@@ -116,38 +111,6 @@ class TestTrackRoutes:
         response = client.patch("/api/track/99/99", json={"track_bits": 1})
         assert response.status_code == 404
 
-    def test_update_track_switch_change_rejected_returns_409(
-        self, client, app_state, network_with_tracks
-    ):
-        """A locked switch must surface a 409 with an error, not a 500.
-
-        When a runtime SwitchManager is wired, a rejected throw (e.g. the
-        switch is locked by a live path) returns the tagged
-        `switch_change_rejected` result. The route must map it to 409 with
-        an `error` field the UI can show -- not fall through and KeyError.
-        """
-        from runtime_payloads import SwitchLockClaim
-
-        network = network_with_tracks
-        track = network.get_track(1, 0)
-        track.track_bits = 6  # EW main + NE diverge => a switch tile (is_switch)
-        track.switch_id = "SW_test"
-        network.add_switch(Switch(switch_id="SW_test", x=1, y=0))
-
-        # An operating throw needs an active environment; the lock is what
-        # refuses this one.
-        app_state.sim_controller.environment_active = True
-        # Lock the switch to MAIN (0) so a DIVERGE (1) request conflicts.
-        switch = network.switches["SW_test"]
-        assert switch.acquire_lock(
-            SwitchLockClaim(path_id="P_test", train_id="T1", locked_state=0)
-        )
-
-        response = client.patch("/api/track/1/0", json={"switch_state": 1})
-        assert response.status_code == 409
-        data = response.get_json()
-        assert "error" in data
-        assert "locked" in data["error"].lower()
 
     def test_delete_track_success(self, client, network_with_tracks):
         """DELETE /api/track/<x>/<y> should remove track."""
@@ -893,153 +856,6 @@ class TestStationGroupRoutes:
 # ============================================================================
 
 
-class TestTrainRoutes:
-    """Test train management and control endpoints."""
-
-    def test_create_train(self, client):
-        """POST /api/trains should create train."""
-        response = client.post(
-            "/api/trains", json={"id": "TRAIN_001", "max_speed": 100.0}
-        )
-        assert response.status_code == 200
-        data = response.get_json()
-        assert data["status"] == "success"
-
-    def test_list_trains(self, client):
-        """GET /api/trains should list all trains."""
-        response = client.get("/api/trains")
-        assert response.status_code == 200
-        data = response.get_json()
-        assert "trains" in data
-
-    def test_get_train(self, client, app_state):
-        """GET /api/trains/<train_id> should return train details."""
-        car = TrainCar("CAR_1", "LOCOMOTIVE", length_cm=1000.0, max_speed=100.0)
-        train = Train("TRAIN_001", consist=[car])
-        app_state.network.add_train(train)
-        response = client.get("/api/trains/TRAIN_001")
-        assert response.status_code == 200
-
-    def test_delete_train(self, client, app_state):
-        """DELETE /api/trains/<train_id> should delete train."""
-        car = TrainCar("CAR_1", "LOCOMOTIVE", length_cm=1000.0, max_speed=100.0)
-        train = Train("TRAIN_001", consist=[car])
-        app_state.network.add_train(train)
-        response = client.delete("/api/trains/TRAIN_001")
-        assert response.status_code == 200
-
-    def test_train_power_on(self, client, app_state, network_with_tracks):
-        """POST /api/trains/<train_id>/power-on should power on train."""
-        car = TrainCar("CAR_1", "LOCOMOTIVE", length_cm=40.0, max_speed=100.0)
-        train = Train("TRAIN_001", consist=[car])
-        app_state.network.add_train(train)
-        app_state.network.place_train(train, 0, 0, Direction.EAST)
-        response = client.post("/api/trains/TRAIN_001/power-on")
-        assert response.status_code == 200
-
-    def test_train_power_off(self, client, app_state, network_with_tracks):
-        """POST /api/trains/<train_id>/power-off should power off train."""
-        car = TrainCar("CAR_1", "LOCOMOTIVE", length_cm=40.0, max_speed=100.0)
-        train = Train("TRAIN_001", consist=[car])
-        app_state.network.add_train(train)
-        app_state.network.place_train(train, 0, 0, Direction.EAST)
-        response = client.post("/api/trains/TRAIN_001/power-off")
-        # A freshly-placed train is stopped, so power-off (any state -> OFF when
-        # stopped) succeeds deterministically -- mirror of test_train_power_on.
-        assert response.status_code == 200
-
-    def test_release_emergency_clears_eb_in_ato_mode(
-        self, client, app_state, network_with_tracks
-    ):
-        """POST /release-emergency clears a latched EB even in ATO mode.
-
-        Regression: the "Release Emergency" / Reset button used to call
-        setHandle(train, 'N'), which never releases EB (the handle and EB are
-        separate; EB clears only via eb.release()) and is rejected outright in
-        ATO mode with "Handle input requires manual mode". The dedicated
-        release-emergency route calls the canonical eb.release() instead, so it
-        works regardless of control mode.
-        """
-        car = TrainCar("CAR_1", "LOCOMOTIVE", length_cm=40.0, max_speed=100.0)
-        train = Train("TRAIN_001", consist=[car])
-        app_state.network.add_train(train)
-        app_state.network.place_train(train, 0, 0, Direction.EAST)
-
-        controller = app_state.sim_controller.get_or_create_controller("TRAIN_001")
-        controller.commands.power_on_cmd()  # OFF -> powered, MANUAL (default)
-        # This case exercises EB activated from ATO, so select ATO explicitly
-        # (power-on lands the train in MANUAL, per design_new.md).
-        controller.commands.set_mode("ato")
-        assert controller.commands.control_mode == "ato"
-        controller.eb.activate()  # stopped, no path -> EB latches cleanly
-        assert controller.eb.active is True
-        # EB activation keeps control_mode and clears the engage bit
-        # (design_new.md "Canonical EB activation effects").
-        assert controller.commands.control_mode == "ato"
-        assert controller.commands.engaged is False
-
-        # The OLD button path (handle 'N') never releases EB — the handle and EB
-        # are separate — so EB stays latched however the handle command is
-        # resolved.
-        client.post("/api/trains/TRAIN_001/handle", json={"position": "N"})
-        assert controller.eb.active is True
-
-        # The NEW path releases EB and leaves the controller powered and stopped.
-        resp = client.post("/api/trains/TRAIN_001/release-emergency")
-        assert resp.status_code == 200
-        assert resp.get_json()["status"] == "success"
-        assert controller.eb.active is False
-        assert controller.powered and controller.is_stopped()
-
-    def test_release_emergency_rejected_while_moving(
-        self, client, app_state, network_with_tracks
-    ):
-        """release-emergency is latch-gated: it rejects (400) while the train
-        is still rolling and leaves EB latched, per eb.release()'s contract."""
-        car = TrainCar("CAR_1", "LOCOMOTIVE", length_cm=40.0, max_speed=100.0)
-        train = Train("TRAIN_002", consist=[car])
-        app_state.network.add_train(train)
-        app_state.network.place_train(train, 0, 0, Direction.EAST)
-
-        controller = app_state.sim_controller.get_or_create_controller("TRAIN_002")
-        controller.commands.power_on_cmd()
-        controller.eb.activate()
-        controller.physics_sync.current_speed_kmh = 5.0  # still moving
-
-        resp = client.post("/api/trains/TRAIN_002/release-emergency")
-        assert resp.status_code == 400
-        assert "moving" in resp.get_json()["error"].lower()
-        assert controller.eb.active is True
-
-    def test_release_emergency_lands_stopped_powered_synchronously(
-        self, client, app_state, network_with_tracks
-    ):
-        """The POST is synchronous: a train EB'd to a stop with no live
-        reservation reads a powered, non-EB status within the POST.
-
-        `train_status` is derived, so once `eb.release()` clears `eb.active`
-        the train reads its underlying mode with no separate state write
-        (design_new.md "Controller state machine").
-        """
-        car = TrainCar("CAR_1", "LOCOMOTIVE", length_cm=40.0, max_speed=100.0)
-        train = Train("TRAIN_003", consist=[car])
-        app_state.network.add_train(train)
-        app_state.network.place_train(train, 0, 0, Direction.EAST)
-
-        controller = app_state.sim_controller.get_or_create_controller("TRAIN_003")
-        controller.commands.power_on_cmd()
-        controller.powered = True
-        controller.physics_sync.current_speed_kmh = 0.0
-        controller.eb.activate()  # stopped, no path -> clean latch
-        assert controller.eb.active is True
-        # While EB is latched the derived status is EB.
-        assert controller.train_status == TrainStatus.EB
-
-        resp = client.post("/api/trains/TRAIN_003/release-emergency")
-        assert resp.status_code == 200
-        assert controller.eb.active is False
-        # Derived: once the latch clears the train reads a powered, non-EB status.
-        assert controller.powered and controller.train_status != TrainStatus.EB
 
 # ============================================================================
 # Path Routes Tests (9 routes)
@@ -1051,90 +867,13 @@ class TestTrainRoutes:
 class TestPathRoutes:
     """Test path management and dispatcher endpoints."""
 
-    def test_create_path_rejects_v0_payload(self, client, app_state, network_with_tracks):
-        """POST /api/paths rejects the v0 wire format. The legacy
-        `{start_block_id, end_block_id}` keys are no longer accepted; the handler
-        returns 400 with a message naming the v1 fields (routes/paths.py:111).
-        The success path is covered by `test_create_path_assigns_one_off_route`."""
-        make_segment_block_with_tracks(app_state.network, "BLK_001", [(0, 0)])
-        make_segment_block_with_tracks(app_state.network, "BLK_002", [(2, 0)])
-        response = client.post(
-            "/api/paths", json={"start_block_id": "BLK_001", "end_block_id": "BLK_002"}
-        )
-        assert response.status_code == 400
-        data = response.get_json()
-        assert data["success"] is False
-        assert "start_block_id/end_block_id" in data["error"]
 
-    def test_create_path_assigns_one_off_route(
-        self, client, app_state, network_with_tracks
-    ):
-        """POST /api/paths constructs a one-off operator route and assigns the
-        train (design_new.md "Availability flag REST API surface",
-        Quick Route). It returns 202 accepted and does
-        NOT create dispatcher authority inline — Phase 1 builds the path. The
-        "one active path per train" invariant is enforced by the dispatcher in
-        Phase 1 (create_path rejects a second active path), not by this handler.
-        """
-        make_segment_block_with_tracks(app_state.network, "BLK_001", [(0, 0), (1, 0)])
-        make_segment_block_with_tracks(app_state.network, "BLK_002", [(2, 0), (3, 0)])
-
-        car = TrainCar("CAR_1", "LOCOMOTIVE", length_cm=40.0, max_speed=100.0)
-        train = Train("TRAIN_001", consist=[car])
-        app_state.network.add_train(train)
-        app_state.network.place_train(train, 0, 0, Direction.EAST)
-
-        response = client.post(
-            "/api/paths",
-            json={
-                "requested_destination_block_id": "BLK_002",
-                "requested_destination_direction": "forward",
-                "train_id": "TRAIN_001",
-            },
-        )
-        assert response.status_code == 202, response.get_json()
-        data = response.get_json()
-        assert data["success"] is True
-        route_id = data["route_id"]
-
-        # A one-off route toward BLK_002 was created and the train assigned to it.
-        registry = app_state.sim_controller.route_executor.route_registry
-        assert route_id in registry
-        route = registry[route_id]
-        assert route.mode.value == "one_off"
-        assert "TRAIN_001" in route.assigned_train_ids
-
-        # The handler did NOT create dispatcher authority inline; the path is
-        # built later in Phase 1.
-        assert app_state.path_dispatcher.active_path_id_by_train("TRAIN_001") is None
-
-    def test_list_paths(self, client):
-        """GET /api/paths should list all paths."""
-        response = client.get("/api/paths")
-        assert response.status_code == 200
-        data = response.get_json()
-        assert "paths" in data
-
-    def test_find_dispatcher_paths(self, client, app_state, network_with_tracks):
-        """POST /api/dispatcher/paths should find paths."""
-        make_segment_block_with_tracks(app_state.network, "BLK_001", [(0, 0)])
-        make_segment_block_with_tracks(app_state.network, "BLK_002", [(2, 0)])
-        response = client.post(
-            "/api/dispatcher/paths",
-            json={"start_block_id": "BLK_001", "end_block_id": "BLK_002"},
-        )
-        assert response.status_code == 200
 
     def test_get_reachable_endpoints(self, client, app_state, network_with_tracks):
         """GET /api/dispatcher/reachable/<block_id> should return reachable blocks."""
         make_segment_block_with_tracks(app_state.network, "BLK_001", [(0, 0)])
         response = client.get("/api/dispatcher/reachable/BLK_001")
         assert response.status_code == 200
-
-    def test_get_reachable_endpoints_for_train_unknown(self, client, app_state, network_with_tracks):
-        """GET /api/dispatcher/reachable-for-train/<train_id> 404s for an unknown train."""
-        response = client.get("/api/dispatcher/reachable-for-train/NO_SUCH_TRAIN")
-        assert response.status_code == 404
 
 
 # ============================================================================
@@ -1197,10 +936,6 @@ class TestMiscRoutes:
 class TestRouteRedesignApis:
     """Coverage for newly added route-panel redesign APIs."""
 
-    def _create_train(self, app_state, train_id: str = "TRAIN_A"):
-        car = TrainCar(car_id=f"{train_id}_CAR", car_type="LOCOMOTIVE", length_cm=20.0)
-        train = Train(train_id=train_id, consist=[car], max_speed=80.0)
-        app_state.network.add_train(train)
 
     def _setup_connected_platforms(self, app_state, client):
         for x in range(4):
@@ -1253,119 +988,6 @@ class TestRouteRedesignApis:
         payload = get_resp.get_json()
         assert payload["platform_id"] == "PLT_001"
 
-    def test_train_route_viability_endpoint(self, client, app_state):
-        self._setup_connected_platforms(app_state, client)
-        resp = client.post(
-            "/api/train-routes/check-viability",
-            json={"pairs": [["PLT_A", "PLT_B"]]},
-        )
-        assert resp.status_code == 200
-        data = resp.get_json()
-        assert "results" in data
-        assert len(data["results"]) == 1
-        assert data["results"][0]["from"] == "PLT_A"
-        assert data["results"][0]["to"] == "PLT_B"
-
-    def test_viability_dict_payload_with_direction(self, client, app_state):
-        """New payload shape {from, to, direction} resolves correctly and
-        response carries hop_count, distance_cm, and resolved direction."""
-        self._setup_connected_platforms(app_state, client)
-        resp = client.post(
-            "/api/train-routes/check-viability",
-            json={"pairs": [
-                {"from": "PLT_A", "to": "PLT_B", "direction": "either"}
-            ]},
-        )
-        assert resp.status_code == 200
-        result = resp.get_json()["results"][0]
-        assert result["viable"] is True
-        assert result["hop_count"] >= 1
-        assert result["distance_cm"] > 0
-        assert result["direction"] in ("forward", "reverse")
-
-    def test_viability_traverses_switch_tile(self, client, app_state):
-        """Switch-barrier regression: blocks separated by a tile whose
-        ``segment_id`` is None (the way switches are modeled in v1)
-        must still be reachable. The legacy ``build_block_graph``
-        treated such tiles as graph barriers and chopped the network into
-        disconnected components, marking valid pairs unviable."""
-        network = app_state.network
-        for x in range(5):
-            network.add_track(Tile(x=x, y=0, track_bits=2))
-        # (2,0) is intentionally left out of both blocks; it has track
-        # geometry but no segment_id — the same shape a switch tile
-        # has in v1.
-        make_segment_block_with_tracks(network, "BLK_LEFT",
-            positions=[(0, 0), (1, 0)],
-            name="Left",
-        )
-        make_segment_block_with_tracks(network, "BLK_RIGHT",
-            positions=[(3, 0), (4, 0)],
-            name="Right",
-        )
-
-        resp = client.post(
-            "/api/train-routes/check-viability",
-            json={"pairs": [{
-                "from": {"block_id": "BLK_LEFT"},
-                "to": {"block_id": "BLK_RIGHT"},
-                "direction": "either",
-            }]},
-        )
-        assert resp.status_code == 200
-        result = resp.get_json()["results"][0]
-        assert result["viable"] is True, (
-            f"BLK_LEFT → BLK_RIGHT should traverse the unblocked tile; "
-            f"got {result}"
-        )
-        assert result["hop_count"] >= 1
-        assert result["distance_cm"] > 0
-        assert result["direction"] in ("forward", "reverse")
-
-    def test_viability_unreachable_blocks(self, client, app_state):
-        """Truly disconnected blocks return viable=False with a No-path
-        error and the requested direction is echoed back."""
-        network = app_state.network
-        network.add_track(Tile(x=0, y=0, track_bits=2))
-        network.add_track(Tile(x=10, y=0, track_bits=2))
-        make_segment_block_with_tracks(network, "BLK_X",
-            positions=[(0, 0)],
-            name="X",
-        )
-        make_segment_block_with_tracks(network, "BLK_Y",
-            positions=[(10, 0)],
-            name="Y",
-        )
-
-        resp = client.post(
-            "/api/train-routes/check-viability",
-            json={"pairs": [{
-                "from": {"block_id": "BLK_X"},
-                "to": {"block_id": "BLK_Y"},
-                "direction": "forward",
-            }]},
-        )
-        assert resp.status_code == 200
-        result = resp.get_json()["results"][0]
-        assert result["viable"] is False
-        assert "No path found" in (result.get("error") or "")
-        assert result.get("requested_direction") == "forward"
-
-    def test_viability_self_pair_is_trivially_viable(self, client, app_state):
-        """A pair whose from-block and to-block resolve to the same
-        block is viable with zero hops and zero distance."""
-        self._setup_connected_platforms(app_state, client)
-        resp = client.post(
-            "/api/train-routes/check-viability",
-            json={"pairs": [{
-                "from": "PLT_A", "to": "PLT_A", "direction": "either"
-            }]},
-        )
-        assert resp.status_code == 200
-        result = resp.get_json()["results"][0]
-        assert result["viable"] is True
-        assert result["hop_count"] == 0
-        assert result["distance_cm"] == 0.0
 
     # ------------------------------------------------------------------
     # Quick Route flow: the canonical replacement for the legacy
@@ -1374,73 +996,6 @@ class TestRouteRedesignApis:
     # is modeled through an
     # ordinary one-off Route + RouteRun rather than a raw path.
     # ------------------------------------------------------------------
-
-    def _place_powered_train_on_two_block_line(self, app_state, train_id="TRAIN_QR"):
-        """Build BLK_A→BLK_B, place a powered cab-A train on BLK_A.
-
-        Goes through `sim_controller.add_train(...)`, which is the canonical
-        entry point that writes the initial `TrainController.physics_sync
-        .current_span` from the span returned by `network.place_train(...)`
-        (simulation.py:607). Phase 1 cannot allocate a path without that span.
-        """
-        for x in range(4):
-            app_state.network.add_track(Tile(x=x, y=0, track_bits=2))
-        make_segment_block_with_tracks(app_state.network, "BLK_A", positions=[(0, 0), (1, 0)], name="Block A"
-        )
-        make_segment_block_with_tracks(app_state.network, "BLK_B", positions=[(2, 0), (3, 0)], name="Block B"
-        )
-
-        train = app_state.sim_controller.add_train(
-            train_id=train_id,
-            starting_block_id="BLK_A",
-            initial_direction="EAST",
-            max_speed_kmh=60.0,
-            length_cm=20.0,
-            initial_cab="A",
-        )
-
-        controller = app_state.sim_controller.get_or_create_controller(train_id)
-        controller.commands.control_mode = "ato"
-        controller.powered = True
-        return train, controller
-
-
-    def test_assign_route_replaces_another_route_without_a_flag(self, client, app_state):
-        """assign-route accepts a train that is already on another route, with
-        no extra flag (design_new.md "Route assignment writers"). With no
-        running run yet, the new route is assigned at once."""
-        self._place_powered_train_on_two_block_line(app_state)
-
-        for route_id in ("ROUTE_FIRST", "ROUTE_SECOND"):
-            resp = client.post(
-                "/api/train-routes",
-                json={
-                    "route_id": route_id,
-                    "mode": "one_off",
-                    "tasks": [{
-                        "task_kind": "stop",
-                        "task_location": {"block_id": "BLK_B"},
-                        "task_direction": "forward",
-                    }],
-                },
-            )
-            assert resp.status_code == 200, resp.get_json()
-
-        assert (
-            client.put(
-                "/api/trains/TRAIN_QR/assign-route",
-                json={"route_id": "ROUTE_FIRST"},
-            ).status_code
-            == 200
-        )
-
-        replace_resp = client.put(
-            "/api/trains/TRAIN_QR/assign-route",
-            json={"route_id": "ROUTE_SECOND"},
-        )
-        assert replace_resp.status_code == 200, replace_resp.get_json()
-        executor = app_state.sim_controller.route_executor
-        assert executor.assigned_route_id_for("TRAIN_QR") == "ROUTE_SECOND"
 
 
 class TestEventLogRoute:
@@ -1586,131 +1141,6 @@ class TestMigratedSwitchRoutes:
         )
         assert client.put("/api/switches/NOPE/state", json={"state": 0}).status_code == 404
 
-
-class TestMigratedSpeedProfileRoutes:
-    """Speed-profile CRUD migrated from the server-dependent JavaScript suite."""
-
-    def test_list_and_get_default_profile(self, client):
-        listing = client.get("/api/speed-profiles")
-        assert listing.status_code == 200
-        body = listing.get_json()
-        assert body["count"] == len(body["profiles"])
-        assert any(p["profile_id"] == 0 for p in body["profiles"])
-
-        default = client.get("/api/speed-profiles/0")
-        assert default.status_code == 200
-        assert default.get_json()["profile_id"] == 0
-        assert default.get_json()["kind"] == "default"
-
-    def test_update_delete_and_conflicts(self, client, app_state):
-        registry = app_state.network.speed_profiles
-        model = registry.add_model("Migrated model")
-        the_set = registry.create_set(model.model_id, "1", registry.get(0))
-        pid = the_set.profile_id
-
-        # No request creates a profile; only Promote does.
-        assert client.post("/api/speed-profiles", json={}).status_code == 405
-
-        updated = client.put(f"/api/speed-profiles/{pid}", json={"set_name": "2"})
-        assert updated.status_code == 200
-        assert updated.get_json()["set_name"] == "2"
-
-        assert client.put("/api/speed-profiles/0", json={"acceleration_rate": 2}).status_code == 409
-        assert client.delete("/api/speed-profiles/0").status_code == 409
-        assert client.delete(f"/api/speed-profiles/{pid}").status_code == 204
-        assert client.get(f"/api/speed-profiles/{pid}").status_code == 404
-
-    def test_profile_input_validation(self, client):
-        assert client.get("/api/speed-profiles/999").status_code == 404
-        assert client.put("/api/speed-profiles/999", json={"set_name": "x"}).status_code == 404
-
-
-class TestMigratedScaleRoutes:
-    def test_get_and_put_scale(self, client):
-        from model_scale import get_model_scale, set_model_scale
-
-        original = get_model_scale()
-        try:
-            current = client.get("/api/scale")
-            assert current.status_code == 200
-            assert "presets" in current.get_json()
-
-            updated = client.put("/api/scale", json={"scale": 160.0})
-            assert updated.status_code == 200
-            assert updated.get_json()["scale"] == 160.0
-            assert client.put("/api/scale", json={"preset": "NOPE"}).status_code == 400
-        finally:
-            set_model_scale(original)
-
-
-class TestMigratedTrainRouteCrud:
-    def test_list_create_get_and_delete_route(self, client):
-        assert client.get("/api/train-routes").status_code == 200
-        created = client.post(
-            "/api/train-routes",
-            json={
-                "route_id": "ROUTE_MIGRATED",
-                "name": "Migrated route",
-                "mode": "one_way",
-                "tasks": [
-                    {"task_kind": "stop", "task_location": {"block_id": "BLK_A"}}
-                ],
-            },
-        )
-        assert created.status_code == 200
-        route = created.get_json()["route"]
-        assert route["route_id"] == "ROUTE_MIGRATED"
-        assert route["mode"] == "one_off"
-
-        fetched = client.get("/api/train-routes/ROUTE_MIGRATED")
-        assert fetched.status_code == 200
-        assert fetched.get_json()["route_id"] == "ROUTE_MIGRATED"
-
-        assert client.delete("/api/train-routes/ROUTE_MIGRATED").status_code == 200
-        assert client.get("/api/train-routes/ROUTE_MIGRATED").status_code == 404
-
-
-class TestMigratedTrainPositionAndRetiredCommands:
-    def test_reposition_train_uses_current_position_contract(
-        self, client, app_state, network_with_tracks
-    ):
-        make_segment_block_with_tracks(app_state.network, "BLK_POSITION", [(0, 0), (1, 0), (2, 0), (3, 0)]
-        )
-        created = client.post(
-            "/api/trains",
-            json={
-                "id": "TRAIN_POSITION",
-                "length": 0.4,
-                "position": {"x": 0, "y": 0},
-                "direction": "EAST",
-            },
-        )
-        assert created.status_code == 200
-
-        repositioned = client.put(
-            "/api/trains/TRAIN_POSITION/position",
-            json={"position": {"x": 2, "y": 0}, "direction": "EAST"},
-        )
-        assert repositioned.status_code == 200
-        controller = app_state.sim_controller.get_or_create_controller("TRAIN_POSITION")
-        assert controller._get_head_tile() == (2, 0)
-
-    @pytest.mark.parametrize(
-        "path",
-        [
-            "/api/trains/T/clear-direction",
-            "/api/trains/T/set-direction",
-            "/api/trains/T/turn-around",
-            "/api/trains/T/enable-manual",
-            "/api/trains/T/disable-manual",
-            "/api/trains/T/emergency-stop",
-            "/api/trains/T/arrive",
-        ],
-    )
-    def test_v0_train_command_endpoint_is_retired(self, client, path):
-        # Flask resolves these URLs to the live /api/trains/<id> resource but
-        # correctly rejects POST because the v0 command method is absent.
-        assert client.post(path).status_code == 405
 
 
 # ============================================================================

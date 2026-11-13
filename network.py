@@ -3,42 +3,23 @@ Railway Network Management
 
 Definition:
 This module provides the RailwayNetwork class which manages the complete railway infrastructure
-including tracks, trains, and block sections. It serves as the central repository and
+including tracks, switches and block sections. It serves as the central repository and
 coordinator for all railway system components.
 """
 
 from collections import deque
 import logging
-from typing import (
-    Any,
-    Dict,
-    Iterable,
-    List,
-    Optional,
-    Set,
-    Tuple,
-    Union,
-    TYPE_CHECKING,
-)
-import uuid
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple, Union
 from track import Tile, EDGE_MASKS, BIT_TO_EDGES
-from train import Train
 from block import Block
 from entity_ids import block_id_for_segment
 from block_manager import BlockManager
 from switch_manager import SwitchManager
-from resource_coordinator import ResourceCoordinator
-from enums import TrackType, Direction
-from constants import FLANK_PROTECTION_DISTANCE_CM
 from railway_signal import Signal, SignalType, SignalState
 from station import Station
 from segment import Segment
 from railway_platform import Platform
-from speed_profile import SpeedProfileRegistry
 from switch_power import SwitchOutputOwner
-
-if TYPE_CHECKING:
-    from path_utils import GraphLocator, GraphWalkStep, ReservationEnd
 
 
 logger = logging.getLogger(__name__)
@@ -82,13 +63,12 @@ class RailwayNetwork(SwitchOutputOwner):
     """
     Central railway network management system.
 
-    Manages all railway infrastructure components including tracks, trains,
+    Manages all railway infrastructure components including tracks, switches,
     and block sections.
     """
 
     def __init__(self):
         self.tracks: Dict[Tuple[int, int], Tile] = {}
-        self.trains: Dict[str, Train] = {}
         self.blocks: Dict[str, Block] = {}
         self.signals: Dict[str, Signal] = {}
         self.platforms: Dict[str, Platform] = {}
@@ -102,25 +82,6 @@ class RailwayNetwork(SwitchOutputOwner):
         # derived from `Block.segment_ids`, so they can never drift from the
         # blocks themselves.
 
-        # Lookahead memo coordination (perf; see TrainController.
-        # _compute_canonical_lookahead). `_lookahead_world_version` is bumped by
-        # the SimulationController at every tick phase boundary; the per-train
-        # lookahead memo keys on it, so a new tick — or any intra-tick mutation
-        # phase — invalidates every cached payload. `_lookahead_memo_active` is
-        # True ONLY while a tick is running: the memo is read/written only then,
-        # so every between-tick / paused / UI caller recomputes the lookahead
-        # live and can never observe a stale payload.
-        self._lookahead_world_version: int = 0
-        self._lookahead_memo_active: bool = False
-
-        # The one speed-profile store for the whole runtime. TrainPhysics /
-        # TrainController._get_speed_profile read it to drive trains, and the
-        # REST API + services read and write the same object through
-        # AppState.speed_profile_registry (a property that returns this
-        # registry). It always holds the fixed Default profile 0, plus the
-        # models, the sets and every train's instance profile (design_new.md
-        # "SpeedProfile", Models, sets and instance profiles).
-        self.speed_profiles: SpeedProfileRegistry = SpeedProfileRegistry()
 
         # Symmetric map of tunnel endpoints. A tunnel pairs two dead-end
         # edges so they behave as a single tile-to-tile connection. Keyed
@@ -133,7 +94,6 @@ class RailwayNetwork(SwitchOutputOwner):
 
         self.block_manager: Optional[BlockManager] = None
         self.switch_manager: Optional[SwitchManager] = None
-        self.resource_coordinator: Optional[ResourceCoordinator] = None
         self.power_controller: Optional["BlockPowerController"] = None
         self.switch_output_interface: Optional["SwitchOutput"] = None
         # Owns the throw output above and the switch's rail feed; the only
@@ -153,7 +113,7 @@ class RailwayNetwork(SwitchOutputOwner):
         # Reverse index block id -> its Tiles, derived from
         # _tile_to_segment and built lazily by _block_tiles_index(). Turns
         # get_block_tracks() from an O(all tracks) scan into an O(block)
-        # lookup; the lookahead calls it thousands of times per tick. None
+        # lookup. None
         # means "rebuild on next read"; invalidate_pathfinding_cache() resets
         # it on every topology change (none of which run in the tick loop).
         self._block_index_cache: Optional[Dict[str, List["Tile"]]] = None
@@ -161,18 +121,6 @@ class RailwayNetwork(SwitchOutputOwner):
         # _block_index_cache and dropped by the same invalidation.
         self._segment_index_cache: Optional[Dict[str, List["Tile"]]] = None
 
-        # Cache of built topology-only walk CANDIDATES, keyed by
-        # (start_block_id, end_block_id). Populated lazily by
-        # RailwayPathfinder.query_graph_walks and shared by every pathfinder
-        # built from this network (the dispatcher's and any throwaway one).
-        # The candidate geometry (raw walk + ordered_walk steps) is a pure
-        # function of the static graph -- the BFS ignores switch position and
-        # the per-step enrichment reads only static topology / Block.ordered_tiles
-        # -- so it stays valid across sim ticks and is dropped only when the
-        # topology itself changes. The per-call disabled/manual/direction FILTER
-        # runs fresh in query_graph_walks, not here. See
-        # invalidate_pathfinding_cache() and its callers.
-        self._walk_cache: Dict[Tuple[str, str], List["GraphWalkCandidate"]] = {}
 
         # Helper modules (signal computation, station registry, block
         # geometry mutation). Lazy-initialised on first access to keep
@@ -181,9 +129,7 @@ class RailwayNetwork(SwitchOutputOwner):
         self._segment_geometry_manager = None
         self._station_registry = None
         self._block_grouping_manager = None
-        self._flank_protection_calculator = None
         self._signal_registry = None
-        self._train_placement = None
 
     def _ensure_block_manager(self):
         if self.block_manager is None:
@@ -233,17 +179,6 @@ class RailwayNetwork(SwitchOutputOwner):
             self._block_grouping_manager = BlockGroupingManager(self)
         return self._block_grouping_manager
 
-    def _get_flank_protection_calculator(self):
-        """Lazy-init `FlankProtectionCalculator`. The flank-protection graph
-        walk lives there; it reads the network graph through its back-reference
-        and writes each `Switch.flank_protection`.
-        """
-        if self._flank_protection_calculator is None:
-            from flank_protection import FlankProtectionCalculator
-
-            self._flank_protection_calculator = FlankProtectionCalculator(self)
-        return self._flank_protection_calculator
-
     def _get_signal_registry(self):
         """Lazy-init `SignalRegistry`. Signal CRUD lives there; the `signals`
         dict stays on the network and the registry reads / writes it through its
@@ -255,30 +190,11 @@ class RailwayNetwork(SwitchOutputOwner):
             self._signal_registry = SignalRegistry(self)
         return self._signal_registry
 
-    def _get_train_placement(self):
-        """Lazy-init `TrainPlacement`. Train placement / occupancy geometry
-        lives there; it reads the network graph through its back-reference
-        (_get_tile_length_cm and the entity dicts stay on the network).
-        """
-        if self._train_placement is None:
-            from train_placement import TrainPlacement
-
-            self._train_placement = TrainPlacement(self)
-        return self._train_placement
-
-    def _ensure_resource_managers(self):
-        """Construct BlockManager, SwitchManager, and ResourceCoordinator if not
-        yet wired. The coordinator is the dispatcher-facing facade per
-        design_new.md "ResourceCoordinator"; constructed last because it
-        composes the other two managers.
-        """
+    def _ensure_managers(self):
+        """Construct the BlockManager and SwitchManager if not yet wired."""
         self._ensure_block_manager()
         if self.switch_manager is None:
             self.switch_manager = SwitchManager(self.switches, network=self)
-        if self.resource_coordinator is None:
-            self.resource_coordinator = ResourceCoordinator(
-                self.block_manager, self.switch_manager
-            )
 
     # === Tile -> owning entity reverse indices (v1) ===
 
@@ -313,9 +229,6 @@ class RailwayNetwork(SwitchOutputOwner):
         """Forward to `StationRegistry.tile_to_platform_id(x, y)`."""
         return self._get_station_registry().tile_to_platform_id(x, y)
 
-    def tile_to_station_id(self, x: int, y: int) -> Optional[str]:
-        """Forward to `StationRegistry.tile_to_station_id(x, y)`."""
-        return self._get_station_registry().tile_to_station_id(x, y)
 
     def _set_tile_segment(self, x: int, y: int, segment_id: Optional[str]) -> None:
         """Update the tile -> segment reverse index.
@@ -339,35 +252,10 @@ class RailwayNetwork(SwitchOutputOwner):
 
     # === Pathfinding walk cache (owned here; the static graph lives here) ===
 
-    def get_cached_walks(
-        self, start_block_id: str, end_block_id: str
-    ) -> Optional[List["GraphWalkCandidate"]]:
-        """Return the cached built walk candidates for this block pair, or None
-        on a miss. The pathfinder owns what goes in (raw walk + ordered_walk
-        geometry); this network only stores it so every pathfinder built from
-        this graph shares one enrichment per (start, end) until the topology
-        changes."""
-        return self._walk_cache.get((start_block_id, end_block_id))
-
-    def store_cached_walks(
-        self, start_block_id: str, end_block_id: str,
-        candidates: List["GraphWalkCandidate"],
-    ) -> None:
-        """Record the built walk candidates for this block pair."""
-        self._walk_cache[(start_block_id, end_block_id)] = candidates
-
     def invalidate_pathfinding_cache(self) -> None:
-        """Drop every cached walk. Called by each topology mutator (block
-        membership, track add/remove, switch add/remove, tunnel changes, full
-        reload). None of those run inside the sim tick loop, so the cache
-        survives a whole `update()` storm and is rebuilt lazily after an edit."""
-        # Defensive getattr: the segment_id setter routes through
-        # _set_tile_segment -> here, which can fire on a Tile whose
-        # network back-reference was attached before __init__ finished wiring
-        # the cache (e.g. unusual deserialization orders).
-        cache = getattr(self, "_walk_cache", None)
-        if cache:
-            cache.clear()
+        """Drop the derived tile indices. Called by each topology mutator
+        (block membership, track add/remove, switch add/remove, tunnel
+        changes, full reload)."""
         # The block->tracks / segment->tracks reverse indices are derived from
         # tile->segment membership and the segment->block grouping, so they are
         # stale after any topology change. Drop them; the next
@@ -387,23 +275,18 @@ class RailwayNetwork(SwitchOutputOwner):
         action and by ``from_dict``'s "clear existing" step.
         """
         self.tracks.clear()
-        self.trains.clear()
         self.blocks.clear()
         self.signals.clear()
         self.platforms.clear()  # self.stations is the same object
         self.station_groups.clear()
         self.switches.clear()
         self.tunnels.clear()
-        # Models and sets are not layout data: clearing the network keeps them.
-        # Each train's instance profile goes with its train (design_new.md
-        # "SpeedProfile", Where models, sets and instance profiles are kept).
-        self.speed_profiles.remove_instances()
         # Derived tile -> owner reverse indices. Not held on any entity dict,
         # so they must be cleared explicitly to avoid stale block/platform
         # membership on reused tiles.
         self._tile_to_segment.clear()
         self._tile_to_platform.clear()
-        # Drops _walk_cache + _block_index_cache.
+        # Drops the block and segment tile indices.
         self.invalidate_pathfinding_cache()
 
     def add_track(self, track: Tile):
@@ -424,14 +307,6 @@ class RailwayNetwork(SwitchOutputOwner):
 
         # Propagate to this tile and neighbors
         self.propagate_from_tile(track.x, track.y)
-
-    def bump_lookahead_world_version(self) -> None:
-        """Invalidate every per-train lookahead memo (see ``__init__``).
-
-        Called by the SimulationController at each tick phase boundary so a
-        cached lookahead is never reused across a state change.
-        """
-        self._lookahead_world_version += 1
 
     def get_track(self, x: int, y: int) -> Optional[Tile]:
         """Get track segment at specified position"""
@@ -515,43 +390,6 @@ class RailwayNetwork(SwitchOutputOwner):
 
         return None
 
-    def project_reservation_boundary_delta(
-        self,
-        ordered_walk: List["GraphWalkStep"],
-        head_locator: "GraphLocator",
-        reservation_end: "ReservationEnd",
-        safety_margin_cm: float,
-    ) -> float:
-        """The head's forward distance to the safety-margin-adjusted
-        reservation boundary (design_new.md "Boundary-projection helper").
-
-        ``ordered_walk`` is the live reservation's directed walk from the
-        head's resolved occurrence on; ``head_locator`` names the head's tile
-        and its in-tile ``distance_cm``; ``reservation_end`` names the
-        reservation-end block and its terminal frame. The distance is measured
-        along the walk from the head to the last tile of the terminal frame,
-        minus ``safety_margin_cm``. It is never negative: a head at or past the
-        boundary returns ``0``. This is for braking and diagnostics only, not
-        the path-completion gate.
-        """
-        from path_utils import GraphLocator
-        from railway_pathfinder import RailwayPathfinder
-
-        frame_tiles = list(getattr(reservation_end.terminal_frame, "path_tiles", None) or [])
-        if not ordered_walk or not frame_tiles:
-            return 0.0
-        last_tile = frame_tiles[-1]
-        end_locator = GraphLocator(
-            tile=(last_tile[0], last_tile[1]),
-            resource_type="block",
-            resource_id=reservation_end.block_id,
-            block_id=reservation_end.block_id,
-        )
-        clearance_cm = RailwayPathfinder(self).measure_along_walk(
-            ordered_walk, head_locator, end_locator
-        )
-        return max(0.0, clearance_cm - float(safety_margin_cm))
-
     # ------------------------------------------------------------------
     # Tunnels: pair two dead-end edges so they act like neighbouring tiles.
     # ------------------------------------------------------------------
@@ -564,12 +402,6 @@ class RailwayNetwork(SwitchOutputOwner):
     }
     _TUNNEL_OPPOSITE: Dict[str, str] = {"N": "S", "S": "N", "E": "W", "W": "E"}
 
-    def get_tunnel(
-        self, x: int, y: int, edge: str
-    ) -> Optional[Tuple[int, int, str]]:
-        """Far endpoint of the tunnel at ``(x, y, edge)``, or ``None`` if not
-        tunneled. Reader only — does not consult grid neighbours."""
-        return self.tunnels.get((int(x), int(y), str(edge).upper()))
 
     def add_tunnel(
         self,
@@ -1085,140 +917,12 @@ class RailwayNetwork(SwitchOutputOwner):
         """Forward to `SignalCalculator.compute_state(signal)`."""
         return self._get_signal_calculator().compute_state(signal)
 
-    def add_train(self, train: Train):
-        """Add a train to the network"""
-        self.trains[train.train_id] = train
-
-    def place_train(
-        self,
-        train: Train,
-        tile_x: int,
-        tile_y: int,
-        direction: Optional[Direction] = None,
-        *,
-        head_offset_cm: float = 0.0,
-        confine_to_blocks: Optional[Iterable[str]] = None,
-    ) -> "TrainSpan":
-        """Forward to `TrainPlacement.place_train(...)`."""
-        return self._get_train_placement().place_train(
-            train,
-            tile_x,
-            tile_y,
-            direction,
-            head_offset_cm=head_offset_cm,
-            confine_to_blocks=confine_to_blocks,
-        )
-
-    def _get_tile_length_cm(self, x: int, y: int) -> float:
-        """
-        Get physical length of a tile in cm.
-
-        Returns DEFAULT_TILE_LENGTH_CM if track is unconfigured.
-        """
-        track = self.get_track(x, y)
-        if not track:
-            return DEFAULT_TILE_LENGTH_CM
-
-        if track.is_switch:
-            switch_config = (
-                self.get_switch_at(x, y) if hasattr(self, "get_switch_at") else None
-            )
-            if switch_config:
-                return switch_config.get_active_length(track.switch_state)
-            # Switches without entity should have 0 length by design
-            # Do NOT fall back to DEFAULT_TILE_LENGTH_CM
-            return 0.0
-
-        # Per-tile length is the segment's length spread over its tiles:
-        # length is segment geometry, so a grouped block must not average its
-        # members' combined length across all of their tiles.
-        if track.segment_id:
-            segment = self.get_segment(track.segment_id)
-            if segment and segment.length_cm > 0:
-                positions = self.get_segment_positions(track.segment_id)
-                tile_count = len(positions) if positions else 1
-                return segment.length_cm / tile_count
-            return DEFAULT_TILE_LENGTH_CM
-
-        return DEFAULT_TILE_LENGTH_CM
 
     def _get_neighbor_coords(self, x: int, y: int, edge: str) -> Tuple[int, int]:
         """Get coordinates of neighbor tile in given direction."""
         dx, dy = _EDGE_OFFSETS.get(edge, (0, 0))
         return (x + dx, y + dy)
 
-    def get_occupied_tiles_rich(
-        self, span: "TrainSpan", head_is_a: bool
-    ) -> List[Dict[str, Any]]:
-        """Forward to `TrainPlacement.get_occupied_tiles_rich(span, head_is_a)`."""
-        return self._get_train_placement().get_occupied_tiles_rich(span, head_is_a)
-
-    def remove_train(self, train_id: str) -> bool:
-        train = self.trains.get(train_id)
-        if not train:
-            return False
-
-        # Release every block this train physically occupies. Physical
-        # occupancy lives on `Block.occupied_by` (design_new.md); there is no
-        # `train.position` in v1, so the block-ownership state itself is the
-        # source of truth. Removal has no detector observation to wait for, so
-        # it goes through the release-and-reevaluate path — there is no separate
-        # `clear_block()` step (design_new.md "Block occupancy"). That drops
-        # every block this train held and re-checks any downstream chain it was
-        # protecting, so a caution chain cannot stay in CAUTION forever once the
-        # train that held it behind is gone.
-        if self.block_manager:
-            self.block_manager.release_train_occupancy(train_id)
-        else:
-            for block_id, block in list(self.blocks.items()):
-                if getattr(block, "occupied_by", None) == train_id:
-                    block.release()
-
-        self.trains.pop(train_id, None)
-        # The train's instance profile goes with it (design_new.md "Train
-        # Entity", Deleting a train; "SpeedProfile", Where models, sets and
-        # instance profiles are kept).
-        instance = self.speed_profiles.get(train.speed_profile_id)
-        if instance is not None and instance.is_instance:
-            self.speed_profiles.remove(instance.profile_id)
-        self.update_signals_from_blocks()
-        return True
-
-    def get_train(self, train_id: str) -> Optional[Train]:
-        return self.trains.get(train_id)
-
-    def visualization(self):
-        """Simple text-based visualization of the network"""
-        if not self.tracks:
-            print("Empty network")
-            return
-
-        min_x = min(pos[0] for pos in self.tracks.keys())
-        max_x = max(pos[0] for pos in self.tracks.keys())
-        min_y = min(pos[1] for pos in self.tracks.keys())
-        max_y = max(pos[1] for pos in self.tracks.keys())
-
-        print(f"\nNetwork Layout ({max_x - min_x + 1} x {max_y - min_y + 1}):")
-        for y in range(max_y, min_y - 1, -1):
-            row = ""
-            for x in range(min_x, max_x + 1):
-                track = self.get_track(x, y)
-                if track:
-                    if track.track_type == TrackType.STRAIGHT:
-                        row += "-"
-                    elif track.track_type == TrackType.CURVE:
-                        row += "╭"
-                    elif track.track_type == TrackType.SWITCH:
-                        row += "S"
-                    elif track.track_type == TrackType.SIGNAL:
-                        row += "O"
-                    elif track.track_type == TrackType.STATION:
-                        row += "▦"
-                    else:
-                        row += "?"
-                else:
-                    row += " "
-            print(row)
 
     # === Centralized Station Management ===
 
@@ -1262,9 +966,6 @@ class RailwayNetwork(SwitchOutputOwner):
         """Forward to `StationRegistry.add_platform(...)`."""
         return self._get_station_registry().add_platform(*args, **kwargs)
 
-    def get_station(self, station_id: str):
-        """Forward to `StationRegistry.get_station(station_id)`."""
-        return self._get_station_registry().get_station(station_id)
 
     def get_platform(self, platform_id: str):
         """Forward to `StationRegistry.get_platform(platform_id)`."""
@@ -1323,9 +1024,6 @@ class RailwayNetwork(SwitchOutputOwner):
         """Forward to `StationRegistry.get_station_for_platform(platform_id)`."""
         return self._get_station_registry().get_station_for_platform(platform_id)
 
-    def get_platforms_for_station(self, station_id: str):
-        """Forward to `StationRegistry.get_platforms_for_station(station_id)`."""
-        return self._get_station_registry().get_platforms_for_station(station_id)
 
     def create_station_group(self, *args, **kwargs):
         """Forward to `StationRegistry.create_station_group(...)`."""
@@ -1417,9 +1115,6 @@ class RailwayNetwork(SwitchOutputOwner):
             x, y, also_removing=also_removing
         )
 
-    def remove_tiles_from_segment(self, positions: List[Tuple[int, int]]) -> List[str]:
-        """Forward to `SegmentGeometryManager.remove_tiles_from_segment(positions)`."""
-        return self._get_segment_geometry_manager().remove_tiles_from_segment(positions)
 
     def _check_segment_connectivity(self, segment_id: str) -> List[str]:
         """Forward to `SegmentGeometryManager._check_segment_connectivity(...)`."""
@@ -1467,9 +1162,6 @@ class RailwayNetwork(SwitchOutputOwner):
         self.invalidate_pathfinding_cache()
         # Link track to switch
         track.switch_id = switch.switch_id
-        # A new switch can create flank relationships for itself and any
-        # nearby switches (design_new.md, "Flank protection computation" — recompute on topology change).
-        self.recompute_all_flank_protection()
 
     def get_switch(self, switch_id: str) -> Optional["Switch"]:
         """Get switch configuration by ID."""
@@ -1504,10 +1196,6 @@ class RailwayNetwork(SwitchOutputOwner):
         del self.switches[switch_id]
         # Removing a switch removes exits the topology-only BFS could take.
         self.invalidate_pathfinding_cache()
-        # Drop any stale flank entries that referenced the removed switch and
-        # recompute neighbours (design_new.md, "Flank protection computation" — recompute on
-        # topology change).
-        self.recompute_all_flank_protection()
         return True
 
     def update_switch(self, switch_id: str, **kwargs) -> Optional["Switch"]:
@@ -1555,18 +1243,7 @@ class RailwayNetwork(SwitchOutputOwner):
         # switch_type changes the exits the BFS can take; the *_length/_radius
         # changes feed walk distances. Both invalidate cached walks.
         self.invalidate_pathfinding_cache()
-        # *_length changes can move a neighbour in/out of the flank radius.
-        self.recompute_all_flank_protection()
         return switch
-
-    # ------------------------------------------------------------------
-    # Flank protection computation (design_new.md "Flank Protection
-    # Computation")
-    # ------------------------------------------------------------------
-
-    def recompute_all_flank_protection(self) -> None:
-        """Forward to `FlankProtectionCalculator.recompute_all_flank_protection()`."""
-        return self._get_flank_protection_calculator().recompute_all_flank_protection()
 
     # ── Block grouping (design_new.md "Block grouping") ────────────────────
 
@@ -1608,51 +1285,7 @@ class RailwayNetwork(SwitchOutputOwner):
                 return platform_id
         return None
 
-    def platforms_for_block(self, block_id: str) -> List[str]:
-        """The `Platform`s a block's member segments belong to.
 
-        The `block -> platform` reverse index (design_new.md "Platform And
-        Station"), two-way with `blocks_for_platform`. Derived live from the
-        ownership chain — each of the block's `Segment`s through
-        `segment_to_platform_id` — never a stored back-reference. Block and
-        platform are orthogonal groupings over `Segment`: a segment belongs to
-        exactly one block and at most one platform, but a multi-segment block's
-        members may sit on different platforms or none. So this resolves a block
-        to every `Platform` its members belong to (deduped, in block-segment
-        order), and is empty when no member segment has one. A caller needing a
-        single platform for a directional standoff takes the one for the
-        terminal segment in the traversed direction.
-        """
-        block = self.blocks.get(block_id)
-        if block is None:
-            return []
-        out: List[str] = []
-        for segment_id in block.segment_ids:
-            platform_id = self.segment_to_platform_id(segment_id)
-            if platform_id is not None and platform_id not in out:
-                out.append(platform_id)
-        return out
-
-    def blocks_for_platform(self, platform_id: str) -> List[str]:
-        """The `Block`s a platform's segments belong to, in platform order.
-
-        The `platform -> blocks` reverse index (design_new.md "Platform And
-        Station"), two-way with `platforms_for_block`. Derived live from
-        `Platform.ordered_segments(self)` through `segment_to_block_id`, deduped
-        while preserving the platform's tile-extent order, so the first and last
-        entries are the platform's two end blocks (they collapse to one for a
-        single-block platform). Never read from a stored back-reference on the
-        platform.
-        """
-        platform = self.platforms.get(platform_id)
-        if platform is None:
-            return []
-        out: List[str] = []
-        for segment_id in platform.ordered_segments(self):
-            block_id = self.segment_to_block_id(segment_id)
-            if block_id is not None and block_id not in out:
-                out.append(block_id)
-        return out
 
     def add_segment_to_block(self, block_id: str, segment_id: str) -> bool:
         """Forward to `BlockGroupingManager.add_segment_to_block(...)`."""
@@ -1845,13 +1478,6 @@ class RailwayNetwork(SwitchOutputOwner):
 
         return {
             "tracks": enriched_tracks,
-            # Every train, unidentified trains included. This is the live UI payload, and a
-            # unidentified train must appear in the train list and on the layout, marked apart
-            # from the trains the operator controls (design_new.md "Unidentified train
-            # trains", Shown as itself) — it is also how the operator reaches the
-            # panel that adopts it. The save payload is the one that leaves them
-            # out; see `to_layout_dict`.
-            "trains": [t.to_dict(self) for t in self.trains.values()],
             # `current_voltage` is the applied-output mirror owned by
             # `BlockPowerController`, not a `Block` field; inject it onto each
             # block's live payload here (design_new.md "Power", Block
@@ -1866,8 +1492,6 @@ class RailwayNetwork(SwitchOutputOwner):
                 p.to_dict_with_orientation(self) for p in self.platforms.values()
             ],
             "station_groups": [s.to_dict() for s in self.station_groups.values()],
-            "speed_profiles": self.speed_profiles.to_dict(),
-            "locomotive_models": self.speed_profiles.models_to_list(),
             "switches": {
                 k: v.to_dict() for k, v in self.switches.items()
             },
@@ -1890,81 +1514,18 @@ class RailwayNetwork(SwitchOutputOwner):
             })
         return out
 
-    def _train_layout_dict(self, train) -> dict:
-        """A saved train with its instance profile and its parent's names.
-
-        design_new.md "SpeedProfile", A loaded train brings its instance
-        profile: the save writes the instance profile with the train, and the
-        parent set's model `name` and `set_name` (or that the parent is the
-        Default profile), so a load can tell whether the saved parent number
-        still names the same set.
-        """
-        data = train.to_dict(self)
-        instance = self.speed_profiles.get(train.speed_profile_id)
-        if instance is not None:
-            data["speed_profile"] = instance.to_dict()
-            data["speed_profile_parent"] = self.speed_profiles.parent_label(instance)
-        return data
-
-    def _give_loaded_train_its_profile(self, train, train_data: dict) -> None:
-        """Register a loaded train's instance profile under a fresh number.
-
-        design_new.md "SpeedProfile", A loaded train brings its instance
-        profile: every field is kept except `parent_profile_id`, which is kept
-        only when it names the Default profile, or a set here whose model name
-        and set name equal the saved ones. A train saved with no instance
-        profile gets a copy of the Default profile.
-        """
-        from speed_profile import DEFAULT_PROFILE_ID, SpeedProfile
-
-        registry = self.speed_profiles
-        saved = train_data.get("speed_profile")
-        if not isinstance(saved, dict):
-            train.speed_profile_id = registry.create_instance(
-                max_speed_kmh=train.max_speed
-            ).profile_id
-            return
-        record = SpeedProfile.from_dict(saved)
-        record.model_id = None
-        record.set_name = ""
-        record.profile_id = registry.allocate_profile_id()
-        label = train_data.get("speed_profile_parent") or {}
-        parent_id = record.parent_profile_id
-        record.parent_profile_id = None
-        if label.get("kind") == "default":
-            record.parent_profile_id = DEFAULT_PROFILE_ID
-        elif label.get("kind") == "set" and parent_id is not None:
-            parent = registry.get(parent_id)
-            if parent is not None and parent.is_set:
-                model = registry.get_model(parent.model_id)
-                if (
-                    model is not None
-                    and model.name == label.get("model_name")
-                    and parent.set_name == label.get("set_name")
-                ):
-                    record.parent_profile_id = parent_id
-        registry.register(record)
-        train.speed_profile_id = record.profile_id
-
     def to_layout_dict(self) -> dict:
         """Layout-only serialization used by persistence.
 
         Per design_new.md Out of Scope ("Persistence / save-load of
         runtime state | In-memory only"), this writes only editor /
         configuration data: track geometry, block / switch / signal
-        definitions, platforms, station groups, and train config. Live
+        definitions, platforms and station groups. Trains are not saved
+        (design_v2.md "Trains", Trains are not saved). Live
         runtime fields on every sub-entity are excluded.
         """
         return {
             "tracks": [t.to_layout_dict() for t in self.tracks.values()],
-            # Unidentified trains are runtime-only: they are not written to saved
-            # state and not restored, because a restart re-detects whatever is
-            # still drawing current (design_new.md "Unidentified trains", Runtime only).
-            "trains": [
-                self._train_layout_dict(t)
-                for t in self.trains.values()
-                if not t.is_unidentified
-            ],
             "blocks": {k: v.to_layout_dict() for k, v in self.blocks.items()},
             "signals": {k: v.to_layout_dict() for k, v in self.signals.items()},
             "platforms": [
@@ -1987,7 +1548,7 @@ class RailwayNetwork(SwitchOutputOwner):
         for block_id, block_data in data.get("blocks", {}).items():
             self.blocks[block_id] = Block.from_dict(block_data)
 
-        self._ensure_resource_managers()
+        self._ensure_managers()
 
         for t_data in data.get("tracks", []):
             track = Tile.from_dict(t_data)
@@ -2043,17 +1604,6 @@ class RailwayNetwork(SwitchOutputOwner):
         # (a grouping may name a platform block).
         self._fold_grouped_blocks(data.get("power_districts", []))
 
-        # Models and sets are not layout data: they live in the locomotive file,
-        # and loading a layout leaves them as they are. Each saved train brings
-        # its own instance profile (design_new.md "SpeedProfile", Where models,
-        # sets and instance profiles are kept).
-
-        # Rebuild trains
-        for train_data in data.get("trains", []):
-            train = Train.from_dict(train_data)
-            self.trains[train.train_id] = train
-            self._give_loaded_train_its_profile(train, train_data)
-
         # Rebuild tunnels (after all tracks are in place — add_tunnel
         # validates against the live track set). A malformed entry is
         # logged and skipped so one bad pair doesn't brick the load.
@@ -2072,7 +1622,3 @@ class RailwayNetwork(SwitchOutputOwner):
                     exc,
                 )
 
-        # `Switch.from_dict` does not persist runtime `flank_protection`
-        # (design_new.md: it is recomputed, not loaded). Compute it once the
-        # full topology — tracks, switches, and tunnels — is in place.
-        self.recompute_all_flank_protection()

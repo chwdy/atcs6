@@ -1,6 +1,6 @@
 """
 Session and network routes - server lifecycle, the network payload and its
-stream, network stats/clear, and model-scale configuration.
+stream, the event log, and network stats/clear.
 """
 
 import os
@@ -9,7 +9,6 @@ import time
 from flask import Response, jsonify, request
 
 from app_state import AppState
-from services import ValidationError, train_service
 from network_poll import build_network_poll_reply
 from network_stream import STATE_CHANGING_METHODS, NetworkStreamHub, stream_messages
 from simulation import build_network_payload
@@ -179,89 +178,6 @@ def register(app, state: AppState) -> None:
             records = records[-limit:]
         return jsonify({"events": records})
 
-    @app.route("/api/simulation/emergency-cut-out", methods=["POST"])
-    def emergency_cut_out():
-        """Emergency stop: the layout emergency cut-out, in every environment
-        (design_new.md "Emergency cut-out", Layout emergency cut-out).
-
-        Runs between ticks under the lock. While Live or Paused it cuts every
-        output and every train out and the session reads Halted for
-        `layout_emergency_cut_out`. In Setup it closes whichever Setup tool
-        holds the outputs, and the session stays in Setup. While Halted it is
-        accepted and changes nothing, because nothing drives the outputs.
-        """
-        from enums import SessionStateValue
-        from hardware.setup_tools import close_setup_tools, report_close_failures
-
-        sim = getattr(state, "sim_controller", None)
-        if sim is None:
-            return jsonify({"error": "No simulation running"}), 400
-        with state.simulation_lock:
-            session = state.session_state()
-            if session.value is SessionStateValue.SETUP:
-                report_close_failures(sim, close_setup_tools())
-                message = "Setup tools closed; the outputs are in their safe state"
-            elif session.value is SessionStateValue.HALTED:
-                message = "The session is halted; nothing drives the outputs"
-            else:
-                message = sim.layout_emergency_cut_out().message
-            body = {
-                "status": "success",
-                "message": message,
-                "session_state": state.session_state().to_dict(),
-            }
-        return jsonify(body)
-
-    @app.route("/api/simulation/reset", methods=["POST"])
-    def reset_layout_cut_out():
-        """Reset: release every train after Emergency stop (design_new.md
-        "Emergency cut-out", Reset). Refused with 409 unless the session is
-        Halted for `layout_emergency_cut_out`."""
-        from enums import HaltReason
-
-        sim = getattr(state, "sim_controller", None)
-        if sim is None:
-            return jsonify({"error": "No simulation running"}), 400
-        with state.simulation_lock:
-            session = state.session_state()
-            if session.halt_reason is not HaltReason.LAYOUT_EMERGENCY_CUT_OUT:
-                return jsonify({
-                    "error": "Reset applies only after Emergency stop",
-                    "session_state": session.to_dict(),
-                }), 409
-            result = sim.reset_layout_cut_out()
-            body = {
-                "status": "success",
-                "message": result.message,
-                "session_state": state.session_state().to_dict(),
-            }
-        return jsonify(body)
-
-    @app.route("/api/simulation/hold-all", methods=["POST"])
-    def hold_all():
-        """Hold all: ATO stop on every ATO train, in every session state and
-        environment (design_new.md "Hold all"). Returns the trains it stopped."""
-        sim = getattr(state, "sim_controller", None)
-        if sim is None:
-            return jsonify({"error": "No simulation running"}), 400
-        with state.simulation_lock:
-            stopped = sim.hold_all()
-        return jsonify({"status": "success", "stopped_train_ids": stopped})
-
-    @app.route("/api/runtime/clear-fatal", methods=["POST"])
-    def clear_fatal_conflict():
-        """Release a fatal-conflict halt, leaving every train off.
-
-        The operator has gone and sorted the conflict out on the layout; this
-        reopens the gate so the session carries on instead of demanding a
-        process restart that would throw the whole layout state away.
-        """
-        try:
-            cleared = train_service.clear_failed_runtime(state)
-        except ValidationError as exc:
-            return jsonify({"status": "error", "message": str(exc)}), 400
-        return jsonify({"status": "success", "cleared_conflict": cleared})
-
     @app.route("/api/health", methods=["GET"])
     def health():
         """Liveness probe, plus enough identity for the client to tell a
@@ -362,19 +278,6 @@ def register(app, state: AppState) -> None:
             }
         )
 
-    @app.route("/api/network/steps", methods=["GET"])
-    def get_network_steps():
-        """Return current network layout as StepRecorder steps.
-
-        Used by the frontend scenario recorder to embed the layout
-        in scenario files for self-contained replay.
-        """
-        from step_recorder import StepRecorder
-
-        recorder = StepRecorder()
-        steps = recorder.generate_steps_list(state.network)
-        return jsonify({"steps": steps})
-
     @app.route("/api/network/clear", methods=["POST"])
     def clear_network():
         """Clear the current network, giving a fresh canvas.
@@ -389,17 +292,14 @@ def register(app, state: AppState) -> None:
                 "signals": len(state.network.signals),
                 "platforms": len(getattr(state.network, "platforms", {})),
                 "stations": len(state.network.station_groups),
-                "trains": len(state.network.trains),
+                "trains": len(state.sim_controller.train_runtime.trains),
                 "switches": len(state.network.switches),
                 "tunnels": len(state.network.tunnels_to_list()),
             }
 
-            # The trains are about to be replaced, so every calibration run
-            # ends and every held result is discarded first (design_new.md
-            # "What ends a calibration run").
-            state.sim_controller.speed_calibration.discard_all(
-                "calibration ended: the network was cleared"
-            )
+            # Clearing a layout removes every train (design_v2.md "Running a
+            # train", Edit the layout); the detectors find them again.
+            state.sim_controller.train_runtime.clear()
 
             # Clear everything — entity dicts plus the derived tile->owner
             # reverse indices and caches (see RailwayNetwork.clear). Without
@@ -426,63 +326,9 @@ def register(app, state: AppState) -> None:
                     "signals": len(state.network.signals),
                     "platforms": len(getattr(state.network, "platforms", {})),
                     "stations": len(state.network.station_groups),
-                    "trains": len(state.network.trains),
+                    "trains": len(state.sim_controller.train_runtime.trains),
                     "switches": len(state.network.switches),
                     "tunnels": len(state.network.tunnels_to_list()),
                     "is_empty": len(state.network.tracks) == 0,
                 }
             )
-
-    @app.route("/api/scale", methods=["GET"])
-    def get_scale():
-        """Get current model scale configuration.
-
-        Returns:
-            JSON with current scale value and available presets
-        """
-        from model_scale import get_model_scale, SCALE_PRESETS
-
-        return jsonify({"scale": get_model_scale(), "presets": SCALE_PRESETS})
-
-    @app.route("/api/scale", methods=["PUT"])
-    def set_scale():
-        """Set model scale.
-
-        Request Body:
-            {"scale": 160.0}  - Direct scale value
-            OR
-            {"preset": "1:160"}  - Use a preset
-
-        Returns:
-            JSON with new scale value
-        """
-        from model_scale import get_model_scale, set_model_scale, SCALE_PRESETS
-
-        data = request.get_json()
-        if not data:
-            return jsonify({"error": "No data provided"}), 400
-
-        with state.simulation_lock:
-            try:
-                if "preset" in data:
-                    preset_name = data["preset"]
-                    if preset_name not in SCALE_PRESETS:
-                        return jsonify(
-                            {
-                                "error": f"Unknown preset '{preset_name}'",
-                                "available_presets": list(SCALE_PRESETS.keys()),
-                            }
-                        ), 400
-                    set_model_scale(SCALE_PRESETS[preset_name])
-                elif "scale" in data:
-                    scale = float(data["scale"])
-                    set_model_scale(scale)
-                else:
-                    return (
-                        jsonify({"error": "Must provide 'scale' or 'preset'"}),
-                        400,
-                    )
-
-                return jsonify({"scale": get_model_scale(), "status": "success"})
-            except ValueError as e:
-                return jsonify({"error": str(e)}), 400

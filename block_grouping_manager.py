@@ -140,7 +140,7 @@ class BlockGroupingManager:
         block = Block(block_id=block_id, name=name, segments=segments)
         self._n.blocks[block_id] = block
         self._reindex_block_tiles(block)
-        self._n._ensure_resource_managers()
+        self._n._ensure_managers()
         return block
 
     def delete_block(self, block_id: str) -> bool:

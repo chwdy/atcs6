@@ -135,31 +135,7 @@ def update_switch(
                 raise ConflictError("Switch has live future locks")
             if switch.train_protection_claims:
                 raise ConflictError("Switch has live train-protection claims")
-        disabled_actually_changed = new_disabled != switch.disabled
         switch.disabled = new_disabled
-        # Connectivity changed -- notify BlockManager, but only on a real
-        # value change (the UI's availability segment always sends both
-        # disabled and manual together).
-        if disabled_actually_changed:
-            block_manager = getattr(state.network, "block_manager", None)
-            if block_manager is not None:
-                try:
-                    block_manager.on_switch_position_changed(switch_id)
-                except Exception:
-                    pass
-            # design_new.md "`disabled` and `manual` availability flags": the disabled toggle is a topology-
-            # availability change, so neighbouring switches' stored
-            # flank_protection can go stale against the opened/closed circuit.
-            # Recompute network-wide (the same recompute the add/remove/update-
-            # switch topology paths run; cheap and only fires on this edit).
-            recompute = getattr(
-                state.network, "recompute_all_flank_protection", None
-            )
-            if callable(recompute):
-                try:
-                    recompute()
-                except Exception:
-                    pass
 
     if manual_change is not None:
         switch.manual = bool(manual_change)
@@ -194,32 +170,6 @@ def delete_switch(state: AppState, switch_id: str) -> bool:
     if not state.network.remove_switch(switch_id):
         raise NotFoundError("Switch not found")
     return True
-
-
-#: The reason an operator throw is refused while the session is Halted for
-#: `runtime_failure` (design_new.md, `PUT /api/switches/<switch_id>/state`).
-RUNTIME_HALTED_REASON = "runtime halted"
-
-
-def runtime_halt_refusal(state: AppState) -> Optional[str]:
-    """The refusal reason for an operator switch throw, or None.
-
-    While the session is Halted for `runtime_failure` an operator throw is
-    refused, read through `AppState.session_state()` (design_new.md "Session
-    state", readers; `PUT /api/switches/<switch_id>/state`): a fatal conflict
-    halted the runtime and nothing may drive a coil until the operator clears
-    it. A throw while Halted for `layout_emergency_cut_out` is not refused
-    here: the environment stays active, so the operating-throw gate accepts it.
-    Every operator throw entry point checks this before calling
-    `SwitchManager.request_position_change(...)`.
-    """
-    from enums import HaltReason
-
-    if state.sim_controller is None:
-        return None
-    if state.session_state().halt_reason is HaltReason.RUNTIME_FAILURE:
-        return RUNTIME_HALTED_REASON
-    return None
 
 
 def request_position_change(
@@ -260,13 +210,9 @@ def request_position_change(
 
     resolved_command_id = command_id or str(uuid.uuid4())
 
-    refusal = runtime_halt_refusal(state)
-    if refusal is not None:
-        success, message = False, refusal
-    else:
-        success, message = switch_manager.request_position_change(
-            switch_id, new_state, manual_override=bool(manual_override)
-        )
+    success, message = switch_manager.request_position_change(
+        switch_id, new_state, manual_override=bool(manual_override)
+    )
 
     if success:
         from routes.running_trains import _runtime
