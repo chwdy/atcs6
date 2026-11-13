@@ -60,6 +60,8 @@ export interface CanvasPalette {
   trainLineWaiting: string;
   trainLineStopped: string;
   trainLineLost: string;
+  trainHighlight: string;
+  trainTagInk: string;
   // highlight overlays driven by the LayoutHighlighter. Only the "locate" flash
   // needs its own hue; peek/selection outlines take entity-chip colours and the
   // reachable fill reuses `warning`, so they have no dedicated token here.
@@ -105,6 +107,8 @@ const TOKENS: Record<keyof CanvasPalette, string> = {
   trainLineWaiting: '--train-line-waiting',
   trainLineStopped: '--train-line-stopped',
   trainLineLost: '--train-line-lost',
+  trainHighlight: '--train-highlight',
+  trainTagInk: '--train-tag-ink',
   highlightLocate: '--canvas-highlight-locate',
 };
 
@@ -145,10 +149,12 @@ const FALLBACK: CanvasPalette = {
   trainBodyTeardown: '#c8a2ff',
   trainBodyEb: '#8257e5',
   trainBodyUnidentified: '#8a8a99',
-  trainLineMoving: '#ffffff',
-  trainLineWaiting: '#ffd93d',
-  trainLineStopped: '#a3a3b5',
-  trainLineLost: '#c8a2ff',
+  trainLineMoving: '#e6f0ff',
+  trainLineWaiting: '#ffe7a0',
+  trainLineStopped: '#c4c4cf',
+  trainLineLost: '#e2ccff',
+  trainHighlight: '#ff8a3d',
+  trainTagInk: '#16161c',
   highlightLocate: '#ffd93d',
 };
 

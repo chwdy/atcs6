@@ -29,6 +29,7 @@
     --canvas-on-accent: #000000;     /* text on bright fills (switch dots) */
     --canvas-overlay-bg: #0d1020;    /* info-panel background drawn on canvas */
     --canvas-overlay-border: #646496;/* info-panel border */
+    --train-tag-ink: #16161c;        /* v2 train tag edge and text, on pale fills */
 }
 
 /* ── DARK (bare default) — the original drawing-board palette. ── */
@@ -61,11 +62,13 @@
     --train-body-teardown: #c8a2ff;
     --train-body-eb: #8257e5;
     --train-body-unidentified: #8a8a99;
-    /* v2 train line, by train state (design_v2.md "Seeing trains on the layout") */
-    --train-line-moving: #ffffff;
-    --train-line-waiting: #ffd93d;
-    --train-line-stopped: #a3a3b5;
-    --train-line-lost: #c8a2ff;
+    /* v2 train line and tag, by train state, and the train highlight
+       (design_v2.md "Seeing trains on the layout") */
+    --train-line-moving: #e6f0ff;
+    --train-line-waiting: #ffe7a0;
+    --train-line-stopped: #c4c4cf;
+    --train-line-lost: #e2ccff;
+    --train-highlight: #ff8a3d;
     /* "Locate" flash from the LayoutHighlighter — a bright caution-yellow pulse. */
     --canvas-highlight-locate: #ffd93d;
 }
@@ -100,11 +103,13 @@
     --train-body-teardown: #7c3aed;
     --train-body-eb: #7048cf;
     --train-body-unidentified: #5a5a66;
-    /* v2 train line, by train state (design_v2.md "Seeing trains on the layout") */
-    --train-line-moving: #1f1f26;
-    --train-line-waiting: #a86a00;
-    --train-line-stopped: #7d7d8a;
-    --train-line-lost: #7c3aed;
+    /* v2 train line and tag, by train state, and the train highlight
+       (design_v2.md "Seeing trains on the layout") */
+    --train-line-moving: #dbe8ff;
+    --train-line-waiting: #ffe08a;
+    --train-line-stopped: #b9b9c6;
+    --train-line-lost: #d9c2ff;
+    --train-highlight: #e8630a;
     --canvas-highlight-locate: #b07d00;
 }
 
@@ -138,10 +143,12 @@
     --train-body-teardown: #c8a2ff;
     --train-body-eb: #b07cff;
     --train-body-unidentified: #9a9aa8;
-    /* v2 train line, by train state (design_v2.md "Seeing trains on the layout") */
-    --train-line-moving: #ffffff;
-    --train-line-waiting: #ffe46b;
-    --train-line-stopped: #8fb0d0;
-    --train-line-lost: #d3b4ff;
+    /* v2 train line and tag, by train state, and the train highlight
+       (design_v2.md "Seeing trains on the layout") */
+    --train-line-moving: #e6f0ff;
+    --train-line-waiting: #ffe7a0;
+    --train-line-stopped: #b7c3d4;
+    --train-line-lost: #e2ccff;
+    --train-highlight: #ff9a4d;
     --canvas-highlight-locate: #ffe46b;
 }

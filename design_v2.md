@@ -191,27 +191,36 @@ These are all the things the operator can do to trains and switches from the Ope
 
 ### Seeing trains on the layout
 
-The Operate screen draws a line along the track of each train's blocks. Every
-train's line has the same shape, and its colour shows the train's `state`:
-moving, waiting, stopped or lost. Each layout theme sets its own four colours,
-and changing the layout theme changes them. The line is narrower than the
-block's own colour band, so the band still shows whether the block reads
-occupied, reads empty or is claimed. The line stays on blocks the train still
-holds when they read empty. A claim ahead is shown separately from the line.
-The line breaks at tunnel mouths and joins across switches only when the
-layout shows one connection between consecutive blocks.
+The Operate screen draws a thin line along the track of each train's blocks,
+and a tag on the middle tile of its front block. Every train has the same line
+and tag, and their colour shows the train's `state`: moving, waiting, stopped
+or lost. Each layout theme sets its own four colours, and changing the layout
+theme changes them. The line is a quarter of the width of the block's own
+colour band, so the band still shows whether the block reads occupied, reads
+empty or is claimed; the tag covers the band only where it sits. When the
+layout is zoomed out so far that the line would fill the track, the line is
+not drawn and the tag remains. The line stays on blocks the train still holds
+when they read empty. The line runs unbroken from the train's rear block to
+its front block, across the switch between two of its blocks. At the rear it
+stops short of the train's end and finishes with a short bar across the
+track. At the far end of the front block it has an open arrowhead. When the
+train holds a claim, the line carries on from there, across the switch if
+there is one, to the middle of the claimed block, and ends in a second open
+arrowhead. Without a claim, the line stops short of the front block's end at
+its arrowhead. The line breaks at tunnel mouths, and joins across a switch
+only when the layout shows one connection between consecutive blocks.
 
-The train ID on the layout matches the ID on the card, and sits in a tag of
-the line's colour. An arrow in the front block shows **Direction**, including
-while stopped or waiting. The arrow sits on the middle tile of the front
-block. While the train is moving, a small
-mark on each tile of its blocks points along its line of travel. A successful
-Reverse updates the arrow from the next snapshot. A lost train shows its
-retained block with a dashed line and a question mark beside its ID, and no
-arrow.
+The tag holds the train ID, which matches the ID on the card. The tag has a
+point on the side the train will leave its front block by, which shows
+**Direction**, including while stopped or waiting. A successful Reverse turns
+the point from the next snapshot. A lost train shows its retained block with
+a dashed line, and a tag with a dashed edge, a question mark beside its ID,
+and no point.
 
-Hovering or focusing a card highlights the train's line, arrow and ID with a
-thicker line and an outline, and leaves the state colour as it is. Clicking
+Hovering or focusing a card highlights the train: two thin lines in the
+theme's highlight colour run along the outside edges of the train's blocks,
+and the tag's edge takes the same colour. The highlight leaves the state
+colour and the block's colour band as they are. Clicking
 the card's ID or the train on the map selects it. Temporary highlighting takes
 precedence over selection and the selected train is highlighted again when it
 ends. The card remains the place to turn the knob or reverse the train.
