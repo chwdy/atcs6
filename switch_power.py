@@ -5,8 +5,8 @@ Definition:
 This module defines the software-to-hardware boundary for switch *throw*
 output: driving a switch's point motor to a target alignment (MAIN=0 /
 DIVERGE=1). It holds no wiring knowledge — how a target alignment reaches the
-motor belongs to the driver, and is defined in design_new.md "Power", Hardware
-configuration ("A switch throw is a pulse on one of two coils"). This throw
+motor belongs to the driver, and is defined in design_v2.md "Hardware setup",
+A switch throw is a pulse on one of two coils. This throw
 voltage is a separate electrical output from the block ``track_voltage`` emitted
 by ``BlockPowerController``; the two are different wires and are never compared
 to each other.
@@ -58,9 +58,9 @@ class SwitchOutput(ABC):
     def enter_safe_state(self) -> None:
         """Drive the safe state: every switch point motor de-energized.
 
-        Per design_new.md "Power" (Safe state / fail-safe) the runtime issues
-        this when it stops driving outputs (simulation stop or process
-        shutdown). The simulated interface drops its commanded drive; real
+        Per design_v2.md "Safe state, watchdog and hardware failure" (Safe
+        state / fail-safe) the runtime issues this when it stops driving
+        outputs (leaving Live, or process shutdown). The simulated interface drops its commanded drive; real
         hardware de-energizes the point motors.
         """
 
@@ -89,24 +89,25 @@ class SimulatedSwitchDriver(SwitchOutput):
     def enter_safe_state(self) -> None:
         """Safe state: drop every commanded throw (motors de-energized). The
         switch's commanded `Switch.position` remains the alignment authority;
-        this only stops asserting drive (design_new.md "Power", Safe state /
-        fail-safe)."""
+        this only stops asserting drive (design_v2.md "Safe state, watchdog and
+        hardware failure", Safe state / fail-safe)."""
         self._throws.clear()
 
 
 class SwitchPowerController:
     """The switch-side counterpart of `BlockPowerController`.
 
-    It covers a switch's two separate electricals (design_new.md "Power",
-    Switch power-controller role):
+    It covers a switch's two separate electricals (design_v2.md "Block and
+    switch power controllers", `SwitchPowerController` is the software side
+    of a switch's two electricals):
 
     - the `throw voltage` driven onto the point motor, through the
       `SwitchOutput` it holds. It is the only caller of that interface —
       including the safe-state call — so `SwitchManager` requests a throw
       through this controller and never touches the interface itself.
     - the block feed its rails run on. A switch has no track channel of its
-      own: its rails are wired to the block at its main entrance and carry that
-      block's `track voltage`. That wiring is the `switch_track_source` binding
+      own: its rails are wired to its feed block (the first block reached out
+      of the switch's toe) and carry that block's voltage. That wiring is the `switch_track_source` binding
       in Hardware Setup, and this controller is that map's only reader.
 
     Why the switch has its own controller: `BlockPowerController` takes a
@@ -142,8 +143,8 @@ class SwitchPowerController:
     ) -> None:
         """Inject the named dependencies this controller needs: the event-log
         NotificationCenter and `SimulationController.enter_hardware_failure`,
-        which an unissued throw reports to (design_new.md "Power", An unissued
-        throw is fatal to a hardware-backed session), and the
+        which an unissued throw reports to (design_v2.md "Block and switch power
+        controllers", An unissued throw is fatal to the session), and the
         BlockPowerController whose block feeds a switch's rails. Called by
         SimulationController each time it builds the power controllers; this
         controller holds no general SimulationController reference of its own."""
@@ -164,8 +165,8 @@ class SwitchPowerController:
         motor reports nothing back.
 
         A refusal or an exception after activation means the device contract
-        failed at runtime (design_new.md "Power", An unissued throw is fatal to
-        a hardware-backed session). This controller is the only reporter of it:
+        failed at runtime (design_v2.md "Block and switch power controllers", An
+        unissued throw is fatal to the session). This controller is the only reporter of it:
         it reports the failed command through `NotificationCenter` and the
         failure to `SimulationController.enter_hardware_failure(...)`, which
         drives the safe state itself — the same way `BlockPowerController`
@@ -241,7 +242,8 @@ class SwitchPowerController:
 
         This is the switch half of the `OutputSafety.enter_safe_state()`
         sequence, and it runs first: points are dropped before block voltages
-        (design_new.md "Power", Safe state / fail-safe). It commands the device
+        (design_v2.md "Safe state, watchdog and hardware failure", Safe state /
+        fail-safe). It commands the device
         transport directly and does not touch `Switch.position` or any other
         recorded model field — the commanded alignment stays the authority;
         this only stops asserting drive — so the sequence is safe to call from
@@ -250,8 +252,8 @@ class SwitchPowerController:
         self.output_interface.enter_safe_state()
 
     def enter_safe_state(self) -> None:
-        """De-energize every point motor (design_new.md "Power", Safe state /
-        fail-safe). As the only caller of the output interface, the controller
+        """De-energize every point motor (design_v2.md "Safe state, watchdog and
+        hardware failure", Safe state / fail-safe). As the only caller of the output interface, the controller
         delegates the de-energizing to it."""
         self.de_energize_device_outputs()
 

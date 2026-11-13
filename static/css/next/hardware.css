@@ -1,6 +1,5 @@
 /* ============================================================================
-   Hardware Setup screen (docs/ui-layout-rewrite-plan.md §7;
-   frontend/src/next/hardware/screen.tsx).
+   Hardware Setup screen (frontend/src/next/hardware/screen.tsx).
 
    A full screen over the page body: the seven steps in a column on the left,
    the picked step on the right. The dialog's own sections drawn into steps 2

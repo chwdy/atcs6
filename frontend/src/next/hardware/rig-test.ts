@@ -1,6 +1,6 @@
 /**
- * Test the rig: the Hardware Setup screen's one-button run (design_new.md
- * "Hardware setup", Test the rig). In order it runs self-test, opens the
+ * Test the rig: the Hardware Setup screen's one-button run (design_v2.md
+ * "Setup tools", Test the rig). In order it runs self-test, opens the
  * occupancy bench and runs the block check on every block with a rail
  * binding, closes the bench, and throws every bound switch to its other
  * position and back. It asks the operator nothing, a failed step does not

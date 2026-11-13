@@ -4,8 +4,7 @@
  *
  * A panel starts polling when it appears and stops when it goes away, so a
  * panel nobody can see never asks the server for anything. This replaces the
- * one-timer-per-panel pattern of today's panels (docs/ui-layout-rewrite-plan.md
- * §10).
+ * one-timer-per-panel pattern of today's panels.
  */
 import { useEffect, useRef } from 'preact/hooks';
 

@@ -1,5 +1,5 @@
 /**
- * The Editor screen's tool bar and options row (docs/ui-layout-rewrite-plan.md §4).
+ * The Editor screen's tool bar and options row.
  *
  * The top row is one flat bar of the things you place, each with its fixed
  * number key. The row under it shows only the picked tool's variants, plus

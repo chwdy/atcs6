@@ -1,5 +1,5 @@
 /**
- * Entry point of the page layout (docs/ui-layout-rewrite-plan.md): the top
+ * Entry point of the page layout: the top
  * bar and the four screens.
  *
  * It marks <html data-screen="editor|hardware|operate|logs"> with the

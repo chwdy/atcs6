@@ -77,8 +77,7 @@ IDLE_TIMEOUT_S = 120.0
 # that choice is deliberate rather than discovered afterwards.
 DEFAULT_DRIVE_PERCENT = 40.0
 
-# The block check (design_new.md "Hardware setup", Occupancy bench, Block
-# check). The pulse is long enough for many reads and short enough that a
+# The block check (design_v2.md "Setup tools", Block check). The pulse is long enough for many reads and short enough that a
 # locomotive on the block only twitches. At `current_sense_min_drive_v` the
 # digital detector asserts on roughly the duty-cycle fraction of reads, so the
 # pulse takes as many reads as it can rather than a fixed few.
@@ -222,8 +221,8 @@ class OccupancyBenchSession:
         interfaces on it.
 
         `device` borrows the session's already-open device: in Setup every tool
-        reaches the rig through that one handle (design_new.md "Hardware
-        setup", Setup tools own the writes; the detectors stay shared). A
+        reaches the rig through that one handle (design_v2.md "Setup tools",
+        Setup tools own the writes; the detectors stay shared). A
         borrowed device is not closed when the bench closes; the safe state is
         still applied.
 
@@ -319,9 +318,8 @@ class OccupancyBenchSession:
 
     def close_if_idle(self) -> List[str]:
         """Close the tool when its idle timeout has passed, for the runtime loop
-        (design_new.md "Power", Hardware setup, Closing a Setup tool restores
-        the safe state: a timeout closes the tool on time, with no request
-        needed). Never waits for the lock: a tool whose lock is held is in use,
+        (design_v2.md "Setup tools", A timeout closes the tool on time: no
+        request is needed). Never waits for the lock: a tool whose lock is held is in use,
         so it is not idle. Returns the failed zeroing writes of that close, plus
         any a request-noticed timeout left, for the caller to report."""
         if not self._lock.acquire(blocking=False):
@@ -496,8 +494,7 @@ class OccupancyBenchSession:
         sleep: Callable[[float], None] = time.sleep,
         clock: Callable[[], float] = time.monotonic,
     ) -> Dict[str, Any]:
-        """Check one block's wiring (design_new.md "Hardware setup", Occupancy
-        bench, Block check): read every block at rest, pulse this block at
+        """Check one block's wiring (design_v2.md "Setup tools", Block check): read every block at rest, pulse this block at
         `current_sense_min_drive_v` while reading every block, then drive it
         back to 0 V. The block goes back to 0 V even when a read fails.
 
@@ -622,8 +619,8 @@ class OccupancyBenchSession:
 
     def _expire_locked(self) -> None:
         if self._device is not None and (time.monotonic() - self._last) > IDLE_TIMEOUT_S:
-            # A timed-out close is a close like any other (design_new.md "Power",
-            # Hardware setup, Closing a Setup tool restores the safe state): a
+            # A timed-out close is a close like any other (design_v2.md "Setup
+            # tools", A failed closing write is a hardware I/O failure): a
             # failed zeroing is a hardware I/O failure. The expiry runs inside
             # whatever call noticed it, which cannot report it, so the failures
             # wait for `take_close_failures()`.
@@ -637,8 +634,8 @@ class OccupancyBenchSession:
     def _close_locked(self) -> List[str]:
         if self._device is None:
             return []
-        # Closing a Setup tool restores the safe state (design_new.md "Power",
-        # Hardware setup): the bench zeroes every channel of the chips it drives
+        # Closing a Setup tool restores the safe state (design_v2.md "Setup
+        # tools", The tool performs its safe-state sequence itself): the bench zeroes every channel of the chips it drives
         # itself, before letting go of the handle — not through `OutputSafety`,
         # and without advancing `safe_state_generation`, because the runtime's
         # power controllers do not own the outputs while the bench holds them.

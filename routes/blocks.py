@@ -110,10 +110,10 @@ def register(app, state: AppState) -> None:
     def update_block(block_id):
         """Update block config / availability flags (NOT geometry).
 
-        Mutations to block runtime state happen between simulation ticks
-        per design_new.md "The runtime uses one thread" — the service holds
-        `state.simulation_lock` while writing entity fields so the per-tick
-        phase loop cannot observe a torn read. Geometry lives on the member
+        Changes to a block happen between runtime steps per design_v2.md
+        "Operator requests", Requests run between runtime steps — the service
+        holds `state.simulation_lock` while writing entity fields so a runtime
+        step cannot observe a torn read. Geometry lives on the member
         segments (PATCH /api/segments/<segment_id>).
         """
         data = request.json or {}
@@ -124,8 +124,8 @@ def register(app, state: AppState) -> None:
         except GoneError as exc:
             return jsonify({"error": str(exc)}), 410
         except ConflictError as exc:
-            # design_new.md "Availability flag REST API surface": the flag PATCH emits a command_result even
-            # on the 409 admin-reject, carrying the rejection reason.
+            # The flag PATCH emits a command_result even on the 409
+            # admin-reject, carrying the rejection reason.
             emit_command_result(
                 state, source="Block", entity_id_key="block_id",
                 entity_id=block_id, command_name="update_flags",

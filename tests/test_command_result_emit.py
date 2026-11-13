@@ -1,12 +1,10 @@
-"""A3 — entity-flag PATCH endpoints emit a canonical command_result.
-
-design_new.md "Availability flag REST API surface": all four entity-flag PATCH
-endpoints (block / switch /
-platform / station) emit one `command_result` notification with the closed-core
-payload `{command_id, <entity>_id, success, reason}`, on success and on the 409
-admin-reject alike; the command name rides the event's `operation` field, not
-the payload. This exercises the shared emit helper they route through
+"""The shared command-result emit helper
 (`services.notifications.emit_command_result`).
+
+design_v2.md "Runtime notifications", Command execution results: a command's
+result is one event whose payload is `{command_id, success, reason}` plus the
+id field of the one entity it targets, on acceptance and on rejection alike;
+the command name rides the event's `operation` field, not the payload.
 """
 
 from notification_center import NotificationCenter

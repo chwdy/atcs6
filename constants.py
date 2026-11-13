@@ -2,40 +2,26 @@
 Global runtime constants for ATCS6.
 
 This module is the canonical home for thresholds, distances, and tunables that
-appear in `design_new.md` as global values rather than per-entity fields. Every
-runtime layer (controller, physics, dispatcher, route executor, block manager)
-imports its values from here so we never re-fork a constant again.
+appear in `design_v2.md` as global values rather than per-entity fields. Every
+runtime layer imports its values from here so we never re-fork a constant again.
 
-If a value should be configurable per-train or per-route, it belongs on the
-relevant entity (`SpeedProfile`, `Route`, `RouteTask`, ...) instead of here.
+If a value should be configurable per entity, it belongs on that entity
+instead of here.
 """
 
-# Global "considered stopped" speed threshold per design_new.md "Units contract".
-# Used by TrainController.is_stopped(), the post-physics usable-authority stop
-# check, command-acceptance gates (set_mode, power_off_cmd,
-# release_emergency_cmd), and any other layer that needs the canonical stopped
-# predicate. This is distinct from the ATC zero-speed limit, which is a separate
-# clearance value.
+# v1 "considered stopped" speed threshold. v2 has no train speed (a train is
+# stopped while its knob is at 0 V); only `runtime_config.py`'s docstring still
+# names this value.
 STOPPED_SPEED_THRESHOLD_KMH: float = 0.1
 
-# Controller safety margin globals per design_new.md "Safety margin globals".
-# Both are owned by TrainController lookahead and are not authored on routes,
-# paths, or per-block fields.
+# v1 controller safety margins. No code reads them.
 TRACK_END_SAFETY_MARGIN_CM: float = 25.0
 PLATFORM_SAFETY_MARGIN_CM: float = 5.0
 
-# Stop-arrival tolerance per design_new.md step `8df5` (Stop-arrival check),
-# arrival condition 4a. A train that braked to rest at the end of its
-# reservation stops a fraction of a centimetre short of the braking target
-# (`target_stop_cm`), because a discrete tick cannot land exactly on it: under
-# 0.4 cm at the 0.1 s runtime tick, under 1 cm at the 1 s tick cap. 4a counts the
-# train as arrived only while `target_stop_cm` is at or below this value, so a
-# train standing with real clearance left in front of it has not arrived.
+# v1 stop-arrival tolerance. No code reads it.
 RESERVATION_STOP_ARRIVAL_TOLERANCE_CM: float = 2.0
 
-# Flank protection global per design_new.md "Flank Protection Computation".
-# Used at switch placement time to decide which neighbours require mutual
-# locking.
+# v1 flank protection distance. No code reads it.
 FLANK_PROTECTION_DISTANCE_CM: float = 5.0
 
 # CAUTION speed cap applied by TrainController lookahead when it samples a block
@@ -48,45 +34,34 @@ CAUTION_SPEED_LIMIT_KMH: float = 40.0
 # `speed_cm_s * tick_delta * LOOKAHEAD_TICKS`.
 LOOKAHEAD_TICKS: int = 5
 
-# The braking-distance authority lock sizes its reservation for a speed a little
-# above the train's current speed, so there is always enough locked track ahead
-# for the ATC/ATO curve to accelerate into (design_new.md "Braking-distance
-# lock"). The lock speed is `current_speed + BRAKING_LOCK_ACCEL_HEADROOM_KMH`,
-# capped at `atc_limit + BRAKING_LOCK_LIMIT_MARGIN_KMH` so a train at line speed
-# reserves only its real braking distance (plus a small margin so the posted
-# limit, not the reservation, is what holds it at top speed), and floored at the
-# current speed so an overspeeding train still reserves its full stopping
-# distance. The one-block floor in the cap-block walk keeps a stopped train able
-# to start when even this rounds under a single block.
+# v1 braking-distance reservation margins. No code reads them.
 BRAKING_LOCK_ACCEL_HEADROOM_KMH: float = 20.0
 BRAKING_LOCK_LIMIT_MARGIN_KMH: float = 5.0
 
 # How many of the most recent events `NotificationCenter` keeps before dropping
-# the oldest (design_new.md "Core Runtime Loop", Runtime notifications ->
-# Retention). `notification_id` keeps counting past a drop, so a gap in the ids
+# the oldest (design_v2.md "Runtime notifications", Retention).
+# `notification_id` keeps counting past a drop, so a gap in the ids
 # means events aged out rather than that the stream lost order. Tunable, so an
 # operator running a long session may raise it.
 NOTIFICATION_RETENTION_ROWS: int = 10000
 
-# Detector reading log files (design_new.md "Event log", Detector reading log).
+# Detector reading log files (design_v2.md "Detector reading log", File size
+# limits).
 # A file that has grown past DETECTOR_READING_LOG_MAX_FILE_BYTES is closed and
 # the next line starts a new one, which opens by listing every block. Opening a
 # file deletes the oldest files until the folder holds no more than
-# DETECTOR_READING_LOG_MAX_TOTAL_BYTES. A 10-minute Simulation run of demo_6
-# (163 blocks, 17 trains) writes about 1 MB, so the budget keeps days of runs.
+# DETECTOR_READING_LOG_MAX_TOTAL_BYTES. A 10-minute run of demo_6 (163 blocks,
+# 17 trains) wrote about 1 MB under v1, so the budget keeps days of runs.
 DETECTOR_READING_LOG_MAX_FILE_BYTES: int = 20 * 1024 * 1024
 DETECTOR_READING_LOG_MAX_TOTAL_BYTES: int = 200 * 1024 * 1024
 
-# Delay-class on-time tolerance per design_new.md "RouteTaskRun schema"
-# (delay_class). A task's actual elapsed travel time is compared with its
-# expected `task_time`: elapsed below `task_time - tol` is "early", above
-# `task_time + tol` is "late", otherwise "on_time". Tunable; diagnostic only.
+# v1 route-task delay tolerance. No code reads it.
 DELAY_CLASS_ON_TIME_TOLERANCE_SECONDS: float = 30.0
 
-# Block occupancy detection debounce per design_new.md "Block occupancy
-# detection". Each electrically-isolated block has a current detector; current
-# present means a train is on the block. Real contacts flicker, so a momentary
-# open circuit inside the train's span must not immediately vacate the block.
+# Block occupancy detection debounce per design_v2.md "Occupancy detection".
+# Each electrically-isolated block has a current detector; current present
+# means a train is on the block. Real contacts flicker, so a momentary open
+# circuit under a train must not immediately make the block read empty.
 # A block is confirmed OCCUPIED after OCCUPANCY_ON_THRESHOLD consecutive
 # current reads and confirmed CLEAR after OCCUPANCY_OFF_THRESHOLD no-current
 # reads. While a confirmed block counts toward clear, a lone current read pauses
@@ -97,9 +72,9 @@ DELAY_CLASS_ON_TIME_TOLERANCE_SECONDS: float = 30.0
 #
 # Two reads rather than one, because a single read is one sample of a noisy
 # line and a block that confirms on it inherits every glitch that line carries.
-# A confirmed entry is not a private opinion of the detector: it is attributed
-# to a train, it writes `Block.occupied_by`, and an occupied block is energized
-# — so one bad sample moves a train in the model and puts voltage on rail. Two
+# A confirmed entry is not a private opinion of the detector: it gives the
+# block to a train (design_v2.md "Trains"), so one bad sample puts a train on
+# the page, or onto a block, where there is none. Two
 # consecutive reads cost 100 ms of extra latency against a sensor lag the
 # design already accepts as one tick, and they are what a detector must produce
 # to be believed rather than merely heard.
@@ -112,20 +87,15 @@ DELAY_CLASS_ON_TIME_TOLERANCE_SECONDS: float = 30.0
 OCCUPANCY_ON_THRESHOLD: int = 2
 OCCUPANCY_OFF_THRESHOLD: int = 10
 
-# How many blocks a forward span correction must gain before it is reported as
-# an overrun (design_new.md "Power", A large correction is reported). One block
-# is the ordinary sensor-latency correction: the cap parks the head on a block's
-# entry seam and the correction walks it one tile inside once that block
-# confirms, so every normal block entry gains exactly one. Gaining two or more
-# means the detector found the train a whole block past where the model had it,
-# which the model cannot explain by latency and the operator needs to see.
+# v1 overrun-report threshold for its span correction. No code reads it; v2
+# reports an overrun its own way (design_v2.md "When a train overruns").
 OVERRUN_REPORT_MIN_BLOCKS: int = 2
 
 # How many consecutive reads the lighting zone's deciding source — the current
 # channel, or the '165 on a block that has no current channel — must call a
-# block clear before the driver stops holding it occupied (design_new.md
-# "Occupancy source follows drive state"). Counted in the same 10 Hz
-# detection reads as the thresholds above, so this is ~3 s.
+# block clear before the driver stops holding it occupied (design_v2.md
+# "Occupancy source and drive zones", The lighting hold). Counted in the same
+# 10 Hz detection reads as the thresholds above, so this is ~3 s.
 #
 # This is the stopped-and-lit case the note above says no debounce can protect,
 # and it is a different problem from a dropout. A locomotive drawing under its
@@ -140,18 +110,13 @@ OVERRUN_REPORT_MIN_BLOCKS: int = 2
 # latch no empty block ever escaped — see `OccupancyDriver`'s class docstring.
 LIGHTING_CLEAR_HOLD_READS: int = 30
 
-# How long an unidentified train that holds no blocks at all is held before it is
-# retired (design_new.md "Unidentified trains", The gap). Switch tiles carry no
-# detection, so an unidentified train rolling through one holds nothing for a moment; within
-# this window a confirmed entry no existing train accounts for, on a block
-# reachable through undetected track, is that same unidentified train continuing its run and
-# keeps its `train_id`.
+# v1 hold for an unidentified train with no blocks. No code reads it; v2's
+# hold time is the runtime setting `hold_time_s`.
 UNIDENTIFIED_GAP_HOLD_S: float = 5.0
 
-# Speed calibration (design_new.md "Speed calibration"). A pass commands
-# voltages and measures the speed the locomotive reaches at each, filling
-# SpeedProfile.voltage_speed_curve. Its coarse steps run down from max_voltage
-# CALIBRATION_VOLTAGE_STEP_V apart until one fails.
+# v1 speed calibration and speed profile values, down to the Default profile
+# below. v2 has no speed calibration and no speed profiles, and no code reads
+# these.
 CALIBRATION_VOLTAGE_STEP_V: float = 2.0
 
 # The narrowing halves the gap between the lowest step that passed and the step
@@ -194,14 +159,12 @@ CALIBRATION_MIN_CROSSING_SPEED_KMH: float = 2.0
 # Each leg starts at half the step's power for this many seconds before the
 # step's power, and each stop after a crossing holds half the step's power for
 # this long before cutting it, so the locomotive never takes a full step of
-# track voltage at once (design_new.md "Speed calibration", The pass starts
-# and stops the train at half power first).
+# track voltage at once.
 CALIBRATION_HALF_POWER_S: float = 0.5
 
 # Each end of the calibration stretch takes run-off blocks past its outer block
 # until it holds the train's entered length plus this many centimetres, then
-# one block more (design_new.md "Speed calibration", Each end of the stretch is
-# an outer block and the run-off blocks past it). The margin covers the
+# one block more. The margin covers the
 # detector's lag on the far block's entry and a length entered a little short.
 CALIBRATION_RUNOFF_MARGIN_CM: float = 5.0
 
@@ -213,8 +176,7 @@ CALIBRATION_RUNOFF_MARGIN_CM: float = 5.0
 CALIBRATION_OFF_B_WAIT_READS: int = LIGHTING_CLEAR_HOLD_READS + OCCUPANCY_OFF_THRESHOLD + 10
 
 # When a pass opens with the train not standing in an outer block, it first
-# drives the train at this voltage into the nearer one (design_new.md "Speed
-# calibration", The move runs at `CALIBRATION_MOVE_VOLTAGE_V`). A fixed voltage,
+# drives the train at this voltage into the nearer one. A fixed voltage,
 # because a target speed and a power percent are both read through the curve
 # the pass is about to measure.
 CALIBRATION_MOVE_VOLTAGE_V: float = 6.0
@@ -224,25 +186,21 @@ CALIBRATION_MOVE_VOLTAGE_V: float = 6.0
 # standoff) or by a repeated conflict, that crossing is discarded and
 # re-measured. This many consecutive discarded crossings of one step ends the
 # pass with a "stretch too short" report, so a too-short stretch fails rather
-# than shuttling forever (design_new.md "Speed calibration", A capped crossing
-# is discarded).
+# than shuttling forever.
 CALIBRATION_CAP_RETRY_LIMIT: int = 4
 
 # A speed pass opens with two trial stages in which the operator sets the
-# voltage by hand (design_new.md "Speed calibration", The pass starts with two
-# trial stages). The lighting trial starts here when the train's profile sets
+# voltage by hand. The lighting trial starts here when the train's profile sets
 # no lighting voltage, and the panel steps the trial voltage by
 # CALIBRATION_TRIAL_STEP_V. The ATO minimum test uses the same step.
 CALIBRATION_LIGHTING_TRIAL_START_V: float = 1.5
 CALIBRATION_TRIAL_STEP_V: float = 0.1
 
 # The ATO minimum test marks its test voltage steady once this many round trips
-# in a row have finished at it with no stalled crossing (design_new.md "Speed
-# calibration", ATO minimum test, The panel marks a steady voltage).
+# in a row have finished at it with no stalled crossing.
 ATO_MINIMUM_TEST_ROUND_TRIPS: int = 3
 
-# The Default profile's values (design_new.md "SpeedProfile", the `max_voltage`
-# and `voltage_speed_curve` field descriptions). `DEFAULT_SEEDED_MAX_VOLTAGE_V`
+# The Default profile's values. `DEFAULT_SEEDED_MAX_VOLTAGE_V`
 # is the top of the usable `track_voltage` range. `DEFAULT_SEEDED_STARTING_VOLTAGE_V`
 # is the Default `starting_voltage`. The Default curve is the straight line from
 # 0 V -> 0 km/h to `max_voltage` -> `DEFAULT_SEEDED_TOP_SPEED_KMH`, with its
@@ -255,14 +213,14 @@ DEFAULT_SEEDED_FIRST_POINT_VOLTAGE_V: float = 1.5
 DEFAULT_SEEDED_TOP_SPEED_KMH: float = 100.0
 
 
-# Commissioning session bounds (design_new.md "Hardware REST payload schemas").
-# The commissioning `enter` body carries `timeout_seconds` with the doc's stated
+# Commissioning session bounds (design_v2.md "Hardware REST API", Commissioning
+# limits live in `constants.py`).
+# The commissioning `open` body carries `timeout_seconds` with the doc's stated
 # bound `0 < timeout_seconds <= COMMISSION_MAX_SESSION_SECONDS`: it is the idle
 # window after which an abandoned session is reclaimed and its outputs dropped to
 # the safe state. This ceiling only rejects an absurd request; a real bench
 # session — a person wiring and poking at a rig — runs minutes, well under an
-# hour. The doc names the constant as the bound but gives no number, so this is a
-# defensible pick: generous for any genuine session, finite enough that a
+# hour. It is generous for any genuine session, and finite enough that a
 # forgotten one cannot request an unbounded hold on the controller. A session
 # opened with no `timeout_seconds` keeps the default idle window in
 # `hardware/commission.py` (IDLE_TIMEOUT_S).

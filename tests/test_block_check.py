@@ -1,6 +1,6 @@
-"""The occupancy bench's block check (design_new.md "Hardware setup", Occupancy
-bench, Block check) and the Virtual Hardware swamp model it relies on
-(design_new.md "Hardware setup", Virtual Hardware).
+"""The occupancy bench's block check (design_v2.md "Setup tools", Block check)
+and the Virtual Hardware swamp model it relies on (design_v2.md "Setup tools",
+The fake device's `hc165` bit follows the drive).
 
 Exercised against the in-memory `FakeCh347Device`, so no USB hardware is needed.
 

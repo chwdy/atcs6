@@ -193,12 +193,12 @@ class Tile:
     dead_end_ports: Set[str] = field(default_factory=set)  # Buffer stops (N/E/S/W)
 
     # === SWITCH STATE ===
-    # Per design_new.md "Tile role and traversal" + "Switch entity":
+    # Per design_v2.md "Tile", A tile holds no switch alignment of its own:
     # `Switch.position` is the canonical live switch alignment; `Tile`
     # does not store switch state. The `_switch_state_local` field below is a
-    # fallback used only when this segment is not attached to a `RailwayNetwork`
+    # fallback used only when this tile is not attached to a `RailwayNetwork`
     # (e.g. unit tests that construct a bare Tile without a network).
-    # When the segment is attached, the `switch_state` property resolves
+    # When the tile is attached, the `switch_state` property resolves
     # through `network.switches[switch_id].position`.
     _switch_state_local: int = 0
 
@@ -247,7 +247,8 @@ class Tile:
     def segment_id(self) -> Optional[str]:
         """Id of the `Segment` this tile belongs to, or None.
 
-        A tile belongs to a segment (design_new.md "segment"); the segment is
+        A tile belongs to a segment (design_v2.md "Tile", A tile does not
+        store its segment or its block); the segment is
         grouped into a `Block` by `BlockGroupingManager`. This is the stored
         membership — `block_id` below is derived from it.
         """
@@ -379,8 +380,8 @@ class Tile:
     def switch_state(self) -> int:
         """Active switch alignment for this tile (0=MAIN, 1=DIVERGE).
 
-        Per design_new.md, `Switch.position` is canonical. When this segment
-        is attached to a `RailwayNetwork` and has an owning `Switch`, this
+        Per design_v2.md "Tile", A tile holds no switch alignment of its own,
+        `Switch.position` is canonical. When this tile is attached to a `RailwayNetwork` and has an owning `Switch`, this
         property resolves from `network.switches[switch_id].position`. The
         local fallback `_switch_state_local` is used only when not attached
         (e.g. unit tests with bare Tiles).
@@ -628,8 +629,7 @@ class Tile:
         if not self.is_switch:
             return sorted(all_exits)
 
-        # Fix #10 (design_new.md "Tile role and traversal"): disabled switches have no
-        # traversable exits. Resolve the owning Switch entity from the network
+        # Disabled switches have no traversable exits. Resolve the owning Switch entity from the network
         # registry; if `switch.disabled` is True return [] immediately.
         if (
             self.network is not None
@@ -792,8 +792,8 @@ class Tile:
     def to_layout_dict(self) -> dict:
         """Layout-only serialization used by persistence.
 
-        Per design_new.md Out of Scope, the live `switch_state` mirror is
-        excluded (switch locks are never tile-stored). Computed/derived reads
+        The live `switch_state` read is excluded (design_v2.md "Tile", A tile
+        holds no switch alignment of its own). Computed/derived reads
         used by the frontend are also dropped — they are recomputed from
         `track_bits` on load.
         """

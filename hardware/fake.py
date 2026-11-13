@@ -12,8 +12,8 @@ from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
 # ---------------------------------------------------------------------------
 # Operator-facing virtual-hardware fault taxonomy
-# (design_new.md "Fault injection belongs to Virtual Hardware" and
-# "Hardware REST payload schemas").
+# (design_v2.md "Hardware interface", Fault injection belongs to Virtual
+# Hardware, and "Hardware REST API", `VirtualHardwareFaultRequest`).
 #
 # These are the injectable fault KINDS an operator names through
 # `PUT /api/virtual-hardware/fault`. They are a behavioral layer ABOVE this
@@ -25,7 +25,8 @@ from typing import Callable, Dict, Iterable, List, Optional, Tuple
 # available for the driver tests that need them.
 # ---------------------------------------------------------------------------
 
-# The 6 canonical VirtualHardwareFaultKind values (design_new.md 3222 / 3353).
+# The 6 canonical VirtualHardwareFaultKind values (design_v2.md "Hardware
+# interface", Fault injection belongs to Virtual Hardware).
 VIRTUAL_HARDWARE_FAULT_KINDS = frozenset({
     "transaction_refusal",
     "timeout",
@@ -35,7 +36,8 @@ VIRTUAL_HARDWARE_FAULT_KINDS = frozenset({
     "output_disagrees_with_command",
 })
 
-# The 5 VirtualHardwareFaultRequest.target_kind values (design_new.md 3353).
+# The 5 VirtualHardwareFaultRequest.target_kind values (design_v2.md
+# "Hardware REST API", `VirtualHardwareFaultRequest`).
 VIRTUAL_HARDWARE_FAULT_TARGETS = frozenset({
     "controller",
     "chip",
@@ -45,7 +47,8 @@ VIRTUAL_HARDWARE_FAULT_TARGETS = frozenset({
 })
 
 # Which fault kinds each target_kind may carry. An incompatible pair is rejected
-# rather than translated to another name (design_new.md 3353). Derived from the
+# rather than translated to another name (design_v2.md "Hardware REST API",
+# `VirtualHardwareFaultRequest`). Derived from the
 # canonical kinds' own parentheticals: invalid_reading is a readback fault,
 # input_hold_or_flicker an OccupancyInput port fault, output_disagrees_with_
 # command a TrackOutput readback/port fault, transaction_refusal / timeout are
@@ -92,7 +95,7 @@ def validate_virtual_fault_request(
     fault: Optional[str],
 ) -> Optional[str]:
     """Return an error string if a VirtualHardwareFaultRequest is malformed,
-    else None (design_new.md "Hardware REST payload schemas").
+    else None (design_v2.md "Hardware REST API", `VirtualHardwareFaultRequest`).
 
     `fault` is required for `inject` and must be absent for `clear`; an
     incompatible (target_kind, fault) pair is rejected, not translated.
@@ -237,8 +240,8 @@ class FakeCh347Device:
         self._raise_if_closed("load_in")
         self._raise_if_fault("shift_read_error")
         raw = bytearray((bytes(self.inputs.get(select, bytearray(count))) + bytes(count))[:count])
-        # A driven rail swamps its block's digital detector (design_new.md
-        # "Occupancy source follows drive state"): while any of the block's
+        # A driven rail swamps its block's digital detector (design_v2.md
+        # "Setup tools", The fake device's `hc165` bit follows the drive): while any of the block's
         # rail channels carries a duty, its bit reads asserted, whatever the
         # stored input says. The stored input is left alone, so the bit reads
         # its own value again once the rails go quiet.
@@ -304,8 +307,8 @@ class FakeCh347Device:
             raise OSError(f"injected virtual-hardware fault: {operation_fault}")
 
     # -- operator-facing virtual-hardware fault injection ---------------
-    # `PUT /api/virtual-hardware/fault` drives these (design_new.md
-    # "Hardware REST payload schemas"). They name one of the 6
+    # `PUT /api/virtual-hardware/fault` drives these (design_v2.md
+    # "Hardware REST API", `VirtualHardwareFaultRequest`). They name one of the 6
     # VIRTUAL_HARDWARE_FAULT_KINDS against a target and reproduce on the
     # transport faults above.
     def inject_virtual_fault(
@@ -358,8 +361,8 @@ class FakeCh347Device:
     def _transport_for_record(record: Dict[str, Optional[str]]) -> set:
         """The transport faults one injected operator fault implies. For a
         transaction fault the request's `operation` narrows it to just the
-        read or the write side (design_new.md types `operation` on the
-        request); an absent operation means the whole transaction."""
+        read or the write side (design_v2.md "Hardware REST API" types
+        `operation` on `VirtualHardwareFaultRequest`); an absent operation means the whole transaction."""
         fault = record["fault"]
         transport = set(_FAULT_TO_TRANSPORT_FAULTS.get(fault or "", frozenset()))
         if fault in ("transaction_refusal", "timeout"):

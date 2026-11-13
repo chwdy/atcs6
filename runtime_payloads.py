@@ -11,18 +11,15 @@ from typing import Any, Dict, Optional
 
 @dataclass
 class ErrorRecord:
-    """The single diagnostic-error object (design_new.md "Design Direction",
-    Errors and diagnostic classification).
+    """The single diagnostic-error object (design_v2.md "`ErrorRecord`").
 
     It carries exactly two fields, always written whole — both present, or the
     whole record is `None`:
 
     - ``text``: the human-readable failure detail.
-    - ``origin``: a free-form label naming what produced the error (``"eb"``,
-      ``"out_of_sequence"``, ``"switch_intrusion"``, ``"operator_cancelled"``,
-      ``"planning_failed"``, ``"no_viable_path"``). Diagnostic only: no runtime
-      branch reads it, and writers may use labels beyond the ones the document
-      names. It is the field a reader groups errors by when ``operation`` alone
+    - ``origin``: a free-form label naming what produced the error (for
+      example ``"detector_reading_log_write"``). Diagnostic only: no runtime
+      branch reads it, and a writer may use any label. It is the field a reader groups errors by when ``operation`` alone
       is too coarse.
 
     It carries no timestamp and no severity of its own: a record is never

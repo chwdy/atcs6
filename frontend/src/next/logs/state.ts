@@ -1,5 +1,5 @@
 /**
- * What the Logs screen (docs/ui-layout-rewrite-plan.md §8) shows and
+ * What the Logs screen shows and
  * remembers: the tab on show, the block a click on the canvas picked, and
  * each tab's own settings (refresh rate, filters). The settings
  * are a per-viewer convenience kept in localStorage under one key. Every read

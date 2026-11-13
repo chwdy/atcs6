@@ -104,9 +104,9 @@ def test_a_refused_write_never_claims_the_block_is_energized():
 
 
 def test_a_hardware_failure_stays_latched_until_an_activation_succeeds():
-    """The safe state revoked output permission and only a successful
-    activation grants it again; the conflict clearer does not touch the latch
-    (design_new.md "Power", Recovery is reactivation)."""
+    """The hardware-failure latch stays set until a successful activation;
+    nothing else clears it (design_v2.md "Safe state, watchdog and hardware
+    failure", Recovery is reactivation)."""
     import pytest
 
     _network, sim, pc = power_controller({"BLK_1"})
@@ -136,7 +136,8 @@ def test_a_successful_hardware_activation_clears_the_latch():
 
 def test_the_halt_retains_no_payload():
     """The halt keeps only its bool latch; its diagnostic lives in the event
-    stream (design_new.md "Power", Hardware I/O failure; "Error events")."""
+    stream (design_v2.md "Error events", Hardware I/O failure keeps only a
+    flag)."""
     _network, sim, pc = power_controller({"BLK_1"})
     sim.operation_mode = OperationMode.VIRTUAL_HARDWARE
 
@@ -175,9 +176,9 @@ def test_a_refused_write_is_reported_once_not_every_tick():
     assert len(notes) == 1
     assert notes[0].payload["block_id"] == "BLK_1"
     assert "no track binding" in notes[0].message
-    # A refused write is a recoverable output fault, not a fatal session entry:
-    # `error` is reserved for `enter_failed_runtime` / `enter_hardware_failure`
-    # (design_new.md "Error events"), so this reports as `warning`.
+    # The first-unreachable-block report is a `warning`: `error` is reserved
+    # for entry into the hardware-failure state (design_v2.md "Block and switch
+    # power controllers", The first unreachable block is named).
     assert notes[0].kind == "warning"
 
 

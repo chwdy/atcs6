@@ -1,12 +1,7 @@
 """C3 — Block.is_holding_point: persistence + service write surface.
 
-design_new.md "Block model": `is_holding_point` is a static,
-operator-set config flag persisted with the layout and never written by runtime.
-Its only consumer is the best-effort truncation holding-point preference (item
-11 under "Path And PathDispatcher"): a holding-point terminal overrides the
-switch-based junction-fouling back-off (implemented in
-`PathDispatcher._best_effort_truncate`; that override is observable only in a
-switch + two-way-block-off-switch scene).
+`is_holding_point` is a static, operator-set flag persisted with the layout
+and never written by the runtime. Nothing in the runtime reads it.
 
 These tests cover the persistence contract (serialization round-trip) and the
 operator write surface (create / PATCH).

@@ -1,6 +1,7 @@
 """Rail polarity lives on the `block_track` hardware binding.
 
-design_new.md "Power", Rail polarity lives on the rail binding: a block whose
+design_v2.md "Hardware setup", The rail binding bonds tile order to rail
+polarity: a block whose
 two rails are wired the opposite way round from the nominal-positive sense its
 tile order implies is corrected with `TrackBinding.reversed`, stored WITH the
 wiring in the hardware configuration — so a flip auto-persists like every other
@@ -8,9 +9,7 @@ binding edit instead of waiting on a layout save. The concrete track driver
 swaps the two channels as it resolves the binding; the channels themselves are
 never rebound, because one physical rail may carry the idle detection feed.
 
-It is deliberately NOT `Block.allowed_travel_directions`, which is a routing
-policy the pathfinder reads and which never reaches hardware — and it is no
-longer a Block field at all: the block PATCH rejects `polarity_reversed` with a
+It is not a Block field: the block PATCH rejects `polarity_reversed` with a
 pointer at the binding surface.
 """
 

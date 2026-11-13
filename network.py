@@ -68,7 +68,7 @@ class RailwayNetwork(SwitchOutputOwner):
         self.blocks: Dict[str, Block] = {}
         self.switches: Dict[str, "Switch"] = {}  # NEW: Switch entity management
         # Segments are geometry; they live inside their owning `Block`
-        # (design_new.md "Block": a block is a switch-free connected run of one
+        # (design_v2.md "Block": a block is a switch-free connected run of one
         # or more segments sharing one power feed). `self.segments` and
         # `segment_to_block_id(...)` below are the network-level registry reads
         # derived from `Block.segment_ids`, so they can never drift from the
@@ -88,8 +88,8 @@ class RailwayNetwork(SwitchOutputOwner):
         self.power_controller: Optional["BlockPowerController"] = None
         self.switch_output_interface: Optional["SwitchOutput"] = None
         # Owns the throw output above and the switch's rail feed; the only
-        # caller of `SwitchOutput` (design_new.md "Power", Switch
-        # power-controller role).
+        # caller of `SwitchOutput` (design_v2.md "Hardware interface", Who
+        # calls the output interfaces).
         self.switch_power_controller: Optional["SwitchPowerController"] = None
 
         # Reverse index from tile -> owning segment. A tile belongs to a
@@ -149,8 +149,9 @@ class RailwayNetwork(SwitchOutputOwner):
     def tile_to_segment_id(self, x: int, y: int) -> Optional[str]:
         """Reverse index from tile coordinate to owning Segment id, or None.
 
-        Per design_new.md: a tile belongs to a `Segment`. This is the stored
-        membership; block membership is derived from it by `tile_to_block_id`.
+        Per design_v2.md "Tile", A tile does not store its segment or its
+        block: a tile belongs to a `Segment`, and `RailwayNetwork` owns this
+        lookup; block membership is derived from it by `tile_to_block_id`.
         Geometry callers (tile ordering, continuity, length) want this one.
         """
         return self._tile_to_segment.get((x, y))
@@ -283,7 +284,7 @@ class RailwayNetwork(SwitchOutputOwner):
         """Return the connecting edge pair for two tiles, either via grid
         adjacency or via a tunnel.
 
-        Per design_new.md "Operational pathfinding home": answers two questions at once
+        Per design_v2.md "Tunnel", One shared neighbour helper: answers two questions at once
         — are the two tiles track-connected, and if so, which edge on each
         tile connects to the other?
 
@@ -531,8 +532,8 @@ class RailwayNetwork(SwitchOutputOwner):
         Segment membership is reconciled via `remove_tile_from_segment`.
 
         A tile that is a segment's last one takes the segment with it, so
-        erasing it is bound by the rule for deleting that segment (design_new.md,
-        "Segment deletion keeps its block connected"). That is judged first,
+        erasing it is bound by the rule for deleting that segment (design_v2.md
+        "Tile", Segment deletion keeps its block connected). That is judged first,
         before the switch is touched, so a rejection
         changes nothing. `also_removing` names the other tiles erased in the
         same edit; a caller erasing a whole block's track passes them all, so
@@ -607,7 +608,7 @@ class RailwayNetwork(SwitchOutputOwner):
 
         Returns False for an unknown segment. Raises ValueError, and changes
         nothing, when the segment is in the middle of a multi-segment block
-        (design_new.md, "Segment deletion keeps its block connected").
+        (design_v2.md "Tile", Segment deletion keeps its block connected).
         """
         return self._get_segment_geometry_manager().delete_segment(segment_id)
 
@@ -896,7 +897,7 @@ class RailwayNetwork(SwitchOutputOwner):
         self.invalidate_pathfinding_cache()
         return switch
 
-    # ── Block grouping (design_new.md "Block grouping") ────────────────────
+    # ── Block grouping (design_v2.md "Block", Block grouping) ──────────────
 
     @property
     def segments(self) -> Dict[str, Segment]:
@@ -1098,8 +1099,8 @@ class RailwayNetwork(SwitchOutputOwner):
             "tracks": [t.to_dict() for t in self.tracks.values()],
             # `current_voltage` is the applied-output mirror owned by
             # `BlockPowerController`, not a `Block` field; inject it onto each
-            # block's live payload here (design_new.md "Power", Block
-            # power-controller role). It defaults to `0` when no controller is
+            # block's live payload here (design_v2.md "Data flow to the page",
+            # Live fields). It defaults to `0` when no controller is
             # wired (bootstrap / isolated tests).
             "blocks": {
                 k: {**v.to_dict(), "current_voltage": self._recorded_block_voltage(k)}

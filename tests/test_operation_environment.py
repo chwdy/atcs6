@@ -73,8 +73,8 @@ def test_environment_api_reports_selected_separately_from_active(
             "is_active": False,
             "activation_issues": [],
             # No hardware-backed session has been built, so no saved edit can be
-            # pending against one (design_new.md "Hardware setup", A binding is
-            # read per write).
+            # pending against one (design_v2.md "Hardware setup", Reporting
+            # captured changes).
             "awaits_activation": False,
             # Nothing has been activated (design_v2.md "Session state").
             "session_state": {"value": "halted", "halt_reason": "not_activated"},
@@ -90,8 +90,8 @@ def test_complete_setup_is_ready_in_both_hardware_environments():
             {"chip_id": "cur", "kind": "ina3221", "i2c_address": "0x41"},
         ],
         "block_track": {"B1": {"chip_id": "pwm", "forward": 0, "reverse": 1}},
-        # Both occupancy sources are mandatory before activation (design_new.md
-        # "Power"): a complete block carries a digital AND a current binding.
+        # Both occupancy sources are mandatory before activation (design_v2.md
+        # "Occupancy source and drive zones"): a complete block carries a digital AND a current binding.
         "block_occupancy": {"B1": {"chip_id": "in", "port": 0}},
         "block_occupancy_current": {"B1": {"chip_id": "cur", "port": 0}},
     })

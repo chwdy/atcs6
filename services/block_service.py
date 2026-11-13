@@ -6,8 +6,8 @@ this layer owns the block-side mutations:
 
   * Grouping — create a block from a `segment_ids` list, dissolve (ungroup) a
     block, and add / remove a member `Segment` at either end. These are the
-    four-method `BlockGroupingManager` surface (design_new.md **Block
-    grouping**), the replacement for the old power-district grouping API.
+    four-method `BlockGroupingManager` surface (design_v2.md "Block", Block
+    grouping), the replacement for the old power-district grouping API.
   * Config + availability — name, holding-point flag, `disabled` / `manual`
     availability flags, and the static `allowed_travel_directions` policy.
 
@@ -114,7 +114,8 @@ def delete_block(state: AppState, block_id: str) -> bool:
     """Dissolve a block grouping (ungroup). Returns True.
 
     Every member segment is re-homed into its own single-segment block, the
-    default one-feed-per-segment layout (design_new.md, "Non-empty parent rule") —
+    default one-feed-per-segment layout (design_v2.md "Block", Block grouping,
+    Deleting a block re-homes every member) —
     `BlockGroupingManager.delete_block`. This never deletes geometry; deleting a
     segment's tiles is a segment-geometry operation
     (``services.segment_service.delete_segment``).
@@ -152,7 +153,7 @@ def remove_segment_from_block(
     """Remove `segment_id` from either end of `block_id`'s run.
 
     The segment returns to its own single-segment block; removing the block's
-    last member dissolves the block (design_new.md **Block grouping**). Returns
+    last member dissolves the block (design_v2.md "Block", Block grouping). Returns
     True when removed, False when the segment was not a member.
 
     Raises:
@@ -208,14 +209,14 @@ def update_block(state: AppState, block_id: str, *, data: Dict[str, Any]):
             block.disabled = bool(data["disabled"])
         if "manual" in data:
             block.manual = bool(data["manual"])
-        # Holding-point config flag (design_new.md "Block"). No
-        # precondition — it does not affect availability, reservation, or
-        # runtime state; it only biases best-effort truncation.
+        # Holding-point config flag. No precondition — it does not affect
+        # availability, claims, or runtime state. Nothing reads it now: its
+        # only reader was v1 route planning, which is deleted.
         if "is_holding_point" in data:
             block.is_holding_point = bool(data["is_holding_point"])
 
         # Rail polarity moved onto the block's `block_track` hardware binding
-        # (design_new.md "Power", Rail polarity lives on the rail binding). It
+        # (design_v2.md "Hardware setup", A block's rails). It
         # is wiring, so it is edited and auto-persisted with the wiring — PUT
         # /api/hardware/binding — not through the block PATCH. Reject rather
         # than silently drop, so a stale client learns where the write went.
@@ -225,8 +226,8 @@ def update_block(state: AppState, block_id: str, *, data: Dict[str, Any]):
                 "Set it via PUT /api/hardware/binding (map 'block_track')."
             )
 
-        # Static block-level travel policy per design_new.md
-        # `Block.allowed_travel_directions`. Must be a non-empty subset of
+        # Static block-level travel policy, `Block.allowed_travel_directions`.
+        # Must be a non-empty subset of
         # {"forward", "reverse"}; editing it has no occupancy precondition.
         if "allowed_travel_directions" in data:
             raw = data["allowed_travel_directions"]

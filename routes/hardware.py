@@ -1,4 +1,5 @@
-"""Hardware configuration routes (design_new.md "Hardware setup").
+"""Hardware configuration routes (design_v2.md "Hardware setup" and
+"Hardware REST API").
 
 - `GET/PUT /api/hardware/config` reads / writes the `HardwareConfig` store (chip
   inventory + port bindings). A `PUT` validates the merged configuration and, on
@@ -102,8 +103,8 @@ def register(app, state: AppState) -> None:
     """Register the hardware-configuration routes."""
     def _refuse_outside_setup(what):
         """A 409 reply when the session is not in Setup, else None. The tools
-        that drive the outputs run only in Setup (design_new.md "Hardware
-        setup", Setup)."""
+        that drive the outputs run only in Setup (design_v2.md "Setup tools",
+        Setup)."""
         if state.setup_active:
             return None
         return jsonify({
@@ -128,8 +129,8 @@ def register(app, state: AppState) -> None:
 
     def _report_zeroing_failures(failures, *, locked):
         """Report a Setup tool's failed closing zeroing as a hardware I/O
-        failure (design_new.md "Power", Hardware setup, Closing a Setup tool
-        restores the safe state). `locked` says whether the caller already holds
+        failure (design_v2.md "Setup tools", A failed closing write is a
+        hardware I/O failure). `locked` says whether the caller already holds
         `simulation_lock`. No-op when nothing failed."""
         if not failures:
             return
@@ -381,7 +382,7 @@ def register(app, state: AppState) -> None:
         lock while that happens and recomputes the block on its next tick.
 
         It runs only in Setup, where no environment drives the outputs
-        (design_new.md "Hardware setup", Track direction sweep)."""
+        (design_v2.md "Setup tools", Track direction sweep)."""
         refused = _refuse_outside_setup("The track direction sweep")
         if refused is not None:
             return refused
@@ -401,7 +402,7 @@ def register(app, state: AppState) -> None:
 
         def _mirror(volts: float) -> None:
             # Mirror the sweep voltage onto the applied-output store so the layout
-            # shows it while the leg is held (design_new.md "Power"). Voltage is
+            # shows it while the leg is held. Voltage is
             # not a `Block` field; it is recorded on `BlockPowerController`.
             if block is not None and power_controller is not None:
                 power_controller.set_recorded_voltage(str(block_id), volts)
@@ -409,8 +410,8 @@ def register(app, state: AppState) -> None:
         mirror = {
             "on_voltage": _mirror,
             # From the same config payload the sweep drives, so bench test and
-            # runtime resolve the flag identically (design_new.md "Power", Rail
-            # polarity lives on the rail binding).
+            # runtime resolve the flag identically (design_v2.md "Hardware
+            # setup", The sweep resolves the flag the same way the driver does).
             "polarity_reversed": (
                 bool(cfg.block_track[str(block_id)].reversed)
                 if str(block_id) in cfg.block_track
@@ -583,8 +584,8 @@ def register(app, state: AppState) -> None:
             with state.simulation_lock:
                 if map_name == "block_track":
                     # A block's track binds two PWM channels (forward + reverse),
-                    # chosen independently (design_new.md Power, Hardware
-                    # configuration), plus the `reversed` rail-polarity flag —
+                    # chosen independently (design_v2.md "Hardware setup",
+                    # The two channels are chosen independently), plus the `reversed` rail-polarity flag —
                     # omitted, the flag keeps its stored value.
                     hardware_config.set_track_binding(
                         str(logical_id),
@@ -595,7 +596,7 @@ def register(app, state: AppState) -> None:
                     )
                 elif map_name == "switch_output":
                     # A switch binds two coil ports plus an optional standby bit
-                    # (design_new.md Power, Hardware configuration).
+                    # (design_v2.md "Hardware setup", Bindings).
                     hardware_config.set_switch_binding(
                         str(logical_id),
                         data.get("chip_id"),
@@ -605,14 +606,16 @@ def register(app, state: AppState) -> None:
                     )
                 elif map_name == "switch_track_source":
                     # The one binding whose value is another logical id: the
-                    # block whose feed powers this switch's rails (design_new.md
-                    # Power, Switch power-controller role).
+                    # block whose feed powers this switch's rails (design_v2.md
+                    # "Hardware setup", `switch_track_source` wires a switch to
+                    # its feed block).
                     hardware_config.set_switch_track_source(
                         str(logical_id), data.get("block_id")
                     )
                 elif map_name == "block_occupancy_current":
                     # The current map carries per-channel calibration, so it has
-                    # its own setter (design_new.md Power, Block occupancy detection).
+                    # its own setter (design_v2.md "Hardware setup", Detector
+                    # calibration is looked up by `calibration_id`).
                     hardware_config.set_current_binding(
                         str(logical_id),
                         data.get("chip_id"),
@@ -675,8 +678,8 @@ def register(app, state: AppState) -> None:
 
     @app.route("/api/hardware/bench/open", methods=["POST"])
     def hardware_bench_open():
-        """Open the occupancy bench, a Setup tool (design_new.md "Hardware
-        setup", Occupancy bench).
+        """Open the occupancy bench, a Setup tool (design_v2.md "Setup tools",
+        Occupancy bench).
 
         Accepted only in Setup. It reaches the rig through the session's
         device when one is open and opens its own otherwise, and it never
@@ -710,7 +713,7 @@ def register(app, state: AppState) -> None:
     def hardware_bench_close():
         """Close the bench. Closing completes the safe-state sequence and
         leaves the session in Setup; it never activates an environment
-        (design_new.md "Hardware setup", Occupancy bench)."""
+        (design_v2.md "Setup tools", Opening and closing the bench)."""
         from hardware.setup_tools import report_close_failures
 
         with state.simulation_lock:
@@ -761,8 +764,8 @@ def register(app, state: AppState) -> None:
 
     @app.route("/api/hardware/bench/check-block", methods=["POST"])
     def hardware_bench_check_block():
-        """Run the block check on one block (design_new.md "Hardware setup",
-        Occupancy bench, Block check).
+        """Run the block check on one block (design_v2.md "Setup tools", Block
+        check).
 
         Body: ``{block_id}``. Refused with ``409`` when the bench is not open and
         with ``400`` when the block has no rail binding. A failed read is
@@ -863,7 +866,8 @@ def register(app, state: AppState) -> None:
         except Exception as exc:
             return jsonify({"ok": False, "error": str(exc)})
         # The switch bits a caller walking the bits must pulse only for the
-        # switch-coil width (design_new.md "The commissioning session").
+        # switch-coil width (design_v2.md "Setup tools", `open` lists the
+        # switch bits).
         return jsonify({
             "ok": True,
             "switch_ports": commission.get_session().switch_ports_by_chip(),
@@ -1243,7 +1247,7 @@ def register(app, state: AppState) -> None:
     @app.route("/api/virtual-hardware/fault", methods=["PUT"])
     def virtual_hardware_set_fault():
         """Inject or clear one VirtualHardwareFaultRequest below the real HAL
-        (design_new.md "Hardware REST payload schemas").
+        (design_v2.md "Hardware REST API", `VirtualHardwareFaultRequest`).
 
         Body: `{action, target_kind, target_id, operation, fault}`. `action` is
         `inject` or `clear`; `fault` is one of the 6 VirtualHardwareFaultKind
@@ -1336,7 +1340,7 @@ def register(app, state: AppState) -> None:
             "active": state.sim_controller.operation_mode.value,
             "is_active": bool(state.sim_controller.environment_active),
             "activation_issues": list(state.sim_controller.activation_issues),
-            # The one session truth the header reads (design_new.md "Session
+            # The one session truth the header reads (design_v2.md "Session
             # state").
             "session_state": state.session_state().to_dict(),
             # Saved setup changes the running session is not using. Without it
@@ -1460,8 +1464,9 @@ def register(app, state: AppState) -> None:
 
         Caller holds `simulation_lock`. Once readiness passes it closes any
         Setup tool still holding the device; each close completes the safe-state
-        sequence before the new interfaces take the outputs (design_new.md
-        "Hardware setup", Closing a Setup tool restores the safe state). A
+        sequence before the new interfaces take the outputs (design_v2.md
+        "Operating environment and activation", An open Setup tool is closed
+        first). A
         refused activation leaves the tools as they were.
         """
         report = _readiness()

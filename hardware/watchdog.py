@@ -1,10 +1,10 @@
 """Loss-of-control watchdog for the real output interfaces.
 
-design_new.md "Hardware interface boundary": a real output
-implementation arms a watchdog that drops the outputs to the safe state when
-the control loop stops refreshing them. The timing lives here; the design
-models only the safe-state command and the rule that loss of control reaches
-the safe state.
+design_v2.md "Safe state, watchdog and hardware failure", Loss-of-control
+watchdog: a real output implementation arms a watchdog that drops the outputs
+to the safe state when the control loop stops refreshing them. The design sets
+the deadline (`DEFAULT_WATCHDOG_TIMEOUT_S`) and the rule that loss of control
+reaches the safe state; the timing mechanism lives here.
 
 What this covers, and what it does not
 -------------------------------------
@@ -39,7 +39,8 @@ _MAX_POLL_S = 0.25
 
 class WatchdogTripRecord:
     """Thread-safe hand-off from the watchdog daemon thread to the runtime
-    thread (design_new.md "Power", Loss-of-control watchdog).
+    thread (design_v2.md "Safe state, watchdog and hardware failure",
+    Trip-record consumption escalates a failed drop to hardware failure).
 
     The daemon may not touch `SimulationController` or any model state, so when
     it drops the outputs to the safe state it only records the transport result

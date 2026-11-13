@@ -80,8 +80,7 @@ class TestBlock:
         """A save from before one-name-per-record loads with the copy gone.
 
         The block and its only member held one string; the segment keeps it and
-        the block loads unnamed (design_new.md **Block grouping**, one name per
-        record).
+        the block loads unnamed (design_v2.md "Block", One name per record).
         """
         block = Block(block_id="BLK_LEFT", length_cm=100)
         block.segments[0].name = "Left"

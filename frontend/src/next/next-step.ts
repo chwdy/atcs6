@@ -1,7 +1,7 @@
 /**
  * The one button the top bar's status control offers: the step that gets the
  * session to Live, or keeps it going, from where it is now
- * (docs/ui-layout-rewrite-plan.md §3; design_v2.md "Session state").
+ * (design_v2.md "Session state").
  */
 import { sessionControls, type SessionStateView } from '../lib/session-controls';
 

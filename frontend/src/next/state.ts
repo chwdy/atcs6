@@ -5,8 +5,6 @@
  * changes. `App.refreshNetwork` hands each network snapshot to
  * `updateFromNetwork`, so this is the one place the new layout gets session
  * state from; no component runs its own timer for it.
- *
- * See docs/ui-layout-rewrite-plan.md §10.
  */
 import { signal } from '@preact/signals';
 
@@ -15,7 +13,7 @@ import type { SessionStateView } from '../lib/session-controls';
 /** The four screens picked in the top bar (plan §2). */
 export type Screen = 'editor' | 'hardware' | 'operate' | 'logs';
 
-/** The session state (design_new.md "Session state"); null before the first snapshot. */
+/** The session state (design_v2.md "Session state"); null before the first snapshot. */
 export const sessionState = signal<SessionStateView | null>(null);
 
 /** The active operating environment: `virtual_hardware` or `real_hardware`. */

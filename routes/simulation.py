@@ -32,15 +32,15 @@ def register(app, state: AppState) -> None:
     @app.route("/api/network", methods=["GET"])
     def get_network():
         # The poller passes the layout_version it holds; when it still
-        # matches, the reply leaves the layout out (design_new.md "Data Flow
-        # To UI", Layout version).
+        # matches, the reply leaves the layout out (design_v2.md "Layout
+        # version").
         return jsonify(
             build_network_poll_reply(
                 network_payload(), request.args.get("layout_version")
             )
         )
 
-    # design_new.md "Data Flow To UI", Network stream: one hub per app, so
+    # design_v2.md "Network stream": one hub per app, so
     # every open tab sends the same snapshot and it is built once.
     stream_hub = NetworkStreamHub(
         network_payload,
@@ -71,7 +71,8 @@ def register(app, state: AppState) -> None:
         label — `message` says what was attempted, `error.text` says what went
         wrong, and `origin` is how a reader groups errors when `operation`
         alone is too coarse. Display-only: this narrows a view, and no runtime
-        branch reads any of the three (design_new.md "Error events")."""
+        branch reads any of the three (design_v2.md "`ErrorRecord`", No code
+        branches on an `ErrorRecord`)."""
         if needle in event.message.lower() or needle in event.operation.lower():
             return True
         if needle in event.source.lower():
@@ -83,7 +84,7 @@ def register(app, state: AppState) -> None:
 
     @app.route("/api/event-log", methods=["GET"])
     def get_event_log():
-        """Read the operator-facing event log (design_new.md "Event log").
+        """Read the operator-facing event log (design_v2.md "Event log").
 
         Returns the `NotificationCenter` stream as records the read-only viewer
         and replay layers consume. Optional filters:
@@ -94,7 +95,7 @@ def register(app, state: AppState) -> None:
         most-recent count). ``train_id`` is shorthand for
         ``entity_type=train&entity_id=<id>``: per-entity views are membership
         filters over the event's `entities` list, which is the only entity
-        routing key (design_new.md "Runtime notifications").
+        routing key (design_v2.md "Runtime notifications", Event schema).
 
         ``since_notification_id`` lets a poller ask only for what it has not
         seen, the same watermark the per-train endpoint takes. Ids increase in

@@ -1,5 +1,5 @@
 /**
- * The Operate screen's left list (docs/ui-layout-rewrite-plan.md §5): the
+ * The Operate screen's left list: the
  * operational lists, each in its own folding section. The whole list folds
  * away to give the map room.
  *

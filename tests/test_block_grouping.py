@@ -1,4 +1,4 @@
-"""Block grouping — design_new.md **Block grouping**.
+"""Block grouping — design_v2.md "Block", Block grouping.
 
 `BlockGroupingManager` owns block membership: creating a block over segments,
 adding or removing a `Segment` from `segment_ids`, and deleting a block. It

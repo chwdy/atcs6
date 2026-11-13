@@ -1,7 +1,7 @@
 /**
  * The network snapshot, pushed by the server instead of polled.
  *
- * design_new.md "Data Flow To UI", Network stream: `GET /api/network/stream`
+ * design_v2.md "Network stream": `GET /api/network/stream`
  * is a server-sent event stream. Each message is the reply `GET /api/network`
  * would give, with the layout part only when it changed, sent every 200 ms
  * and right after any request that changes state. Each message goes through
@@ -129,7 +129,7 @@ export class NetworkStream {
     this.armSilenceTimer();
     const result = this.options.poller.apply(reply);
     // A live-only message for a layout other than the cached one: read the
-    // full network instead (design_new.md "Data Flow To UI", Layout version).
+    // full network instead (design_v2.md "Layout version").
     Promise.resolve(result ? this.options.onMessage(result) : this.options.pollOnce()).catch((e) =>
       console.error('[NetworkStream] Showing a message failed:', e)
     );

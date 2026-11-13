@@ -1,5 +1,5 @@
 /* ============================================================================
-   Editor screen (docs/ui-layout-rewrite-plan.md §4; frontend/src/next/editor/).
+   Editor screen (frontend/src/next/editor/).
 
    The tool bar and options row sit across the top of the screen area, the
    right panel right of the canvas.

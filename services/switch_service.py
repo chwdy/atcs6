@@ -216,7 +216,8 @@ def _emit_command_result(
     """Emit a Switch ``command_result`` event; never raises.
 
     Delegates to the shared `command_result` emit helper (the single canonical
-    emit path, design_new.md "Runtime notifications") with
+    emit path, design_v2.md "Runtime notifications", Command execution
+    results) with
     `command_name = "change_state"`.
     """
     from services.notifications import emit_command_result

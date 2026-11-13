@@ -1,7 +1,7 @@
 """Tests for switch throw output.
 
-Covers design_new.md "Power" (Switch throw output) and the `SwitchManager`
-throw integration:
+Covers design_v2.md "Block and switch power controllers" (`SwitchPowerController`)
+and the `SwitchManager` throw integration:
 - the throw output interface records the commanded alignment,
 - `SwitchManager.request_position_change(...)` emits the throw to the interface,
 - a throw the interface cannot issue (no hardware binding) fails the command,
@@ -30,8 +30,9 @@ class SwitchOutputHolder:
     """Wires a `SwitchPowerController` over whatever `SwitchOutput` is assigned.
 
     `SwitchManager` reaches the controller, never the interface — the controller
-    is `SwitchOutput`'s only caller (design_new.md "Power", Switch
-    power-controller role). These fakes are still written in terms of the
+    is `SwitchOutput`'s only caller (design_v2.md "Block and switch power
+    controllers", `SwitchPowerController` is the software side of a switch's
+    two electricals). These fakes are still written in terms of the
     interface, because that is what a test wants to assert against, so assigning
     one builds the controller that owns it.
     """
@@ -175,8 +176,8 @@ class _RecordingRuntime:
 
 @pytest.mark.parametrize("raises", [False, True])
 def test_an_unissued_throw_is_reported_by_the_switch_power_controller(raises):
-    """design_new.md "Power", An unissued throw is fatal to a hardware-backed
-    session: `SwitchPowerController` is the only reporter; `SwitchManager`
+    """design_v2.md "Block and switch power controllers", An unissued throw is
+    fatal to the session: `SwitchPowerController` is the only reporter; `SwitchManager`
     reports nothing itself."""
 
     class FailingInterface(SimulatedSwitchDriver):

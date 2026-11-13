@@ -127,9 +127,9 @@ def runtime_pass(state: AppState) -> Optional[str]:
 
 def close_idle_setup_tools(state: AppState) -> None:
     """Close any Setup tool whose idle timeout has passed, and report a failed
-    zeroing as a hardware I/O failure (design_new.md "Power", Hardware setup,
-    Closing a Setup tool restores the safe state; "Running and stopped", Which
-    pass runs).
+    zeroing as a hardware I/O failure (design_v2.md "Setup tools", Closing a
+    tool: A timeout closes the tool on time, A failed closing write is a
+    hardware I/O failure; "Runtime loop", Which pass runs).
 
     The runtime loop calls this every iteration, whatever pass it runs, so a
     tool the operator walked away from closes on time instead of waiting for

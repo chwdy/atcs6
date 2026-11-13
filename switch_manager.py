@@ -50,8 +50,8 @@ class SwitchManager:
                 (the pre-runtime / editor default lets the throw proceed).
 
         A throw that fails to reach the device is reported by
-        `SwitchPowerController`, not here (design_new.md "Power", An unissued
-        throw is fatal to a hardware-backed session).
+        `SwitchPowerController`, not here (design_v2.md "Block and switch
+        power controllers", An unissued throw is fatal to the session).
         """
         self.switches = switches
         self.network = network
@@ -81,9 +81,8 @@ class SwitchManager:
         then drives the throw. Returns the
         `(success, message)` tuple from the data-layer helper.
 
-        `manual_override` (default False) is the operator-override flag per
-        the `disabled` and `manual` availability flags canonical home in
-        design_new.md (under TrackResource). Without the override, a
+        `manual_override` (default False) is the operator-override flag for
+        the `disabled` and `manual` availability flags. Without the override, a
         switch with `Switch.manual == True` rejects the request; with the
         override, the manual filter is bypassed (the disabled filter always
         applies regardless).
@@ -112,8 +111,8 @@ class SwitchManager:
 
     def record_bench_alignment(self, switch_id: str, position: int) -> tuple[bool, str]:
         """Record the alignment a commissioning bench throw has ALREADY driven
-        onto the points (design_new.md "Hardware setup", Self-test and
-        commissioning ownership).
+        onto the points (design_v2.md "Setup tools", The single-wire tools:
+        Recording a bench throw drives no coil).
 
         Commissioning owns the device exactly when no operating environment
         does, so `request_position_change` cannot serve a bench throw twice
@@ -169,8 +168,8 @@ class SwitchManager:
             return (False, message)
 
         if drive:
-            # Drive the physical throw (design_new.md "Power", Switch throw
-            # output) on every accepted command, including one that names the
+            # Drive the physical throw (design_v2.md "Hardware setup", Switch
+            # throws) on every accepted command, including one that names the
             # alignment `Switch.position` already held: the operator asking for
             # MAIN on a switch the app already calls MAIN is how a divergence
             # between the model and the actual points gets corrected, so it has
@@ -184,7 +183,8 @@ class SwitchManager:
                 switch.position_known = False
                 return (False, fail_reason)
 
-        # design_new.md "Event log": a confirmed operator alignment CHANGE is a
+        # design_v2.md "Event log", Three switch-throw events: a confirmed
+        # operator alignment CHANGE is a
         # SWITCH_THROWN event. A re-assert of the position already held is not
         # one — the log records alignment changes, and nothing changed.
         if (
@@ -216,8 +216,8 @@ class SwitchManager:
         (the throw is then a no-op).
 
         `SwitchManager` never reaches `SwitchOutput` itself: the controller is
-        that interface's only caller (design_new.md "Power", Switch
-        power-controller role)."""
+        that interface's only caller (design_v2.md "Hardware interface", Who
+        calls the output interfaces)."""
         if self.network is not None:
             return getattr(self.network, "switch_power_controller", None)
         return None
@@ -225,7 +225,7 @@ class SwitchManager:
     def _drive_throw(
         self, switch: "Switch", target_state: int, *, force: bool = False
     ) -> Optional[str]:
-        """Drive the physical throw (design_new.md "Power", Switch throw output).
+        """Drive the physical throw (design_v2.md "Hardware setup", Switch throws).
 
         Behaves the same for every caller, and callers issue it on every
         commanded alignment — not only when `Switch.position` changed. What
@@ -280,8 +280,8 @@ class SwitchManager:
 
     def throw_all_to_layout(self) -> List[str]:
         """Throw every switch once to the position the layout shows, at the
-        activation of Virtual Hardware or Real Hardware (design_new.md "Switch
-        entity", Activation throws every switch to the layout).
+        activation of Virtual Hardware or Real Hardware (design_v2.md "Switch",
+        Activation throws every switch to the layout).
 
         A fresh hardware session does not know where any points lie; one pulse
         to `Switch.position` puts them there, so each switch it reaches becomes

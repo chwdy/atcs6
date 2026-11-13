@@ -1,5 +1,5 @@
 /**
- * Mounts the Operate screen (docs/ui-layout-rewrite-plan.md §5):
+ * Mounts the Operate screen:
  * the left list, the right panel for the selection, and the row of train
  * cards along the bottom. Each draws only while the Operate tab is picked.
  */

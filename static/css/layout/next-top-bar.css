@@ -1,6 +1,5 @@
 /* ============================================================================
-   The top bar's own parts (docs/ui-layout-rewrite-plan.md §3;
-   frontend/src/next/top-bar.tsx): the status control, Emergency stop and the
+   The top bar's own parts (frontend/src/next/top-bar.tsx): the status control, Emergency stop and the
    drop-down menus. The bar itself carries the `app-header` class, so its
    height, surface, 32px controls, zone hairlines, session chip and screen
    tabs are in shell.css.

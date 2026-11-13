@@ -306,8 +306,8 @@ export class BlockGroupingEditorHandler {
                      segment panel's "Allowed travel direction": that one is a
                      routing policy, this one is wiring, and it pairs with the
                      rail binding directly below. The flag lives ON that rail
-                     binding and auto-saves with it (design_new.md "Power", Rail
-                     polarity lives on the rail binding), so it is disabled
+                     binding and auto-saves with it (design_v2.md "Hardware
+                     setup", The rail binding bonds tile order to rail polarity), so it is disabled
                      until the rails are bound. -->
                 <div class="control-section control-section-divider mt-12 pt-12">
                     ${renderPolaritySegment(
@@ -338,8 +338,8 @@ export class BlockGroupingEditorHandler {
     // They are what makes the Track direction control below checkable: F marks
     // the end a positive track voltage drives toward, which is the first leg of
     // the track Test sweep, so the operator can watch the loco and see whether
-    // the wiring agrees (design_new.md "Power", A block voltage carries a
-    // direction).
+    // the wiring agrees (design_v2.md "Hardware setup", A block's track is two
+    // PWM channels).
     this.editor.renderer?.setBlockDirectionFocus?.(blockId);
     this._setColorLayer(true);
     setTimeout(() => this._initDetailHandlers(blockId, hwCfg), 0);
@@ -366,7 +366,8 @@ export class BlockGroupingEditorHandler {
     // re-renders so the active cell rolls back to the server's value. The write
     // goes to the block's `block_track` hardware binding — PUT
     // /api/hardware/binding — which persists on its own, no layout save needed
-    // (design_new.md "Power", Rail polarity lives on the rail binding).
+    // (design_v2.md "Hardware setup", The rail binding bonds tile order to rail
+    // polarity).
     bindPolaritySegment('block-polarity', async (reversed, _payload) => {
       const binding = hwCfg?.block_track?.[blockId];
       if (!binding) {

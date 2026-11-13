@@ -142,7 +142,7 @@ textarea {
 }
 
 /* ---- Session state chip — the top bar's one answer to "is the layout
-   live?" (design_new.md "Session state"). It names the operating environment
+   live?" (design_v2.md "Session state"). It names the operating environment
    in muted text, then the session state. Live reads success; a halt reads
    danger only for a failure or Emergency stop; Paused, Setup and
    not-activated stay neutral. A long halt label is cut with an ellipsis; the

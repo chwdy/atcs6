@@ -2,78 +2,171 @@
 
 Base URL: `http://localhost:5007`
 
-## Infrastructure Endpoints
+This file describes the requests the Editor screen uses to draw and edit tiles,
+segments, blocks, switches and tunnels, the snapshot the page reads, and the
+layout save and load requests. The rules these requests must keep are in
+design_v2.md under **Tile**, **Tunnel**, **Segment**, **Block** and **Switch**.
 
-### GET /
+The other requests are described in design_v2.md, not here:
 
-Serves the main application HTML page.
+- train requests: **Running a train** and **Trains** (see also
+  [Train requests](#train-requests) below);
+- hardware, Setup and activation requests: **Hardware REST API** (see also
+  [Hardware requests](#hardware-requests) below);
+- `GET` / `PUT /api/settings`: **Runtime settings**;
+- `GET /api/event-log`: **Event log**.
 
-**Response:** `index.html` (Content-Type: text/html)
+## Contents
 
-### GET /<path:path>
-
-Serves static files (CSS, JavaScript, images, etc.) from the `static/` directory.
-
-**Examples:**
-
-- `GET /static/css/style.css` - Stylesheet
-- `GET /static/js/app.js` - JavaScript application code
-- `GET /static/js/api.js` - API client library
-- `GET /static/images/logo.png` - Images
-
-**Response:** File contents with appropriate Content-Type header
+- [Page and static files](#page-and-static-files)
+- [Snapshot](#snapshot)
+- [Tiles](#tiles)
+- [Segments](#segments)
+- [Blocks](#blocks)
+- [Switches](#switches)
+- [Tunnels](#tunnels)
+- [Layouts](#layouts)
+- [Server](#server)
+- [Train requests](#train-requests)
+- [Hardware requests](#hardware-requests)
+- [Error responses](#error-responses)
 
 ---
 
-## Network Endpoints
+## Page and static files
+
+### GET /
+
+Serves `static/index.html`.
+
+### GET /<path:path>
+
+Serves a file from the `static/` directory (for example `GET /dist/main.js`).
+A path with no file extension that matches no file is answered with
+`index.html`, so the page's own router can handle it. A missing file that has
+an extension is a real `404`. Every reply carries `Cache-Control: no-cache`.
+
+---
+
+## Snapshot
 
 ### GET /api/network
 
-Get complete railway network state.
+Returns the snapshot: the layout and its live state (design_v2.md **Data flow
+to the page**).
 
 **Query parameter:** `layout_version` (optional). Every reply carries
 `layout_version`, a hash of the layout part of the snapshot. When the request
 passes the current value, the reply leaves the layout out: it carries
 `layout_unchanged: true` and `live_blocks`, `live_switches` and `live_tracks`
 (only the fields that change during a run) instead of `tracks`, `blocks`,
-`switches`, `platforms`, `station_groups`, `tunnels`, `speed_profiles` and
-`locomotive_models`. Otherwise the reply is the full snapshot with
-`layout_unchanged: false`. See design_new.md "Data Flow To UI", **Layout
-version**, and `frontend/src/lib/network-poll.ts`.
+`switches` and `tunnels`. Otherwise the reply is the full snapshot with
+`layout_unchanged: false`. See design_v2.md **Layout version**,
+`network_poll.py` and `frontend/src/lib/network-poll.ts`.
 
-The frontend reads this snapshot from `GET /api/network/stream` while that
-stream is open, and uses this endpoint for one-off reads and while the stream
-is down.
+The page reads the snapshot from `GET /api/network/stream` while that stream is
+open, and uses this request for one-off reads and while the stream is down.
 
 **Response (full snapshot, abridged):**
 
 ```json
 {
   "tracks": [{
-    "x": 0,
-    "y": 0,
-    "track_bits": 3,
-    "dead_end_ports": ["N"],
-    "type": "track",
+    "x": 3, "y": 5,
+    "track_bits": 4,
+    "type": "diagonal",
+    "edges": ["E", "N"],
+    "dead_end_ports": [],
     "is_switch": false,
-    "edges": ["N", "S", "E", "W"],
-    "switch_points": {}
+    "switch_id": null,
+    "switch_state": null,
+    "switch_states": null,
+    "switch_points": {},
+    "segment_id": "SEG_4F110A",
+    "block_section_id": "BLK_C37589A5",
+    "length": 1.0,
+    "is_valid": true,
+    "num_paths": 1,
+    "has_long_path": false,
+    "has_short_path": true,
+    "long_path_type": null,
+    "is_diagonal_only_switch": false
   }],
-  "trains": [{
-    "id": "train_1",
-    "position": {
-      "end_a": {"tile": [0, 0], "distance_cm": 50.0, "entry_edge": "W"},
-      "end_b": {"tile": [0, 0], "distance_cm": 10.0, "entry_edge": "W"},
-      "leading_end": "a",
-      "facing_direction": "NORTH",
-      "occupied_tiles": [[0, 0]],
-      "occupied_blocks": []
-    },
-    "direction": "NORTH",
-    "speed": 0
-  }]
+  "blocks": {
+    "BLK_4F4CF0": {
+      "block_id": "BLK_4F4CF0",
+      "name": "Right",
+      "segment_ids": ["SEG_4F4CF0"],
+      "segments": [{ "segment_id": "SEG_4F4CF0", "...": "segment fields" }],
+      "ordered_tiles": [[9, 13, "W"], [10, 13, "W"]],
+      "length_cm": 99.6,
+      "min_radius_cm": null,
+      "grade_percent": null,
+      "speed_limit_kmh": null,
+      "is_holding_point": false,
+      "allowed_travel_directions": ["forward", "reverse"],
+      "disabled": false,
+      "manual": false,
+      "current_voltage": 0.0,
+      "state": "free",
+      "reads_occupied": false,
+      "train_id": null,
+      "claimed_by_train_id": null,
+      "voltage": 0.0
+    }
+  },
+  "switches": {
+    "SW_11_9": {
+      "switch_id": "SW_11_9",
+      "x": 11, "y": 9,
+      "name": "",
+      "notes": "",
+      "switch_type": "standard",
+      "main_length_cm": 0.0,
+      "diverge_length_cm": 0.0,
+      "main_radius_cm": null,
+      "diverge_radius_cm": null,
+      "position": 0,
+      "position_known": true,
+      "flip_count": 0,
+      "disabled": false,
+      "manual": false,
+      "motor_unavailable": false,
+      "allow_exit_from_either_leg": false,
+      "held": false,
+      "alternate_next": null
+    }
+  },
+  "tunnels": [],
+  "running_trains": {},
+  "session_state": { "value": "halted", "halt_reason": "not_activated" },
+  "operation_environment": "virtual_hardware",
+  "operation_mode": "virtual_hardware",
+  "environment_active": false,
+  "activation_issues": [],
+  "occupancy_is_real": false,
+  "hardware_failure": false,
+  "runtime_halted": false,
+  "hardware_failure_detail": null,
+  "layout_version": "c75b7ea48f9b82a3f086d24151cb1b87",
+  "layout_unchanged": false
 }
 ```
+
+What the code sends, where it differs from design_v2.md **Live fields**:
+
+- The train map is sent as `running_trains`, not `trains`. Each entry is the
+  train entry **Live fields** describes.
+- Each block also carries `state`: `"occupied"` when the block reads occupied
+  or is one of a train's blocks, `"reserved"` when a train holds a claim on it,
+  and `"free"` otherwise. A block whose `state` is `"occupied"` also carries
+  `occupied_by`, the `train_id` of the train whose block it is, or `null`.
+  These two are worked out in `add_train_runtime_fields` in `simulation.py`.
+- Each block carries `current_voltage` as well as `voltage`; both are the
+  voltage `BlockPowerController` last recorded for the block.
+- `disabled` and `manual` on blocks and switches, and `flip_count`,
+  `motor_unavailable` and `allow_exit_from_either_leg` on switches, are sent
+  in the live part.
 
 ### GET /api/network/stream
 
@@ -86,101 +179,80 @@ snapshot once for all open streams.
 **Query parameter:** `layout_version` (optional). The first message leaves the
 layout out only when this names the current version; each later message leaves
 it out while the version equals the one the previous message carried. See
-design_new.md "Data Flow To UI", **Network stream**, `network_stream.py` and
+design_v2.md **Network stream**, `network_stream.py` and
 `frontend/src/lib/network-stream.ts`.
 
 ---
 
-## Track Endpoints
+## Tiles
+
+A tile is one grid square of track (design_v2.md **Tile**). Tile coordinates in
+`/api/track/...` may be negative: `/api/track/-5/10`.
 
 ### GET /api/track/{x}/{y}
 
-Get track at coordinates. Supports negative coordinates: `/api/track/-5/10`
+Returns the tile at those coordinates, in the shape of one `tracks` entry of
+the snapshot.
 
-**Response:**
-
-```json
-{
-  "x": 0,
-  "y": 0,
-  "track_bits": 3,
-  "dead_end_ports": ["N"],
-  "type": "track",
-  "is_switch": false,
-  "edges": ["N", "S"],
-  "switch_points": {},
-  "station_name": null,
-  "block_section_id": null,
-  "signal_ids": []
-}
-```
-
-**Error (404):**
-
-```json
-{
-  "error": "Track not found"
-}
-```
+**Error (404):** `{"error": "Track not found"}`
 
 ### PATCH /api/track/{x}/{y}
 
-Update track properties.
+Changes one tile.
 
 **Request:**
 
 ```json
 {
   "track_bits": 7,
-  "switch_state": 0,
   "dead_end_ports": ["N"],
-  "station_name": "Station A",
-  "block_section_id": "BLK_001"
+  "switch_state": 0,
+  "segment_id": "SEG_001",
+  "force": false
 }
 ```
 
 | Field | Type | Description |
 |-------|------|-------------|
-| track_bits | int | New track geometry |
-| switch_state | int | 0 = MAIN, 1 = DIVERGE |
-| dead_end_ports | array | Manual dead-end override |
-| station_name | string | Station name (or null to clear) |
-| block_section_id | string | Block ID (or null to clear) |
+| track_bits | int | New tile geometry. A tile that becomes a switch leaves its segment, and a switch record is made for it. |
+| dead_end_ports | array | Edges (`N`, `E`, `S`, `W`) that end the track. |
+| switch_state | int | `0` = main, `1` = diverge. On a tile that holds a switch, sent to `SwitchManager.request_position_change` when the runtime is present. |
+| segment_id | string | Sets the tile's `segment_id` directly. |
+| force | bool | Confirms a change that would remove a switch. |
 
-**Response:**
+**Responses:**
 
-```json
-{
-  "status": "success",
-  "track": { ... }
-}
-```
+- `200` `{"status": "success", "track": { ... }}`
+- `200` `{"status": "success", "message": "Track at (x, y) removed (empty)"}`
+  when the change leaves the tile with no track and no dead ends.
+- `409` `{"requires_confirmation": true, "impact": { ... }}` when the change
+  would remove a switch and `force` is not set.
+- `409` `{"error": "<reason>"}` when the switch throw is refused.
+- `400` `{"success": false, "error": "<message>"}` for track bits that are not
+  allowed; `400` `{"error": ...}` for a malformed body, or when the change would
+  empty a segment in the middle of its block.
+- `404` `{"error": "Track not found"}`
 
 ### DELETE /api/track/{x}/{y}
 
-Remove track segment.
+Removes the tile.
 
-**Response:**
+**Response:** `{"status": "success", "message": "Track at (0, 0) removed"}`
 
-```json
-{
-  "status": "success",
-  "message": "Track at (0, 0) removed"
-}
-```
+**Errors:** `404` when there is no tile; `400` when removing it would empty a
+segment in the middle of its block.
 
 ### POST /api/tracks/bulk
 
-Add multiple tracks at once (used for drag-to-build).
+Adds many tiles at once (drag-to-build).
 
 **Request:**
 
 ```json
 {
   "tracks": [
-    {"x": 0, "y": 0, "track_bits": 1},
-    {"x": 0, "y": 1, "track_bits": 1},
-    {"x": 0, "y": 2, "track_bits": 5}
+    {"x": 0, "y": 0, "track_bits": 2},
+    {"x": 1, "y": 0, "track_bits": 2}
   ]
 }
 ```
@@ -191,969 +263,305 @@ Add multiple tracks at once (used for drag-to-build).
 {
   "status": "success",
   "added": 2,
-  "updated": 1,
-  "tracks": [...]
+  "updated": 0,
+  "tracks": [ ... ]
 }
 ```
 
-**Notes:**
-- If track exists at position, new bits are merged (OR operation)
-- Forbidden configurations are silently skipped
-- Changes propagate to neighbors automatically
+- Where a tile already exists, the new bits are merged into it (bitwise OR).
+- Track bits that are not allowed are skipped without an error.
+- Neighbouring tiles are updated to match.
 
----
+### POST /api/tracks/bulk-delete
 
-## Train Endpoints
-
-Trains use a DC analog control model with a state machine for realistic operation.
-
-### Train States
-
-| State | Description |
-|-------|-------------|
-| `off` | Train is powered off |
-| `idle` | Powered on but no direction set |
-| `standby` | Direction set, ready to depart |
-| `running_moving` | Currently moving under ATC control |
-| `running_waiting` | Stopped waiting for path/signal |
-| `running_at_station` | Stopped at a station platform |
-| `manual` | Manual control mode (direct speed control) |
-
-### POST /api/trains
-
-Create a new train. Trains use a consist model where the train is composed of individual cars.
+Removes many tiles at once.
 
 **Request:**
 
 ```json
 {
-  "id": "train_1",
-  "length": 1.0,
-  "max_speed": 100.0,
-  "position": {"x": 0, "y": 0},
-  "direction": "NORTH"
-}
-```
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| id | string | Required | Unique train identifier |
-| length | float | 1.0 | Train length (used to create a LOCOMOTIVE car) |
-| max_speed | float | 100.0 | Maximum operational speed (km/h) |
-| position | object | null | Initial {x, y} position |
-| direction | string | null | NORTH, EAST, SOUTH, WEST |
-
-**Response:**
-
-```json
-{
-  "status": "success",
-  "train": {
-    "id": "train_1",
-    "length": 1.0,
-    "speed": 0,
-    "max_speed": 100.0,
-    "state": "off",
-    "position": {
-      "end_a": {"tile": [0, 0], "distance_cm": 50.0, "entry_edge": "W"},
-      "end_b": {"tile": [0, 0], "distance_cm": 10.0, "entry_edge": "W"},
-      "leading_end": "a",
-      "facing_direction": "NORTH",
-      "occupied_tiles": [[0, 0]],
-      "occupied_blocks": []
-    },
-    "direction": "NORTH",
-    "facing_direction": "NORTH",
-    "travel_direction": "forward",
-    "manual_target_speed": 0
-  }
-}
-```
-
-### GET /api/trains
-
-List all trains in the network.
-
-**Response:**
-
-```json
-{
-  "trains": [
-    {
-      "id": "train_1",
-      "state": "idle",
-      "position": {
-        "end_a": {"tile": [0, 0], "distance_cm": 50.0, "entry_edge": "W"},
-        "end_b": {"tile": [0, 0], "distance_cm": 10.0, "entry_edge": "W"},
-        "leading_end": "a",
-        "facing_direction": "NORTH",
-        "occupied_tiles": [[0, 0]],
-        "occupied_blocks": []
-      },
-      "facing_direction": "NORTH"
-    }
-  ]
-}
-```
-
-### GET /api/trains/{train_id}
-
-Get detailed information about a specific train.
-
-**Response:** Train object with all properties
-
-**Error (404):** `{"error": "Train not found"}`
-
-### DELETE /api/trains/{train_id}
-
-Delete a train from the network. The train must be powered off and hold no
-path or running route run (400 otherwise). Blocks it held that still read
-current become an unidentified train, which can then be adopted.
-
-**Response:** `{"success": true}`
-
-### POST /api/trains/{train_id}/power-on
-
-Power on a train. Transitions from `off` to `idle` state.
-
-**Response:**
-
-```json
-{
-  "success": true,
-  "state": "idle",
-  "message": "Train powered on"
-}
-```
-
-### POST /api/trains/{train_id}/power-off
-
-Power off a train. Only works when train is stopped.
-
-**Response:**
-
-```json
-{
-  "success": true,
-  "state": "off",
-  "message": "Train powered off"
-}
-```
-
-**Error (400):** `{"error": "Cannot power off while moving"}`
-
-### POST /api/trains/{train_id}/set-direction
-
-Set train facing direction. Transitions from `idle` to `standby` state.
-
-**Request:**
-
-```json
-{
-  "direction": "N"
-}
-```
-
-| Field | Type | Description |
-|-------|------|-------------|
-| direction | string | N, E, S, W (or NORTH, EAST, SOUTH, WEST) |
-
-**Response:**
-
-```json
-{
-  "success": true,
-  "state": "standby",
-  "facing_direction": "N"
-}
-```
-
-### POST /api/trains/{train_id}/depart
-
-Start train moving. Transitions from `standby` to `running_moving` state.
-
-**Response:**
-
-```json
-{
-  "success": true,
-  "state": "running_moving",
-  "message": "Train departing"
-}
-```
-
-### POST /api/trains/{train_id}/arrive
-
-Signal that train is arriving at station. Transitions to `running_at_station` state.
-
-**Response:**
-
-```json
-{
-  "success": true,
-  "state": "running_at_station",
-  "message": "Train arrived at station"
-}
-```
-
-### POST /api/trains/{train_id}/turn-around
-
-Flip the train's facing direction 180 degrees. Only works in `standby` state.
-
-**Response:**
-
-```json
-{
-  "success": true,
-  "facing_direction": "S",
-  "message": "Train turned around"
-}
-```
-
-### POST /api/trains/{train_id}/enable-manual
-
-Enable manual control mode. Bypasses ATC for direct speed control.
-
-**Response:**
-
-```json
-{
-  "success": true,
-  "state": "manual",
-  "message": "Manual mode enabled"
-}
-```
-
-### POST /api/trains/{train_id}/disable-manual
-
-Disable manual control mode. Returns to `idle` state.
-
-**Response:**
-
-```json
-{
-  "success": true,
-  "state": "idle",
-  "message": "Manual mode disabled"
-}
-```
-
-### POST /api/trains/{train_id}/manual-speed
-
-Set target speed in manual mode.
-
-**Request:**
-
-```json
-{
-  "speed": 50.0
-}
-```
-
-| Field | Type | Description |
-|-------|------|-------------|
-| speed | float | Target speed in km/h (0 to max_speed) |
-
-**Response:**
-
-```json
-{
-  "success": true,
-  "manual_target_speed": 50.0
-}
-```
-
-### POST /api/trains/{train_id}/travel-direction
-
-Set travel direction in manual mode (forward or reverse relative to facing direction).
-
-**Request:**
-
-```json
-{
-  "direction": "forward"
-}
-```
-
-| Field | Type | Description |
-|-------|------|-------------|
-| direction | string | `forward` or `reverse` |
-
-**Response:**
-
-```json
-{
-  "success": true,
-  "travel_direction": "forward"
-}
-```
-
-### POST /api/trains/{train_id}/emergency-stop
-
-Activate emergency stop. Immediately stops the train.
-
-**Response:**
-
-```json
-{
-  "success": true,
-  "state": "running_waiting",
-  "message": "Emergency stop activated"
-}
-```
-
-### POST /api/trains/{train_id}/stop
-
-Controlled stop - bring train to standby state (ATO stop). Only works when train is in a running state.
-
-**Response:**
-
-```json
-{
-  "success": true,
-  "state": "standby",
-  "message": "Train stopped"
-}
-```
-
-**Error (400):** `{"error": "Cannot stop (train not in a running state)"}`
-
-### POST /api/trains/{train_id}/set-cab
-
-Set active cab (A, B, or off) and manage state transitions. Cab selection determines which end of the train is "forward".
-
-**Request:**
-
-```json
-{
-  "cab": "A"
-}
-```
-
-| Field | Type | Description |
-|-------|------|-------------|
-| cab | string | `A`, `B`, or `null`/`off` to turn off |
-
-**Response:**
-
-```json
-{
-  "success": true,
-  "train": { ... }
-}
-```
-
-**Error (400):** `{"error": "Cannot set cab (train not in IDLE or STANDBY state)"}`
-
-### POST /api/trains/{train_id}/clear-direction
-
-Clear facing direction and transition back to IDLE state. Only works when train is in STANDBY state.
-
-**Response:**
-
-```json
-{
-  "success": true,
-  "train": { ... }
-}
-```
-
-**Error (400):** `{"error": "Cannot clear direction (train not in STANDBY state)"}`
-
-### PUT /api/trains/{train_id}/position
-
-Update train position on the network.
-
-**Request:**
-
-```json
-{
-  "position": {"x": 5, "y": 10},
-  "direction": "EAST"
-}
-```
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| position | object | Yes | `{x, y}` tile coordinates |
-| direction | string | Yes | `NORTH`, `EAST`, `SOUTH`, `WEST` |
-
-**Response:** Updated train object
-
-**Error (400):** `{"error": "No track at position (x, y)"}`
-
-### PUT /api/trains/{train_id}/speed-profile
-
-Assign a speed profile to a train.
-
-**Request:**
-
-```json
-{
-  "profile_id": "SHINKANSEN_N700"
-}
-```
-
-**Response:** Updated train object
-
-**Error (404):** `{"error": "Speed profile 'UNKNOWN' not found"}`
-
-### GET /api/trains/{train_id}/lookahead
-
-Get lookahead data for train monitor visualization. Returns blocks, signals, stations, and speed limits ahead of the train up to a specified distance.
-
-**Query Parameters:**
-- `distance_cm` (optional): Maximum lookahead distance in cm (default: 100000 = 1km)
-
-**Response:**
-
-```json
-{
-  "train_id": "TRAIN_01",
-  "current_speed_kmh": 45.5,
-  "target_speed_kmh": 60.0,
-  "max_speed_kmh": 100.0,
-  "facing_direction": "EAST",
-  "travel_direction": "forward",
-  "state": "running_moving",
-  "lookahead_items": [
-    {
-      "type": "signal",
-      "id": "SIG_001",
-      "distance_cm": 500.0,
-      "aspect": "green",
-      "direction": "E"
-    },
-    {
-      "type": "block",
-      "id": "BLK_A",
-      "distance_cm": 1000.0,
-      "state": "free",
-      "length_cm": 5000.0
-    },
-    {
-      "type": "station",
-      "id": "STA_MAIN",
-      "distance_cm": 3500.0,
-      "name": "Main Station",
-      "platform_side": "right"
-    },
-    {
-      "type": "speed_limit",
-      "distance_cm": 2000.0,
-      "speed_kmh": 40.0,
-      "reason": "curve"
-    }
-  ],
-  "clearance_cm": 8500.0,
-  "atc_target_speed_kmh": 60.0
-}
-```
-
-**Lookahead Item Types:**
-
-| Type | Fields | Description |
-|------|--------|-------------|
-| `signal` | id, distance_cm, aspect, direction | Signal ahead with current aspect |
-| `block` | id, distance_cm, state, length_cm | Block section with occupancy state |
-| `station` | id, distance_cm, name, platform_side | Station platform ahead |
-| `speed_limit` | distance_cm, speed_kmh, reason | Speed restriction (curve, signal, etc.) |
-
-**Error (404):**
-
-```json
-{
-  "error": "Train not found"
-}
-```
-
----
-
-## Train Routes Endpoints
-
-Train routes are travel plans for trains, consisting of multiple waypoints (stations) with specific timing and dwell instructions. This is distinct from dispatcher paths, which are interlocking routes.
-
-### GET /api/train-routes
-
-List all defined train routes in the network.
-
-**Response:**
-
-```json
-{
-  "routes": [
-    {
-      "route_id": "ROUTE-ABC123",
-      "name": "Main Line Express",
-      "waypoints": [
-        {
-          "station_id": "STA_A",
-          "dwell_time_sec": 30.0,
-          "timing_mode": "none",
-          "target_time": null
-        }
-      ],
-      "mode": "loop",
-      "current_waypoint_index": 0
-    }
-  ]
-}
-```
-
-### POST /api/train-routes
-
-Create a new train route travel plan.
-
-**Request:**
-
-```json
-{
-  "name": "Morning Commuter",
-  "mode": "loop",
-  "waypoints": [
-    {
-      "station_id": "STA_A",
-      "dwell_time_sec": 30.0,
-      "timing_mode": "none"
-    },
-    {
-      "station_id": "STA_B",
-      "dwell_time_sec": 45.0,
-      "timing_mode": "relative",
-      "target_time": 300
-    }
-  ]
-}
-```
-
-| Field | Type | Required | Default | Description |
-|-------|------|----------|---------|-------------|
-| name | string | Yes | "" | Name of the route |
-| mode | string | No | "one_way" | `one_way`, `loop`, or `round_trip` |
-| waypoints | array | Yes | [] | List of waypoint objects |
-| route_id | string | No | Auto | Custom route identifier |
-
-**Waypoint Object:**
-
-| Field | Type | Required | Default | Description |
-|-------|------|----------|---------|-------------|
-| station_id | string | Yes | - | Station identifier |
-| dwell_time_sec | float | No | 30.0 | Stop duration at station |
-| timing_mode | string | No | "none" | `none`, `relative`, or `absolute` |
-| target_time | float | No | null | Target arrival/departure time |
-
-**Response:**
-
-```json
-{
-  "status": "success",
-  "route": { ... }
-}
-```
-
-### GET /api/train-routes/{route_id}
-
-Get detailed information about a specific route.
-
-**Response:** Route object (JSON)
-
-**Error (404):** `{"error": "Route not found"}`
-
-### PUT /api/train-routes/{route_id}
-
-Update an existing train route.
-
-**Request:**
-
-```json
-{
-  "name": "Updated Route Name",
-  "mode": "loop",
-  "waypoints": [
-    {
-      "station_id": "STA_A",
-      "dwell_time_sec": 45.0,
-      "timing_mode": "relative",
-      "target_time": 300
-    }
-  ]
-}
-```
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| name | string | No | Updated route name |
-| mode | string | No | `one_way`, `loop`, or `round_trip` |
-| waypoints | array | No | Replaces all waypoints if provided |
-
-**Response:** Updated route object
-
-**Error (404):** `{"error": "Route not found"}`
-
-### DELETE /api/train-routes/{route_id}
-
-Delete a train route and unassign it from any trains.
-
-**Response:**
-
-```json
-{
-  "status": "success",
-  "message": "Route ROUTE-ABC123 deleted"
-}
-```
-
-**Error (404):** `{"error": "Route not found"}`
-
-### PUT /api/trains/{train_id}/assign-route
-
-Assign a travel plan route to a specific train.
-
-**Request:**
-
-```json
-{
-  "route_id": "ROUTE-ABC123"
-}
-```
-
-**Note:** Set `route_id` to `null` to unassign the current route.
-
-**A train already on another route** needs no extra flag. When it has no running route run, the new route is assigned at once. When it has one, the train runs to the end of its reservation and stops, and the new route takes over then; until that happens its pending actions read "switching to route `<route_id>` once stopped" (or "leaving its route once stopped" for an unassign). Every new route starts not engaged, so an ATO train needs Go (`/ato/go`) or Start route to run it. A train with a calibration run open is refused (409).
-
-**Response:**
-
-```json
-{
-  "status": "success",
-  "train": { ... }
-}
-```
-
-**Error (404):** `{"error": "Train not found"}` or `{"error": "Route not found"}`
-
----
-
-## Simulation Endpoints
-
-### POST /api/simulation/control
-
-Control simulation execution.
-
-**Request:**
-
-```json
-{
-  "action": "start",
-  "speed": 1.0
-}
-```
-
-| Action | Description |
-|--------|-------------|
-| start | Start simulation loop |
-| stop | Pause simulation |
-| reset | Reset to initial state |
-| set_speed | Change simulation speed multiplier |
-
-**Response:**
-
-```json
-{
-  "status": "success",
-  "running": true,
-  "speed": 1.0
-}
-```
-
----
-
-## Block Endpoints
-
-Blocks are track sections used for signaling and train separation.
-
-### GET /api/blocks
-
-List all blocks with track counts and positions.
-
-**Response:**
-
-```json
-[
-  {
-    "block_id": "BLK_abc123",
-    "name": "Main Line Block 1",
-    "state": "FREE",
-    "track_count": 5,
-    "positions": [[0, 0], [0, 1], [0, 2], [0, 3], [0, 4]],
-    "signal_count": 2
-  }
-]
-```
-
-### POST /api/blocks
-
-Create a new empty block.
-
-**Request:**
-
-```json
-{
-  "block_id": "BLK_MAIN_1",
-  "name": "Main Line Block 1"
-}
-```
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| block_id | string | No | Custom block ID (auto-generated if not provided) |
-| name | string | No | Human-readable name |
-
-**Response:**
-
-```json
-{
-  "success": true,
-  "block_id": "BLK_MAIN_1"
-}
-```
-
-### POST /api/blocks/create-with-tracks
-
-Create a new block with validated track assignments.
-
-**Request:**
-
-```json
-{
-  "name": "Platform Block",
-  "positions": [[0, 0], [0, 1], [0, 2]]
-}
-```
-
-**Response:**
-
-```json
-{
-  "success": true,
-  "block_id": "BLK_abc123",
-  "tracks_assigned": 3
-}
-```
-
-**Validation:**
-- All positions must have tracks
-- All tracks must form a continuous connected path
-- Tracks cannot already belong to another block
-
-### GET /api/blocks/{block_id}
-
-Get block details including validation status and connected signals.
-
-**Response:**
-
-```json
-{
-  "block_id": "BLK_abc123",
-  "name": "Main Block",
-  "state": "FREE",
-  "track_count": 3,
   "positions": [[0, 0], [0, 1], [0, 2]],
-  "is_valid": true,
-  "signals": ["SIG_001", "SIG_002"]
-}
-```
-
-### PATCH /api/blocks/{block_id}
-
-Update block properties.
-
-**Request:**
-
-```json
-{
-  "name": "New Block Name",
-  "state": "RESERVED"
-}
-```
-
-| Field | Type | Description |
-|-------|------|-------------|
-| name | string | Block name |
-| state | string | FREE, RESERVED, OCCUPIED, or CAUTION |
-
-**Response:** Updated block object
-
-### DELETE /api/blocks/{block_id}
-
-Delete block and clear track references.
-
-**Response:** `{"success": true}`
-
-### POST /api/blocks/{block_id}/cycle-state
-
-Cycle block state through: FREE → RESERVED → OCCUPIED → CAUTION → FREE
-
-**Response:**
-
-```json
-{
-  "success": true,
-  "new_state": "RESERVED"
-}
-```
-
-### POST /api/blocks/{block_id}/extend
-
-Extend an existing block with new track positions.
-
-**Request:**
-
-```json
-{
-  "positions": [[0, 3], [0, 4]],
   "force": false
 }
 ```
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| positions | array | Yes | List of [x, y] coordinates to add |
-| force | boolean | No | If true, removes signals in the path to allow extension |
+**Responses:**
 
-**Validation Rules:**
-- Block must exist
-- All positions must have tracks
-- Tracks cannot be switches (switches are block boundaries)
-- Tracks cannot be crossings (+ or X shape - crossings isolate paths)
-- **Block cannot cross station boundaries** (blocks must be fully inside or fully outside stations)
-- Tracks with signals require `force: true` to proceed (signals will be invalidated)
-- New positions must be adjacent to existing block
-- Extended block must remain continuous
+- `200` `{"status": "success", "deleted": 3}`
+- `409` `{"requires_confirmation": true, "impact": { ... }}` when the removal
+  needs confirming and `force` is not set.
+- `400` `{"error": ...}` for a malformed body, or when the removal would empty
+  a segment in the middle of its block.
 
-**Response (success):**
+---
 
-```json
-{
-  "block_id": "BLK_abc123",
-  "name": "Main Block",
-  "state": "FREE",
-  "track_count": 5
-}
-```
+## Segments
 
-**Response with signal invalidation (when force=true):**
+A segment holds the geometry of a run of tiles: its tile order, length,
+radius, grade and speed limit (design_v2.md **Segment**). Every segment belongs
+to one block; a new segment gets a block of its own.
 
-When extending a block over tiles that have signals, the signals are not removed.
-Instead, their `monitored_block_id` is cleared and they are set to RED state.
-These invalidated signals will show an orange warning triangle in the UI until
-they are reconfigured to monitor a block.
+A segment reply is the segment's own fields plus `block_id` (the block it
+belongs to), `track_count` and `track_positions`:
 
 ```json
 {
-  "block_id": "BLK_abc123",
-  "name": "Main Block",
-  "state": "FREE",
-  "track_count": 5,
-  "invalidated_signals": [
-    {
-      "signal_id": "SIG_001",
-      "position": [0, 3],
-      "direction": "NORTH",
-      "previous_block": "BLK_old456"
-    }
-  ]
+  "segment_id": "SEG_D67B49B7",
+  "block_id": "BLK_D67B49B7",
+  "name": "",
+  "ordered_tiles": [[3, 0, "W"], [4, 0, "W"], [5, 0, "W"]],
+  "length_cm": 20,
+  "min_radius_cm": 40.0,
+  "grade_percent": null,
+  "speed_limit_kmh": null,
+  "track_count": 3,
+  "track_positions": [[3, 0], [4, 0], [5, 0]]
 }
 ```
 
-**Error Response:**
+### GET /api/segments
 
-```json
-{
-  "error": "Track at (0, 3): Has signal(s) - use force=true to invalidate and extend"
-}
-```
+Lists every segment as a segment reply.
 
-### POST /api/blocks/{block_id}/tracks
+### GET /api/segments/{segment_id}
 
-Add tracks to a block by positions.
+One segment reply, plus `is_continuous` (bool) and `validation_errors` (list).
+
+**Error (404):** `{"error": "Segment not found"}`
+
+### POST /api/segments
+
+Makes a segment from the given tiles, and a block that holds only that segment.
 
 **Request:**
 
 ```json
 {
-  "positions": [[0, 3], [0, 4]],
-  "force": false
+  "positions": [[0, 0], [1, 0], [2, 0]],
+  "segment_id": "SEG_A",
+  "name": "A",
+  "length_cm": 30,
+  "speed_limit_kmh": null
 }
 ```
 
-| Field | Type | Description |
-|-------|------|-------------|
-| positions | array | List of [x, y] coordinates |
-| force | boolean | If true, reassign tracks from other blocks |
+Only `positions` is required. `max_speed_kmh` is read when `speed_limit_kmh` is
+absent.
 
-### DELETE /api/blocks/{block_id}/tracks
+**Response:** the new segment reply. **Error (400):** `{"error": ...}`.
 
-Remove tracks from a block.
+### PATCH /api/segments/{segment_id}
 
-**Request:**
+Changes a segment's `name`, `length_cm`, `min_radius_cm`, `grade_percent` or
+`speed_limit_kmh` (`max_speed_kmh` is read when `speed_limit_kmh` is absent).
 
-```json
-{
-  "positions": [[0, 3], [0, 4]]
-}
-```
+**Response:** the segment reply. **Errors:** `404`, `400`.
 
-**Response:** `{"success": true, "removed": 2}`
+### DELETE /api/segments/{segment_id}
 
-### GET /api/blocks/{block_id}/end_tiles
+Deletes the segment, and its block when it was the block's only segment. A
+segment in the middle of a block of several segments is refused with `400`,
+because deleting it would leave the block in two pieces.
 
-Get the start and end tiles of a block sorted by orientation.
+**Response:** `{"status": "success", "message": "Segment SEG_A deleted"}`
+
+### POST /api/segments/{segment_id}/reverse-orientation
+
+Reverses the order of the segment's tiles (design_v2.md **Segment**).
+
+**Response:** `{"status": "success", "segment_id": "SEG_A", "reversed": true}`
+
+**Error (404):** `{"error": "Segment not found"}`
+
+### POST /api/segments/{segment_id}/extend
+
+Adds tiles to the segment.
+
+**Request:** `{"positions": [[5, 0]], "force_overwrite": false}`.
+`force_overwrite` moves a tile that already belongs to another segment.
+
+**Response:** the segment reply. **Errors:** `400` (also when `positions` is
+empty), `404`.
+
+### POST /api/segments/{segment_id}/tracks
+
+Assigns tiles to the segment by position.
+
+**Request:** `{"positions": [[6, 0]], "force": false}`. A tile that belongs to
+another segment is skipped unless `force` is set.
 
 **Response:**
 
 ```json
 {
-  "start_tile": [0, 0],
-  "end_tile": [0, 4],
-  "orientation": "NS"
+  "status": "success",
+  "segment_id": "SEG_A",
+  "added": 1,
+  "positions": [[6, 0]],
+  "reassigned": 0,
+  "reassignment_details": []
 }
 ```
 
-### POST /api/blocks/{block_id}/can_extend
+### DELETE /api/segments/{segment_id}/tracks
 
-Check if a position can be added to extend a block.
+Takes tiles out of the segment.
 
-**Request:**
-
-```json
-{
-  "x": 0,
-  "y": 5
-}
-```
+**Request:** `{"positions": [[6, 0]]}`
 
 **Response:**
 
 ```json
 {
-  "can_extend": true,
-  "reason": null
+  "status": "success",
+  "block_id": "BLK_A",
+  "positions": [[6, 0]],
+  "removed": 1,
+  "segment_deleted": false,
+  "errors": []
 }
 ```
 
-**Error Response:**
+**Errors:** `404`, `400`.
+
+### GET /api/segments/{segment_id}/end_tiles
+
+The first and last tile of the segment, in track order.
+
+**Response:** `{"start_tile": {"x": 9, "y": 13}, "end_tile": {"x": 12, "y": 9}}`
+(both `null` when the segment has no tiles).
+
+### POST /api/segments/{segment_id}/can_extend
+
+Says whether a tile could be added to the segment, without changing anything.
+
+**Request:** `{"x": 5, "y": 0}`
+
+**Response:** `{"can_extend": true}`, or
 
 ```json
 {
   "can_extend": false,
-  "reason": "Track is a switch - switches are block boundaries"
+  "reason": "Tile already in segment SEG_B - use force_overwrite=true",
+  "requires_force_overwrite": true
 }
 ```
 
+Other reasons: no track at the position, the tile is a crossing, the tile is a
+switch, or the tile is not next to the segment.
+
+---
+
+## Blocks
+
+A block groups one or more segments that share one power feed and one
+occupancy detector (design_v2.md **Block**). Geometry is edited on the
+segments; the block requests change grouping, name and the availability flags.
+
+A block reply is the block's own fields plus `current_voltage`:
+
+```json
+{
+  "block_id": "BLK_3E1C9417",
+  "name": "Main",
+  "segment_ids": ["SEG_201936B2", "SEG_D67B49B7"],
+  "segments": [ { "...": "segment fields" } ],
+  "ordered_tiles": [[0, 0, "W"], [1, 0, "W"]],
+  "length_cm": 50,
+  "min_radius_cm": 40.0,
+  "grade_percent": null,
+  "speed_limit_kmh": null,
+  "is_holding_point": false,
+  "allowed_travel_directions": ["forward", "reverse"],
+  "disabled": false,
+  "manual": false,
+  "current_voltage": 0.0
+}
+```
+
+### GET /api/blocks
+
+Lists every block as a block reply plus `track_count` and `track_positions`.
+
+### GET /api/blocks/{block_id}
+
+One block reply plus `track_count`, `track_positions`, `sorted_positions`
+(the tiles in track order), `is_continuous` and `validation_errors` (a block is
+continuous when each of its segments is).
+
+**Error (404):** `{"error": "Block not found"}`
+
+### POST /api/blocks
+
+Groups existing segments into one block.
+
+**Request:**
+
+```json
+{
+  "segment_ids": ["SEG_201936B2"],
+  "block_id": "BLK_MAIN",
+  "name": "Main"
+}
+```
+
+Only `segment_ids` is required. Grouping never reverses a segment: a segment
+that runs against the others is refused and named in the error (reverse it
+first with `POST /api/segments/{segment_id}/reverse-orientation`).
+
+**Response:** the block reply. **Error (400):** `{"error": ...}`.
+
+### PATCH /api/blocks/{block_id}
+
+Changes `name`, `is_holding_point`, `allowed_travel_directions` (a non-empty
+list of `"forward"` / `"reverse"`), `disabled` or `manual`.
+
+- A geometry field (`length_cm` and the like) is refused with `400`: edit it on
+  the segment.
+- `polarity_reversed` is refused with `400`: it is part of the block's
+  `block_track` binding, set through `PUT /api/hardware/binding`.
+
+**Response:** the block reply. **Errors:** `404`, `400`, `409`, `410`. Each
+call also adds a `command_result` event (`source` `"Block"`, `command_name`
+`"update_flags"`) to the event stream, on success and on a `409` refusal.
+
+### DELETE /api/blocks/{block_id}
+
+Ungroups the block. Each of its segments goes back to a block of its own; no
+geometry is lost.
+
+**Response:** `{"status": "success", "message": "Block BLK_A ungrouped"}`
+
+### POST /api/blocks/{block_id}/segments
+
+Adds a segment to either end of the block.
+
+**Request:** `{"segment_id": "SEG_D67B49B7"}`
+
+**Response:** the block reply. **Errors:** `400` (also when `segment_id` is
+missing), `404`.
+
+### DELETE /api/blocks/{block_id}/segments/{segment_id}
+
+Takes a segment off either end of the block. The segment goes back to a block
+of its own.
+
+**Response:** the block reply, or, when that was the block's last segment and
+the block is gone:
+
+```json
+{
+  "status": "success",
+  "block_dissolved": true,
+  "message": "Block BLK_A dissolved (last member removed)"
+}
+```
+
+**Errors:** `404`, `400`.
+
 ### GET /api/blocks/{block_id}/voltage
 
-Get current voltage for a block (used for DC analog control simulation).
+The block's current voltage, from `BlockPowerController`.
 
 **Response:**
 
@@ -1161,7 +569,7 @@ Get current voltage for a block (used for DC analog control simulation).
 {
   "block_id": "BLK_001",
   "voltage": 12.0,
-  "timestamp": "2024-01-03T12:00:00"
+  "timestamp": "2026-11-13T09:38:22.677203"
 }
 ```
 
@@ -1169,538 +577,155 @@ Get current voltage for a block (used for DC analog control simulation).
 
 ---
 
-## Signal Endpoints
+## Switches
 
-Signals control train movements and are associated with blocks.
+A switch record holds a switch tile's geometry, name and position
+(design_v2.md **Switch**).
 
-### POST /api/signal
+A switch reply:
 
-Create a new signal with validation.
+```json
+{
+  "switch_id": "SW_11_9",
+  "x": 11, "y": 9,
+  "name": "",
+  "notes": "",
+  "switch_type": "standard",
+  "main_length_cm": 0.0,
+  "diverge_length_cm": 0.0,
+  "main_radius_cm": null,
+  "diverge_radius_cm": null,
+  "position": 0,
+  "position_known": true,
+  "flip_count": 0,
+  "disabled": false,
+  "manual": false,
+  "motor_unavailable": false,
+  "allow_exit_from_either_leg": false
+}
+```
+
+### GET /api/switches
+
+Lists every switch reply.
+
+### GET /api/switches/{switch_id}
+
+One switch reply. **Error (404):** `{"error": "Switch not found"}`
+
+### POST /api/tracks/{x}/{y}/switch
+
+Makes the switch record for a switch tile. `x` and `y` must not be negative
+here.
+
+**Request (optional):** `name`, `notes`, `switch_type`, `main_length_cm`,
+`diverge_length_cm`, `main_radius_cm`, `diverge_radius_cm`.
+
+**Responses:** `201` with the new switch reply; `200` with the existing one
+when the tile already has a switch; `404` when there is no tile; `400`
+`{"error": "Track is not a switch"}`.
+
+### PUT /api/switches/{switch_id}
+
+Changes any of the switch's fields, including `disabled`, `manual`,
+`motor_unavailable` and `allow_exit_from_either_leg`.
+
+**Response:** the switch reply. **Errors:** `400` (also for an empty body),
+`404`, `409` when a physical setting changes while the session is Live. Each
+call also adds a `command_result` event (`source` `"Switch"`, `command_name`
+`"update_flags"`) to the event stream, on success and on a `409` refusal.
+
+### PATCH /api/switches/{switch_id}
+
+The same as `PUT /api/switches/{switch_id}`.
+
+### DELETE /api/switches/{switch_id}
+
+Removes the switch record.
+
+**Response:** `{"success": true}`. **Error (404).**
+
+### PUT /api/switches/{switch_id}/state
+
+The operator's request to throw a switch (design_v2.md **Running a train**,
+Throw a switch, and **Switch**).
 
 **Request:**
 
 ```json
 {
-  "x": 0,
-  "y": 0,
-  "detection_direction": "N",
-  "signal_type": "block",
-  "name": "Home Signal",
-  "auto_connect": true
+  "state": 1,
+  "command_id": "optional",
+  "manual_override": false
 }
 ```
 
-| Field | Type | Required | Default | Description |
-|-------|------|----------|---------|-------------|
-| x | int | Yes | - | X coordinate |
-| y | int | Yes | - | Y coordinate |
-| detection_direction | string | Yes | - | N, E, S, W (direction the signal detects trains from) |
-| signal_type | string | No | "block" | Signal type |
-| name | string | No | null | Human-readable name |
-| auto_connect | boolean | No | true | Auto-connect to reachable block |
+**Responses:**
 
-**Response:**
+- `202` `{"command_id": "...", "status": "queued"}`. The result arrives later
+  as a `command_result` event with `source` `"Switch"`.
+- `409` `{"success": false, "reason": "switch_held", "error": "..."}` while
+  the session is Live and the switch is a held switch.
+- `400` for a missing or wrong `state`; `404` for an unknown switch; `503`
+  when `SwitchManager` is not available.
 
-```json
-{
-  "success": true,
-  "signal": {
-    "signal_id": "SIG_abc123",
-    "x": 0,
-    "y": 0,
-    "direction": "NORTH",
-    "signal_type": "block",
-    "state": "RED",
-    "monitored_block_id": "BLK_001"
-  }
-}
-```
+### PUT /api/switches/{switch_id}/alternate
 
-**Validation Errors:**
-- No track at position
-- Track has no valid exit in specified direction
-- Signal already exists at this position/direction
+Turns alternate arrivals on or off (design_v2.md **Running a train**, Alternate
+arrivals).
 
-### GET /api/signal/{signal_id}
+**Request:** `{"enabled": true}`
 
-Get signal by ID.
-
-**Response:** Signal object
-
-### GET /api/signal/{x}/{y}
-
-Get signal at position.
-
-**Response:** Signal object or 404
-
-### PATCH /api/signal/{signal_id}
-
-Update signal properties.
-
-**Request:**
-
-```json
-{
-  "state": "GREEN",
-  "name": "Updated Name",
-  "monitored_block_id": "BLK_002"
-}
-```
-
-### DELETE /api/signal/{signal_id}
-
-Delete signal by ID.
-
-**Response:** `{"success": true}`
-
-### DELETE /api/signal/{x}/{y}
-
-Delete signal at position.
-
-**Response:** `{"success": true}`
-
-### GET /api/signal/validate/{x}/{y}
-
-Check if signal can be placed at position and get valid directions.
-
-**Response:**
-
-```json
-{
-  "can_place": true,
-  "valid_directions": ["NORTH", "SOUTH"],
-  "existing_block": "BLK_001"
-}
-```
-
-### GET /api/signal/{signal_id}/reachable-blocks
-
-Get all blocks reachable from a signal (for manual connection UI).
-
-**Response:**
-
-```json
-{
-  "blocks": [
-    {"block_id": "BLK_001", "distance": 0},
-    {"block_id": "BLK_002", "distance": 3}
-  ]
-}
-```
+**Response:** `{"alternate_next": 0}`: the position (`0` main, `1` diverge)
+the switch is set to for the next train, or `null` once turned off. **Errors:** `400` when `enabled` is not a bool; `404`; `409` while
+the session is not Live, when the switch is disabled, manual or has no motor,
+or when its two legs do not each lead to a block of their own.
 
 ---
 
-## Bulk Track Operations
+## Tunnels
 
-### POST /api/tracks/bulk-delete
+A tunnel joins two dead-end tile edges so a train passes from one to the other
+(design_v2.md **Tunnel**).
 
-Delete multiple tracks at once.
-
-**Request:**
-
-```json
-{
-  "positions": [[0, 0], [0, 1], [0, 2]]
-}
-```
+### GET /api/tunnels
 
 **Response:**
 
 ```json
-{
-  "status": "success",
-  "deleted": 3
-}
+[
+  {"a": {"x": 0, "y": 0, "edge": "W"}, "b": {"x": 5, "y": 0, "edge": "E"}}
+]
 ```
+
+### POST /api/tunnels
+
+Adds a tunnel.
+
+**Request:** `{"a": {"x": 0, "y": 0, "edge": "W"}, "b": {"x": 5, "y": 0, "edge": "E"}}`
+
+**Response (201):** the full tunnel list. **Error (400):** a malformed body or
+a pair the network refuses.
+
+### DELETE /api/tunnels
+
+Removes the tunnel that has the given end.
+
+**Request:** `{"x": 0, "y": 0, "edge": "W"}`
+
+**Response:** the full tunnel list. **Errors:** `400` for a malformed body;
+`404` `{"error": "No tunnel at that endpoint"}`.
 
 ---
 
-## Station Endpoints
-
-Stations are multi-tile platform entities with physical properties.
-
-### POST /api/station
-
-Create a new station at specified position.
-
-**Request:**
-
-```json
-{
-  "x": 0,
-  "y": 0,
-  "station_id": "STA_MAIN",
-  "name": "Main Station",
-  "length_cm": 100.0,
-  "platform_side": "both",
-  "top_speed_kmh": 30.0
-}
-```
-
-| Field | Type | Required | Default | Description |
-|-------|------|----------|---------|-------------|
-| x | int | Yes | - | X coordinate |
-| y | int | Yes | - | Y coordinate |
-| station_id | string | No | Auto | Custom station ID |
-| name | string | No | "" | Human-readable name |
-| length_cm | float | No | 0.0 | Physical track length |
-| platform_side | string | No | "both" | `left`, `right`, or `both` |
-| top_speed_kmh | float | No | null | Speed limit |
-
-**Response:** Station object (same as GET response)
-
-### GET /api/station/{station_id}
-
-Get station by ID.
-
-**Response:** Station object
-
-**Error (404):** `{"error": "Station not found"}`
-
-### PATCH /api/station/{station_id}
-
-Update station properties.
-
-**Request:**
-
-```json
-{
-  "name": "New Name",
-  "length_cm": 200.0,
-  "platform_side": "left",
-  "top_speed_kmh": 50.0
-}
-```
-
-**Response:** Updated station object
-
-### DELETE /api/station/{station_id}
-
-Delete station.
-
-**Response:** `{"success": true}`
-
-### GET /api/station/validate/{x}/{y}
-
-Check if station can be placed at position.
-
-**Response:**
-
-```json
-{
-  "can_place": true,
-  "existing_block": "BLK_001"
-}
-```
-
-**Validation errors:**
-- No track at position
-- Cannot place on switch
-- Cannot place on tile with signal
-- Tile already belongs to station
-
-### POST /api/station/{station_id}/extend
-
-Extend station platform with new tiles.
-
-**Request:**
-
-```json
-{
-  "positions": [[0, 3], [0, 4]]
-}
-```
-
-**Response:** Updated station object
-
-**Validation:**
-- New tiles must be adjacent to existing station
-- All tiles must form continuous path
-
-### POST /api/station/{station_id}/remove_tile
-
-Remove an edge tile from a station.
-
-**Request:**
-
-```json
-{
-  "x": 0,
-  "y": 4
-}
-```
-
-**Response:**
-
-```json
-{
-  "success": true,
-  "message": "Tile (0, 4) removed from station"
-}
-```
-
-### GET /api/station/{station_id}/end_tiles
-
-Get the start and end tiles of a station sorted by orientation.
-
-**Response:**
-
-```json
-{
-  "start_tile": [0, 0],
-  "end_tile": [0, 4],
-  "orientation": "NS"
-}
-```
-
-### POST /api/station/{station_id}/can_extend
-
-Check if a position can be added to extend a station.
-
-**Request:**
-
-```json
-{
-  "x": 0,
-  "y": 5
-}
-```
-
-**Response:**
-
-```json
-{
-  "can_extend": true,
-  "reason": null
-}
-```
-
-### POST /api/station/{station_id}/assign_tile
-
-Assign a station tile to a block.
-
-**Request:**
-
-```json
-{
-  "x": 0,
-  "y": 0,
-  "block_id": "BLK_001"
-}
-```
-
-**Response:**
-
-```json
-{
-  "success": true,
-  "message": "Tile (0, 0) assigned to block BLK_001"
-}
-```
-
-### POST /api/station/{station_id}/unassign_tile
-
-Remove block assignment from a station tile.
-
-**Request:**
-
-```json
-{
-  "x": 0,
-  "y": 0
-}
-```
-
-**Response:**
-
-```json
-{
-  "success": true,
-  "message": "Block assignment removed from tile (0, 0)"
-}
-```
-
-### GET /api/station/{station_id}/block_assignments
-
-Get all block assignments for a station.
-
-**Response:**
-
-```json
-{
-  "assignments": {
-    "(0, 0)": "BLK_001",
-    "(0, 1)": "BLK_001",
-    "(0, 2)": "BLK_002"
-  }
-}
-```
-
----
-
-## Path and Dispatcher Endpoints
-
-Paths are interlocking routes through the network with block reservations and switch locking.
-
-**Note:** The API uses `/api/paths` for dispatcher paths (interlocking routes). Train travel plans use `/api/train-routes`.
-
-### GET /api/paths
-
-List all active paths.
-
-**Response:**
-
-```json
-{
-  "paths": [
-    {
-      "path_id": "PATH_abc123",
-      "train_id": "train_1",
-      "status": "ACTIVE",
-      "block_sequence": ["BLK_001", "BLK_002", "BLK_003"],
-      "current_block_index": 1
-    }
-  ]
-}
-```
-
-### POST /api/paths
-
-Create a new path between two blocks.
-
-**Request:**
-
-```json
-{
-  "start_block_id": "BLK_001",
-  "end_block_id": "BLK_003",
-  "train_id": "train_1"
-}
-```
-
-**Response:**
-
-```json
-{
-  "success": true,
-  "path": {
-    "path_id": "PATH_abc123",
-    "status": "SETTING",
-    "block_sequence": ["BLK_001", "BLK_002", "BLK_003"]
-  }
-}
-```
-
-### GET /api/paths/{path_id}
-
-Get path details.
-
-**Response:** Path object
-
-### DELETE /api/paths/{path_id}
-
-Cancel and release a path.
-
-**Response:** `{"success": true}`
-
-### PUT /api/paths/{path_id}/extend
-
-Extend an existing path with additional blocks.
-
-**Request:**
-
-```json
-{
-  "block_id": "BLK_004"
-}
-```
-
-**Response:** Updated path object
-
-### GET /api/paths/{path_id}/reachable-extensions
-
-Get blocks reachable for extending a path (direction-aware).
-
-**Response:**
-
-```json
-{
-  "reachable_blocks": [
-    {
-      "block_id": "BLK_004",
-      "distance": 1,
-      "direction": "N"
-    }
-  ],
-  "exit_direction": "N"
-}
-```
-
-### POST /api/paths/{path_id}/complete
-
-Manually complete a path and release all resources.
-
-**Response:**
-
-```json
-{
-  "success": true,
-  "message": "Path completed"
-}
-```
-
-### GET /api/dispatcher/reachable/{block_id}
-
-Get all endpoint blocks reachable from a given block.
-
-**Response:**
-
-```json
-{
-  "reachable": [
-    {
-      "block_id": "BLK_002",
-      "distance": 3
-    }
-  ]
-}
-```
-
-### POST /api/dispatcher/paths
-
-Get all possible paths between two blocks.
-
-**Request:**
-
-```json
-{
-  "start_block_id": "BLK_001",
-  "end_block_id": "BLK_003"
-}
-```
-
-**Response:**
-
-```json
-{
-  "paths": [
-    {
-      "block_sequence": ["BLK_001", "BLK_002", "BLK_003"],
-      "distance": 5
-    }
-  ]
-}
-```
-
----
-
-## Layout Persistence Endpoints
-
-The system automatically saves layouts every 5 minutes to `layouts/_autosave.json`. Layouts are saved as JSON files in the `layouts/` directory. Each file contains both a snapshot (for fast loading) and construction steps (for recovery if the snapshot format changes).
+## Layouts
+
+Layouts are saved as JSON files in `layouts/`. The server also saves the
+current layout every 5 minutes to `layouts/_autosave.json`. Each file holds a
+snapshot (for loading), construction steps (for recovery when the snapshot
+cannot be read) and the Hardware Setup. See `docs/PERSISTENCE_DESIGN.md`.
 
 ### GET /api/layouts
-
-List all saved layouts.
 
 **Response:**
 
@@ -1711,10 +736,11 @@ List all saved layouts.
       "name": "My Layout",
       "filename": "my_layout",
       "description": "A sample layout",
-      "modified": "2024-01-03T12:00:00",
-      "size_bytes": 12345,
+      "modified": "2026-11-13T09:39:08.415239",
+      "size_bytes": 2909,
       "has_snapshot": true,
-      "has_steps": true
+      "has_steps": true,
+      "has_hardware": true
     }
   ]
 }
@@ -1722,16 +748,10 @@ List all saved layouts.
 
 ### POST /api/layouts
 
-Save the current network state as a layout.
+Saves the current layout.
 
-**Request:**
-
-```json
-{
-  "name": "My Layout",
-  "description": "A sample layout"
-}
-```
+**Request:** `{"name": "My Layout", "description": "A sample layout"}`
+(`name` required).
 
 **Response:**
 
@@ -1745,77 +765,46 @@ Save the current network state as a layout.
 }
 ```
 
-**Response with warning (if steps generation fails):**
+When the steps could not be made, the reply also carries
+`"warning": "Steps could not be generated: <message>"`.
 
-```json
-{
-  "status": "success",
-  "message": "Layout 'My Layout' saved successfully",
-  "path": "layouts/my_layout.json",
-  "steps_generated": false,
-  "steps_count": 0,
-  "warning": "Steps could not be generated: error message"
-}
-```
+**Errors:** `400` for a missing or bad name; `500` when the file cannot be
+written.
 
 ### POST /api/layouts/{name}/load
 
-Load a layout, replacing the current network state.
-
-**Response (snapshot load):**
-
-```json
-{
-  "status": "success",
-  "message": "Layout 'My Layout' loaded successfully",
-  "method": "snapshot"
-}
-```
-
-**Response (recovery mode - when snapshot fails):**
-
-```json
-{
-  "status": "success",
-  "message": "Layout 'My Layout' recovered from steps (snapshot was corrupted)",
-  "method": "steps",
-  "recovery": true
-}
-```
-
-**Error Response:**
-
-```json
-{
-  "error": "Layout not found" | "Failed to load layout",
-  "method": "snapshot" | "steps" | null
-}
-```
-
-### DELETE /api/layouts/{name}
-
-Delete a saved layout.
+Loads a layout in place of the current one. It also takes the layout's saved
+Hardware Setup, which applies when the session is next built.
 
 **Response:**
 
 ```json
 {
   "status": "success",
-  "message": "Layout 'My Layout' deleted"
+  "message": "Layout 'My Layout' loaded successfully",
+  "method": "snapshot",
+  "hardware": "applied"
 }
 ```
 
-**Error (404):**
+- `method` is `"snapshot"`, or `"steps"` when the layout was rebuilt from its
+  steps. In that case the reply also carries `"recovery": true` and the message
+  says the layout was recovered from steps.
+- `hardware` is `"applied"`, `"absent"` (the file has no Hardware Setup) or
+  `"error"`. On `"error"` the reply also carries a `warning` naming what went
+  wrong; the layout itself is still loaded.
 
-```json
-{
-  "error": "Layout 'My Layout' not found"
-}
-```
+**Errors:** `404`, `400`.
+
+### DELETE /api/layouts/{name}
+
+**Response:** `{"status": "success", "message": "Layout 'My Layout' deleted"}`
+
+**Error (404):** `{"error": "Layout 'My Layout' not found"}`
 
 ### POST /api/network/clear
 
-Clear the current network (empty canvas).
+Clears the layout, giving an empty canvas. Every train is removed with it.
 
 **Response:**
 
@@ -1824,444 +813,107 @@ Clear the current network (empty canvas).
   "status": "success",
   "message": "Network cleared",
   "cleared": {
-    "tracks": 100,
-    "blocks": 10,
-    "signals": 20,
-    "stations": 5,
-    "trains": 2
+    "tracks": 43,
+    "blocks": 5,
+    "trains": 0,
+    "switches": 2,
+    "tunnels": 0
   }
 }
 ```
 
 ### GET /api/network/stats
 
-Get counts of items in the network. Useful for checking if network is empty.
+Counts of what the layout holds, used to check whether it is empty.
 
 **Response:**
 
 ```json
 {
-  "tracks": 100,
-  "blocks": 10,
-  "signals": 20,
-  "stations": 5,
-  "trains": 2,
+  "tracks": 43,
+  "blocks": 5,
+  "trains": 0,
+  "switches": 2,
+  "tunnels": 0,
   "is_empty": false
 }
 ```
 
 ---
 
-## Speed Profile Endpoints
+## Server
 
-design_new.md "SpeedProfile": every profile is the fixed Default profile
-(`profile_id` 0), a **set** under a locomotive model (`model_id` set), or one
-train's **instance profile** (its own copy of the Default profile or a set,
-with `parent_profile_id` naming where it came from). Profile and model ids are
-numbers from counters that never give a number out twice. No request creates
-a profile or a model: a set, and a new model for it, come only from a finished
-speed pass's Promote (`POST /api/trains/{train_id}/calibrate/commit`).
+### GET /api/health
 
-### GET /api/speed-profiles
+**Response:** `{"ok": true, "boot_id": "...", "pid": 12345, "uptime_seconds": 12.3}`.
+`boot_id` changes each time the server process starts, so the page can tell a
+dropped connection from a restarted server.
 
-Every profile and every model.
+### GET /api/server/shutdown-report
 
-**Response:**
+How the previous server process ended: `{"previous": null}` on the first run,
+otherwise `{"previous": { ... }}`, whose `clean` flag is `false` when the
+process was killed before it could put the layout in the safe state.
 
-```json
-{
-  "profiles": [
-    {"profile_id": 0, "model_id": null, "set_name": "", "parent_profile_id": null, "voltage_speed_curve": [[1.5, 12.5], [12.0, 100.0]], "...": "..."},
-    {"profile_id": 1, "model_id": 1, "set_name": "1", "parent_profile_id": null, "calibrated_at": "2026-11-08T03:37:42+00:00", "...": "..."}
-  ],
-  "models": [{"model_id": 1, "name": "H100"}],
-  "count": 2
-}
-```
+### POST /api/server/restart
 
-### GET /api/speed-profiles/{profile_id}
+Puts the layout in the safe state, saves the layout to `_autosave`, and starts
+a new server process in place of this one.
 
-One profile as the Speed Profile panel shows it: the record plus `kind`
-(`"default"`, `"set"` or `"instance"`), an instance profile's `parent`
-(`{"kind": "set", "model_name", "set_name"}`, `{"kind": "default"}`,
-`{"kind": "deleted"}` or `{"kind": "none"}`), and a set's `model_name`.
-404 when no profile has that number.
-
-### PUT /api/speed-profiles/{profile_id}
-
-Hand-edit a set or a train's instance profile. Send only the fields that
-changed; the rest keep their stored values.
-
-- **The Default profile is refused** (409).
-- **`calibrated_at` never changes here**; only a speed calibration commit writes it.
-- **`profile_id`, `model_id` and `parent_profile_id` are refused** when the body changes them (400).
-- **`set_name` changes only on a set**, and must not be blank (400 otherwise).
-- **The record must stay valid**: a curve of at least two points whose speed does not fall as voltage rises, a lighting voltage below the starting voltage, a starting voltage below `max_voltage`, an ATO minimum voltage on the measured part of the curve. A changed starting voltage or curve clears `ato_min_voltage` unless the same body sets one.
-
-### DELETE /api/speed-profiles/{profile_id}
-
-Delete a set. 204 on success, 404 when absent, 409 for the Default profile
-or a train's instance profile (which goes only with its train). A train
-copied from the deleted set keeps its own copy, but its reset is refused.
-
-### GET /api/locomotive-models
-
-`{"models": [{"model_id": 1, "name": "H100"}]}`
-
-### PUT /api/locomotive-models/{model_id}
-
-Rename a model: body `{"name": str}`. 400 for a blank name, 404 when absent.
-Its sets name it by number, so nothing else moves.
-
-### DELETE /api/locomotive-models/{model_id}
-
-Delete a model and every set naming it.
-`{"status": "success", "removed_profile_ids": [1, 3]}`.
-
-### PATCH /api/trains/{train_id}/speed-profile
-
-Give a train the Default profile or a set: body `{"profile_id": int}`. The
-server copies it into the train's own instance profile, keeping that
-profile's number. 400 for an instance profile or an unknown number, 409 while
-a calibration run or a finished pass is open for the train.
-
-### POST /api/trains/{train_id}/speed-profile/reset
-
-Copy the profile the train's instance profile names in `parent_profile_id`
-back into it. 409 when it has no parent, the parent was deleted, or a
-calibration run or a finished pass is open for the train.
-
-## Switch Endpoints
-
-Switches (turnouts/points) control train routing at junctions. They can be locked by paths to prevent conflicts.
-
-### GET /api/switches
-
-List all switch configurations.
-
-**Response:**
-
-```json
-[
-  {
-    "switch_id": "SW_5_10",
-    "x": 5,
-    "y": 10,
-    "name": "Junction A",
-    "switch_type": "standard",
-    "main_length_cm": 15.0,
-    "diverge_length_cm": 18.0,
-    "main_radius_cm": null,
-    "diverge_radius_cm": 50.0,
-    "is_locked": false,
-    "locked_by_path": null,
-    "locked_state": null,
-    "notes": ""
-  }
-]
-```
-
-### GET /api/switches/{switch_id}
-
-Get specific switch configuration.
-
-**Response:** Switch object
-
-**Error (404):** `{"error": "Switch not found"}`
-
-### POST /api/tracks/{x}/{y}/switch
-
-Create a switch configuration for a track tile. Auto-called when switch track is placed.
-
-**Request (optional):**
-
-```json
-{
-  "name": "Junction A",
-  "main_length_cm": 15.0,
-  "diverge_length_cm": 18.0,
-  "main_radius_cm": null,
-  "diverge_radius_cm": 50.0,
-  "switch_type": "standard",
-  "notes": ""
-}
-```
-
-**Response (201):** Created switch object
-
-**Response (200):** Existing switch object (if already exists, idempotent)
-
-**Error (400):** `{"error": "Track is not a switch"}`
-
-### PUT /api/switches/{switch_id}
-
-Update switch configuration.
-
-**Request:** Partial update with any switch fields
-
-**Response:** Updated switch object
-
-**Error (404):** `{"error": "Switch not found"}`
-
-### DELETE /api/switches/{switch_id}
-
-Remove switch configuration.
-
-**Response:** `{"success": true}`
-
-**Error (404):** `{"error": "Switch not found"}`
-
-### PUT /api/switches/{switch_id}/state
-
-Change switch state (MAIN=0, DIVERGE=1). Fails if switch is locked by a path.
-
-**Request:**
-
-```json
-{
-  "state": 0
-}
-```
-
-| Field | Type | Description |
-|-------|------|-------------|
-| state | int | 0 = MAIN, 1 = DIVERGE |
-
-**Response:**
-
-```json
-{
-  "success": true,
-  "message": "Switch state changed to MAIN",
-  "switch": { ... }
-}
-```
-
-**Error (409):** `{"error": "Switch locked by path PATH_123"}`
-
-### POST /api/switches/{switch_id}/lock
-
-Lock a switch for a path. Used by dispatcher to prevent conflicting routes.
-
-**Request:**
-
-```json
-{
-  "path_id": "PATH_123",
-  "state": 0
-}
-```
-
-**Response:**
-
-```json
-{
-  "success": true,
-  "switch": { ... }
-}
-```
-
-**Error (409):** `{"error": "Switch already locked by path PATH_456"}`
-
-### POST /api/switches/{switch_id}/unlock
-
-Unlock a switch. Only the path that locked it can unlock it.
-
-**Request:**
-
-```json
-{
-  "path_id": "PATH_123"
-}
-```
-
-**Response:**
-
-```json
-{
-  "success": true,
-  "switch": { ... }
-}
-```
-
-**Error (403):** `{"error": "Switch locked by different path: PATH_456"}`
+**Response:** `{"status": "restarting", "flushed": true, "flush_error": null}`
 
 ---
 
-## Scale Configuration Endpoints
+## Train requests
 
-### GET /api/scale
+These are described in design_v2.md **Running a train** and **Trains**. The
+routes that exist now (`routes/running_trains.py`):
 
-Get current model scale configuration.
-
-**Response:**
-
-```json
-{
-  "scale": 160.0,
-  "presets": {
-    "1:1": 1.0,
-    "1:87": 87.0,
-    "1:160": 160.0,
-    ...
-  }
-}
-```
-
-### PUT /api/scale
-
-Set model scale or use a preset.
-
-**Request:**
-
-```json
-{
-  "scale": 87.0
-}
-```
-OR
-```json
-{
-  "preset": "1:87"
-}
-```
-
-**Response:**
-
-```json
-{
-  "scale": 87.0,
-  "status": "success"
-}
-```
+- `PUT /api/trains/{train_id}/knob`
+- `POST /api/trains/{train_id}/reverse`
+- `POST /api/trains/{train_id}/stop`
+- `POST /api/trains/stop-all`
+- `DELETE /api/trains/{train_id}`
+- `GET /api/trains/{train_id}/notifications` (design_v2.md **Runtime
+  notifications**)
 
 ---
 
-## Debug Inspector Endpoints
+## Hardware requests
 
-The debug inspector provides a generic object traversal API over the live Python runtime. It powers the standalone debug UI at `/debug`.
+These are described in design_v2.md **Hardware REST API**. Routes in
+`routes/hardware.py` that the table there does not list:
 
-### GET /debug
-
-Serves the standalone debug inspector HTML page — a tree-view browser for the Python object graph.
-
-**Response:** `debug-inspector.html` (Content-Type: text/html)
+- `GET /api/hardware/coverage` — which blocks and switches in the loaded
+  layout have no binding, and which bindings name blocks or switches the layout
+  no longer has.
+- `GET /api/hardware/occupancy/raw` — what the occupancy read saw on its last
+  read, before debounce, with the USB link state. It reads recorded state only
+  and sends nothing to the rig.
+- `PUT /api/hardware/binding` — sets or clears one binding of one block or
+  switch. Body `{map, logical_id, chip_id?, port?}`; no `chip_id` clears it.
+- `GET /api/debug/hw`, `POST /api/debug/hw/occupancy`,
+  `POST /api/debug/hw/current` — other names for `GET /api/virtual-hardware`,
+  `PUT /api/virtual-hardware/input/occupancy` and
+  `PUT /api/virtual-hardware/input/current`.
 
 ---
 
-### GET /api/debug/inspect
+## Error responses
 
-Traverse the Python object graph from `AppState` using a dot-separated path.
-
-**Query Parameters:**
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `path` | string | No | Dot-separated path from AppState root, e.g. `network.trains` or `network.trains.T1` |
-| `depth` | integer | No | Max traversal depth (default: 2) |
-
-**Example:** `GET /api/debug/inspect?path=network.trains&depth=2`
-
-**Response:**
+Errors return JSON with an `error` field:
 
 ```json
 {
-  "path": "network.trains",
-  "value": {
-    "T1": {
-      "__type__": "Train",
-      "train_id": "T1",
-      "current_speed": 42.3
-    }
-  }
-}
-```
-
----
-
-### GET /api/debug/summary
-
-Returns counts of top-level entities (trains, blocks, signals, etc.).
-
-**Response:**
-
-```json
-{
-  "trains": 3,
-  "blocks": 12,
-  "signals": 8,
-  "stations": 2,
-  "routes": 1,
-  "active_paths": 3
-}
-```
-
----
-
-### GET /api/debug/block-history
-
-Returns recent block state transition history from `BlockManager`.
-
-**Query Parameters:**
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `block_id` | string | No | Filter history for a specific block |
-| `limit` | integer | No | Max entries to return (default: 50) |
-
-**Response:**
-
-```json
-{
-  "history": [
-    {
-      "block_id": "BLK_abc123",
-      "from_state": "FREE",
-      "to_state": "RESERVED",
-      "train_id": "T1",
-      "timestamp": "2026-03-30T10:23:01"
-    }
-  ]
-}
-```
-
----
-
-## Platform Endpoints
-
-Platforms are physical multi-tile track entities (formerly called "stations" before the station/platform split). Stations are now the logical grouping; platforms are the physical infrastructure.
-
-See `/api/station` endpoints for the logical station grouping. Platform endpoints follow the same pattern:
-
-- `POST /api/platform` — Create a platform
-- `GET /api/platform/{platform_id}` — Get platform details
-- `PATCH /api/platform/{platform_id}` — Update platform
-- `DELETE /api/platform/{platform_id}` — Delete platform
-- `GET /api/platform/validate/{x}/{y}` — Validate placement
-- `POST /api/platform/{platform_id}/extend` — Add tiles
-- `POST /api/platform/{platform_id}/remove_tile` — Remove a tile
-- `POST /api/platform/{platform_id}/can_extend` — Check extension feasibility
-- `POST /api/platform/{platform_id}/assign_tile` — Assign tile to block
-- `POST /api/platform/{platform_id}/unassign_tile` — Unassign tile from block
-- `GET /api/platform/{platform_id}/block_assignments` — Get tile→block mappings
-
----
-
-## Error Responses
-
-All errors return JSON with `error` field:
-
-```json
-{
-  "error": "Error message",
-  "success": false
+  "error": "Error message"
 }
 ```
 
 | Status Code | Meaning |
 |-------------|---------|
-| 400 | Bad request (invalid data, forbidden configuration) |
-| 404 | Track not found |
+| 400 | Bad request (malformed body, a value that is not allowed, an edit the layout rules refuse) |
+| 404 | The tile, segment, block, switch, tunnel or layout named does not exist |
+| 409 | The request needs confirming (`requires_confirmation`), or is refused in the current session state |
+| 410 | The block is gone |
 | 500 | Server error |
-
----
+| 503 | A part of the runtime the request needs is not available |

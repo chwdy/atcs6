@@ -1,14 +1,13 @@
 """Hardware configuration store, factory, REST surface, and bootstrap wiring.
 
-design_new.md "Power -> Hardware configuration": a chip inventory (controller +
-chips) plus the port-binding maps (block_track, block_occupancy,
-block_occupancy_current, switch_output), persisted to an
-app-managed JSON file and applied at the next
-session build. These tests cover the config store + validation, disk persistence
-(round-trip + fail-safe), the operation-mode derivation, the interface factory
-(sim -> no overrides, real -> interfaces built from a fake device or a clear
-HardwareBackendUnavailable), the REST routes, and the bootstrap fallback to sim
-mode when the real driver cannot be brought up.
+design_v2.md "Hardware setup": a chip inventory (controller + chips) plus the
+binding maps (block_track, block_occupancy, block_occupancy_current,
+switch_output, switch_track_source), persisted to an app-managed JSON file and
+captured at the next activation. These tests cover the config store +
+validation, disk persistence (round-trip + fail-safe), the operation-mode
+derivation, the interface factory (interfaces built from a fake device, or a
+clear HardwareBackendUnavailable), the REST routes, and that boot activates no
+hardware environment.
 
 Run with:
     /opt/homebrew/anaconda3/envs/general/bin/python -m pytest \
@@ -65,8 +64,9 @@ def _real_payload(**overrides):
         "switch_output": {
             "SW_A": {"chip_id": "sw1", "port_main": 5, "port_diverge": 6},
         },
-        # A switch's rails carry the feed of the block at its main entrance, so
-        # a completely-wired rig names one (design_new.md "Power", Bindings).
+        # A switch's rails carry the feed of the block at its toe, so a
+        # completely-wired rig names one (design_v2.md "Hardware setup",
+        # `switch_track_source` wires a switch to its feed block).
         "switch_track_source": {"SW_A": "B1"},
         "block_occupancy": {"B1": {"chip_id": "in1", "port": 2}},
     }
@@ -622,7 +622,7 @@ def test_factory_device_open_failure_raises_backend_unavailable(monkeypatch):
 
 
 # --- what activation captures ----------------------------------------------
-# design_new.md "Hardware setup", A binding is read per write: a session is
+# design_v2.md "Hardware setup", A binding is read per write: a session is
 # built from chips, so those are captured; the port a chip drives for a logical
 # entity is looked up per write. `setup_awaits_activation` is what tells an
 # operator which kind of edit they just made.
@@ -851,7 +851,8 @@ def test_binding_endpoint_sets_current_binding(client):
 
 def test_missing_switch_track_source_blocks_activation(client):
     """Every switch must name the block feeding its rails before a hardware
-    environment may activate (design_new.md "Power", Bindings). Unlike the /OE
+    environment may activate (design_v2.md "Hardware setup", Completeness is
+    activation policy, not edit policy). Unlike the /OE
     inhibit this is not optional wiring a rig may lack — a switch with no feed
     is a switch whose rails no block drives."""
     client.put("/api/hardware/config", json=_real_payload(switch_track_source={}))
@@ -906,8 +907,8 @@ def test_real_hardware_warns_that_outputs_latch_if_the_host_dies(client):
     """Safe state is a write, so a dead process writes nothing and the boards
     hold their last commanded value. Advisory, not a blocker: it is a property
     of every rig without an independent gate, which is every rig here."""
-    # Both occupancy sources are mandatory before activation (design_new.md
-    # "Power"), so a ready rig binds B1 in the digital AND the current map; the
+    # Both occupancy sources are mandatory before activation (design_v2.md
+    # "Occupancy source and drive zones"), so a ready rig binds B1 in the digital AND the current map; the
     # config is only stored for the readiness check, not device-initialized, so
     # the extra ina3221 chip needs no fake backend.
     client.put(
@@ -1030,9 +1031,8 @@ def test_bootstrap_keeps_real_environment_inactive_when_device_unavailable(monke
 def test_bootstrap_activates_no_hardware_environment(monkeypatch):
     """A Real Hardware selection is not activated at boot: the session boots
     Halted for `not_activated` until the operator activates it, and boot runs no
-    readiness check of its own (design_new.md "Activation starts the railway
-    over", Boot activates no hardware environment; design_v2.md "Session state",
-    Boot)."""
+    readiness check of its own (design_v2.md "Operating environment and
+    activation", Boot activates no environment; "Session state", Boot)."""
     import bootstrap
     _patch_fake_device(monkeypatch)
     hardware_config.apply_updates(_real_payload(

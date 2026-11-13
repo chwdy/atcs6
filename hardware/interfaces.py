@@ -53,7 +53,8 @@ SwitchBindingMap = Dict[str, Tuple[str, int, int, Optional[int]]]
 # A current-sense binding map:
 # block_id -> (chip_id, port, baseline_a, threshold_a, driven_threshold_a).
 # `threshold_a` judges the lighting zone and `driven_threshold_a` the driven zone
-# (design_new.md "Occupancy source follows drive state"). Thresholds arrive
+# (design_v2.md "Occupancy source and drive zones", The driven threshold).
+# Thresholds arrive
 # already resolved to amps by the config layer, an unset driven threshold
 # already replaced by the channel's own threshold.
 CurrentBindingMap = Dict[str, Tuple[str, int, float, float, float]]
@@ -70,8 +71,8 @@ _CURRENT_SENSE_MIN_DRIVE_V = 4.0
 
 class DriveZone(Enum):
     """How hard a block's rails are being driven, which decides which of the
-    block's two detectors can be believed (design_new.md "Hardware setup",
-    Occupancy source follows drive state).
+    block's two detectors can be believed (design_v2.md "Occupancy source and
+    drive zones", Occupancy source follows drive state).
 
     `TrackDriver` owns this. It classifies each block's last commanded voltage
     into a zone and reports it through `drive_zone(block_id)`; `OccupancyDriver`
@@ -314,8 +315,9 @@ class TrackDriver(TrackOutput):
 
     def get_readback_voltage(self, block_id: str) -> Optional[float]:
         """Read the block's bound current-sense channel bus voltage — the actual
-        rail voltage — never the commanded value (design_new.md "Power", the
-        block-voltage read surface). Returns None where the block has no such
+        rail voltage — never the commanded value (design_v2.md "Hardware
+        interface", The block-voltage readback is not an `OccupancyInput`
+        read). Returns None where the block has no such
         facility; a failed readback transaction raises so the diagnostic
         consumer reports it."""
         if self._readback_of is None:
@@ -339,8 +341,8 @@ class TrackDriver(TrackOutput):
 
     def zero_every_channel(self) -> List[str]:
         """Write `0` to every channel of every chip this driver drives, bound to
-        a block or not, without `OutputSafety` (design_new.md "Power", Hardware
-        setup, Closing a Setup tool restores the safe state). A Setup tool's
+        a block or not, without `OutputSafety` (design_v2.md "Setup tools", The
+        tool's sequence is not `OutputSafety.enter_safe_state()`). A Setup tool's
         close uses it: the runtime's power controllers do not own the outputs
         while a tool holds them.
 
@@ -388,7 +390,7 @@ class SwitchDriver(SwitchOutput):
     which is why that write is unconditional.
 
     Which bits those are is read per throw through `binding_of`, not captured
-    when the session was built (design_new.md "Hardware setup", A binding is
+    when the session was built (design_v2.md "Hardware setup", A binding is
     read per write): re-picking a coil port aims the next throw at the new bit.
     The chips are the session's; the port numbers are the setup's.
     """
@@ -840,7 +842,8 @@ class OccupancyDriver(OccupancyInput):
     ) -> bool:
         """Read one current channel and judge it against the threshold for the
         block's drive zone: the driven threshold while driven, `threshold_a`
-        otherwise (design_new.md "Occupancy source follows drive state")."""
+        otherwise (design_v2.md "Occupancy source and drive zones", The driven
+        threshold)."""
         chip_id, port, baseline_a, lighting_a, driven_a = self._current[block_id]
         configured_a = driven_a if zone is DriveZone.DRIVEN else lighting_a
         threshold_a = (
@@ -855,8 +858,8 @@ class OccupancyDriver(OccupancyInput):
             current = chip.read_current(port + 1)   # port 0 -> sensor channel 1
         except Exception:
             # A failed current-sense transaction is a hardware I/O failure, not a
-            # clear block: "Missing never counts as clear" (design_new.md
-            # "Hardware setup", Both occupancy sources are mandatory). Re-raise so
+            # clear block (design_v2.md "Occupancy source and drive zones",
+            # Both occupancy sources are mandatory). Re-raise so
             # the detector-read seam escalates it to enter_hardware_failure rather
             # than silently reporting the block empty.
             if detail is not None:
@@ -937,7 +940,8 @@ def build_real_interfaces(
     maps passed positionally are what the chips are built and checked against.
 
     `watchdog_timeout_s` arms the loss-of-control watchdog on both output
-    interfaces (design_new.md "Hardware interface boundary"); `None` leaves it
+    interfaces (design_v2.md "Safe state, watchdog and hardware failure",
+    Loss-of-control watchdog); `None` leaves it
     unarmed, which is what a test harness driving a fake device wants."""
     track_chips: Dict[str, PCA9685] = {}
     switch_chips: Dict[str, HC595Chain] = {}
@@ -996,7 +1000,9 @@ def build_real_interfaces(
             # result in its thread-safe trip record; the runtime thread
             # reconciles the recorded voltages and escalates a failed drop to
             # hardware failure when it consumes that record on its next tick
-            # (design_new.md "Power", Loss-of-control watchdog).
+            # (design_v2.md "Safe state, watchdog and hardware failure",
+            # Trip-record consumption escalates a failed drop to hardware
+            # failure).
             logging.getLogger(__name__).error(
                 "output watchdog: no output write landed for %.1fs — every "
                 "track voltage and point motor driven to its safe state",
@@ -1024,7 +1030,8 @@ def build_real_interfaces(
     def _block_bus_voltage_readback(block_id: str) -> Optional[float]:
         """Real / Virtual Hardware block-voltage readback: the bus voltage on the
         block's bound current-sense channel — the actual rail voltage
-        (design_new.md "Power", the block-voltage read surface). Returns None
+        (design_v2.md "Hardware interface", The block-voltage readback is not an
+        `OccupancyInput` read). Returns None
         where the block has no current-sense facility; a failed transaction
         raises so the diagnostic consumer reports it as None plus a warning."""
         binding = (block_occupancy_current or {}).get(block_id)
@@ -1117,7 +1124,8 @@ def build_real_interfaces(
             track=block_out,
             lighting_clear_hold_reads=lighting_clear_hold_reads,
             # Which shift-in chains are wired active-low, so the interface can
-            # normalize their bits (design_new.md Power, Block occupancy detection).
+            # normalize their bits (design_v2.md "Occupancy source and drive zones",
+            # Where polarity is applied).
             digital_active_low={
                 spec.chip_id: bool(getattr(spec, "active_low", False))
                 for spec in chip_specs

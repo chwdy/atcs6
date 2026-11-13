@@ -49,17 +49,16 @@ node_modules/
 # Doc-review checkpoint files (per-reader findings persisted mid-fan-out, for crash recovery)
 .claude/scratch/
 
-# Persisted runtime event log (design_new.md Event log)
+# Persisted runtime event log (design_v2.md "Event log")
 event_log.jsonl
 
 # Per-machine process bookkeeping: run marker + last shutdown record (shutdown.py)
 .runtime/
 
-# App-managed hardware backend selection (design_new.md Power, Hardware configuration)
+# App-managed hardware backend selection (design_v2.md "Operating environment and activation", "Hardware setup")
 hardware_config.json
 operation_environment.json
-# App-managed speed profiles + train roster (design_new.md SpeedProfile, Where
-# profiles and the roster are kept), plus its write temp and unreadable copy
+# v1 locomotive file (no longer read), plus its write temp and unreadable copy
 locomotives.json
 locomotives.json.*
 i2c.ipynb

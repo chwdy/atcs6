@@ -1,6 +1,6 @@
 """C6 — Event log: operational-kind vocabulary + disk persistence + read-back.
 
-design_new.md "Event log": the event log is the `NotificationCenter` stream kept
+design_v2.md "Event log": the event log is the `NotificationCenter` stream kept
 on disk and surfaced for review. It is not a second sink — every event still
 flows through `NotificationCenter`, which assigns order (`notification_id`) and
 schema; the log is that one stream persisted (append-only) and read back in id
@@ -28,9 +28,9 @@ def test_notification_roundtrip():
 
 
 def test_event_kind_vocabulary():
-    # design_new.md "Event log" operational kinds.
+    # design_v2.md "Runtime notifications", Event schema:
     # `kind` is the level, and the only field runtime code may branch on.
-    # What happened is `source` + `operation` (design_new.md "Event log").
+    # What happened is `source` + `operation`.
     assert Kind.DEBUG == "debug"
     assert Kind.INFO == "info"
     assert Kind.WARNING == "warning"
@@ -72,7 +72,7 @@ def test_read_missing_log_is_empty():
 
 
 # --- Time sampling: the stream is wall-clock ---------------------------------
-# design_new.md "Time sampling": every site that records a notification
+# design_v2.md "Units and clocks", Time sampling: every site that records a notification
 # `event_time` samples wall-clock `time.time()` at the moment of the write.
 # Callers do not thread a timestamp across writers, and no site stamps with the
 # playback-scaled `simulation_time` (which restarts at 0.0 each run and would
@@ -88,8 +88,9 @@ def test_emit_samples_wall_clock_when_no_event_time_is_passed():
 
 
 def test_emit_still_accepts_one_local_sample_shared_with_an_entity_write():
-    # The one case design_new.md allows: a single writer samples once locally
-    # and uses that value for both its notification and its entity write.
+    # design_v2.md "Units and clocks", One sample for two fields: a single
+    # writer samples once locally and uses that value for both its
+    # notification and its entity write.
     nc = NotificationCenter()
     n = nc.emit(source="X", operation="op", kind=Kind.INFO, message="m", event_time=1234.5)
     assert n.event_time == 1234.5
@@ -138,7 +139,7 @@ def test_detector_diagnostic_is_stamped_wall_clock():
 
 
 # --- NotificationCenter is the only runtime event sink -----------------------
-# design_new.md "Out of Scope", Logging beyond NotificationCenter:
+# design_v2.md "Runtime notifications", One event stream:
 # NotificationCenter is the only runtime event sink, and component-local logging
 # is forbidden by design (the detector reading log records detector readings,
 # not events). Routine traces must not exist in domain code. The
@@ -199,7 +200,7 @@ def test_domain_code_does_not_print_to_stdout():
 
 
 def test_notification_ids_stay_monotonic_across_sessions(tmp_path):
-    """design_new.md "Event log": the increasing `notification_id` is the order
+    """design_v2.md "Event log": the increasing `notification_id` is the order
     the log reads back in. The log is append-only across process restarts, so a
     fresh session must not restart numbering at 1 and duplicate ids on disk."""
     path = str(tmp_path / "event_log.jsonl")
@@ -240,11 +241,11 @@ def test_corrupt_event_log_line_does_not_block_boot(tmp_path):
 
 
 def test_an_unchanged_repeat_error_is_suppressed():
-    """Emit on change, not per tick (design_new.md "Error events").
+    """Emit on change, not on every runtime step (design_v2.md "Error events").
 
-    Plan retries a blocked task every eligible tick, so the same entity
-    blocked for the same reason under the same `condition_key` must not fill
-    the stream: the second call is dropped while the key stays active.
+    The same entity in the same condition for the same reason under the same
+    `condition_key` must not fill the stream: the second call is dropped while
+    the key stays active.
     """
     from runtime_payloads import ErrorRecord
 
@@ -268,7 +269,7 @@ def test_a_changed_reason_is_a_new_event():
 
     nc = NotificationCenter()
     # One live condition (one `condition_key`); a changed fingerprint under it
-    # is appended and replaces the active value (design_new.md "Error events").
+    # is appended and replaces the active value (design_v2.md "Error events").
     args = dict(
         source="RouteExecutor", operation="tick_train_plan", kind=Kind.WARNING,
         message="blocked", entities=[train_ref("T1")],
@@ -298,7 +299,7 @@ def test_ordinary_traffic_is_never_suppressed():
 
 
 # ---------------------------------------------------------------------------
-# condition_key lifecycle (design_new.md "Error events", Suppression mechanism
+# condition_key lifecycle (design_v2.md "Error events", Suppression mechanism
 # + Resolution and recurrence)
 # ---------------------------------------------------------------------------
 

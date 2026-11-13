@@ -76,8 +76,8 @@ def register(app, state: AppState) -> None:
         except NotFoundError as exc:
             return jsonify({"error": str(exc)}), 404
         except ConflictError as exc:
-            # design_new.md "Availability flag REST API surface": the flag PATCH emits a command_result even
-            # on the 409 admin-reject, carrying the rejection reason.
+            # The flag PATCH emits a command_result even on the 409
+            # admin-reject, carrying the rejection reason.
             emit_command_result(
                 state, source="Switch", entity_id_key="switch_id",
                 entity_id=switch_id, command_name="update_flags",
@@ -96,8 +96,7 @@ def register(app, state: AppState) -> None:
     @app.route("/api/switches/<switch_id>", methods=["PATCH"])
     def patch_switch_availability(switch_id: str):
         """PATCH mirror of PUT for the availability flags (`disabled`,
-        `manual`), so the entity-editor UI can use a uniform PATCH endpoint
-        per design_new.md "Availability flag REST API surface"."""
+        `manual`), so the entity-editor UI can use a uniform PATCH endpoint."""
         return update_switch(switch_id)
 
     @app.route("/api/switches/<switch_id>", methods=["DELETE"])

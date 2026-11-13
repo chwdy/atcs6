@@ -1,11 +1,8 @@
 """
-Tests for the Non-empty parent rule (design_new.md, "Tile" ownership
-list): every grouping entity in the ownership chain always owns at least one
-child, and removing the last child deletes the now-empty parent in the same
-operation, cascading upward.
+Tests for the Non-empty parent rule (design_v2.md "Tile", Non-empty parent
+rule): every grouping record always owns at least one child, and removing the
+last child deletes the now-empty parent in the same operation.
 
-    Station group  >= 1 Platform   (network.station_groups, station.py)
-    Platform       >= 1 tile/block (network.platforms, railway_platform.py)
     Block          >= 1 tile       (network.blocks)
 
 Run with:
@@ -84,26 +81,3 @@ class TestBlockMinimumOneTile:
 
         net.remove_tile_from_segment(0, 0)
         assert "BLK1" not in net.blocks
-
-
-# --------------------------------------------------------------------------- #
-# Platform >= 1 tile / block
-# --------------------------------------------------------------------------- #
-
-
-
-# --------------------------------------------------------------------------- #
-# Station group >= 1 platform
-# --------------------------------------------------------------------------- #
-
-
-
-# --------------------------------------------------------------------------- #
-# Full upward cascade: tile -> platform -> station group
-# --------------------------------------------------------------------------- #
-
-
-
-# --------------------------------------------------------------------------- #
-# HTTP route surface (routes/stations.py)
-# --------------------------------------------------------------------------- #

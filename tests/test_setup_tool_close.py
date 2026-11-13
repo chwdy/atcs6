@@ -1,7 +1,8 @@
 """Closing a Setup tool zeroes the outputs of the chips that tool drives itself
 — not through `OutputSafety`, and without advancing `safe_state_generation` —
-and a failed write is a hardware I/O failure (design_new.md "Power", Hardware
-setup, Closing a Setup tool restores the safe state).
+and a failed write is a hardware I/O failure (design_v2.md "Setup tools",
+Closing a Setup tool restores the safe state and A failed closing write is a
+hardware I/O failure).
 
 Run with: ``/opt/homebrew/anaconda3/envs/general/bin/python -m pytest
 tests/test_setup_tool_close.py -q``

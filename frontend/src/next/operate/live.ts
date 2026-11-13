@@ -5,8 +5,7 @@
  * tells its subscribers when one really changed. `liveVersion` goes up once
  * for each poll that changed something, so a component that reads it
  * re-draws then and only then, and reads the values themselves from
- * StateManager. No Operate component runs its own timer for this
- * (docs/ui-layout-rewrite-plan.md §10).
+ * StateManager. No Operate component runs its own timer for this.
  */
 import { signal } from '@preact/signals';
 

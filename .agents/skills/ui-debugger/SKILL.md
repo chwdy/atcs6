@@ -9,7 +9,7 @@ The point of this skill is to turn "I don't like this UI" into a sequence of nam
 
 Every step exists because skipping it makes the redesign worse. Skipping the critique gives generic advice. Skipping the clarification gives a layout that misses the user's actual task. Skipping the doc read invents tokens that already exist. Skipping the iteration ships the first cut (which is never right). Skipping the reflection means re-learning the same lesson next time.
 
-The canonical design language lives at `docs/DESIGN_LANGUAGE.md` — read it once before designing, patch it at the end with what you learned. The route-runs editor (`static/js/editor-route-runs.js` + `static/css/features/routes-paths.css`) is the worked reference implementation; copy from it when in doubt.
+The canonical design language lives at `docs/DESIGN_LANGUAGE.md` — read it once before designing, patch it at the end with what you learned. The Editor's switch list (`frontend/src/editor/editor-switches.ts` + `static/css/features/editor-lists.css`) is the worked reference for list rows; copy from it when in doubt.
 
 ## The 7 phases
 
@@ -101,13 +101,13 @@ When the user gives an answer that surprises you, push back gently with the prin
 
 Edit the relevant JS + CSS in this repo. Common surface areas:
 
-- **Route-runs editor** (the worked reference): `static/js/editor-route-runs.js` (`renderTaskRow`, `buildRunEditorHTML`) + `static/css/features/routes-paths.css`.
-- **Other editor panels**: same `editor-<feature>.js` + `features/<feature>.css` pattern.
-- **Train monitor, train control, inspector**: see the file map in `docs/DESIGN_LANGUAGE.md` §15 (Reference panels).
+- **Editor list panels** (the worked reference): `frontend/src/editor/editor-switches.ts` and `editor-block-grouping.ts` + `static/css/features/editor-lists.css`.
+- **Other editor panels**: `frontend/src/editor/editor-<feature>.ts`.
+- **The four screens** (Editor, Hardware Setup, Operate, Logs): `frontend/src/next/<screen>/` + `static/css/next/<screen>.css`.
 
 **Verify in browser** before declaring done. Don't ship CSS you haven't seen rendered.
 
-1. Check the preview server (`mcp__Claude_Preview__preview_list`). If absent, start it with `name: atcs6-dev` from `.Codex/launch.json`.
+1. Check the preview server (`mcp__Claude_Browser__preview_list`). If absent, start it with `name: atcs6-readonly` from `.Codex/launch.json`.
 2. Reload after CSS/JS edits — some files don't hot-reload.
 3. Use `preview_eval` to inject **synthetic data** covering every state real runs rarely combine: live row, pending, finished/ok, finished/late, finished/errored, plus edge widths (sidebar min ~440px, wider ~880px). Mount a temporary host div, render the component, take a screenshot.
 4. Use `preview_inspect` for exact computed CSS (colors, font sizes, widths) when a screenshot is ambiguous.
@@ -167,6 +167,6 @@ After updating, confirm what landed where so the user can spot anything you got 
 
 ## Pointers
 
-- When in doubt about how a list-row or detail-page section should look, **copy the route-runs editor** as the reference implementation: `static/js/editor-route-runs.js` and the `.rr-*` rules in `static/css/features/routes-paths.css`. The patterns there are battle-tested — they're what produced §12 and the §11 "Composing a detail page top" subsection.
+- When in doubt about how a list-row or detail-page section should look, **copy the Editor's switch list** as the reference implementation: `frontend/src/editor/editor-switches.ts` and the `.rr-*` and `.switch-row` rules in `static/css/features/editor-lists.css`.
 - `.claude/rules/design-v2-authoring.md` has style rules for `design_v2.md` that mostly apply to `DESIGN_LANGUAGE.md` too — simple English, no dead branches, sweep cross-references, no migration shims.
-- All Python invocations need `conda run -n general` (per `AGENTS.md`). UI work rarely hits Python, but the preview server uses it — `mcp__Claude_Preview__preview_start` with `name: atcs6-dev` handles the conda activation via `.Codex/launch.json`.
+- Python runs through the `general` env binary, `/opt/homebrew/anaconda3/envs/general/bin/python` (see the project instructions). The preview configs in `launch.json` already use it; use `atcs6-readonly` so the user's layout on port 5007 is untouched.

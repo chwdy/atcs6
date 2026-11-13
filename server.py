@@ -294,7 +294,7 @@ def main() -> None:
         detector_reading_log_dir=DETECTOR_READING_LOG_DIR,
     )
 
-    # design_new.md "Detector reading log", Operator commands are written too:
+    # design_v2.md "Detector reading log", `after_pass` comes from the lock:
     # the lock remembers the pass count at each request's last release, which
     # is the pass a recorded command ran after.
     from detector_reading_log import SimulationLock
@@ -311,9 +311,10 @@ def main() -> None:
         simulation_lock=simulation_lock,
     )
 
-    # design_new.md Power, Hardware interface boundary — loss-of-control
-    # fail-safe: a process shutdown must drive outputs to the safe state (block
-    # voltages 0, switch motors de-energized). The simulation-stop route issues
+    # design_v2.md "Safe state, watchdog and hardware failure", A process
+    # shutdown writes the safe state before it closes the device: a process
+    # shutdown must drive outputs to the safe state (block
+    # voltages 0, switch motors de-energized). The restart route issues
     # the same enter_safe_state call. shutdown.py owns it for every exit path
     # this process can observe, reports whether it actually succeeded, and
     # leaves a record the UI reads back. It also detects a *previous* run that

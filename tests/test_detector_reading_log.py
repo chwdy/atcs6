@@ -253,7 +253,7 @@ def test_a_new_environment_lists_every_block_again(tmp_path):
 
 
 def test_entering_setup_lists_every_block_with_no_environment(tmp_path):
-    """design_new.md "Detector reading log": Setup leaves no environment
+    """design_v2.md "Detector reading log": Setup leaves no environment
     active, so entering it is an environment change — the next line lists
     every block with `environment` empty — and Setup's passes keep logging."""
     network, sim, _detector = build_sim(tmp_path)
@@ -429,8 +429,8 @@ def test_a_driver_detail_that_raises_does_not_stop_the_tick(tmp_path):
 
 
 def test_a_directory_that_cannot_be_made_is_a_failed_write_that_retries(tmp_path):
-    """design_new.md "Detector reading log", A failed write never stops the
-    session: a folder that cannot be made at boot is reported once, the log
+    """design_v2.md "Detector reading log", A folder that cannot be created is
+    a failed write: a folder that cannot be made at boot is reported once, the log
     stays on, and the first line that does get written is the `"start"` line,
     which resolves the warning."""
     blocker = tmp_path / "not_a_dir"

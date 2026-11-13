@@ -823,17 +823,8 @@
 .input-large-label,
 .input-small-label,
 .property-label,
-.tc-section-title,
-.tc-section-subtitle,
-.tc-field-label,
-.tc-row-label,
-.tc-state-badge,
-.tc-running-badge,
-.tc-eb-badge,
 .status-header-role,
 .status-sep,
-.chip-state,
-.train-debug-label,
-.train-debug-subsection-title {
+.chip-state {
     user-select: none;
 }

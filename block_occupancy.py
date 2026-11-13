@@ -25,9 +25,9 @@ if TYPE_CHECKING:
 
 class OccupancyInput(ABC):
     """Read side for hardware sensors that no software output drives
-    (design_new.md Power, Hardware interface boundary).
+    (design_v2.md "Hardware interface", Input and sensing).
 
-    v1 reads block current only. A concrete implementation owns the map from a
+    It reads block current only. A concrete implementation owns the map from a
     logical block_id to its physical detector channel and is the only place that
     knows the wiring; nothing above this interface names a pin or bus.
     """
@@ -37,20 +37,19 @@ class OccupancyInput(ABC):
         """Return the raw per-block current map: block_id -> current detected.
 
         Raw booleans only, with no train identity — a real detector knows only
-        on/off per electrically-isolated block. Attribution to a train is a
-        separate model step (BlockOccupancyDetector.attribute).
+        on/off per electrically-isolated block. Putting a train's label on a
+        block is a separate step (design_v2.md "Trains").
         """
         raise NotImplementedError
 
     def detected_block_ids(self) -> Set[str]:
-        """The blocks this input can answer for (design_new.md "Power",
-        Hardware interface boundary).
+        """The blocks this input can answer for (design_v2.md "Hardware
+        interface", Input and sensing).
 
         A real driver returns the union of its occupancy binding maps. The
         default is empty, which is the honest answer for an input that senses
         nothing physical: a block outside this set never has a physical reading
-        behind it, so nothing may be held waiting on one (see
-        `TrainPhysics.cap_distance_to_detected_occupancy`).
+        behind it.
         """
         return set()
 
@@ -107,9 +106,9 @@ class BlockOccupancyDetector:
             if present:
                 self._on_counts[block_id] = self._on_counts.get(block_id, 0) + 1
                 # A confirmed block's clear count restarts only on the evidence
-                # an entry needs; a lone current read pauses it (design_new.md
-                # "Block occupancy detection", A lone current read pauses the
-                # clear count).
+                # an entry needs; a lone current read pauses it (design_v2.md
+                # "Occupancy detection", A lone current read pauses the clear
+                # count).
                 if (
                     block_id not in self._confirmed
                     or self._on_counts[block_id] >= self.on_threshold

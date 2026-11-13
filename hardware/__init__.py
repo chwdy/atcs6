@@ -1,4 +1,5 @@
-"""Real hardware drivers for the operation runtime (design_new.md "Power").
+"""Real hardware drivers for the operation runtime (design_v2.md "Hardware
+interface").
 
 This package is the concrete side of the hardware interface boundary. Nothing
 above the interfaces (`TrackOutput`, `SwitchOutput`,

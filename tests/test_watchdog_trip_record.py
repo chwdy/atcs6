@@ -1,5 +1,5 @@
-"""Loss-of-control watchdog trip record (design_new.md "Power",
-Loss-of-control watchdog).
+"""Loss-of-control watchdog trip record (design_v2.md "Safe state, watchdog and
+hardware failure", Loss-of-control watchdog).
 
 The watchdog daemon drops the physical outputs to the safe state on its own
 thread and may not touch model state, so it records only the transport result

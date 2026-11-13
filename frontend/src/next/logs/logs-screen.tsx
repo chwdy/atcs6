@@ -1,5 +1,5 @@
 /**
- * The Logs screen (docs/ui-layout-rewrite-plan.md §8), shown when the Logs
+ * The Logs screen, shown when the Logs
  * tab is picked: a tab each for the event log and the detectors, with the
  * canvas on the right (static/css/next/logs.css moves
  * it there) so a reading can be matched to where the trains are.

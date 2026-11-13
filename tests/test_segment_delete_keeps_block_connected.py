@@ -1,7 +1,6 @@
 """Segment deletion keeps its block connected.
 
-design_new.md, **Tile** > **Non-empty parent rule** > "Segment deletion keeps
-its block connected": `SegmentGeometryManager.delete_segment(...)` rejects the
+design_v2.md "Tile", Segment deletion keeps its block connected: `SegmentGeometryManager.delete_segment(...)` rejects the
 deletion of a `Segment` that is a non-terminal member of a multi-segment
 `Block`, and changes nothing. A segment may be deleted only when it is a
 terminal member of its block (at either end of `Block.segments`) or the block's

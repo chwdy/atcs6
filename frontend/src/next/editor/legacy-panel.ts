@@ -9,7 +9,7 @@
  * the body, the title, and the "← Switches" back link (all three written by
  * the panel host, editor/editor-ui.ts). Off the Editor screen they wait in a
  * hidden holder in static/index.html. Every panel then renders into the new panel unchanged. Panels are
- * ported off this one at a time (docs/ui-layout-rewrite-plan.md §10).
+ * ported off this one at a time.
  */
 
 /** Today's nodes the right panel takes over, and which of its slots each goes in. */

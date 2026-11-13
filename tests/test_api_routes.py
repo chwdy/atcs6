@@ -224,7 +224,7 @@ class TestBlockRoutes:
         self, client, app_state
     ):
         """An empty set is rejected with 400 — a block must allow at least
-        one direction (design_new.md: defaults to both, never none)."""
+        one direction (it defaults to both, never none)."""
         block = make_segment_block(app_state.network, "BLK_001", "Test")
         response = client.patch(
             "/api/blocks/BLK_001",
@@ -656,21 +656,11 @@ class TestMiscRoutes:
         assert response.status_code == 200
 
 
-
-    # ------------------------------------------------------------------
-    # Quick Route flow: the canonical replacement for the legacy
-    # POST /api/paths create_path call from the editor's path tool.
-    # Per design_new.md "Route data" (Quick Route), manual reposition
-    # is modeled through an
-    # ordinary one-off Route + RouteRun rather than a raw path.
-    # ------------------------------------------------------------------
-
-
 class TestEventLogRoute:
     """`GET /api/event-log` — the read side of the persisted event log.
 
-    design_new.md "Event log": the viewer reads the persisted stream and filters
-    by entity / operation / level / time. The default in-memory read serves a
+    design_v2.md "Event log": the viewer reads the persisted stream and filters
+    by entity / kind / source / operation / time. The default in-memory read serves a
     live session; `?persisted=true` reads the on-disk stream so an earlier run
     can be reviewed after a restart.
     """

@@ -1,5 +1,5 @@
 /**
- * The top bar (docs/ui-layout-rewrite-plan.md §3).
+ * The top bar.
  *
  * Left: the app name, the Layout menu and the five screen tabs. Right: the
  * status control (environment, session state, and the one next-step button),

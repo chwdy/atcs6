@@ -200,8 +200,8 @@ def gen_tunnels(net) -> str:
 def gen_block_groups(net) -> str:
     """Emit each block that groups several segments onto one power feed.
 
-    Grouping is an operator decision about shared power wiring (design_new.md
-    "Block grouping"); it is not re-derivable from geometry, so it must be baked
+    Grouping is an operator decision about shared power wiring (design_v2.md
+    "Block", Block grouping); it is not re-derivable from geometry, so it must be baked
     explicitly. ``gen_blocks`` emits every member segment as its own block — the
     default one-feed-per-segment layout — and this emits the fold that turns
     each group into the single block it describes.

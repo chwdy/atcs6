@@ -174,7 +174,7 @@ export class MultiSelectActionsHandler {
     const addDisabled = cachedSegments.length === 0 ? 'disabled' : '';
 
     // Block-grouping actions operate on the selection's distinct segments (a
-    // block groups whole segments, design_new.md "block").
+    // block groups whole segments, design_v2.md "Block").
     const blocks: any[] = Object.values(this.editor.cachedNetwork?.blocks || {});
     const blockOptions =
       blocks.length === 0

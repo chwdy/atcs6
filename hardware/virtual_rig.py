@@ -56,7 +56,7 @@ def set_block_presence(cfg: Any, device: Any, block_id: str, present: bool) -> N
         chip = build_chip(device, spec)
         baseline = float(current.baseline_ma or 0.0)
         # Clear of the larger of the two thresholds, so the block reads present
-        # in whichever zone it is in (design_new.md, PUT
+        # in whichever zone it is in (design_v2.md "Hardware REST API", PUT
         # /api/virtual-hardware/input/presence).
         threshold = max(
             float(current.threshold_ma or 3.0), float(current.driven_threshold_ma or 0.0)
@@ -73,7 +73,8 @@ def set_block_presence(cfg: Any, device: Any, block_id: str, present: bool) -> N
 def install_drive_swamp(cfg: Any, device: Any) -> None:
     """Make the fake device's '165 bit for each block read asserted while the
     block's rails are driven, as the swamped detector does on the rig
-    (design_new.md "Hardware setup", Virtual Hardware). Only a block bound both
+    (design_v2.md "Setup tools", The fake device's `hc165` bit follows the
+    drive). Only a block bound both
     to rails on a PCA9685 and to a '165 bit gets an entry."""
     entries = []
     for block_id, digital in cfg.block_occupancy.items():

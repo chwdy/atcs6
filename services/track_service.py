@@ -97,7 +97,7 @@ def update_track(
 
         # A tile that becomes a switch, or is erased, leaves its segment. If it
         # is the segment's last tile the segment goes with it, so the edit is
-        # bound by the rule for deleting a segment (design_new.md, "Segment
+        # bound by the rule for deleting a segment (design_v2.md "Tile", "Segment
         # deletion keeps its block connected"). Judged here, before anything
         # below changes, so a rejection changes nothing.
         becomes_switch = Tile(x=x, y=y, track_bits=new_bits).is_switch
@@ -176,7 +176,7 @@ def delete_track(state: AppState, x: int, y: int) -> bool:
     Raises:
         NotFoundError when the tile has no track.
         ValidationError when erasing the tile would empty a segment in the
-        middle of its block (design_new.md, "Segment deletion keeps its block
+        middle of its block (design_v2.md "Tile", "Segment deletion keeps its block
         connected"). Nothing is changed.
     """
     if not state.network.get_track(x, y):
@@ -202,7 +202,7 @@ def add_tracks_bulk(
     # A tile that merges into a switch leaves its segment (a switch is never a
     # segment member). If it is the segment's last tile the segment goes with
     # it, so the tiles are bound by the rule for deleting a segment
-    # (design_new.md, "Segment deletion keeps its block connected"). They are
+    # (design_v2.md "Tile", "Segment deletion keeps its block connected"). They are
     # judged together, before anything changes, so a rejection changes nothing.
     becoming_switches: List[Tuple[int, int]] = []
     for track_data in tracks_data:
@@ -269,7 +269,7 @@ def delete_tracks_bulk(
 
     Raises:
         ValidationError when the erase would empty a segment in the middle of
-        its block (design_new.md, "Segment deletion keeps its block
+        its block (design_v2.md "Tile", "Segment deletion keeps its block
         connected"). The tiles are judged together, before anything is asked
         or erased, so a rejection changes nothing; erasing all of a block's
         track together is allowed.

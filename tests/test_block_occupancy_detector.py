@@ -90,7 +90,7 @@ def test_off_threshold_vacates_after_n_consecutive_clears():
 
 
 def test_a_lone_current_read_pauses_the_clear_count():
-    # design_new.md "Block occupancy detection", A lone current read pauses the
+    # design_v2.md "Occupancy detection", A lone current read pauses the
     # clear count: one stray sample on an empty powered block neither restarts
     # the count nor adds to it.
     _, det = make_detector(

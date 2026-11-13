@@ -1,5 +1,5 @@
 /**
- * The Editor screen (docs/ui-layout-rewrite-plan.md §4): the tool bar and
+ * The Editor screen: the tool bar and
  * options row across the top of the canvas, and the right panel that edits
  * the selection.
  *

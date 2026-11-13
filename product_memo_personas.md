@@ -1,6 +1,6 @@
 # atcs6 — Persona Memo & Next-Step Brief
 
-*Strategy brief. Not a contract — no authoring rules apply (those govern only `design_new.md`).*
+*Strategy brief. Not a contract — no authoring rules apply (those govern only `design_v2.md`).*
 *Last updated: 2026-06-25.*
 
 ---

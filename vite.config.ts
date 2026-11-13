@@ -36,7 +36,7 @@ export default defineConfig({
       output: { entryFileNames: '[name].js' },
     },
   },
-  // The ?ui=next layout (docs/ui-layout-rewrite-plan.md) writes its panels as
+  // The ?ui=next layout writes its panels as
   // Preact components in .tsx files; compile their JSX against Preact.
   esbuild: { jsx: 'automatic', jsxImportSource: 'preact' },
   server: {

@@ -1,5 +1,5 @@
 /**
- * The Editor screen's tool bar, as data (docs/ui-layout-rewrite-plan.md §4).
+ * The Editor screen's tool bar, as data.
  *
  * One flat bar of the things you place. Each bar tool has a fixed number key
  * (its place in the bar) and the variants that the options row shows while

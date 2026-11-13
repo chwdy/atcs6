@@ -5,8 +5,8 @@ Handles saving and loading of track layouts to/from JSON files.
 Saves snapshot, steps, and hardware configuration in a single file:
 - Snapshot: Primary format for fast loading
 - Steps: Fallback for recovery if snapshot fails
-- Hardware: The whole hardware configuration (design_new.md
-  "Hardware setup"), so a saved layout carries the wiring its
+- Hardware: The whole hardware configuration (design_v2.md
+  "Hardware setup", Saved with the layout), so a saved layout carries the wiring its
   logical ids are bound to
 """
 
@@ -55,8 +55,7 @@ class PersistenceManager:
             raise ValueError(f"Invalid layout name: {name}")
 
         # Layout-only snapshot — runtime state is not persisted (see
-        # design_new.md "Persistence / save-load of runtime state | In-memory
-        # only"). The frontend payload still uses `network.to_dict()`.
+        # design_v2.md "Out of scope", Saving trains). The frontend payload still uses `network.to_dict()`.
         snapshot_data = network.to_layout_dict()
 
         steps_data = []
@@ -70,7 +69,7 @@ class PersistenceManager:
 
         # The binding maps are keyed by `block_id` / `switch_id`, so the wiring
         # only means anything alongside the layout those ids come from — save it
-        # with the layout (design_new.md "Hardware setup",
+        # with the layout (design_v2.md "Hardware setup",
         # Saved with the layout).
         hardware_data = hardware_config.persisted_dict()
 
@@ -181,8 +180,8 @@ class PersistenceManager:
     def _restore_hardware(self, wrapper: Dict) -> Dict:
         """Adopt the layout's `hardware` section onto the hardware-configuration
         store, writing it to the app-managed config file so it applies on the
-        next session build (design_new.md "Hardware setup",
-        Persisted to disk; applies on the next session build, not live).
+        next session build (design_v2.md "Hardware setup", Loading a layout's
+        setup).
 
         Returns the `hardware` result keys to merge into the load result:
         `absent` for a layout saved before hardware was carried (the running
@@ -202,8 +201,8 @@ class PersistenceManager:
 
         # Legacy lift: rail polarity used to live on the Block
         # (`polarity_reversed` in the snapshot's block dicts) and now lives on
-        # the `block_track` binding (design_new.md "Power", Rail polarity lives
-        # on the rail binding). A layout saved under the old schema would
+        # the `block_track` binding (design_v2.md "Hardware setup", A block's
+        # rails). A layout saved under the old schema would
         # otherwise load a corrected block back to normal wiring — silently
         # reversing it on the rails. Only ever sets the flag: a new-schema save
         # carries `reversed` in the binding itself and has no block-level key.

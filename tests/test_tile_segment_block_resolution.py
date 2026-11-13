@@ -1,8 +1,8 @@
 """Tile -> Segment -> Block resolution over a block that groups two segments.
 
-A tile belongs to a `Segment` (design_new.md "segment"); the segment is grouped
-into a `Block` (design_new.md "Block grouping"), and the block is what carries
-power, occupancy and reservation. Which of the two a caller wants is the whole
+A tile belongs to a `Segment` (design_v2.md "Segment"); the segment is grouped
+into a `Block` (design_v2.md "Block", Block grouping), and the block is what
+carries power, occupancy and claims. Which of the two a caller wants is the whole
 question this layer answers, so every test here uses a block whose id differs
 from every segment id it groups:
 
@@ -180,7 +180,8 @@ def test_deleting_one_member_keeps_the_block_and_its_other_member(net):
 
 
 def test_deleting_the_block_ungroups_and_rehomes_every_member(net):
-    """design_new.md "Block grouping": deleting a block dissolves the power
+    """design_v2.md "Block", Deleting a block re-homes every member: deleting a
+    block dissolves the power
     grouping only. Its segments survive and are each re-homed into their own
     single-segment block, since a segment always belongs to exactly one block.
     """

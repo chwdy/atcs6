@@ -1,8 +1,8 @@
 /**
  * The seven steps of the Hardware Setup screen, and which of them are done.
  *
- * The steps are design_new.md "Operator workflows" → "Setting up the hardware
- * and going live", steps 1 to 7. Step 8 (Play and Pause) is the top bar's job.
+ * The steps are design_v2.md "Setting up the hardware and going live", steps
+ * 1 to 7.
  * This file decides only what the left column shows; it sends nothing.
  */
 import type { SessionStateView } from '../../lib/session-controls';

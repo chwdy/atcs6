@@ -1,6 +1,5 @@
 /**
- * The two canvas tools the Editor screen adds to today's editor
- * (docs/ui-layout-rewrite-plan.md §4):
+ * The two canvas tools the Editor screen adds to today's editor:
  *
  * - **Switch** (`switch-pick`): click a switch to open its panel. Today a
  *   switch is made by drawing a branch with the Track tool, and there was no

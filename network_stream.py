@@ -1,7 +1,7 @@
 """
 Network stream — pushes the network snapshot to every open browser tab.
 
-Per design_new.md "Data Flow To UI", **Network stream**: `GET
+Per design_v2.md "Network stream": `GET
 /api/network/stream` is a server-sent event stream. Each message is the reply
 `GET /api/network` would give at that moment, and it leaves the layout part
 out when the connection already holds the current layout (the same rule as

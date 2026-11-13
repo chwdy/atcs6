@@ -4,7 +4,7 @@ import { StateManager } from './state-manager';
 
 describe('StateManager.updateEntity', () => {
   it('keeps the newer object when it equals the stored one, without notifying', () => {
-    // design_new.md "Layout version": the network poll hands back the object it
+    // design_v2.md "Layout version": the network poll hands back the object it
     // cached from the last full reply while an entity is unchanged, so the
     // manager must hold that same object for later polls to skip it on identity.
     const manager = new StateManager();

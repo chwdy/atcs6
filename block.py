@@ -44,27 +44,25 @@ class Block:
         self.block_id = block_id  # Unique ID (e.g., "BLK_001")
         self.name = name  # Human-readable name
 
-        # Static config flag: operator-marked safe wait place (design_new.md
-        # "Block" field schema). Never written by runtime; its only consumer is
-        # the best-effort truncation holding-point preference (item 11 under
-        # "Path And PathDispatcher").
+        # Static config flag: operator-marked wait place. Saved with the
+        # layout and never written by the runtime. Nothing reads it now: its
+        # only reader was v1 route planning, which is deleted.
         self.is_holding_point = is_holding_point
 
         # Rail polarity is NOT a block field. A block whose rails are wired the
         # opposite way round is corrected on its `block_track` hardware binding
         # (`TrackBinding.reversed`, hardware_config.py), which auto-persists
-        # like every other wiring edit (design_new.md "Power", Rail polarity
-        # lives on the rail binding).
+        # like every other wiring edit (design_v2.md "Hardware setup", A
+        # block's rails).
 
         self.disabled = disabled  # Static availability flag (physical-absence)
         self.manual = manual  # Virtual-disable flag (manual_override bypasses)
 
-        # Track voltage is not a `Block` field. Its canonical home is the
-        # per-tick derived `TrainPhysics.compute_track_voltage(...)`, and the
-        # applied-output mirror (what reached the rail) is owned by
-        # `BlockPowerController` (`get_recorded_voltage(block_id)`), which the
-        # live frontend payload sources through `RailwayNetwork.to_dict`
-        # (design_new.md "Power", Block power-controller role).
+        # Track voltage is not a `Block` field. The voltage commanded to the
+        # rail is recorded by `BlockPowerController`
+        # (`get_recorded_voltage(block_id)`), which the live page payload reads
+        # through `RailwayNetwork.to_dict` (design_v2.md "Block and switch
+        # power controllers", BlockPowerController).
 
         # Static block-level travel policy. Defaults to both directions allowed.
         self.allowed_travel_directions: Set[str] = (
@@ -242,8 +240,9 @@ class Block:
     def to_layout_dict(self) -> Dict[str, Any]:
         """Layout-only serialization used by persistence.
 
-        Per design_new.md Out of Scope ("Persistence / save-load of runtime
-        state | In-memory only"), this writes block geometry and config only.
+        Runtime state is not saved with the layout (design_v2.md "Block",
+        Block model: a block stores no train state), so this writes block
+        geometry and config only.
         Track voltage is not a `Block` field at all.
 
         Member segments nest under the block, so one `blocks` key carries the
@@ -272,8 +271,8 @@ class Block:
     def _loaded_name(stored_name: str, segments: List[Segment]) -> str:
         """The block's name as loaded, with a copied-down name dropped.
 
-        A name belongs to one record (see design_new.md **Block grouping**, one
-        name per record). A save written before that rule holds one string in
+        A name belongs to one record (see design_v2.md "Block", Block grouping,
+        One name per record). A save written before that rule holds one string in
         both places: the block and its only member segment read identically
         everywhere both are listed, most visibly in a tile's right-click menu.
 

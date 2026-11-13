@@ -1,7 +1,7 @@
 """Shared `command_result` notification emit for service-layer commands.
 
-design_new.md "Runtime notifications" + the **Availability flag REST API
-surface**: every entity-flag PATCH endpoint surfaces its outcome as one
+design_v2.md "Runtime notifications", Command execution results: every
+entity-flag PATCH endpoint surfaces its outcome as one
 canonical `command_result` event on `NotificationCenter` with the closed-core
 payload `{command_id, <entity>_id, success, reason}`; the command name rides the
 event's `operation` field, not the payload. This is the single emit helper those

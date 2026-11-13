@@ -24,12 +24,12 @@ interface Binding { chip_id: string; port: number; }
  * independently so they need not be an adjacent pair. */
 /** `reversed` is the rail-polarity flag stored with the wiring: the two rails
  * are wired the opposite way round, so the driver swaps the channels as it
- * resolves the binding (design_new.md "Power", Rail polarity lives on the rail
- * binding). */
+ * resolves the binding (design_v2.md "Hardware setup", The rail binding bonds
+ * tile order to rail polarity). */
 interface TrackBinding { chip_id: string; forward: number; reverse: number; reversed?: boolean; }
 /** `driven_threshold_ma` judges the channel while its block is driven and
  * `threshold_ma` in the lighting zone; unset, the driven zone uses
- * `threshold_ma` (design_new.md "Occupancy source follows drive state"). */
+ * `threshold_ma` (design_v2.md "Occupancy source and drive zones"). */
 interface CurrentBinding extends Binding {
   baseline_ma?: number | null;
   threshold_ma?: number | null;
@@ -57,7 +57,7 @@ export interface HwConfig {
    * what activation captures — a coil port or a rail-polarity flag is read per
    * write, so editing one never raises this. */
   awaits_activation?: boolean;
-  /** The session state (design_new.md "Session state"); the track Test is a
+  /** The session state (design_v2.md "Session state"); the track Test is a
    * Setup tool, so it runs only in Setup. */
   session_state?: SessionStateView | null;
   chips: HwChip[];

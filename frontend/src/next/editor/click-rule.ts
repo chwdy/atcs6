@@ -1,6 +1,5 @@
 /**
- * What a plain Select click on a tile opens on the Editor screen
- * (docs/ui-layout-rewrite-plan.md §4): the thing you placed there, not the
+ * What a plain Select click on a tile opens on the Editor screen: the thing you placed there, not the
  * tile. The tile's own panel (track bits under Advanced) stays one
  * right-click away, through "Inspect tile".
  *

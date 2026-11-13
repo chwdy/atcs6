@@ -91,8 +91,7 @@
 }
 
 /* Success action in a panel = green TINT, not a solid fill
-   (DESIGN_LANGUAGE.md §3/§12). The sanctioned solid green is the driver-facing
-   hero (.tc-btn-hero), not a panel button. --success-color is var(--success-color). */
+   (DESIGN_LANGUAGE.md §3/§12). */
 .btn-success {
     background-color: rgba(var(--success-rgb), 0.14);
     color: var(--success-color);
@@ -481,109 +480,6 @@
     text-align: center;
     padding: 20px;
     margin: 0;
-}
-
-/* Train Debug Panel */
-.train-debug-panel {
-    margin-top: 8px;
-    padding: 6px;
-    background: var(--bg-dark);
-    border-radius: 4px;
-    border: 1px solid var(--border-color);
-}
-
-.train-debug-panel.hidden {
-    display: none;
-}
-
-.train-debug-row {
-    display: flex;
-    justify-content: space-between;
-    padding: 2px 0;
-    font-size: var(--info-meta-size, 10px);
-    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-}
-
-.train-debug-row:last-child {
-    border-bottom: none;
-}
-
-.train-debug-label {
-    color: var(--text-secondary);
-    font-size: var(--info-label-size, 10px);
-    flex: 0 0 45%;
-}
-
-.train-debug-value {
-    color: var(--text-primary);
-    font-size: var(--info-value-size, 10px);
-    font-family: var(--font-mono);
-    text-align: right;
-    flex: 0 0 55%;
-}
-
-.train-debug-value.text-warning {
-    color: var(--warning-color);
-}
-
-.train-debug-subsection {
-    margin-top: 8px;
-    padding-top: 8px;
-    border-top: 1px solid rgba(255, 255, 255, 0.1);
-}
-
-.train-debug-subsection-title {
-    font-size: 10px;
-    color: var(--text-secondary);
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    margin-bottom: 4px;
-}
-
-.train-debug-tiles {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px;
-    margin-top: 4px;
-}
-
-.train-debug-tile {
-    background: var(--bg-hover);
-    padding: 2px 6px;
-    border-radius: 3px;
-    font-size: 10px;
-    font-family: var(--font-mono);
-    color: var(--success-color);
-}
-
-.train-debug-path {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px;
-    margin-top: 4px;
-    max-height: 120px;
-    overflow-y: auto;
-}
-
-.train-debug-path-step {
-    background: var(--bg-hover);
-    padding: 2px 6px;
-    border-radius: 3px;
-    font-size: 10px;
-    font-family: var(--font-mono);
-    color: var(--text-secondary);
-}
-
-.train-debug-path-step.train-debug-path-current {
-    color: var(--bg-dark);
-    font-weight: bold;
-    text-decoration: underline;
-}
-
-.train-debug-path-current {
-    background: var(--info-color);
-    color: var(--bg-dark);
-    font-weight: bold;
 }
 
 /* Block Modal Dialog - Floating Style */

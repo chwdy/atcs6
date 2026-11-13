@@ -1,11 +1,10 @@
 """A layout save file carries the hardware configuration.
 
-design_new.md "Power -> Hardware configuration" (Saved with the layout): the
-binding maps are keyed by `block_id` / `switch_id`, so the wiring only means
+design_v2.md "Hardware setup", Saved with the layout: the binding maps are keyed by `block_id` / `switch_id`, so the wiring only means
 anything alongside the layout those ids come from. `save_merged_layout` writes
 the whole configuration into the file's `hardware` section and
 `load_layout_with_fallback` adopts it, writing it to the app-managed config file
-so it applies on the next session build.
+so it applies on the next activation.
 
 Run with:
     /opt/homebrew/anaconda3/envs/general/bin/python -m pytest \

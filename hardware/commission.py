@@ -42,7 +42,7 @@ class CommissionSession:
         self._driven: Dict[str, int] = {}
         # (chip_id, port) pairs carrying a switch coil / standby bit: every port
         # a `switch_output` binding names, from the posted config and the saved
-        # one (design_new.md "The commissioning session", Switch bits).
+        # one (design_v2.md "Setup tools", Switch bits).
         self._switch_ports: set = set()
         # True when `_device` belongs to a running operation session rather than
         # to this one: it is neither cleared on open nor closed on close.
@@ -77,8 +77,9 @@ class CommissionSession:
         release the PCA output-enable hold mid-session. The caller is
         responsible for serializing use against the tick.
 
-        `timeout_seconds` is the commissioning `enter` body's idle window
-        (design_new.md "Hardware REST payload schemas"), the time after which an
+        `timeout_seconds` is the commissioning `open` body's idle window
+        (design_v2.md "Hardware REST API", Commissioning-session bodies
+        address raw chips and ports, not entities), the time after which an
         abandoned session is reclaimed and its outputs dropped. The doc bounds it
         at `0 < timeout_seconds <= COMMISSION_MAX_SESSION_SECONDS`; a request
         outside that is rejected here (a session too long is not silently
@@ -86,8 +87,8 @@ class CommissionSession:
 
         `saved_switch_output` is the saved setup's `switch_output` map. The
         panel posts its chips without bindings, so the saved bindings are what
-        tell this session which shift-out bits drive a coil (design_new.md "The
-        commissioning session", Switch bits). A binding counts only for a chip
+        tell this session which shift-out bits drive a coil (design_v2.md "Setup
+        tools", Switch bits). A binding counts only for a chip
         this session builds.
         """
         with self._lock:
@@ -253,8 +254,7 @@ class CommissionSession:
 
         A channel that cannot be read raises, failing the whole read: a missing
         reading is not a clear one, so it is never reported as 0 mA
-        (design_new.md "The commissioning session", Every failure reaches the
-        operator)."""
+        (design_v2.md "Setup tools", Every failure reaches the operator)."""
         with self._lock:
             self._require_open()
             chip = self._chips.get(chip_id)
@@ -291,9 +291,8 @@ class CommissionSession:
 
     def close_if_idle(self) -> List[str]:
         """Close the tool when its idle timeout has passed, for the runtime loop
-        (design_new.md "Power", Hardware setup, Closing a Setup tool restores
-        the safe state: a timeout closes the tool on time, with no request
-        needed). Never waits for the lock: a tool whose lock is held is in use,
+        (design_v2.md "Setup tools", A timeout closes the tool on time: no
+        request is needed). Never waits for the lock: a tool whose lock is held is in use,
         so it is not idle. Returns the failed zeroing writes of that close, plus
         any a request-noticed timeout left, for the caller to report."""
         if not self._lock.acquire(blocking=False):
@@ -331,7 +330,8 @@ class CommissionSession:
         `None` means the caller named no window, so the default IDLE_TIMEOUT_S
         stands. Any named value must satisfy the doc's bound
         `0 < timeout_seconds <= COMMISSION_MAX_SESSION_SECONDS`
-        (design_new.md "Hardware REST payload schemas"); anything else — a
+        (design_v2.md "Hardware REST API", Commissioning-session bodies address
+        raw chips and ports, not entities); anything else — a
         non-number, zero-or-negative, or a value past the ceiling — is rejected
         so the session is not opened with a nonsense or unbounded window."""
         if timeout_seconds is None:
@@ -351,8 +351,8 @@ class CommissionSession:
 
     def _expire_locked(self) -> None:
         if self._device is not None and (time.monotonic() - self._last) > self._timeout_s:
-            # A timed-out close is a close like any other (design_new.md "Power",
-            # Hardware setup, Closing a Setup tool restores the safe state): a
+            # A timed-out close is a close like any other (design_v2.md "Setup
+            # tools", A failed closing write is a hardware I/O failure): a
             # failed zeroing is a hardware I/O failure. The expiry runs inside
             # whatever call noticed it, which cannot report it, so the failures
             # wait for `take_close_failures()`.
@@ -366,8 +366,8 @@ class CommissionSession:
     def _close_locked(self) -> List[str]:
         if self._device is None:
             return []
-        # Closing a Setup tool restores the safe state (design_new.md "Power",
-        # Hardware setup): the session runs only in Setup, where no environment
+        # Closing a Setup tool restores the safe state (design_v2.md "Setup
+        # tools", The tool performs its safe-state sequence itself): the session runs only in Setup, where no environment
         # drives the outputs, so it zeroes every output of every chip it built
         # itself — not through `OutputSafety`, and without advancing
         # `safe_state_generation` — whether or not the device is borrowed. Every

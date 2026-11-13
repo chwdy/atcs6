@@ -51,8 +51,8 @@ def _config(**overrides):
             {"chip_id": "cur1", "kind": "ina3221", "i2c_address": "0x41"},
         ],
         "block_track": {"B1": {"chip_id": "pwm1", "forward": 0, "reverse": 1}},
-        # Both occupancy sources are mandatory (design_new.md "Power"), so a
-        # fully-wired block carries a digital AND a current-sense binding.
+        # Both occupancy sources are mandatory (design_v2.md "Occupancy source
+        # and drive zones"), so a fully-wired block carries a digital AND a current-sense binding.
         "block_occupancy": {"B1": {"chip_id": "in1", "port": 2}},
         "block_occupancy_current": {"B1": {"chip_id": "cur1", "port": 0}},
         "switch_output": {"SW_A": {"chip_id": "sw1", "port_main": 5, "port_diverge": 6}},
@@ -90,8 +90,8 @@ def test_a_fully_wired_layout_is_complete():
 
 
 def test_both_occupancy_sources_are_required_for_a_block_to_be_detected():
-    """Both occupancy sources are mandatory (design_new.md "Power", Both
-    occupancy sources are mandatory): a block bound in only one map is NOT
+    """Both occupancy sources are mandatory (design_v2.md "Occupancy source and
+    drive zones", Both occupancy sources are mandatory): a block bound in only one map is NOT
     detected and is reported as a gap — the runtime never silently covers a
     missing current binding with the digital detector. Here B1 has only the
     digital binding and B2 only the current-sense binding, so both are unbound;

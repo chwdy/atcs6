@@ -48,7 +48,7 @@ class App {
   // `real_hardware`), from the network snapshot.
   operationEnvironment: string | null = null;
   // The session state from the network snapshot, for panels that offer
-  // controls only in some states (design_new.md "Session state").
+  // controls only in some states (design_v2.md "Session state").
   sessionState: { value: string; halt_reason: string | null } | null = null;
   editorMode: 'edit' | 'sim' = 'edit';
   /** Polls the network, getting the layout only when it changed. */
@@ -72,8 +72,7 @@ class App {
     this.editorMode = 'edit';
 
     this.setupControls();
-    // The top bar and the five screens
-    // (docs/ui-layout-rewrite-plan.md).
+    // The top bar and the four screens.
     mountNextUI(this);
     mountOperateScreen(this);
 
@@ -102,9 +101,10 @@ class App {
     // its own buttons.
 
     // Activate starts the selected environment over with the saved Hardware
-    // Setup (design_new.md "Activation starts the railway over"). The banner
-    // offers it after a hardware failure, once the device is repaired
-    // ("Power", Recovery is reactivation).
+    // Setup (design_v2.md "Operating environment and activation", Activation
+    // starts the railway over). The banner offers it after a hardware failure,
+    // once the device is repaired (design_v2.md "Safe state, watchdog and
+    // hardware failure", Recovery is reactivation).
     const activateFatalBtn = document.getElementById('btn-activate-fatal') as HTMLButtonElement | null;
     activateFatalBtn?.addEventListener('click', () => void this.activateEnvironment(activateFatalBtn));
 
@@ -205,9 +205,7 @@ class App {
    * Switch between Editor mode and Operate mode (the Editor screen, and the
    * Operate and Locomotives screens).
    *
-   * The top bar names the operation session mode "Operate" in every operating
-   * environment (design_new.md "Session mode and operating environment"), so
-   * the word "Simulation" means only the environment.
+   * The top bar names this mode "Operate" in every operating environment.
    *
    * In Operate mode the layout must not change, so a tool that builds or
    * deletes layout (its `availableIn` lacks 'sim') stops being the active
@@ -241,7 +239,7 @@ class App {
   }
 
   /** Keep the session state and operating environment from the network
-   *  snapshot (design_new.md "Session state"); the top bar reads them through
+   *  snapshot (design_v2.md "Session state"); the top bar reads them through
    *  next/state.ts. `isSimulationRunning` means the session is Live. */
   recordSessionState(network: any): void {
     const state = network?.session_state ?? null;
@@ -719,7 +717,7 @@ class App {
   /**
    * Start the live network updates: the server's network stream, or a read
    * of `GET /api/network` every 200 ms while the stream is down
-   * (design_new.md "Data Flow To UI", Network stream).
+   * (design_v2.md "Network stream").
    */
   startSimulationPolling(): void {
     if (this.networkStream) return;

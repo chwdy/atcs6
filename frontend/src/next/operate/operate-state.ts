@@ -1,5 +1,5 @@
 /**
- * What the Operate screen is showing (docs/ui-layout-rewrite-plan.md §5),
+ * What the Operate screen is showing,
  * and the App methods it calls.
  */
 import { signal } from '@preact/signals';

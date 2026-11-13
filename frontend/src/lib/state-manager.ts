@@ -190,7 +190,7 @@ export class StateManager {
       // Keep the newer, equal object without notifying anyone. The network
       // poll hands back the object it cached from the last full reply while an
       // entity is unchanged, so holding that same object lets later polls skip
-      // it on identity instead of comparing it again (design_new.md "Layout
+      // it on identity instead of comparing it again (design_v2.md "Layout
       // version").
       if (oldData !== data) this.state[type].set(id, data);
       return false;

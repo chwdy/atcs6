@@ -83,7 +83,7 @@ export function sessionControls(state: SessionStateView | null | undefined): Ses
 /**
  * Whether the Setup tools that drive outputs may run: the commissioning
  * session, the track direction sweep, the occupancy bench, and a port-test
- * output pulse are accepted only in Setup (design_new.md "Setting up the
+ * output pulse are accepted only in Setup (design_v2.md "Setting up the
  * hardware and going live", step 4).
  */
 export function setupToolsAllowed(state: SessionStateView | null | undefined): boolean {

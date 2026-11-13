@@ -156,7 +156,7 @@ describe('block hardware section', () => {
   });
 
   it('offers a driven threshold beside the current calibration, empty when unset', () => {
-    // design_new.md "Occupancy source follows drive state": an unset driven
+    // design_v2.md "Occupancy source and drive zones": an unset driven
     // threshold means the driven zone uses `threshold_ma`.
     const unset = section(cfg());
     expect(unset).toContain('Driven threshold mA');

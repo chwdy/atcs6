@@ -1,6 +1,6 @@
 """`GET /api/network/stream` pushes the network snapshot to every open tab.
 
-design_new.md "Data Flow To UI", **Network stream**: each message is the reply
+design_v2.md "Network stream": each message is the reply
 `GET /api/network` would give, with the layout part only when it changed. The
 server sends every `NETWORK_STREAM_INTERVAL_SECONDS` and right after a request
 that can change state, and one build serves every open connection.

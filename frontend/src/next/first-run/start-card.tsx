@@ -1,5 +1,5 @@
 /**
- * The first-run card (docs/ui-layout-rewrite-plan.md §9): while the layout
+ * The first-run card: while the layout
  * has no track, a card over the map offers two ways to begin. It shows on
  * the Editor and Operate screens, the two that draw the map.
  */

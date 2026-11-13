@@ -4,8 +4,7 @@
  * nothing is selected, giving the map room.
  *
  * Its pop-out button moves it into a floating window and back. That is the
- * only floating window this screen keeps (docs/ui-layout-rewrite-plan.md §12
- * decision 2). It uses FloatingWindow (lib/window-manager.ts): the window
+ * only floating window this screen keeps. It uses FloatingWindow (lib/window-manager.ts): the window
  * adopts this panel's own element, so
  * popping out moves nothing and redraws nothing. Whether it floats, and
  * where, is remembered.

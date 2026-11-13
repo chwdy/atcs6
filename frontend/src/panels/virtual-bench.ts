@@ -374,7 +374,7 @@ class VirtualBench {
 
     /** Build the bench inside `host`, with no window around it, and start
      *  reading the rig. The Hardware Setup screen hosts the bench
-     *  this way, in step 4 (docs/ui-layout-rewrite-plan.md §7). That screen
+     *  this way, in step 4. That screen
      *  covers the layout, so Place on canvas is left out. */
     mountInto(host: HTMLElement): void {
         this._embedded = true;

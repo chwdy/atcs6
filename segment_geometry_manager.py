@@ -46,7 +46,7 @@ class SegmentGeometryManager:
     def rebuild_segment_ordered_tiles(self, segment_id: str) -> None:
         """Recompute `Segment.ordered_tiles` from the segment's current tiles.
 
-        Per design_new.md "segment": `ordered_tiles` is a list of
+        Per design_v2.md "Segment", Segment tile entry: `ordered_tiles` is a list of
         `(x, y, entry_edge)` entries giving the canonical local traversal
         order. Each `entry_edge` is the external edge through which forward
         traversal enters that tile. `ordered_tiles[0]` is the canonical
@@ -137,8 +137,8 @@ class SegmentGeometryManager:
         `Segment.ordered_tiles` is built per segment from a deterministic
         coordinate rule, so two segments that sit next to each other on the
         layout can be stored running towards each other. Grouping them into one
-        block needs every member to run the same way (design_new.md **Block
-        grouping**: member orientations all align with increasing block order,
+        block needs every member to run the same way (design_v2.md "Block", Block
+        grouping, and "Segment", Stored-orientation invariant: member orientations all align with increasing block order,
         and grouping itself never reverses a segment). This is the geometry-side
         write that makes them align, so grouping can keep its no-reversal rule.
 
@@ -153,8 +153,8 @@ class SegmentGeometryManager:
 
         # Reject unless the segment is the sole member of its owning Block: a
         # local reversal of one member would break the stored orientation the
-        # rest of the block is grouped against (design_new.md "Segment",
-        # reverse_segment_orientation).
+        # rest of the block is grouped against (design_v2.md "Segment",
+        # Reversal checks).
         block_id = self._n.segment_to_block_id(segment_id)
         if block_id is not None:
             block = self._n.blocks.get(block_id)
@@ -374,9 +374,8 @@ class SegmentGeometryManager:
             if track:
                 track.segment_id = segment_id
 
-        # Populate Segment.ordered_tiles per design_new.md "segment" so
-        # path completion direction check and the block-direction helper
-        # have geometry to work with.
+        # Populate Segment.ordered_tiles per design_v2.md "Segment" so the
+        # block-direction helper has geometry to work with.
         self.rebuild_segment_ordered_tiles(segment_id)
 
         return block
@@ -494,8 +493,8 @@ class SegmentGeometryManager:
         """Raise ValueError when the segments in `going` leaving `block_id`
         would split it in two.
 
-        design_new.md, **Tile** > **Non-empty parent rule**, "Segment deletion
-        keeps its block connected": the members a block keeps after an edit
+        design_v2.md "Tile", Non-empty parent rule, Segment deletion keeps its
+        block connected: the members a block keeps after an edit
         must still be one connected run, so a segment can go only from either
         end of `Block.segments`, or when it is the block's only member. This is
         the same end-only rule `BlockGroupingManager.remove_segment_from_block`
@@ -559,8 +558,8 @@ class SegmentGeometryManager:
         """Raise ValueError when taking these tiles out of their segments
         would empty a segment whose block could not lose it.
 
-        An emptied segment is deleted in the same operation (design_new.md,
-        **Non-empty parent rule**, "Auto-delete on last-child removal"), so an
+        An emptied segment is deleted in the same operation (design_v2.md "Tile",
+        Non-empty parent rule, Auto-delete on last-child removal), so an
         edit that empties one is bound by the same rule as `delete_segment`,
         and a rejected delete rejects the whole edit ("Atomic commit"). Callers
         that change anything else before they reach the tile removal (erasing
@@ -622,8 +621,8 @@ class SegmentGeometryManager:
         block's last member the block goes too; a block that still has other
         members survives.
 
-        design_new.md, **Tile** > **Non-empty parent rule**, "Segment deletion
-        keeps its block connected": a segment that is a non-terminal member of
+        design_v2.md "Tile", Non-empty parent rule, Segment deletion keeps its
+        block connected: a segment that is a non-terminal member of
         a multi-segment block is not deleted, because the block would be left
         as two pieces with a gap between them.
 
@@ -991,7 +990,7 @@ class SegmentGeometryManager:
                 if track:
                     track.segment_id = child_id
 
-            # Populate ordered_tiles per design_new.md "segment".
+            # Populate ordered_tiles per design_v2.md "Segment".
             # Inherit each tile's `entry_edge` from the parent segment so the
             # child's local traversal direction matches the parent's (this
             # matters for single-tile child segments where the connectivity

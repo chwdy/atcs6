@@ -1,11 +1,11 @@
 """BlockGroupingManager — the power-grouping axis of the track model.
 
-Per design_new.md **Block grouping**: block membership — creating a block,
+Per design_v2.md "Block", Block grouping: block membership — creating a block,
 adding or removing a `Segment` from `segment_ids`, and deleting a block — lives
 here. This manager edits only the power-grouping axis (`segment_ids`); it never
 writes segment geometry (that is the geometry manager).
 
-Rules this module enforces (all from design_new.md **Block grouping**):
+Rules this module enforces (all from design_v2.md "Block", Block grouping):
 
 - A block is a switch-free connected run of segments joined end-to-end, so an
   add or a remove may only happen at either END of `segment_ids`, and only when

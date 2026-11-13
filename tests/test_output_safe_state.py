@@ -1,6 +1,8 @@
 """Safe state is a de-energize, not a lock.
 
-design_new.md "Power", Safe state / fail-safe: `OutputSafety.enter_safe_state()`
+design_v2.md "Safe state, watchdog and hardware failure", Safe state /
+fail-safe and Safe state is a de-energize, not a lock:
+`OutputSafety.enter_safe_state()`
 latches every '595 coil bit low and zeroes every PWM channel. That is the whole
 of the physical safety mechanism — there is no output gate to raise, no
 permission to grant, and nothing to reactivate afterwards.
@@ -127,7 +129,8 @@ def test_stop_start_survives_repeatedly():
 
 def test_an_unreachable_block_is_still_fatal():
     """A refusal has one cause left: the driver cannot reach that block
-    (design_new.md "Power", Hardware I/O failure)."""
+    (design_v2.md "Block and switch power controllers", A refused write is
+    fatal to the session, and never recorded as voltage)."""
     _dev, sim = hardware_session()
 
     assert sim.power_controller.set_block_voltage("BLK_NOT_BOUND", 6.0) is False
@@ -198,7 +201,8 @@ def test_a_simulated_session_stops_and_starts_the_same_way():
 
 # --- the runtime-thread wrapper ---------------------------------------------
 #
-# design_new.md "Power", Safe state / fail-safe: `enter_safe_state()` is the
+# design_v2.md "Safe state, watchdog and hardware failure", Reconciling the
+# recorded values is a separate, later step: `enter_safe_state()` is the
 # sequence and touches no recorded model field, so the watchdog daemon may run
 # it off-thread. `SimulationController.enter_output_safe_state()` is the
 # runtime-thread entry that wraps it — it advances the safe-state generation

@@ -219,10 +219,10 @@ export class API implements LayoutDataClient, SimClient {
   }
 
   /**
-   * Read the persisted hardware configuration (design_new.md "Power -> Hardware
-   * configuration"): `{ config: {enabled, controller, chips, block_track,
-   * block_occupancy, switch_output} }`. Each chip is enriched with derived
-   * role / bus / port_count.
+   * Read the saved Hardware Setup (design_v2.md "Hardware setup"):
+   * `{ config: {controller, chips, block_track, block_occupancy,
+   * switch_output, ...} }`. Each chip is enriched with its derived role and
+   * port count.
    */
   async getHardwareConfig(): Promise<any> {
     return this._request('/hardware/config', {}, 'getHardwareConfig');
@@ -424,7 +424,7 @@ export class API implements LayoutDataClient, SimClient {
   }
 
   /** Read the operator-facing event log — the one NotificationCenter stream
-   * (design_new.md "Event log"). `query` is the already-encoded filter string
+   * (design_v2.md "Event log"). `query` is the already-encoded filter string
    * built by the viewer (level / source / operation / entity / free text /
    * id watermark); see GET /api/event-log for the full parameter set.
    *
@@ -539,8 +539,8 @@ export class API implements LayoutDataClient, SimClient {
     );
   }
 
-  /** Enter Setup for the selected hardware environment (design_new.md
-   *  "Hardware setup", Setup). From Live it runs the layout emergency cut-out
+  /** Enter Setup for the selected hardware environment (design_v2.md
+   *  "Setup tools", Entering Setup). From Live it runs the layout emergency cut-out
    *  first; only Activate leaves Setup. */
   async enterSetup(): Promise<any> {
     return this._request('/operation/setup', { method: 'POST', body: {} }, 'enterSetup');

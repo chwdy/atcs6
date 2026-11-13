@@ -1,7 +1,6 @@
 """NotificationCenter - single runtime notification owner.
 
-Per design_new.md "Runtime notifications" section, all runtime components
-(TrainController, PathDispatcher, RouteExecutor, SimulationController) emit
+Per design_v2.md "Runtime notifications", every runtime component emits
 notifications through this central object. There are no component-local
 notification queues.
 """
@@ -20,7 +19,7 @@ from runtime_payloads import ErrorRecord
 
 class Kind:
     """The event level — the only level field on an event, and the only field
-    runtime code may branch on (design_new.md "Runtime notifications", Event
+    runtime code may branch on (design_v2.md "Runtime notifications", Event
     schema).
 
     `debug` is per-tick detail a developer reads; `info` is a normal thing that
@@ -43,7 +42,9 @@ KINDS = frozenset({Kind.DEBUG, Kind.INFO, Kind.WARNING, Kind.ERROR})
 #: `latest_error_for` answers with.
 ERROR_KINDS = frozenset({Kind.WARNING, Kind.ERROR})
 
-#: The v1 `entity_type` values (design_new.md "Runtime notifications").
+#: The accepted `entity_type` values. design_v2.md "Runtime notifications",
+#: Entity types, lists only "train", "block" and "switch"; "route_run",
+#: "walk_position" and "path" are v1 values still accepted here.
 ENTITY_TYPES = frozenset(
     {"train", "route_run", "walk_position", "path", "block", "switch"}
 )
@@ -88,7 +89,7 @@ def switch_ref(switch_id: str) -> EntityRef:
 
 @dataclass
 class Notification:
-    """One runtime event (design_new.md "Runtime notifications", Event schema).
+    """One runtime event (design_v2.md "Runtime notifications", Event schema).
 
     Attributes:
         notification_id: Assigned by `NotificationCenter` in emit order. It is
@@ -184,7 +185,7 @@ class NotificationCenter:
         self._queue: List[Notification] = []
         self._archive: List[Notification] = []
         # Active error conditions, keyed by the caller-supplied `condition_key`
-        # (design_new.md "Error events", Suppression mechanism). Each value is
+        # (design_v2.md "Error events", Suppression mechanism). Each value is
         # the event that is currently the live occurrence of that condition, so
         # `emit(...)` can compare a fresh call's fingerprint against it and
         # `latest_error_for(...)` can tell which retained events are still the
@@ -193,7 +194,7 @@ class NotificationCenter:
         # restart, so the first still-present condition in a new process emits
         # once for that process.
         self._active_conditions: Dict[str, Notification] = {}
-        # Event-log disk persistence (design_new.md "Event log"): when a path is
+        # Event-log disk persistence (design_v2.md "Event log"): when a path is
         # set, every emitted notification is appended as one JSON line, so a
         # run's record outlives the session. The in-memory queue/archive are
         # unchanged; this is the persisted projection of the same one stream.
@@ -217,7 +218,7 @@ class NotificationCenter:
         """Append one event and return it, or `None` when it was dropped as an
         unchanged repeat of an already-active error condition.
 
-        This is the one way an event enters the stream (design_new.md "Runtime
+        This is the one way an event enters the stream (design_v2.md "Runtime
         notifications", The emit call).
 
         Args:
@@ -231,7 +232,7 @@ class NotificationCenter:
             event_time: Wall-clock `time.time()` seconds. Omit it and this call
                 samples it. Pass it only to share one local sample between this
                 event and a related entity write in the same step, which is the
-                one case design_new.md "Time sampling" allows. Never pass
+                one case design_v2.md "Units and clocks", Time sampling allows. Never pass
                 `simulation_time`: the stream is wall-clock by design, so a
                 playback-scaled value would not order against its siblings.
             latch_event: True from a latch writer helper or a latch's
@@ -239,11 +240,10 @@ class NotificationCenter:
                 active-condition suppression below and is a control argument
                 only — it is not part of the persisted Event schema and is
                 never stored. The point of the write/consume pair is to show
-                intent and commit separately (design_new.md "Error events",
-                Latch events are exempt), so dropping either one as a repeat
+                intent and commit separately, so dropping either one as a repeat
                 would hide the very thing the pair exists to show.
             condition_key: Identifies one live suppressible error condition
-                (design_new.md "Error events", Suppression mechanism). A
+                (design_v2.md "Error events", Suppression mechanism). A
                 control argument only — not part of the persisted Event schema
                 and never stored. When it is set on an event that carries an
                 `ErrorRecord` and is not a latch event, this event is that
@@ -260,7 +260,7 @@ class NotificationCenter:
         data = dict(payload) if payload else {}
 
         # Suppression applies only to an error-carrying, non-latch event that
-        # names a live condition (design_new.md "Error events", Suppression
+        # names a live condition (design_v2.md "Error events", Suppression
         # mechanism). Everything else — command results, error-free events,
         # latch writes/consumptions, and un-keyed errors — is always appended.
         suppressible = (
@@ -305,11 +305,11 @@ class NotificationCenter:
     ) -> bool:
         """True when a fresh emit matches the active condition's fingerprint —
         the same `entities`, `operation`, `ErrorRecord.origin`, and `payload`
-        (design_new.md "Error events", Suppression mechanism).
+        (design_v2.md "Error events", Suppression mechanism).
 
         A match means the condition has not changed since it was recorded, so
         the fresh call is a repeat and is dropped. A changed origin or payload —
-        such as a meet ceiling moving to a different block — is a different
+        such as the same condition now naming a different block — is a different
         fingerprint, so the fresh call is appended and replaces the active
         value.
         """
@@ -323,7 +323,7 @@ class NotificationCenter:
         )
 
     def resolve_condition(self, condition_key: str) -> None:
-        """Clear one active error condition (design_new.md "Error events",
+        """Clear one active error condition (design_v2.md "Error events",
         Resolution and recurrence).
 
         The component that owns the live predicate calls this on the first tick
@@ -362,7 +362,7 @@ class NotificationCenter:
     def latest_by_operation(self, operation: str) -> Optional[Notification]:
         """The most recent retained event whose `operation` matches, or `None`.
 
-        A read over the one stream (design_new.md "Runtime notifications"). A
+        A read over the one stream (design_v2.md "Runtime notifications"). A
         status surface that wants the current detail of a latched condition — the
         hardware-failure halt banner reads the last `enter_hardware_failure`
         event this way — filters the stream for the writer's own event instead of
@@ -376,7 +376,7 @@ class NotificationCenter:
 
     def _trim_archive(self) -> None:
         """Keep the most recent `NOTIFICATION_RETENTION_ROWS` events and drop
-        the oldest beyond that (design_new.md "Runtime notifications",
+        the oldest beyond that (design_v2.md "Runtime notifications",
         Retention).
 
         `_next_id` is untouched, so ids keep counting past a drop: a gap in the
@@ -399,11 +399,12 @@ class NotificationCenter:
         """The persisted event-log path, or `None` when persistence is off.
 
         The read-only viewer reads the persisted stream through this so that an
-        earlier run's incidents survive a restart (design_new.md "Event log").
+        earlier run's incidents survive a restart (design_v2.md "Event log",
+        Persistence).
         """
         return self._log_path
 
-    # -- event-log persistence (design_new.md "Event log") ----------------
+    # -- event-log persistence (design_v2.md "Event log") -----------------
 
     def enable_event_log(self, path: str) -> None:
         """Persist every subsequent emit to ``path`` as append-only JSONL.
@@ -463,7 +464,7 @@ class NotificationCenter:
 
     def _trim_log(self) -> None:
         """Hold the persisted log to the same `NOTIFICATION_RETENTION_ROWS`
-        window the in-memory stream holds (design_new.md "Event log",
+        window the in-memory stream holds (design_v2.md "Event log",
         Persistence): one cap governs the whole stream, so a row an operator
         can no longer see in the viewer is a row no query can reach.
 

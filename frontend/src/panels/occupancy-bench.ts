@@ -31,7 +31,7 @@
  * sign on top of the rail binding's own `reversed` flag and never writes the
  * configuration, so nothing here can leave the layout mis-wired behind you.
  *
- * The bench is a Setup tool (design_new.md "Hardware setup", Occupancy bench):
+ * The bench is a Setup tool (design_v2.md "Setup tools", Occupancy bench):
  * it opens only in Setup, where it owns the outputs while the detectors keep
  * being read. So the layout goes on showing what the app believes, and
  * comparing the two is the diagnosis. Closing it never activates anything.
@@ -508,7 +508,7 @@ class OccupancyBench {
     private _error: string | null = null;
 
     /** Build the bench inside `host` and open it. Hardware Setup step 4
-     *  hosts the bench this way (docs/ui-layout-rewrite-plan.md §7). */
+     *  hosts the bench this way. */
     mountInto(host: HTMLElement): Promise<void> {
         this._buildContentDom(host);
         this._render();
@@ -637,8 +637,8 @@ class OccupancyBench {
     }
 
     /** Close the bench. Closing completes the safe state and leaves the
-     *  session in Setup; it never activates an environment (design_new.md
-     *  "Hardware setup", Occupancy bench). Activate is the way back to Live.
+     *  session in Setup; it never activates an environment (design_v2.md
+     *  "Setup tools", Leaving Setup). Activate is the way back to Live.
      *
      *  Best-effort on the way out: the panel is already closing, and the session
      *  expires and de-energizes on its own timer regardless. */

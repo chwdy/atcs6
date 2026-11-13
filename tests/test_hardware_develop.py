@@ -1,12 +1,11 @@
-"""Develop mode: the real-mode stack on the in-memory fake device.
+"""Virtual Hardware: the Real Hardware stack on the in-memory fake device.
 
-design_new.md "Power -> Hardware configuration": the persisted `develop` flag
-makes `build_session_interfaces` wire the same `Ch347*` interfaces onto a
-`FakeCh347Device` (no USB hardware, watchdog unarmed). These tests cover the
-config round-trip of the flag, the develop factory path (no monkeypatching —
-develop must work with no `ch347api` installed), the occupancy pipeline reading
-injected fake state, the `/api/debug/hw` endpoints, and the commissioning tools
-(self-test / occupancy-test / commission) running on the fake.
+design_v2.md "Operating environment and activation": Virtual Hardware builds
+the same `Ch347*` interfaces as Real Hardware onto a `FakeCh347Device` (no USB
+hardware, no watchdog). These tests cover the Virtual Hardware factory path (no
+monkeypatching — it must work with no `ch347api` installed), the occupancy
+pipeline reading injected fake state, the `/api/debug/hw` endpoints, and the
+Setup tools (self-test / occupancy-test / commission) running on the fake.
 
 Run with:
     /opt/homebrew/anaconda3/envs/general/bin/python -m pytest \
@@ -630,8 +629,8 @@ def test_commission_session_opens_on_fake(client):
 
 
 def test_setup_tools_are_refused_outside_setup(client):
-    """The tools that drive the outputs run only in Setup (design_new.md
-    "Hardware setup", Setup); doc gap B adds a port-test output pulse."""
+    """The tools that drive the outputs run only in Setup, a port-test output
+    pulse among them (design_v2.md "Setup tools", Port-test)."""
     test_client, _state = client
     payload = _develop_payload()
     hardware_config.apply_updates(payload, persist=False)
@@ -649,7 +648,8 @@ def test_entering_setup_keeps_the_session_device_and_detectors(client):
     """Entering Setup for the environment the session was built for keeps its
     device and `OccupancyInput` open, so the detectors keep being read and
     every Setup tool reaches the rig through that one handle; no environment
-    is active (design_new.md "Hardware setup", Setup)."""
+    is active (design_v2.md "Setup tools", What stays open on entering
+    Setup)."""
     from hardware.interfaces import OccupancyDriver
 
     test_client, state = client
@@ -730,7 +730,7 @@ def _ready_virtual_layout(state):
 def test_the_bench_borrows_the_setup_device_and_closing_it_never_activates(client):
     """The bench reaches the rig through the session's device in Setup, and
     closing it completes the safe state and leaves the session in Setup
-    (design_new.md "Hardware setup", Occupancy bench)."""
+    (design_v2.md "Setup tools", Occupancy bench)."""
     test_client, state = client
     _ready_virtual_layout(state)
     assert test_client.post("/api/operation/activate").status_code == 200
@@ -749,8 +749,8 @@ def test_the_bench_borrows_the_setup_device_and_closing_it_never_activates(clien
 
 
 def test_the_block_check_runs_on_the_virtual_rig_and_needs_an_open_bench(client):
-    """`POST /api/hardware/bench/check-block` (design_new.md "Hardware setup",
-    Occupancy bench, Block check): refused while the bench is closed and for a
+    """`POST /api/hardware/bench/check-block` (design_v2.md "Setup tools",
+    Block check): refused while the bench is closed and for a
     block with no rail binding, and in Virtual Hardware a well-wired block checks
     out because the fake device models the swamped detector."""
     test_client, state = client
@@ -780,7 +780,8 @@ def test_a_bench_on_its_own_fake_device_starts_with_every_block_clear(client):
     a fake device, so the bench opens its own. An untouched fake reads every
     '165 bit as zero, which an active-low chain reports as a train on every
     block, so the bench writes every block clear first and an empty block's bit
-    follows the drive (design_new.md "Hardware setup", Virtual Hardware)."""
+    follows the drive (design_v2.md "Setup tools", A bench that opens its own
+    fake device)."""
     from block import Block
 
     test_client, state = client
@@ -835,7 +836,8 @@ def test_activate_closes_an_open_bench_and_leaves_setup(client):
 
 def test_virtual_hardware_fault_api_controls_the_live_fake(client):
     """`PUT /api/virtual-hardware/fault` takes a VirtualHardwareFaultRequest
-    (design_new.md "Hardware REST payload schemas"): an operator-facing
+    (design_v2.md "Hardware REST API", `VirtualHardwareFaultRequest`): an
+    operator-facing
     VirtualHardwareFaultKind against a target reproduces on the live fake."""
     test_client, state = client
     _boot_develop_session(state)
@@ -877,7 +879,7 @@ def test_virtual_hardware_fault_api_rejects_malformed_requests(client):
     inject and optional for clear (a valid fault narrows removal to that one
     record; an unknown kind is still rejected), and an incompatible
     (target_kind, fault) inject pair is rejected rather than translated
-    (design_new.md 3353)."""
+    (design_v2.md "Hardware REST API", `VirtualHardwareFaultRequest`)."""
     test_client, state = client
     _boot_develop_session(state)
 

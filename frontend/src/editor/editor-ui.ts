@@ -6,7 +6,7 @@
 // the "← Switches" back link and the body. The Editor screen's right panel
 // shows those nodes (frontend/src/next/editor/legacy-panel.ts); the Operate
 // screen takes a panel before it gets here (Editor.nextPanelHost). One panel
-// shows at a time (docs/ui-layout-rewrite-plan.md §12, decision 2).
+// shows at a time.
 
 import { showToast } from '../lib/toast';
 import type { EditorHost } from './types';

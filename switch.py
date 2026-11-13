@@ -57,11 +57,11 @@ class Switch:
     """Authoritative physical alignment of the switch (MAIN=0, DIVERGE=1)."""
 
     position_known: bool = True
-    """Whether the app knows where the points are (design_new.md "Switch
-    entity", `position_known`). Activating Virtual Hardware or Real Hardware
-    sets it False on every switch, because a fresh session has thrown no coil;
-    any write through `apply_position_change(...)` or
-    `record_detected_position(...)` sets it True. Runtime only, never saved."""
+    """Whether the app knows where the points are (design_v2.md "Switch",
+    Switch model). Activating Virtual Hardware or Real Hardware sets it False
+    on every switch, because a fresh session has thrown no coil; any write
+    through `apply_position_change(...)` sets it True. Runtime only, never
+    saved."""
 
     flip_count: int = 0
     """Maintenance counter: number of times the switch actually changed
@@ -75,12 +75,11 @@ class Switch:
     operator override bypasses this; physical entry is a fatal conflict."""
 
     manual: bool = False
-    """When True, automatic systems treat the switch as if disabled (pathfinding
-    skips it, lock acquisition fails, manual/API switch-state commands fail),
-    but an operator command carrying `manual_override=True` bypasses the filter.
+    """When True, automatic systems treat the switch as if disabled
+    (switch-state commands fail, and the runtime does not throw it), but an
+    operator command carrying `manual_override=True` bypasses the filter.
     Physical entry into a manual (but not disabled) switch is ordinary clean
-    entry. See the `disabled` and `manual` availability flags canonical home
-    in design_new.md (under TrackResource)."""
+    entry."""
 
     # ========================================================================
     # TrackResource identity
@@ -107,8 +106,7 @@ class Switch:
             new_position: Desired switch position (0=MAIN, 1=DIVERGE).
             manual_override: When True (operator opt-in), allow position
                 changes on a manual switch. The disabled filter always
-                applies regardless. Per the `disabled` and `manual`
-                availability flags canonical home in design_new.md.
+                applies regardless.
 
         Returns:
             (success, message) tuple.
@@ -126,7 +124,7 @@ class Switch:
 
         # Mutate authoritative position. Count a maintenance flip only when the
         # alignment actually changes; re-aligning to the position the switch
-        # already holds is a no-op flip (see design_new.md "Maintenance counters").
+        # already holds is a no-op flip.
         if self.position != SwitchState(new_position):
             self.flip_count += 1
         self.position = SwitchState(new_position)

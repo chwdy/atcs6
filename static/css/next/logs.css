@@ -1,6 +1,5 @@
 /* ============================================================================
-   Logs screen (docs/ui-layout-rewrite-plan.md §8;
-   frontend/src/next/logs/logs-screen.tsx).
+   Logs screen (frontend/src/next/logs/logs-screen.tsx).
 
    The screen sits in .workspace: the tab on show on the left, the canvas on
    the right at 40% of the width (the place Locomotives gives it during a

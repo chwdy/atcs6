@@ -1,11 +1,11 @@
 """
 Segment — track geometry unit.
 
-Definition (design_new.md "segment"):
+Definition (design_v2.md "Segment", Segment model):
 A `Segment` is a group of tiles with one unified geometry. It owns
 `ordered_tiles`, `length_cm`, `speed_limit_kmh`, `min_radius_cm`, and
-`grade_percent`. A segment stores NO occupancy, reservation, availability, or
-power state; those live on its owning `Block`. One segment maps to many
+`grade_percent`. A segment stores NO occupancy, claim, availability, or
+power state; those belong to its owning `Block`. One segment maps to many
 real-world rail pieces that share its geometry.
 
 Key concepts:
@@ -38,9 +38,9 @@ class SegmentTileEntry(NamedTuple):
 
 @dataclass
 class Segment:
-    """A group of tiles with one unified geometry (design_new.md "segment").
+    """A group of tiles with one unified geometry (design_v2.md "Segment").
 
-    Owns geometry only. Occupancy, reservation, availability, and power live on
+    Owns geometry only. Occupancy, claim, availability, and power belong to
     the owning `Block`.
     """
 
@@ -79,9 +79,9 @@ class Segment:
     def to_layout_dict(self) -> Dict[str, Any]:
         """Layout-only serialization used by persistence.
 
-        Per design_new.md Out of Scope ("Persistence / save-load of runtime
-        state | In-memory only"), this writes segment geometry only. There is no
-        runtime state on a segment to exclude.
+        Per design_v2.md "Segment", A segment is geometry only, this writes
+        segment geometry only. There is no runtime state on a segment to
+        exclude.
         """
         return {
             "segment_id": self.segment_id,

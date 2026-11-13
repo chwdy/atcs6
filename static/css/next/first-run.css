@@ -1,6 +1,5 @@
 /* ============================================================================
-   First-run card (docs/ui-layout-rewrite-plan.md §9;
-   frontend/src/next/first-run/start-card.tsx).
+   First-run card (frontend/src/next/first-run/start-card.tsx).
 
    Centred over the map while the layout has no track. The slot covers the
    canvas but lets pointer events through, so the map still pans and draws

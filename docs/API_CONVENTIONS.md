@@ -2,7 +2,7 @@
 
 ## Overview
 
-The backend exposes a REST API via Flask. Routes are organized in the `routes/` directory, with each module handling a specific domain (tracks, blocks, signals, etc.). This document describes the current conventions, known inconsistencies, and guidelines for new endpoints.
+The backend exposes a REST API via Flask. Routes are organized in the `routes/` directory, with each module handling a specific domain (tracks, segments, blocks, switches, etc.). This document describes the current conventions, known inconsistencies, and guidelines for new endpoints.
 
 ## Route Registration Pattern
 
@@ -20,12 +20,15 @@ def register(app, state):
 Registration is centralized in `routes/__init__.py`:
 
 ```python
-from routes import tracks, blocks, signals, stations, trains, paths, misc, platforms
+from routes import (
+    static_files, simulation, layouts, tracks, segments, blocks,
+    running_trains, switches, tunnels, settings, hardware,
+)
 
 def register_all(app, state):
-    tracks.register(app, state)
-    blocks.register(app, state)
-    signals.register(app, state)
+    static_files.register(app, state)
+    simulation.register(app, state)
+    layouts.register(app, state)
     # ... etc
 ```
 
@@ -33,18 +36,21 @@ def register_all(app, state):
 
 ## Route Modules
 
-| Module | File | Endpoints | Domain |
-|--------|------|-----------|--------|
-| `tracks` | `routes/tracks.py` | Track CRUD, bulk operations | Track management |
-| `blocks` | `routes/blocks.py` | Block CRUD, track assignment | Block management |
-| `signals` | `routes/signals.py` | Signal CRUD, validation | Signal management |
-| `stations` | `routes/stations.py` | Station CRUD, orientation | Station management |
-| `platforms` | `routes/platforms.py` | Platform management | Platform management |
-| `trains` | `routes/trains.py` | Train CRUD, consist management | Train management |
-| `paths` | `routes/paths.py` | Pathfinding, dispatcher | Path/dispatch operations |
-| `misc` | `routes/misc.py` | Switches, speed profiles, layouts, routes, simulation, static files | Everything else |
+| Module | File | Endpoints |
+|--------|------|-----------|
+| `static_files` | `routes/static_files.py` | `/` and static files |
+| `simulation` | `routes/simulation.py` | `/api/network`, `/api/network/stream`, `/api/network/clear`, `/api/network/stats`, `/api/event-log`, `/api/health`, `/api/server/*` |
+| `layouts` | `routes/layouts.py` | `/api/layouts` save, load, list, delete |
+| `tracks` | `routes/tracks.py` | `/api/track/{x}/{y}`, `/api/tracks/bulk`, `/api/tracks/bulk-delete` |
+| `segments` | `routes/segments.py` | `/api/segments` |
+| `blocks` | `routes/blocks.py` | `/api/blocks` |
+| `switches` | `routes/switches.py` | `/api/switches`, `/api/tracks/{x}/{y}/switch` |
+| `tunnels` | `routes/tunnels.py` | `/api/tunnels` |
+| `running_trains` | `routes/running_trains.py` | `/api/trains/*` |
+| `settings` | `routes/settings.py` | `/api/settings` |
+| `hardware` | `routes/hardware.py` | `/api/hardware/*`, `/api/operation/*`, `/api/virtual-hardware/*`, `/api/debug/hw*` |
 
-**Note:** `misc.py` (~1300 lines) is a catch-all that handles switches, speed profiles, layouts, train routes, simulation control, and static file serving. It should be decomposed into focused modules (e.g., `routes/switches.py`, `routes/simulation.py`, `routes/layouts.py`).
+The requests themselves are listed in `docs/API.md`.
 
 ## Response Format
 
@@ -52,12 +58,12 @@ def register_all(app, state):
 
 The API has two competing success response patterns:
 
-**Pattern A** (~53 uses) -- status string:
+**Pattern A** -- status string:
 ```json
 { "status": "success", "data": { ... } }
 ```
 
-**Pattern B** (~11 uses) -- boolean flag:
+**Pattern B** -- boolean flag:
 ```json
 { "success": true, "data": { ... } }
 ```
@@ -86,16 +92,16 @@ return jsonify({"error": "Block not found"}), 404
 
 | Convention | Examples | Count |
 |-----------|----------|-------|
-| **Plural nouns** | `/api/blocks`, `/api/trains`, `/api/switches` | ~12 |
-| **Singular nouns** | `/api/signal/{id}`, `/api/station/{id}`, `/api/track/{x}/{y}` | ~8 |
-| **Hyphenated actions** | `/api/trains/{id}/set-speed`, `/api/train-routes` | ~6 |
-| **Underscored actions** | `/api/blocks/{id}/assign_tracks`, `/api/platforms/{id}/set_block` | ~4 |
+| **Plural nouns** | `/api/blocks`, `/api/segments`, `/api/switches` | most |
+| **Singular nouns** | `/api/track/{x}/{y}` | 1 |
+| **Hyphenated actions** | `/api/segments/{id}/reverse-orientation`, `/api/trains/stop-all` | several |
+| **Underscored actions** | `/api/segments/{id}/end_tiles`, `/api/segments/{id}/can_extend` | 2 |
 
 ### Guidelines for New Endpoints
 
-1. **Use plural nouns** for collections: `/api/blocks`, `/api/signals`, `/api/trains`
+1. **Use plural nouns** for collections: `/api/blocks`, `/api/segments`, `/api/trains`
 2. **Use `{id}` sub-paths** for individual resources: `/api/blocks/{id}`
-3. **Use hyphenated verbs** for actions: `/api/trains/{id}/set-speed`
+3. **Use hyphenated verbs** for actions: `/api/segments/{id}/reverse-orientation`
 4. **Avoid underscores** in URL paths (use hyphens instead)
 
 ```
@@ -123,7 +129,7 @@ Some endpoints return bare arrays, others wrap them in an object:
 [{ "block_id": "BLK_1", ... }, { "block_id": "BLK_2", ... }]
 
 // Wrapped (e.g., GET /api/network)
-{ "tracks": { ... }, "blocks": { ... }, "trains": { ... } }
+{ "tracks": [ ... ], "blocks": { ... }, "running_trains": { ... } }
 ```
 
 ### Guideline
@@ -137,22 +143,21 @@ For new collection endpoints, **bare arrays are acceptable** for simple listings
 | `GET` | Read data (no side effects) |
 | `POST` | Create new resources or trigger actions |
 | `PUT` | Update existing resources (full or partial) |
+| `PATCH` | Partial update (tiles, segments, blocks; on switches the same as `PUT`) |
 | `DELETE` | Remove resources |
 
-Note: The API does not use `PATCH` -- all updates use `PUT`.
+Note: both are in use. `PATCH` is used for `/api/track/{x}/{y}`, `/api/segments/{id}`, `/api/blocks/{id}` and `/api/switches/{id}`; `PUT` for switches, settings, hardware and train knob requests.
 
 ## Simulation Lock
 
-Some route modules acquire the simulation lock (`state.simulation_lock`) before modifying network state to prevent race conditions with the simulation tick loop. Usage is **inconsistent** across modules:
+A request that reads or changes runtime state holds `state.simulation_lock`, so it runs between two runtime steps (design_v2.md **Operator requests**). The lock is taken either in the route or in the service it calls:
 
-| Module | Uses Lock? | Notes |
-|--------|-----------|-------|
-| `tracks.py` | Yes | Track mutations lock |
-| `blocks.py` | Partial | Some endpoints lock, some don't |
-| `signals.py` | No | Should lock for signal state changes |
-| `stations.py` | Partial | |
-| `trains.py` | Yes | Train mutations lock |
-| `misc.py` | Partial | Simulation control locks, others don't |
+| Module | Holds the lock? |
+|--------|-----------------|
+| `running_trains.py`, `hardware.py`, `simulation.py`, `settings.py` | Yes, in the route |
+| `blocks.py`, `segments.py`, `layouts.py` | Yes, in `services/block_service.py`, `segment_service.py`, `layout_service.py` (and in the route for reads that need it) |
+| `switches.py` | Yes, in the route for `PUT`, `/state` and `/alternate` |
+| `tracks.py`, `tunnels.py` | No |
 
 **Guideline:** Any endpoint that **mutates** network state should acquire the simulation lock:
 
@@ -194,13 +199,7 @@ def get_block(block_id):
 | File | Purpose |
 |------|---------|
 | `routes/__init__.py` | Route registration orchestrator |
-| `routes/tracks.py` | Track CRUD |
-| `routes/blocks.py` | Block management |
-| `routes/signals.py` | Signal management |
-| `routes/stations.py` | Station management |
-| `routes/platforms.py` | Platform management |
-| `routes/trains.py` | Train management |
-| `routes/paths.py` | Pathfinding + dispatcher |
-| `routes/misc.py` | Switches, layouts, simulation, routes, speed profiles |
+| `routes/*.py` | One module per domain (see Route Modules above) |
+| `services/*.py` | The work behind the layout-editing routes |
 | `app_factory.py` | Flask app creation + route registration call |
 | `app_state.py` | AppState dataclass (dependency injection container) |

@@ -1,9 +1,9 @@
 /**
- * The Hardware Setup screen (docs/ui-layout-rewrite-plan.md §7).
+ * The Hardware Setup screen.
  *
  * A full screen in place of today's Hardware Setup dialog. The left column
- * lists design_new.md "Operator workflows" → "Setting up the hardware and
- * going live", steps 1 to 7, with a tick on each step that is done. The right
+ * lists design_v2.md "Setting up the hardware and going live", steps 1 to
+ * 7, with a tick on each step that is done. The right
  * side shows the step picked.
  *
  * Steps 1, 3, 5, 6 and 7 are written here. Steps 2 and 4 show the dialog's
@@ -643,7 +643,7 @@ function rigTestCalls(): RigTestCalls {
 }
 
 /** Step 4's one button: every check that needs no one watching, then one
- *  summary (design_new.md "Hardware setup", Test the rig). */
+ *  summary (design_v2.md "Setup tools", Test the rig). */
 function RigTest({
   sf,
   inSetup,
@@ -996,7 +996,7 @@ function HardwareSetupSlot({ actions }: { actions: HardwareScreenActions }) {
 }
 
 /** The benches live in step 4. The floating Virtual Bench, kept for its
- *  Place on canvas (docs/ui-layout-rewrite-plan.md §13.10), is closed if it
+ *  Place on canvas, is closed if it
  *  was left open, so only one bench asks for the controller. */
 function closeFloatingBenches(): void {
   window.virtualBench?.hide();

@@ -61,11 +61,12 @@ class TrackOutput(ABC):
         pass
 
     def get_readback_voltage(self, block_id: str) -> Optional[float]:
-        """Read back the actual voltage on a block (design_new.md "Power", the
-        block-voltage read surface).
+        """Read back the actual voltage on a block (design_v2.md "Hardware
+        interface", The block-voltage readback is not an `OccupancyInput`
+        read).
 
-        Simulation returns the last value accepted by the happy-path model (so
-        the default here is `get_actual_voltage`). Virtual Hardware returns the
+        The default here, used by the in-memory test interface below, is
+        `get_actual_voltage`: the last value it accepted. Virtual Hardware returns the
         fake device's readback, and Real Hardware reads the block's bound
         `block_occupancy_current` channel bus voltage where that chip provides
         one — neither hardware-backed environment silently substitutes the
@@ -90,9 +91,9 @@ class TrackOutput(ABC):
     def enter_safe_state(self) -> None:
         """Drive the safe state: every block track voltage to 0.
 
-        Per design_new.md "Power" (Safe state / fail-safe) the runtime issues
-        this when it stops driving outputs (simulation stop or process
-        shutdown). The simulated interface zeroes its stored outputs; real
+        Per design_v2.md "Safe state, watchdog and hardware failure" (Safe
+        state / fail-safe) the runtime issues this when it stops driving
+        outputs (leaving Live, or process shutdown). The simulated interface zeroes its stored outputs; real
         hardware de-energizes the track.
         """
         pass
@@ -127,8 +128,8 @@ class SimulatedTrackDriver(TrackOutput):
         self._voltages.clear()
 
     def enter_safe_state(self) -> None:
-        """Safe state: zero every stored block voltage (design_new.md "Power",
-        Safe state / fail-safe)."""
+        """Safe state: zero every stored block voltage (design_v2.md "Safe
+        state, watchdog and hardware failure", Safe state / fail-safe)."""
         for block_id in self._voltages:
             self._voltages[block_id] = 0.0
 
@@ -152,12 +153,12 @@ class BlockPowerController:
     max_voltage: float = MAX_TRACK_VOLTAGE
     # A commanded block voltage is signed: the magnitude is `track_voltage`
     # and the sign is the block-relative direction the train runs through that
-    # block (design_new.md "Power", A block voltage carries a direction), so
+    # block (design_v2.md "Track power"), so
     # the range is symmetric. The sign is not a voltage on the rails — a
     # block's rails are two 0-100% PWM channels into an H-bridge, and which
     # channel a sign reaches is wiring the driver resolves from the binding
-    # below this layer (design_new.md "Power", The rail binding bonds tile
-    # order to rail polarity).
+    # below this layer (design_v2.md "Hardware setup", The rail binding bonds
+    # tile order to rail polarity).
     min_voltage: float = -MAX_TRACK_VOLTAGE
 
     # Named dependencies, handed in by `wire_dependencies(...)`: the event-log
@@ -187,8 +188,9 @@ class BlockPowerController:
     ) -> None:
         """Inject the named dependencies this controller needs: the event-log
         NotificationCenter and
-        `SimulationController.enter_hardware_failure` (design_new.md "Power",
-        Hardware I/O failure is fatal to the physical session). Called by
+        `SimulationController.enter_hardware_failure` (design_v2.md "Safe state,
+        watchdog and hardware failure", Hardware I/O failure is fatal to the
+        session). Called by
         SimulationController each time it builds a BlockPowerController; this
         controller holds no general SimulationController reference of its own."""
         self._notification_center = notification_center
@@ -214,7 +216,8 @@ class BlockPowerController:
         """Command every block voltage to `0` on the device, recording nothing.
 
         This is the block half of the `OutputSafety.enter_safe_state()` sequence
-        (design_new.md "Power", Safe state / fail-safe). It commands the device
+        (design_v2.md "Safe state, watchdog and hardware failure", Safe state /
+        fail-safe). It commands the device
         transport directly and does not touch the recorded voltages or any
         other recorded model field, which is what makes the sequence safe to
         call from any thread — including the Real Hardware `OutputWatchdog`
@@ -361,11 +364,11 @@ class BlockPowerController:
             )
 
     def get_block_voltage(self, block_id: str) -> Optional[float]:
-        """Diagnostic block-voltage read (design_new.md "Power", the block-voltage
-        read surface).
+        """Diagnostic block-voltage read (design_v2.md "Hardware interface", The
+        block-voltage readback is not an `OccupancyInput` read).
 
-        Reads the actual voltage back from the output driver: the model value in
-        Simulation, the fake device's readback in Virtual Hardware, and the bus
+        Reads the actual voltage back from the output driver: the stored value of
+        the in-memory test interface, the fake device's readback in Virtual Hardware, and the bus
         voltage on the block's bound `block_occupancy_current` channel in Real
         Hardware — never the commanded value silently substituted for a failed
         read. Returns `None` where the rig has no measurement facility, and
@@ -380,8 +383,8 @@ class BlockPowerController:
             return None
 
     def _emit_readback_failure(self, block_id: str) -> None:
-        """Report a failed block-voltage readback transaction (design_new.md
-        "Power", the block-voltage read surface). Diagnostic only — it never
+        """Report a failed block-voltage readback transaction (design_v2.md
+        "Hardware interface", What an injected fault leads to). Diagnostic only — it never
         enters the hardware-failure lifecycle."""
         center = self._notification_center
         if center is None:

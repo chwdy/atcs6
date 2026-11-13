@@ -323,7 +323,7 @@ def remove_tracks_from_segment(
             delete_segment(state, segment_id)
         except ValidationError:
             # The emptied segment sits in the middle of its block, so the
-            # delete is rejected and the edit with it (design_new.md, "Atomic
+            # delete is rejected and the edit with it (design_v2.md "Tile", "Atomic
             # commit"): give the detached tiles back to the segment. Detaching
             # them was the only thing this call changed.
             for x, y in removed:
@@ -426,11 +426,11 @@ def require_tiles_removable(state: AppState, positions: List[Any]) -> None:
     """Refuse an edit that would leave a block split in two.
 
     Any edit that takes a segment's last tile out of it deletes that segment
-    in the same operation (design_new.md, "Non-empty parent rule", "Auto-delete
-    on last-child removal"), so it is bound by the rule for deleting one: a
-    segment in the middle of a multi-segment block stays (design_new.md,
-    "Segment deletion keeps its block connected"), and the rejection rejects
-    the whole edit ("Atomic commit"). Callers that change anything else before
+    in the same operation (design_v2.md "Tile", Non-empty parent rule,
+    Auto-delete on last-child removal), so it is bound by the rule for
+    deleting one: a segment in the middle of a multi-segment block stays
+    (Segment deletion keeps its block connected), and the rejection rejects
+    the whole edit (Atomic commit). Callers that change anything else before
     they reach the tile removal (erasing track, turning a tile into a switch)
     call this first, so a rejection changes nothing.
 
@@ -451,7 +451,7 @@ def delete_segment(state: AppState, segment_id: str) -> bool:
     member the block is deleted too.
 
     A segment in the middle of a multi-segment block is not deleted, because
-    the block would be left as two pieces (design_new.md, "Segment deletion
+    the block would be left as two pieces (design_v2.md "Tile", "Segment deletion
     keeps its block connected").
 
     Raises:

@@ -75,8 +75,8 @@ def client():
         persistence_manager=PersistenceManager(storage_dir="layouts"),
         simulation_lock=threading.Lock(),
     )
-    # The track direction sweep runs only in Setup (design_new.md "Hardware
-    # setup", Track direction sweep).
+    # The track direction sweep runs only in Setup (design_v2.md "Setup
+    # tools", Track direction sweep).
     state.setup_active = True
     app = create_app(state)
     app.config["TESTING"] = True
@@ -156,7 +156,8 @@ def test_sweep_drives_a_reversed_block_the_way_the_driver_would(client, monkeypa
     sweep is the only check that control has. The mirror follows: the first leg
     drives whichever rail a nominal positive drives, so it reads +12 V here too.
     The flag rides in on the rail binding of the config payload the sweep drives
-    (design_new.md "Power", Rail polarity lives on the rail binding)."""
+    (design_v2.md "Hardware setup", The rail binding bonds tile order to rail
+    polarity)."""
     test_client, block, pc = client
     reversed_config = {
         **CONFIG,
@@ -197,8 +198,8 @@ def test_unbound_block_is_reported_and_touches_no_voltage(client):
 
 def test_a_failed_closing_zeroing_halts_on_a_hardware_failure(client, monkeypatch):
     """The sweep zeroes every channel of its chip when it ends; when that write
-    fails it is a hardware I/O failure (design_new.md "Power", Hardware setup,
-    Closing a Setup tool restores the safe state), not just a failed test."""
+    fails it is a hardware I/O failure (design_v2.md "Setup tools", A failed
+    closing write is a hardware I/O failure), not just a failed test."""
     test_client, _block, _power = client
     reported = []
     from hardware import setup_tools

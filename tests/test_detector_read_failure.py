@@ -1,9 +1,10 @@
 """A failed detector transaction is a hardware I/O failure.
 
-design_new.md "Power" (Hardware I/O failure) and "Hardware setup" (Both
-occupancy sources are mandatory): a failed detector transaction escalates to
+design_v2.md "Safe state, watchdog and hardware failure" (Hardware I/O failure
+is fatal to the session) and "Occupancy source and drive zones" (Both occupancy
+sources are mandatory): a failed detector transaction escalates to
 `SimulationController.enter_hardware_failure(...)`, and a missing or unreadable
-source is never treated as a clear block ("Missing never counts as clear").
+source is never treated as a clear block.
 """
 
 import pytest
@@ -44,8 +45,8 @@ def _line(num_tiles: int = 2) -> RailwayNetwork:
 def test_failed_current_read_raises_instead_of_reading_clear():
     """A raising current-sense transaction is a hardware I/O failure, not an
     empty block: `read_block_currents()` propagates the error rather than
-    returning the block clear (design_new.md "Hardware setup", Missing never
-    counts as clear)."""
+    returning the block clear (design_v2.md "Safe state, watchdog and hardware
+    failure", Hardware I/O failure is fatal to the session)."""
     dev = FakeCh347Device(present_addresses={0x40, 0x41})
     specs = [
         ChipConfig("pwm1", "pca9685", i2c_address=0x40),

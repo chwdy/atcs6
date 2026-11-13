@@ -26,11 +26,11 @@ Three layers, with one rule per layer.
   `.banner`, `.accent-*`. Don't redefine the same shape under a feature
   prefix in `features/*.css`; that creates a second source of truth and
   the two drift apart.
-- **Feature implementations** → `features/{inspector,train-monitor,train-control,routes-paths}.css`
+- **Feature implementations** → `features/{controls,editor-lists,event-log,hardware,occupancy-bench,occupancy-monitor,tile-debug,virtual-bench}.css`
   (§15). Layer feature-specific composition on top of the shared
-  primitives — a route-run-shaped card (`.rr-card`), a train-monitor
-  status grid (`.tm-*`), a switch-editor toggle row. These files **do
-  not** redefine the §6/§7/§11 shapes; they consume them.
+  primitives — the editor list card (`.rr-card`), the running-train
+  card's slider and buttons (`.tc-*`), a switch-editor row. These files
+  **do not** redefine the §6/§7/§11 shapes; they consume them.
 
 The trigger for promoting a shape into the shared files (a status shape
 into `status-blocks.css`) is **the second consumer**. When a primitive in a feature file is about to be
@@ -55,7 +55,7 @@ by name for forms, detail pages, and canvas work too.
    not exist.
 
 2. **Container matches data.** Cards are for objects you act on
-   as a whole (a contact, a message, a route in the route list). Rows
+   as a whole (a contact, a message, a train on the cards row). Rows
    are for homogeneous comparable records (log entries, journey steps,
    run history). Lists are for sequences. Picking the wrong container is
    structural — no amount of color, spacing, or chip polish saves a list
@@ -136,26 +136,22 @@ by name for forms, detail pages, and canvas work too.
 ## Surfaces
 
 Where UI lives. Four screens picked from the top bar, and a fixed set of
-regions — every feature has exactly one natural home. The plan behind them
-is [ui-layout-rewrite-plan.md](ui-layout-rewrite-plan.md).
+regions — every feature has exactly one natural home.
 
 The top bar's screen tabs are the app's primary split. Each screen is one
 of the operator's jobs:
 
-- **Editor** — building the layout: track, switches, signals, tunnels,
-  platforms, segments and blocks.
+- **Editor** — building the layout: track, switches, tunnels, segments
+  and blocks.
 - **Hardware Setup** — the steps of setting up the hardware and going
   live (design_new.md "Setting up the hardware and going live").
-- **Operate** — running trains: placing them, driving them, routes and
-  paths.
-- **Locomotives** — the Train Roster, and each locomotive's Speed Profile
-  panel with its calibration group.
-- **Logs** — watching what the system does: the event log, the detectors'
-  raw readings, and one train's diagnostics, beside the canvas.
+- **Operate** — running trains: watching them and driving them.
+- **Logs** — watching what the system does: the event log and the
+  detectors' raw readings, beside the canvas.
 
 Picking a screen only changes what you see; the session state changes
 only through its own buttons. The Editor screen is the Editor session
-mode, and Operate, Locomotives and Logs are the operation mode. The tab reads
+mode, and Operate and Logs are the operation mode. The tab reads
 Operate in every operating environment (design_new.md "Session mode and
 operating environment"), so the word "Simulation" in the UI only ever
 names the operating environment.
@@ -163,27 +159,24 @@ names the operating environment.
 | Region | What lives there |
 |--------|------------------|
 | **Top bar** | App-level commands on every screen: the Layout menu, the screen tabs, the status control with its one next-step button, Emergency stop, and the View and Settings menus ("Composing the top bar" below). The one region where the 32px `--control-height-sm` controls belong (§1 Layout). |
-| **Canvas** | The layout itself — two stacked `<canvas>` layers ([canvas.css](../static/css/layout/canvas.css); §16 "Two-canvas implementation"). Shown on Editor, Operate and Logs, and on Locomotives while a calibration run is open. |
+| **Canvas** | The layout itself — two stacked `<canvas>` layers ([canvas.css](../static/css/layout/canvas.css); §16 "Two-canvas implementation"). Shown on Editor, Operate and Logs. |
 | **Editor tool bar** | One flat bar of the things you place, across the top of the Editor screen, with an options row under it for the picked tool's variants (§3 "Tool bar button"; [next/editor.css](../static/css/next/editor.css)). |
 | **Right panel** | The selection, one record at a time, right of the canvas. On Editor it edits the selected entity; on Operate it shows a train, block or switch. One panel shows at a time — there are no tabs. Its pop-out button moves it into a floating window and back (§12 "Popping the right panel out"). |
-| **Operate's left list and cards row** | The lists of trains, routes, paths, route runs, stations, blocks and switches in a column left of the canvas, which folds away; a card per train along the bottom of the screen, ending with + Place train and Hold all ([next/operate.css](../static/css/next/operate.css)). |
+| **Operate's left list and cards row** | The lists of blocks and switches in a column left of the canvas, which folds away; a card per train along the bottom of the screen, ending with Stop all ([next/operate.css](../static/css/next/operate.css)). |
 | **Hardware Setup steps** | The seven steps in a column, the picked step beside it, over the whole screen area ([next/hardware.css](../static/css/next/hardware.css)). |
-| **Logs screen** | A tab strip (Event log, Detectors, Diagnostics) whose tab fills the left of the screen, with the canvas on the right at 40% of the width. A click on a train or block on the canvas picks what the tabs show ([next/logs.css](../static/css/next/logs.css)). |
+| **Logs screen** | A tab strip (Event log, Detectors) whose tab fills the left of the screen, with the canvas on the right at 40% of the width. A click on a block on the canvas opens the Detectors tab with that block's row marked ([next/logs.css](../static/css/next/logs.css)). |
 | **Overlay layer** | Modals, toasts, floating pickers, menus (§13). |
 
-Two floating windows are left over from the old layout (the plan's
-§13.10): the Train Monitor window, which today's train panel opens on the
-Editor screen (its readings now also show in the Logs screen's
-Diagnostics tab), and the floating Virtual Bench, whose Place on canvas
-has no other home yet. Do not add to them.
+One floating window is left over from the old layout: the floating
+Virtual Bench, whose Place on canvas has no other
+home yet. Do not add to it.
 
 Placement rule for a new feature: places or shapes the layout → the
 Editor tool bar, and its record's panel in the Editor right panel;
 edits or commands one record → the right panel of its screen; watches
 many trains at once → Operate's cards row or left list; part of setting
-up the hardware → its Hardware Setup step; about a locomotive or its
-speed profile → the Locomotives screen; a log, a raw reading, or
-diagnostics over arbitrary state → a Logs screen tab; transient feedback
+up the hardware → its Hardware Setup step; a log or a raw reading → a
+Logs screen tab; transient feedback
 → a toast; a blocking decision → a modal. Do not add a floating window:
 the right panel's pop-out is the only one. If none of those fits, raise
 it as a doc question before inventing a new region.
@@ -194,7 +187,7 @@ One 48px row in two zones (`display: flex; justify-content:
 space-between`):
 
 - **Left** — the wordmark, the **Layout** menu (New, Open…, Save…), then
-  the five screen tabs as a segmented control (§3). They are a segment,
+  the four screen tabs as a segmented control (§3). They are a segment,
   not a §3 tab strip, because they switch the whole screen rather than a
   pane inside one panel.
 - **Right** — the status control, **Emergency stop**, then **View** and
@@ -210,15 +203,13 @@ it sits one next-step button that changes with the state: **Activate**
 `runtime_failure`). Activate and Play are the filled accent CTA — the top
 bar is a top-level page, where §3 allows a filled `--accent-color` button.
 Reset is a warning button: `--warning-color` border and text on
-`--bg-dark`, a solid warning fill on hover, for the same reason as the EB
-Reset (§3 Emergency button) — releasing an emergency is a caution act, not
-a go act. Pause and Clear conflict are ghost buttons. In Simulation a speed menu
+`--bg-dark`, a solid warning fill on hover — releasing an emergency is a
+caution act, not a go act. Pause and Clear conflict are ghost buttons. In Simulation a speed menu
 (`1x`) follows. Clicking the chip opens Hardware Setup at step 1.
 
 **Emergency stop** sits in the same place on every screen: a 32px top-bar
 button with icon and label, outlined in the danger color at rest and filled
-with it on hover. It stops the whole layout; it is not a train's EB button,
-which §3 Emergency button specifies.
+with it on hover. It stops the whole layout.
 
 **View**
 holds the two theme axes (§1 Themes), Show grid, and the canvas layers;
@@ -330,10 +321,10 @@ above the 4.5:1 AA floor against the panel background.
 |-------|-----|----------|
 | `--accent-color` | `#8257e5` | Selection / active state (purple) |
 | `--accent-hover` | `#9466ff` | Hover, active text on tinted bg |
-| `--success-color` | `#04d361` | OK / running / power notch |
-| `--warning-color` | `#ffcd1e` | Caution / dwell / brake notch |
-| `--danger-color` | `#e83f5b` | EB / fault |
-| `--info-color` | `#00d4ff` | Stations / target speed / informational |
+| `--success-color` | `#04d361` | OK / moving |
+| `--warning-color` | `#ffcd1e` | Caution |
+| `--danger-color` | `#e83f5b` | Emergency / fault / lost |
+| `--info-color` | `#00d4ff` | Informational |
 
 The accent palette doubles as the **status accent palette** for left-border
 strips, banner tints, and badge backgrounds. Don't introduce new hues.
@@ -410,16 +401,13 @@ panel chrome.
 
 | Token | Hex (dark) | Marks (§17) |
 |-------|-----------|-------------|
-| `--canvas-success` | `#04d361` | Green signal lamp, switch `M` badge, route run *set* |
-| `--canvas-success-bright` | `#00ff88` | Route run *active* |
-| `--canvas-caution` | `#ffd93d` | Yellow signal lamp, switch `D` badge, route run *setting* |
-| `--canvas-warning` | `#ff9500` | Orange marks: route run *clearing*, selection outlines and build previews, the stuck-waiting leader |
-| `--canvas-danger` | `#e83f5b` | Red signal lamp and its unknown-state fall-through, other red state marks |
+| `--canvas-success` | `#04d361` | Switch `M` badge, the speed-limit readout in the block detail labels |
+| `--canvas-success-bright` | `#00ff88` | A set bit in the track-bit debug view |
+| `--canvas-caution` | `#ffd93d` | Switch `D` badge, track build previews, the length readout in the block detail labels |
+| `--canvas-warning` | `#ff9500` | Orange marks: selection outlines and fills, the diagonal-only switch mark |
+| `--canvas-danger` | `#e83f5b` | Invalid and eraser build previews, other red marks |
 | `--canvas-accent` / `--canvas-accent-bright` | `#8257e5` / `#c8a2ff` | Purple marks that are not a train body |
 | `--canvas-info` | `#00d4ff` | Cyan marks |
-| `--canvas-hold` | `#8b4513` | Brown: a train physically holds the switch; an emphasized route's lock circles |
-| `--canvas-lock` | `#ff8c00` | Orange lock ring: a path holds the switch |
-| `--train-body`, `-manual`, `-teardown`, `-eb`, `-unidentified` | `#ffffff`, `#ffe066`, `#c8a2ff`, `#8257e5`, `#8a8a99` | Train body tints (§17 Train mode) |
 | `--canvas-highlight-locate` | `#ffd93d` | The locate flash (§17) |
 
 A new mark picks from this table or the block table. A mark that needs a hue
@@ -430,10 +418,10 @@ neither has is a doc question first (§14 "No new colors").
 | Token | Value | Use |
 |-------|-------|-----|
 | `--control-height-xs` | `28px` | Default — every control inside a panel (buttons, selects, text/number inputs, segments, icon buttons) |
-| `--control-height-sm` | `32px` | The top bar only (Surfaces). Panels, modal dialogs, and the Hardware Setup and Locomotives screens use `--control-height-xs` |
+| `--control-height-sm` | `32px` | The top bar only (Surfaces). Panels, modal dialogs, and the Hardware Setup screen use `--control-height-xs` |
 | `--control-radius-sm` | `6px` | All buttons, panel corners, cards, floating pickers |
 | `--radius-xs` | `4px` | Inner elements — badges, small controls inside an already-bordered card |
-| `--radius-md` | `8px` | Toasts, context and header-anchored menus, the hero CTA |
+| `--radius-md` | `8px` | Toasts, context and header-anchored menus |
 | `--radius-lg` | `12px` | Modal dialogs |
 | `--radius-pill` | `999px` | Chips / pills (§7) |
 
@@ -465,11 +453,11 @@ hand-pick a number between layers.
 
 | Token | Value | Layer |
 |-------|-------|-------|
-| `--z-canvas-world` | `1` | World canvas — track, blocks, signals (§16) |
+| `--z-canvas-world` | `1` | World canvas — track, blocks (§16) |
 | `--z-canvas-live` | `2` | Live canvas — trains, labels, selection (§16) |
 | `--z-canvas-overlay` | `3` | DOM overlays pinned to the canvas |
 | `--z-shell` | `10` | Docked panels, sticky panel toolbars |
-| `--z-window` | `900` | Floating chrome windows — a right panel popped out, and the Train Monitor and Virtual Bench windows. `WindowManager` stacks open windows within this band by focus order (topmost = most recently focused); the band sits below every picker/modal, so those always win. |
+| `--z-window` | `900` | Floating chrome windows — a right panel popped out, and the Virtual Bench window. `WindowManager` stacks open windows within this band by focus order (topmost = most recently focused); the band sits below every picker/modal, so those always win. |
 | `--z-picker` | `1000` | Floating pickers, context and header-anchored menus, modal backdrops |
 | `--z-modal` | `1100` | Modal dialogs |
 | `--z-restart` | `1200` | Full-app restart overlay |
@@ -533,21 +521,17 @@ hairlines: the header's lighter `--bg-hover` reads against the body's
 `--bg-panel`; the footer's darker `--bg-dark` reads against the body. The
 header has **no border** of its own.
 
-- The **header** is `--bg-hover` with `padding: 8px 10px` and no border. Title is 12px Inter weight 600, letter-spacing `0.02em`. What the right panel's header holds — the parent link, Lists, Pop out and Close — is in §12 "Panel navigation and the unsaved-edits indicator"; its button style is in §3 "Flat ghost".
+- The **header** is `--bg-hover` with `padding: 8px 10px` and no border. Title is 12px Inter weight 600, letter-spacing `0.02em`. What the right panel's header holds — the parent link, Lists, Pop out and Close — is in §12 "Panel navigation"; its button style is in §3 "Flat ghost".
 - The **toolbar** has `border-bottom: 1px solid var(--border-color)` only when it sits on the same surface as the body (`--bg-panel`) — that hairline is the only thing separating it from the body. When the toolbar shares the header's `--bg-hover`, drop the border-bottom; the bg-tint change to the body does the separation.
 - The **body** uses `flex: 1 1 auto; overflow-y: auto` — it does the scrolling.
 - Header and footer use `flex-shrink: 0` so they stay pinned.
 - Footer banners collapse to 0px when their content is hidden — no padding overhead when there's nothing to show.
 
-Reference: `.tm-panel` (deleted with the v1 train monitor) is the
-canonical example.
-
 ---
 
 ## 3. Buttons
 
-Buttons are 28px tall (`--control-height-xs`) unless a subsection below
-gives its own height (Hero CTA, Emergency button), radius 6px, and follow
+Buttons are 28px tall (`--control-height-xs`), radius 6px, and follow
 the **ghost** pattern by default.
 
 ### Icons
@@ -662,7 +646,7 @@ ghost too — see §11 "Action buttons inside a card go flat."
 ### Tool bar button
 
 The Editor screen's tool bar is one flat row of the things you place
-(Select, Track, Switch, Signal, Tunnel, Platform, Segment, Block). Each
+(Select, Track, Switch, Tunnel, Segment, Block). Each
 button is a flat ghost with an icon and a label, and its number key small
 and muted in front of them.
 
@@ -684,10 +668,9 @@ color: var(--accent-hover);
 ```
 
 - The number key is the button's place in the bar, and it never moves:
-  keys 1–8 pick the same tool every time.
+  keys 1–6 pick the same tool every time.
 - No hover menus. A tool's variants (Track: Draw / Remove; Select: Click /
-  Box / Lasso / Brush / Trace / Entity; Platform and Segment: New / Extend
-  / Remove) sit in the options row under the bar, a segmented control
+  Box / Lasso / Brush / Trace / Entity; Segment: New / Extend / Remove) sit in the options row under the bar, a segmented control
   that shows only the picked tool's variants. A tool with one fixed action
   shows a one-line hint there instead.
 - Icons are Tabler glyphs, looked up through the icon roster like every
@@ -697,63 +680,13 @@ Reference: `.ned-tool` and `.ned-options` in
 [next/editor.css](../static/css/next/editor.css); `BAR_TOOLS` in
 [next/editor/tools.ts](../frontend/src/next/editor/tools.ts).
 
-### Hero CTA (driver-facing primary)
-
-For the most important driver-facing action in a panel — the ATO Go /
-Stop buttons. Same ghost + accent-tint shape as the regular ghost, just
-bigger: 52px tall, 15px weight-700 uppercase text, 8px radius, generous
-gap between leading glyph and label. Colors come from `--success-color`
-(Go) or `--danger-color` (Stop) used as text + border + 10% bg tint on
-hover. Reference: `.tc-btn-hero` in
-[features/controls.css](../static/css/features/controls.css).
-
-### Emergency button
-
-For a train's emergency brake: the EB control in the train panel
-(`.tc-eb-btn`). The top bar's layout-wide Emergency stop is specified in
-"Composing the top bar". The control has a full lifecycle,
-and every state is specced — this is the most safety-relevant control
-on the screen, so nothing about it is left to improvisation.
-
-```css
-height: 40px;
-background-color: rgba(var(--danger-rgb), 0.10);
-color: var(--danger-color);
-border: 1px solid var(--danger-color);
-text-transform: uppercase;
-letter-spacing: 0.08em;
-font-weight: 700;
-
-/* hover */
-background-color: var(--danger-color);
-color: var(--bg-dark);
-```
-
-- **Armed (no EB):** the danger-tint button above. The solid-fill hover
-  is the one solid fill permitted inside a panel — emergencies need to
-  shout.
-- **EB active:** the status header shows the pulsing EB badge — danger
-  text on a 15% danger tint with a 1px danger border, driven by
-  `tc-pulse-danger` (0.8s infinite, opacity 1 → 0.55 → 1; pulse is
-  reserved for this tier, see §18 Motion). The button row swaps to the
-  reset variant.
-- **Reset** (`.tc-eb-reset-btn`): same 40px height and uppercase
-  weight-700 type as the EB button, but `--bg-dark` bg with
-  `--warning-color` border + text; hover escalates to a solid warning
-  fill with dark text. Yellow because releasing an emergency is a
-  caution act, not a go act — the operator is confirming the danger has
-  passed, not being invited to move.
-
-Reference: `.tc-eb-btn`, `.tc-eb-reset-btn`, `.tc-eb-badge` in
-[features/controls.css](../static/css/features/controls.css).
-
 ### Segmented control
 
 A row of mutually-exclusive buttons inside a single `var(--bg-dark)` container with a 1px outer border, **no internal dividers**. Buttons inside are flat ghosts — the active accent tint and hover bg-tint give every cell its own legible state without needing vertical hairlines. Active button: `color: var(--accent-hover)`, `background-color: rgba(var(--accent-rgb), 0.18)`. Hover: same accent color, `var(--bg-hover)` background. The container's outline does the grouping. For when to reach for this over a select, tab strip, or checkbox, see §4 "Choosing a selection control."
 
 **Equal-width by default; `fluid` for long labels.** By default each cell takes an equal share of the row. That breaks when the labels differ in length — `Normal | Manual | Disabled` forced into thirds clips the longest word to `Disable…`. When a small fixed set has labels too long for equal cells, add a `fluid` modifier: each cell sizes to its own label and the row wraps to a second line rather than clipping. The set is still small and fixed, so it stays a segment (§4) — `fluid` changes only how the labels fit, not the control. Reach for it whenever a label would otherwise be cut off; don't pre-shrink to a cryptic abbreviation to keep one row, and don't drop to a select just because a label is long.
 
-Reference: `.switch-group` / `.switch-btn` (+ `.switch-group.fluid`, and the `.success` / `.danger` / `.warning` variants) in [components/design-system.css](../static/css/components/design-system.css) is the canonical segmented control — every panel that needs one consumes it directly. The active cell is the accent **tint** (`rgba(var(--accent-rgb), 0.18)` + `--accent-hover`), never a solid fill, and there are **no internal dividers** — the container outline groups the cells and the active tint marks the selection. The train-control HMI (`.tc-seg-btn`) and train-monitor view-distance (`.tm-seg-btn`) carry their own copies of this shape (see Known divergences).
+Reference: `.switch-group` / `.switch-btn` (+ `.switch-group.fluid`, and the `.success` / `.danger` / `.warning` variants) in [components/design-system.css](../static/css/components/design-system.css) is the canonical segmented control — every panel that needs one consumes it directly. The active cell is the accent **tint** (`rgba(var(--accent-rgb), 0.18)` + `--accent-hover`), never a solid fill, and there are **no internal dividers** — the container outline groups the cells and the active tint marks the selection.
 
 **Explaining the options.** A one-line help string under the segment is the
 default; when each option needs its own gloss, stack one line per option
@@ -892,7 +825,7 @@ screen marks the pick with §12 Selected row.)
   even when each cell is tiny — that's when to switch to a select. (Long
   labels on a small set are a layout problem, not a control problem: the
   `fluid` variant wraps them — see the two-axes note above.) And a set built
-  from data (trains, route targets, stations) is always a select however
+  from data (trains, blocks) is always a select however
   short it happens to be today — its length isn't yours to fix at
   author-time.
 - *Flags with a precedence.* Independent flags where one always overrides
@@ -907,42 +840,9 @@ screen marks the pick with §12 Selected row.)
   button will do sits in the same flex cluster as that button, never a row
   away — see §12 "Action modifiers must touch their action."
 
-### Spatial inputs (set on the map, not typed)
-
-Some fields are spatial — a tile location, a facing direction — and the
-honest place to set them is the map, not a typed coordinate or a free
-compass list. This is the input mirror of the Derived-values principle's
-spatial note (Principle 9): if the value lives somewhere on the canvas,
-put the user there.
-
-- **Location is picked, not typed.** A "Pick on map" ghost button (§3,
-  with the `map-pin` glyph) arms a placement mode; the next canvas click
-  sets the value. The panel shows the result as a read-only mono
-  coordinate with a "Re-pick" affordance — never a pair of raw X / Y
-  number inputs, which make the user read a position off the canvas and
-  transcribe it back.
-- **Offer only what the geometry allows.** A direction field reads its
-  options from the thing under the cursor, not the full compass. The
-  Add-Train "Facing" segment is built from the clicked track's real exits
-  (`getTrackExits`), so a straight E–W track offers `Cab A · → East` /
-  `Cab B · → West` and nothing the track can't hold. The set is read from
-  data but stays a **segment**, not a select: a tile's exits are bounded
-  by geometry to a tiny fixed few, so the data-driven→select tie-breaker
-  above (which is about open-ended sets — trains, stations) does not
-  apply. When the count isn't the usual two (a switch tile), the cells
-  fall back to plain direction labels.
-- **Preview the result where it lands.** While a spatial field is being
-  set, draw what it will produce on the canvas — see §17 "Selection and
-  previews" for the placement ghost that shows a new train's footprint and
-  facing before commit.
-
-Reference: `showAddTrainDialog` and the `place-train` mode in
-`editor-trains.ts`.
-
 ### Control row layout
 
-A zone of segmented controls (Power / Mode / Cab in the train panel)
-follows two rules so nothing clips when the sidebar narrows.
+A zone of segmented controls follows two rules so nothing clips when the sidebar narrows.
 
 **Stack the label above a full-width segment** when the segment has three
 or more cells, or whenever the sidebar gets narrow. A label sitting
@@ -950,15 +850,12 @@ or more cells, or whenever the sidebar gets narrow. A label sitting
 segment on a 240px sidebar then splits into cells too small to read, and
 the longest option clips. Stacking hands the segment the full content
 width, so the longest label can't clip at any size. **Same-category
-controls share one layout:** if Power and Mode stack, Cab stacks too — a
-lone control laid out unlike its siblings reads as a mistake even when
-each is fine on its own. Reference: `.tc-controls-pair` in
-[features/controls.css](../static/css/features/controls.css) —
-label-above cells that flow and wrap, with the wider 3-cell Cab taking
-its own full line.
+controls share one layout:** if two segments in a zone stack, the third
+stacks too — a lone control laid out unlike its siblings reads as a
+mistake even when each is fine on its own.
 
 **Keep navigation off a setting's row.** A link that jumps to another
-panel (`Monitor →`, `Route Run →`) is not part of the setting beside it.
+panel is not part of the setting beside it.
 Sharing the row makes the segment and the links `flex: 1` siblings that
 split the width evenly and starve the control — the
 Container-matches-data and Position-semantics traps (see Principles),
@@ -993,26 +890,20 @@ label-beside-input row — not from `.form-group`. `.form-group` is the
 panel that reaches for it falls back to the browser's default oversized
 inputs instead of the 28px control language.
 
-Reference: `.diagnostics-panel-field select` in
-`features/diagnostics.css`.
+Reference: `.input-large-*` and `.input-small-*` in
+[components/design-system.css](../static/css/components/design-system.css).
 
 **On a wide column, the field follows its label.** `.input-small-row`
 spreads its children to both edges. That is right in a 280px sidebar, but
 on a 700px column it pins a short field hundreds of pixels from its label
 (Proximity). There, give the label a fixed width and let the field and its
-unit follow it. Reference: `.sp-scalar-row` in
-`features/speed-profiles.css`.
+unit follow it.
 
 **A value that can never be changed on this panel is plain text, not a
 disabled input.** A disabled input still looks like a field, and a row of
 greyed boxes reads as clutter. Show the value as text with its unit, and
-say where it is changed. On a locomotive's own speed profile, Model and Max
-voltage come from the model profile, so they show as text (`12 V`), and the
-note at the top of the panel names the model profile where they are edited.
-A control that is frozen only for now stays a dimmed input, because it can
-be changed in another mode (Read-only in Operate mode, below). Reference:
-`_scalarRowHtml` in
-`editor-speed-profiles.ts`.
+say where it is changed. A control that is frozen only for now stays a dimmed input, because it can
+be changed in another mode (Read-only in Operate mode, below).
 
 ### Seamless inline edit
 
@@ -1031,7 +922,7 @@ already is, not in a separate "Name" field stacked below. It is a real
 - **Focus** — drops in the standard input chrome: `--bg-dark` fill,
   `--accent-color` border. Now it reads as the 28px field language above.
 
-Pair it with the auto-save contract (§5C): it commits on blur, with the
+Pair it with the auto-save contract (§5B): it commits on blur, with the
 field-edit flash (§18) as the only acknowledgement — an inline edit never
 carries its own Save button. Give it the italic `--text-tertiary`
 placeholder invitation ("Add a name…") so an empty value still teaches what
@@ -1060,8 +951,7 @@ disables it the shared way (Disabled controls, below).
 - **Use the styled box, never a bare native input.** `.checkbox-custom` is
   the canonical chrome; a raw `<input type="checkbox">` renders the OS
   default, which ignores the token palette and breaks the dark theme. Every
-  checkbox in the editor panels uses `.checkbox-custom`, including the
-  Assign-row "Force" checkbox.
+  checkbox in the editor panels uses `.checkbox-custom`.
 - **Mixed / "some but not all" → indeterminate.** When a checkbox edits a
   flag across a multi-item selection and the items disagree, set the input's
   `indeterminate` property: `.checkbox-custom` fills with a horizontal accent
@@ -1101,7 +991,7 @@ rules keep the pairing clean:
   diagram auto-saving while the checkboxes waited for an Apply button, and
   the diagram's path silently skipped the confirmation the button's path
   ran. Each edit here is independent and reversible, so auto-apply it and
-  drop the Apply button (the auto-save contract, §5C "Avoid per-field Save
+  drop the Apply button (the auto-save contract, §5B "Avoid per-field Save
   buttons"); a rejected edit
   re-renders from the server, which reverts the optimistic view.
 - **An in-panel editor canvas is not a map label.** §16 governs labels
@@ -1121,46 +1011,15 @@ Reference: the Track Bits editor — `.track-bits-*` in
 commit path), and `initVisualTrackEditor` (canvas) in
 [frontend/src/editor/](../frontend/src/editor/).
 
-### Curve editor (continuous draggable plot)
-
-The continuous sibling of "Two views of one value" above. Where the track-bits
-editor pairs a clickable diagram with discrete checkboxes over a 6-bit value, the
-speed-profile editor pairs a **draggable curve plot** with a **numeric point
-list** over a continuous curve — both views write the same array of points. The
-same container rule holds: the narrow numeric column hands the plot the rest of
-the row width (`.sp-plot-block` is `minmax(108px, 30%) 1fr`), and the two views
-sit straight in the section body, not in nested cards.
-
-The plot's direct-manipulation grammar:
-
-- **Drag a point** to move it. Endpoints are X-locked; an interior point stays
-  strictly between its neighbours; Y clamps to the axis and keeps the curve
-  ascending. The cursor reads the affordance — `grab` over a point, `grabbing`
-  while dragging.
-- **Left-click the line** between points inserts a new point there (cursor
-  `copy`).
-- **Right-click an interior point** removes it; the two endpoints are locked
-  against removal.
-
-Every edit auto-saves silently (§5C) — no Save button, no save banner, so nothing
-shifts as a save settles — and the list and the plot stay in sync because they
-are two views of the one points array. Render the plot at device resolution, as
-the bit editor's canvas does (the "in-panel editor canvas" rule above).
-Reference: the curve editor (`handleDown` / `handleMove` / `handleContext`) in
-`editor-speed-profiles.ts`;
-`.sp-plot-block`, `.sp-canvas`, `.sp-point-*`, `.sp-converter*` in
-`features/speed-profiles.css`.
-
 ### Slider / handle
 
-For continuous (power %) or notched (master controller) inputs. Native
-`<input type="range">` with custom track + thumb styling. Two patterns:
+For continuous inputs, such as the speed knob on a running-train card.
+Native `<input type="range">` with custom track + thumb styling:
 
 - **Plain slider** (`.tc-power-slider`) — 6px-tall `--border-color` track, circular thumb in the relevant accent (e.g. `--success-color` for a power slider).
-- **Notched handle** (`.tc-handle-slider`) — 8px-tall track with a multi-stop gradient that encodes the notch zones (green=power, gray=neutral, yellow=brake, red=EB). Rectangular grab-handle thumb with an accent halo. Above the track, a 15-column tick grid renders the discrete notch labels; the active notch is highlighted with the same accent tint used by the segmented-control active state. The zone colors are master-controller convention — power / neutral / brake / emergency zones — not the §1 status semantics: yellow here means "brake zone," which is normal driving, not a warning. The handle gradient is the one place these hues are positional rather than status-bearing.
 
-Disabled state across both: the shared rule (Disabled controls, below).
-Reference: `.tc-power-slider`, `.tc-handle-slider` in
+Disabled state: the shared rule (Disabled controls, below).
+Reference: `.tc-power-slider` in
 [features/controls.css](../static/css/features/controls.css).
 
 ### Disabled controls
@@ -1175,23 +1034,22 @@ controls dim less (`opacity: 0.55`) to stay readable.
 ### Read-only in Operate mode (the structural lock)
 
 The physical layout is frozen once you are operating. Picking the Operate
-or Locomotives screen turns the lock on, and picking Editor turns it off.
+screen turns the lock on, and picking Editor turns it off.
 
 A click on the map in Operate opens Operate's own panel for what it hit: a
 train, a block or a switch. Those panels are built from operational
 controls only, so there is nothing in them to lock. Any other record opened
-on Operate — a platform, station, signal, tunnel or segment, or one of the
-lists — still shows its Editor panel in the right panel. That panel goes
+on Operate — a tunnel or segment, or one of the lists — still shows its Editor panel in the right panel. That panel goes
 **read-only for structural edits**: names, geometry (length / radius /
-speed), the create / extend / remove / delete buttons, and signal and
-tunnel config are all disabled. A one-line hint at the top of the panel
+speed), the create / extend / remove / delete buttons, and tunnel config
+are all disabled. A one-line hint at the top of the panel
 (`.sim-lock-hint`, info accent + lock glyph) says why, and each frozen
 control dims to `opacity: 0.55`.
 
 What stays live is the **operational** set — the controls a dispatcher uses
 while running the railroad: the availability segment (Normal / Manual /
-Disabled), the allowed-travel-direction segment, and panel navigation links
-(flank cross-links, "Manage Logical Stations", "All Stations"). Operate's
+Disabled), the allowed-travel-direction segment, and panel navigation
+links. Operate's
 block and switch panels hold the same set, plus the switch's **Throw to …**
 button. These keep full contrast, so the live dispatch controls read
 clearly against the dimmed structure. The split line is simple: **typed
@@ -1202,9 +1060,7 @@ This is one general mechanism, not a per-panel rule: a control opts out of
 the freeze by carrying `data-sim-keep` (on itself or an ancestor), and the
 shared `applyStructuralLock` helper disables everything else. The two segment
 render helpers (`renderAvailabilitySegment`, `renderDirectionSegment`) carry
-the marker, so all four entity panels (Block, Switch, Platform, Station) inherit it. Operational panels (path,
-route, train, speed profile) never call the lock at all — the dispatcher
-creates and runs those freely while operating ("full dispatcher freedom").
+the marker, so the Block and Switch panels inherit it.
 
 Reference: `applyStructuralLock` in
 [lib/helpers.ts](../frontend/src/lib/helpers.ts); `.sim-lock-hint` /
@@ -1221,28 +1077,23 @@ Two patterns, picked by data type:
 ### A. Stacked label / value (compact sidebars, info columns)
 
 ```html
-<div class="tm-field">
-  <dt class="tm-field-label">ATC Limit</dt>
-  <dd class="tm-field-value">
-    <span class="tm-val tm-val-danger">80</span>
-    <span class="tm-val-unit">km/h</span>
-  </dd>
-</div>
+<dt>Voltage</dt>
+<dd><span class="value">12.0</span> <span class="unit">V</span></dd>
 ```
 
 - Label: 10px UPPERCASE, `letter-spacing: 0.06em`, weight 500, `--text-tertiary` — the label is the quiet half of the pair; it should recede, not compete with the value
 - Value: mono, 12px, weight 600, `--text-primary` by default — this is the dominant element of the row
-- Status-tinted variants: `.tm-val-success`, `.tm-val-warn`, `.tm-val-danger`, `.tm-val-info`
+- Status-tinted values take the §1 accent colours
 - Unit: 11px Inter (`--font-size-body`), `--text-secondary`
 - Rows separated by `1px dotted var(--border-color)`
 
 The **meaningful** identifier is the value. Internal keys that name no
-entity the user works with (`run_number`, `path_id`, internal hashes) go in
+entity the user works with (internal keys and hashes) go in
 chips (§7) or foot captions, not in the title slot — the user's eye is
 looking for the entity, not the database key.
 
 **Record identity — the id or the name first.** A record the user works
-with has a stable id (`route_id`, a train id, a block id) and may have a
+with has a stable id (a train id, a block id, a switch id) and may have a
 display name. Where records of one kind sit together — a card, a detail
 page, a list of one kind — the id is the title, in mono, and the name is
 the line beneath it: ids line up and stay unique, while names may repeat
@@ -1252,17 +1103,7 @@ name tells the kinds apart and the id then tells two same-named records
 apart (§13 Context menu). A record with no name shows its id alone. Either
 way the id clamps and the name wraps (Overflow, below).
 
-### B. Three-column row (right panel body)
-
-```
-┌─ name (mono, 11em) ─┬─ badge (4.5em) ─┬─ value (mono, 1fr) ─┐
-```
-
-Used for tabular data where each row has a categorical badge. Color-code
-the badge background using the accent palette. Reference:
-`.diagnostics-row`.
-
-### C. Multi-column form section
+### B. Multi-column form section
 
 When a section holds 2–3 short independent fields that fit side by side
 — `Acquisition`, `On waypoint unreachable`, `Priority` — lay them out
@@ -1345,25 +1186,12 @@ save themselves. A client-invalid entry (non-integer, out of range) reverts
 and flashes danger without a round-trip; only an unexpected server error
 earns a toast.
 
-References: `.route-header-row.run-overrides-grid` in
-`features/routes-paths.css`
-(3-row inner sequence — label / control / reset), consumed by the
-Per-run overrides section in `editor-route-runs.ts`; and
-`.route-header-row.route-policy-grid` in the same file (4-row inner
-sequence — label / control / "Push to runs:" sublabel / soft-force
-segment), consumed by the policy row in `editor-routes.ts`. That makes two
-consumers, so by the promotion rule in "Where the primitives live" the
-rules are due to move into a shared `.field-cluster*` family in
-`components/status-blocks.css`, with each panel layering only its column
-widths and per-cell content on top (see Known divergences).
-
 ### Overflow: identifiers vs names
 
 Three kinds of text with three different answers — the doc used to
 collapse them, but they need different handling.
 
-**Opaque identifiers** (`route_id`, `run_number`, internal hashes,
-target ids): clamp to one line with ellipsis and surface the full
+**Opaque identifiers** (block, switch and segment ids, internal hashes): clamp to one line with ellipsis and surface the full
 string in a `title` tooltip. The user uses these for cross-reference,
 not for reading; the differentiating tail is recoverable on hover.
 
@@ -1379,7 +1207,7 @@ canonical identity display, with a copy button (see [§11 Copy button on an
 identifier](#copy-button-on-an-identifier)): hovering recovers the tail for
 *reading*, but the user usually wants it for *carrying*.
 
-**Human-readable display names** (route names, station names, anything
+**Human-readable display names** (block names, train names, anything
 written for humans to *read*): wrap to multiple lines instead. The
 reader is meant to read the full string, and ellipsis truncates exactly
 the part that differentiates one from another — "Demo v2: East Terminal
@@ -1392,7 +1220,8 @@ overflow-wrap: anywhere;
 /* no white-space: nowrap, no overflow: hidden */
 ```
 
-**One-line status sentences** (a train's hold reason on its card): clamp to
+**One-line status sentences** (the line on a running-train card that says
+where the train is and why it waits): clamp to
 one line with an ellipsis and put the whole sentence in a `title` tooltip.
 The sentence explains a state the card already shows with its stripe and
 chips, and the card must keep its width.
@@ -1405,12 +1234,14 @@ The `min-width: 0` line is the rule most often missed when clamping.
 Flex children default to `min-width: auto`, which lets their content
 expand the cell and silently defeats `overflow: hidden`. Set it
 explicitly on every flex child whose content is supposed to truncate, and
-on every flex item between it and the box whose width is fixed. The train
-card's hold line had it, but the card, itself a flex item in the cards
-row, did not, so a long hold reason widened the whole card to the length
-of the sentence.
+on every flex item between it and the box whose width is fixed. A train
+card's status line once had it, but the card, itself a flex item in the
+cards row, did not, so a long sentence widened the whole card to its
+length.
 Reference: `.rr-card-route` (clamp, opaque id) in
-`features/routes-paths.css`, and
+[features/editor-lists.css](../static/css/features/editor-lists.css);
+`.rt-card-line` (clamped status sentence) and `.op-card` in
+[next/operate.css](../static/css/next/operate.css); and
 `.status-header-name` (wrap, display name) in
 [components/status-blocks.css](../static/css/components/status-blocks.css).
 
@@ -1418,7 +1249,7 @@ Reference: `.rr-card-route` (clamp, opaque id) in
 
 ## 6. Status accents
 
-Three patterns for showing a row's status:
+Two patterns for showing a row's status:
 
 1. **3px left-border** on the row (most common). Color matches the accent
    palette: green=ok, purple=selected, red=fault, yellow=warn,
@@ -1429,29 +1260,20 @@ Three patterns for showing a row's status:
    the §12 status dot and its glyph instead.
 
 2. **Banner**: full-width strip with a 3px left-border accent + ~10% opacity
-   background tint of the same color. Use for one-line diagnostics
-   (`speed_limit_reason`, `ATC: yellow signal at S-3`) or a label/value
-   pair (e.g. `Locked by · PATH_…` on a switch panel — `.banner-label`
-   over `.banner-value`). Banners belong in the panel **footer** for
+   background tint of the same color. Use for one-line diagnostics or a
+   label/value pair (`.banner-label` over `.banner-value`). Banners belong in the panel **footer** for
    running diagnostics; an inline-in-body banner is also fine when it
    surfaces a single high-priority detail for the record on screen.
-   Use a warning banner for an outcome the operator did not cause: a speed
-   pass that ended on its own ("The pass ended: The emergency brake is on.
-   Nothing was written.") sits in a `.banner-warn` above the step's
-   buttons. The same kind of line for something the operator did (they
+   Use a warning banner for an outcome the operator did not cause; it sits
+   in a `.banner-warn` above the step's buttons. The same kind of line for something the operator did (they
    pressed Stop) stays plain text, because it tells them nothing new.
    Canonical home: `.banner` / `.banner-{warn,danger}` / `.banner-label` /
    `.banner-value` / `.banner-text` in
    [components/status-blocks.css](../static/css/components/status-blocks.css).
 
-3. **Source badge**: a small color-coded pill (used by the Logs screen's
-   Diagnostics tab to show `stored / property / latch / external`). Background is the accent color
-   at full opacity, text is `--bg-dark` so it reads on every accent (e.g.
-   `--info-color` bg + `--bg-dark` text).
-
 Where a stripe's colour comes from: a fixed state uses an `.accent-*`
 helper class; a colour the renderer works out at run time (an entity card
-following a block, switch or signal) is set inline as `--card-accent`. A row
+following a block or switch) is set inline as `--card-accent`. A row
 that can also be picked sets `--row-status-color` to the same colour, which
 `.row-selected` reads to keep the left edge (§12 Selected row).
 
@@ -1471,10 +1293,8 @@ font-size: 10px;
 font-family: var(--font-mono);
 ```
 
-For state badges (`▶ ATO RUNNING`), tint the background at
+For state badges (`MOVING`), tint the background at
 ~15% opacity of the relevant accent and use the accent as the text color.
-The EB-active badge is the one state badge with its own border and pulse;
-it is specified with the Emergency button (§3).
 
 **All chips in a row share the same shell.** `--bg-dark` bg, 1px
 `--border-color` border, 999px radius, 10px mono, 1px 8px padding. Color
@@ -1498,9 +1318,7 @@ entity something is — not its state — uses one map:
 | Kind | Variant |
 |------|---------|
 | Block, train | `.chip-accent` / `--accent-color` (purple) |
-| Platform, station | `.chip-info` / `--info-color` |
 | Switch | `.chip-warn` |
-| Signal | `.chip-success` |
 | Raw tile | `.chip-muted` |
 
 A kind chip always carries the kind's word or the record's id, so the hue
@@ -1559,12 +1377,12 @@ sizes across a single row.
 
 ## 10. Empty / loading / error states
 
-- **Empty**: the canonical `.empty-state` class — `padding: 16px 12px; text-align: center; color: var(--text-secondary); font-style: italic; font-size: 11px;` ("No elements ahead", "No path assigned", etc.). Every panel consumes `.empty-state` directly instead of minting a per-feature empty class (`.trains-empty`, `.rr-empty`, `.routes-empty-state`, … had drifted into ten near-copies with different padding, some missing the italic, one hardcoding the grey). Canonical home: [components/status-blocks.css](../static/css/components/status-blocks.css).
-- **Actionable empty** (`.empty-state-action`): when the panel is a list the user fills and the next step is obvious — no routes yet, no trains assigned — the empty state is a teaching surface, not a shrug. Same shape as `.empty-state` but not italic, stacking one plain-language line over one `.btn-accent` CTA ("No routes yet" / `Create route`). Use it wherever a creation or assignment action exists for the empty collection; pure readouts ("No elements ahead") keep the passive form. See §19 Learnability.
+- **Empty**: the canonical `.empty-state` class — `padding: 16px 12px; text-align: center; color: var(--text-secondary); font-style: italic; font-size: 11px;` ("No blocks yet", "No trains yet", etc.). Every panel consumes `.empty-state` directly instead of minting a per-feature empty class (`.trains-empty`, `.rr-empty`, `.routes-empty-state`, … had drifted into ten near-copies with different padding, some missing the italic, one hardcoding the grey). Canonical home: [components/status-blocks.css](../static/css/components/status-blocks.css).
+- **Actionable empty** (`.empty-state-action`): when the panel is a list the user fills and the next step is obvious, the empty state is a teaching surface, not a shrug. Same shape as `.empty-state` but not italic, stacking one plain-language line over one `.btn-accent` CTA (Operate's left list, `Empty` in [next/operate/left-list.tsx](../frontend/src/next/operate/left-list.tsx)). Use it wherever a creation or assignment action exists for the empty collection; pure readouts keep the passive form. See §19 Learnability.
 - **Loading**: same shape, replace italic with subdued spinner glyph if needed.
 - **Status-colored empty**: `.empty-state-warn` / `.empty-state-error` keep the shape but recolor the text to `--warning-color` / `--danger-color` and drop the italic (the color carries the meaning) — e.g. "Train no longer exists", "Error: …".
 - **Error in a row**: on a card or card-shaped row, `border-left: 3px solid var(--danger-color)` + `background-color: rgba(var(--danger-rgb), 0.08)` + value text in `var(--danger-color)`; in a §12 row, the red status dot with its `✕` glyph.
-- **A failed read is never an empty list.** A list the panel reads from the server shows "Loading…" until the first answer, and the empty line only after a read that worked. When no read has worked yet, it says so with `.empty-state-error` ("Could not read the routes: … Trying again."). When a later read fails, it keeps the last list and puts a §6 `.banner-warn` over it saying the list may be out of date. A picker fed by a read follows the same rule in its first option ("Reading the routes…", "Could not read the routes"). Reference: `PolledBody` in [next/operate/left-list.tsx](../frontend/src/next/operate/left-list.tsx); `routePickerPrompt` in `next/operate/train-panel.tsx`.
+- **A failed read is never an empty list.** A list the panel reads from the server shows "Reading…" until the first answer, and the empty line only after a read that worked. When no read has worked yet, it says so with `.empty-state-error` ("Could not read the detectors: … Trying again."). When a later read fails, it keeps the last list and puts a §6 `.banner-warn` over it saying the list may be out of date. A picker fed by a read follows the same rule in its first option ("Reading…", "Could not read …"). Reference: the Detectors tab in [next/logs/detectors-tab.tsx](../frontend/src/next/logs/detectors-tab.tsx) (Reading… and `.empty-state-error`).
 
 ---
 
@@ -1590,10 +1408,11 @@ border: 1px solid var(--border-color);
 border-radius: var(--control-radius-sm);
 ```
 
-For grouped info readouts (Route Plan, Next Stop) and list rows (route
-list, path list). The default `--bg-dark` fill against the body's
+For grouped info readouts and list rows (the Editor's block and switch
+lists). The default `--bg-dark` fill against the body's
 `--bg-panel` gives the card its definition; the 1px border gives the
-rounded shape its hard edge. References: `.rr-card`, `.path-row`.
+rounded shape its hard edge. Reference: `.rr-card` in
+[features/editor-lists.css](../static/css/features/editor-lists.css).
 
 ### Status-accented card
 
@@ -1610,17 +1429,16 @@ background: linear-gradient(180deg, rgba(var(--info-rgb), 0.04), var(--bg-dark) 
 References: the **`.entity-card`
 family** in [components/common.css](../static/css/components/common.css) —
 the compact (4–6px padding) card used for the entity readouts in the
-Editor right panel's tile, block and station panels. Operate's train,
+Editor right panel's tile, block, segment and switch panels. Operate's
 block and switch panels open with a §11 status header instead. It is
 **one** shared container, not five per-entity
 classes: the 3px left-border is driven by a `--card-accent` custom property
 the renderer sets inline — a dynamic state color for block
-(`getBlockStateColor`) / switch / signal (aspect), or a static palette value
-for fixed identities from the §7 kind map (station = `--info-color`, train =
-`--accent-color`). Inner parts: `.entity-card-dot`
+(`getBlockStateColor`) / switch, or a static palette value for fixed
+identities from the §7 kind map (train = `--accent-color`). Inner parts: `.entity-card-dot`
 (10px status dot — named for the family so it doesn't collide with the 8px
 debug `.status-dot`), `.entity-card-body`, `.entity-card-id` (mono
-identifier), `.entity-card-meta` (secondary line, e.g. station name),
+identifier), `.entity-card-meta` (secondary line, e.g. a block's segment count),
 `.entity-card-state` (uppercase state). These are **cards, not §12 rows**:
 each entity is a distinct object acted on as a whole (its own Edit button),
 not a homogeneous record compared down a column.
@@ -1630,7 +1448,7 @@ not a homogeneous record compared down a column.
 A prominent callout at the top of a panel body — `--bg-hover` bg
 (brighter than the rest of the body, so the eye lands here first), 3px
 dynamic left accent driven by state, 6px radius. Used for "the most
-important state right now" — train OBC power state, current task.
+important state right now" — a block's or switch's state.
 
 ```css
 padding: 10px 12px;
@@ -1649,12 +1467,14 @@ indistinguishable from a standard card border and defeats the callout intent.
 For an alert state, layer a horizontal gradient wash over the bg:
 `linear-gradient(90deg, rgba(var(--danger-rgb), 0.10), var(--bg-hover) 60%)`
 turns the emergency state into a tinted but still readable block.
-References: `.tc-status-headline`, `.tc-section-task`.
+Reference: `.status-header` in
+[components/status-blocks.css](../static/css/components/status-blocks.css),
+as Operate's block and switch panels use it.
 
 ### Copy button on an identifier
 
 Every canonical identity display — the id in a status header, in an entity
-card, in a train-control headline — carries a copy button immediately to its
+card — carries a copy button immediately to its
 right. Entity ids are not read so much as *carried*: into a filter box, a bug
 report, an API call. They clamp to an ellipsis (see [§5 Overflow: identifiers
 vs names](#overflow-identifiers-vs-names)), so the differentiating tail is
@@ -1711,7 +1531,7 @@ the row's own click target.
 
 A card whose body collapses behind a native `<details>` / `<summary>`
 toggle. Used for "I might want to look at this, but not by default"
-(the train panel's Details, advanced settings). The card itself follows the Standard
+(advanced settings, a Hardware Setup detail). The card itself follows the Standard
 card styling. Summary row is 10px UPPERCASE weight-600 `--text-secondary`
 with a rotating `▸` caret that points down when open. (`--text-secondary`
 rather than the `--text-tertiary` used for field labels: a disclosure
@@ -1743,11 +1563,11 @@ composition is different enough to deserve its own subsection — see
 "Composing a detail page top" below.
 
 Reference: `.rr-card` in
-`features/routes-paths.css`.
+[features/editor-lists.css](../static/css/features/editor-lists.css).
 
 ### Composing a detail page top
 
-When the page is a single record (a route run, a train, a path) rather
+When the page is a single record (a block, a switch) rather
 than a list of records, the top section pairs a Status header block
 (this section, above) with a stats block directly below it.
 
@@ -1789,15 +1609,14 @@ left-border helpers from the same file (`accent` = purple, for a selected /
 active record). Those helpers must be declared **after** `.status-header` in
 the stylesheet: `.status-header` sets its border color through the
 `border-left` shorthand, so a same-specificity `.accent-*` override only
-wins when it comes later in source order. The stats block (route-runs
-specific) is `.rr-summary` in
-`features/routes-paths.css`.
+wins when it comes later in source order. No panel uses the stats block
+now.
 
 ### Composing a multi-select / batch-action panel
 
 When the panel acts on a **set** of selected entities at once — a drag-select
-in the editor grabbing many tiles that span several blocks, platforms,
-switches, and signals — the top is a selection-summary callout and the body
+in the editor grabbing many tiles that span several blocks and switches —
+the top is a selection-summary callout and the body
 is grouped action sections. It is the multi-entity sibling of "Composing a
 detail page top": the same `.status-header` callout, but it describes a
 selection rather than one record.
@@ -1817,8 +1636,7 @@ so the counts get the full callout width.
   overflows instead of wrapping. Bind the `·` to the end of its segment so a
   wrap never orphans a separator at the start of the next line.
 - **Chip row** — one §7 chip per entity, coloured by the §7 kind map
-  (block purple, platform info, switch warn, signal success, raw tile
-  muted). List the
+  (block purple, switch warn, raw tile muted). List the
   meaningful structural entities first and the bulk (tiles) last, then cap
   the row height and scroll — the structural chips stay visible; only the
   substrate scrolls out.
@@ -1829,7 +1647,7 @@ main action is a single accent-tint `.btn-accent` CTA (§3); supporting
 actions are plain `.btn-outline` ghosts; irreversible actions are the
 danger-tint `.btn-danger`, kept together in a `Destructive` group at the
 bottom. Batch property edits use one `Apply to N` button for the whole group
-rather than per-field saves (§5C); an untouched or mixed field is left out of
+rather than per-field saves (§5B); an untouched or mixed field is left out of
 the write (see §4 indeterminate checkbox).
 
 Reference: `.ms-*` in [layout/shell.css](../static/css/layout/shell.css),
@@ -1866,50 +1684,6 @@ Reference: `SETUP_STEPS` / `stepMarks` / `firstOpenStep` in
 `StepFrame` in
 [next/hardware/screen.tsx](../frontend/src/next/hardware/screen.tsx);
 `.nhs-step*` in [next/hardware.css](../static/css/next/hardware.css).
-
-**When there is no room for a step list beside the step, the steps hold
-their own controls in one column.** The calibration group on the
-Locomotives screen is the reference. That screen already has the locomotive
-list on the left and, during a run, the map on the right, so a second list
-column would squeeze both. The marks follow the rules above.
-
-- **Each step holds the control that does it.** The step's title comes
-  first, and the row that does the step sits right under it. A list of
-  steps at the top with every control in a separate form below makes the
-  operator read "pick a block" and then go looking for the block picker.
-  That is what made the calibration group feel cramped: every step's
-  controls were on screen at once, in a different order from the steps.
-- **A step that is not current shows one line:** its value and the one
-  button that opens it (the lighting-voltage row: `1.5 V` and Calibrate).
-  The operator can redo a done step from there without opening anything
-  else.
-- **Only the current step opens.** It is shaded `--bg-hover`, its mark gets
-  the accent ring, and its open run shows its working controls: the voltage
-  stepper, the block picker, the pass progress, or Save and Promote. The
-  other steps are muted, and a step still to come has a lighter title.
-- **The hint shows only while nothing is open.** It says how to start the
-  current step ("Press Calibrate speed, pick a block on the map or in the
-  list, then Start."). Once a run is open, its own controls and text say
-  what to do, and the hint would be out of date.
-- **A control that serves several steps moves with the job.** The speed
-  row sits under step 3 while the pass is set up, under step 4 while it
-  runs, and under step 5 while the result waits to be committed.
-- **Values stored on the record stay out of the steps.** The steps are a
-  job the operator does; the record's own settings are not part of it. Put
-  each setting beside the thing it sets: Max voltage is the 100% point of
-  the voltage ↔ power curve, so it sits in that curve's section, and Top
-  speed sits in the power ↔ speed section.
-- **Labels inside the steps share one width** (160px), so the values and
-  selects of every step start at the same x. When the column is narrower
-  than 420px, each label goes on its own line above its control (§4,
-  Control row layout).
-
-Reference: `CalibrationSteps` / `stepRows` in
-`next/locomotives/calibration-steps.tsx`,
-which moves the Speed Profile panel's rows into their steps after each draw;
-`calibrationSteps` in
-`next/locomotives/model.ts`;
-`.nloco-step*` in `next/locomotives.css`.
 
 ### One button for a run of checks
 
@@ -1952,61 +1726,28 @@ Operate's cards row has one card per train, and it is the reference for a
 card that stands for one record the operator acts on as a whole (Container
 matches data):
 
-- **Left edge:** a §6 status stripe that says whether the train needs the
-  operator, so that train stands out when the eye runs along the row.
-  This stripe answers "does the operator need to act?", not "what is the
-  train doing?", so for this edge it overrides the §1 accent meanings: a
-  dwell is info here, though §1 calls dwell a warning. A list that shows
-  train *state* — the §12 Assigned Trains row — keeps the §1 meanings. It is
-  read from the train's hold reason (design_new.md "Hold reason"):
-  danger for the emergency brake or cut-out or a lost train; warning when it
-  waits on the operator or a failed plan (unidentified, ATO not started, no
-  route, planning failed); info when the railway makes it wait (a dwell, the
-  end of its reservation, the ATC limit, a pending action, a calibration
-  run); success while it moves; none when it stands by choice or the whole
-  session is stopped, which the top bar already says.
-- **Head line:** the train's name, then its `train_status` and `ato_status`
-  as §7 state chips.
-- **Hero:** the speed, large, with its unit, and the ATC limit beside it in
-  small text — the number the driver watches next to the number that bounds
-  it.
-- **One line of why** while the train stands: its hold reason, cut with an
-  ellipsis and shown whole in the tooltip (§5 Overflow, one-line status
-  sentences). A question-1 reason (the session
-  is Halted, in Setup, or Paused) is left off the card: it is the same for
-  every train and the top bar already shows it. The train panel still shows
-  it in full.
-- **The card keeps its width.** A long hold reason ends in an ellipsis; it
-  never widens the card (see [§5 Overflow](#overflow-identifiers-vs-names):
+- **Left edge:** a §6 status stripe read from the train's state: success
+  while it moves, info while it waits, danger when it is lost, none when it
+  is stopped.
+- **Head line:** the train's id and name, then its state as a §7 state
+  chip.
+- **One line of where and why:** the blocks it is on and the block ahead,
+  or why it waits, cut with an ellipsis and shown whole in the tooltip
+  (§5 Overflow, one-line status sentences).
+- **The card keeps its width.** A long line ends in an ellipsis; it never
+  widens the card (see [§5 Overflow](#overflow-identifiers-vs-names):
   `min-width: 0` on the card as well as on the line).
-- **One main control,** chosen from the train's state: Go or Stop for ATO,
-  Start route, Power on, Release, or a small handle for manual driving. The
-  card carries only the next thing to do; every control lives in the
-  train's right panel.
-- **A click on the card selects the train,** the same as picking it on the
-  map, and a pick on the map marks the card. A click on the card's control
-  acts and does not select. To the keyboard the card is a button: Enter or
-  Space selects it.
-- **The row folds to one line per card.** A button at the end of the row,
-  after + Place train and Hold all, folds it to about half the height: each
-  card becomes one line of name, chips, speed and ATC limit, and the
-  control, and its hold reason moves to the card's hover text. A folded card
-  is as wide as its line, so the chips never squeeze the name; only a name
-  longer than 180px ends in an ellipsis, with the full name in its tooltip.
-  This is the one exception to §5 Overflow's wrap rule for names: the
-  folded row exists to keep each card on one line. The buttons sit side by side when
-  folded and stacked when not.
-- **The end buttons stay in view while the row scrolls.** They are a sticky
-  group, and the row's right padding is on that group rather than on the
-  scrolling row, so no card shows between the group and the edge.
+- **The controls are on the card:** the speed knob (§4 Slider), Reverse,
+  Stop, and a remove button on a lost or stopped train.
+- **A click on the train's name selects it,** the same as picking it on
+  the map, and a pick on the map marks the card.
+- **The end button stays in view while the row scrolls.** Stop all sits in
+  a sticky group, and the row's right padding is on that group rather than
+  on the scrolling row, so no card shows between the group and the edge.
 
-Reference: `RunningTrainsRow` in
+Reference: `RunningTrainsRow` / `RunningTrainCard` in
 [next/operate/running-trains.tsx](../frontend/src/next/operate/running-trains.tsx);
-`cardControl`, `cardHoldLine` and `trainCardTone` in
-`next/operate/train-display.ts`;
-`cardsFolded` in
-[next/operate/operate-state.ts](../frontend/src/next/operate/operate-state.ts);
-`.op-card*` in [next/operate.css](../static/css/next/operate.css).
+`.op-card*` and `.rt-card-*` in [next/operate.css](../static/css/next/operate.css).
 
 ---
 
@@ -2023,15 +1764,16 @@ for the row-shaped alternative.
 
 ### Putting it together
 
-A list of route-run steps, refactored from edge-pinned cards into
-compact rows. The header carries the column names once; the rows below
+A list of timed steps, drawn as compact rows. (The example comes from a
+deleted panel; the Logs screen's Event log follows the same rule of one
+header and shared x-positions.) The header carries the column names once; the rows below
 share the same x-positions so a downward scan reads as a single column.
 
 ```
 #    type    target          detail              time
-●  3 STOP    STA_DDB6BE      platform · F-(9,4)-N    1:33:59 PM
+●  3 STOP    BLK_3           block · F-(9,4)-N       1:33:59 PM
                                                      1:34:15 PM   16s
-•  4 DWELL   STA_DDB6BE      platform · either       1:34:15 PM
+•  4 DWELL   BLK_3           block · either          1:34:15 PM
                                                      1:34:17 PM    2s
 ●  5 STOP    MAIN_WEST       block · R-(6,2)-W       1:34:17 PM    ← currently running
 ```
@@ -2048,9 +1790,9 @@ When both start and finish exist, the time cell stacks them on two lines — ver
 - **Verb** (`STOP` / `DWELL`) — bold accent-tinted chip (`.chip-state`, §7), the
   categorical filter the eye scans first (Scan order). Sized for the
   filter pass, not the identity pass.
-- **Noun** (`STA_DDB6BE` / `MAIN_WEST`) — bright mono, medium-large,
+- **Noun** (`BLK_3` / `MAIN_WEST`) — bright mono, medium-large,
   `--text-primary`. The identity — what the row IS.
-- **Modifiers** (`platform · fwd`) — small, `--text-secondary`.
+- **Modifiers** (`block · fwd`) — small, `--text-secondary`.
   Useful when present, invisible when not. Never repeated when empty
   (Repetition blindness).
 - **Timestamps + derived duration** — when both start and finish exist,
@@ -2088,43 +1830,13 @@ brightness lives in the ambient surface.
 ### Reusing the row pattern across panels
 
 The same dot · ordinal · verb · noun · modifier · action skeleton works
-for every "homogeneous comparable record" view in the app. The route-runs
-editor was the first consumer (`.rr-task-*` in routes-paths.css); the
-route editor's Assigned Trains list became the second (`.atr-*`, same
-file). Two consumers means the rules are due to move into a shared
-`.list-row*` family in `components/status-blocks.css` (the promotion rule
-in "Where the primitives live"; see Known divergences), with each panel
-layering only its own column-set and per-cell content on top — keep the
-grid container, status dot and glyph, verb chip, action column, and row
-hover identical across panels so the eye trains once.
-
-Worked example — the assigned-trains row uses the same skeleton with
-the time column swapped for an `Unassign` action button:
-
-```
-●  T1   DWELL   Station 1    forward · 7s left   [Unassign]
-●  T2   STOP    S2 South     forward             [Unassign]
-●  T3   IDLE    queued       —                   [Unassign]
-```
-
-- **Dot** — warn (amber, `!`) while dwelling, danger (red, `✕`) when the
-  live status payload is missing, transparent with no glyph when ordinary
-  running. Same
-  hue channel rules as the route-runs version; "noteworthy" means a
-  hand to play (not "important row" — that's the brightness channel).
-- **Identity** (`T1` etc.) — bright mono. The train ID is the row's
-  stable identity, sits in the Hero-per-row stable-identity slot.
-- **Verb** (`DWELL` / `STOP` / `IDLE`) — a `.chip-state` with the
-  `.chip-info` / `.chip-warn` / `.chip-muted` variant (§7), the same as
-  the route-runs verb; trains the eye across both editors.
-- **Modifier** — derived dwell-remaining + direction. Sanity-cap the
-  remaining-seconds value before display (here: suppress anything
-  outside `0…3600`) — the §14 "Don't render unit-mismatched numbers
-  raw" rule.
-- **Action** — `Unassign` is a ghost button, **not** danger-colored:
-  unassign is reversible. Danger (red) is reserved for irreversible
-  destructive actions (Delete Route). Mixing the two devalues the hue
-  for the genuinely destructive case (§6).
+for every "homogeneous comparable record" view in the app. Keep the grid
+container, status dot and glyph, verb chip, action column, and row hover
+identical across panels so the eye trains once. When a second panel uses
+the skeleton, move it into a shared `.list-row*` family in
+`components/status-blocks.css` (the promotion rule in "Where the
+primitives live"), with each panel layering only its own column-set and
+per-cell content on top.
 
 ### Selected row (single-select lists)
 
@@ -2151,7 +1863,7 @@ every list.
 - **A status edge survives the pick.** A row with a §6 left stripe sets its
   colour in `--row-status-color`; the selected mark recolours the other
   three sides and leaves the left edge that colour, so picking a train card
-  never hides whether the train needs the operator.
+  never hides the train's state.
 - **One class, everywhere.** Every list adds `.row-selected` to its picked
   row and writes no selected rule of its own. The rule doubles the class so
   it outranks a list's own base and `:hover` rules whatever order the
@@ -2160,8 +1872,8 @@ every list.
 Reference: `.row-selected` in
 [components/status-blocks.css](../static/css/components/status-blocks.css),
 used by the saved-layout list ([app.ts](../frontend/src/app.ts)), Operate's
-left list and train cards, the Hardware Setup step list, the
-Locomotives list, and the Logs screen's Detectors tab (the block picked on
+left list and train cards, the Hardware Setup step list, and the Logs
+screen's Detectors tab (the block picked on
 the canvas).
 
 ### Action modifiers must touch their action
@@ -2181,22 +1893,22 @@ Same principle covers any "execute with options" pattern: per-task
 direction picker next to the move button, per-row enable toggle next to
 the row action, etc.
 
-### Panel navigation and the unsaved-edits indicator
+### Panel navigation
 
 Navigation up and out of a panel lives in the right panel's header — one
 implementation for every panel — never inside any one panel's body:
 
 ```
-[← Routes]  Route Editor                    [≡] [⧉] [×]
+[← Blocks]  Block                           [≡] [⧉] [×]
 ```
 
 - **Parent link** — when the open panel is the detail view of a record
   whose list panel exists, the header's left slot is a ghost button
-  labeled with the destination (`← Routes`), never the ambiguous word
+  labeled with the destination (`← Blocks`), never the ambiguous word
   "Back." It opens the list. List panels, and detail views with no list
-  home (signals, platforms), show no parent link. Keyboard: Alt+Left.
+  home, show no parent link. Keyboard: Alt+Left.
 - **Lists** (`ti-list`, Editor screen) — a menu of the lists that used to
-  be tool-rail buttons: Switches, Stations, Blocks.
+  be tool-rail buttons: Switches, Blocks.
 - **Pop out** (`ti-external-link`) — moves the panel into a floating
   window and back (`ti-layout-sidebar-right` while it floats); see
   "Popping the right panel out" below.
@@ -2204,25 +1916,6 @@ implementation for every panel — never inside any one panel's body:
 - **Button style** — the parent link and the Lists / Pop out / Close
   buttons are each a regular ghost (§3) standing alone on the header; the
   three icons are icon-only squares.
-
-A long editor panel (Route Editor, Path Editor) also shouldn't bury
-Save in the bottom section. Sections describe what they edit; Save
-applies to the whole panel, so it lives in a sticky top toolbar instead
-of inside any one section. Reference: `.re-toolbar` in
-`features/routes-paths.css`.
-
-```
-● unsaved      [⟳]  [Save *]
-```
-
-- **Dirty indicator** — warn-color `● unsaved` text in the spacer. No
-  border, no badge — it's a status marker, not a button.
-- **Refresh** — icon-only flat ghost (the toolbar is its container, §3). Polls already keep the panel in
-  sync, but an explicit affordance gives the user "I clicked something;
-  did the server hear me?" confidence.
-- **Save** — accent-tinted background and a `*` suffix when dirty. Not
-  a primary-fill button; the tint reads as "attention" without
-  competing with destructive actions for visual weight.
 
 ---
 
@@ -2234,8 +1927,7 @@ double-click-to-fit, the `--z-window` band — and the same button docks it
 back to the right of the canvas. The window adopts the panel's own
 element, so popping out moves nothing and redraws nothing: every panel
 inside keeps working. Whether it floats, and where, is remembered per
-screen. It is the only floating window a screen keeps
-(ui-layout-rewrite-plan.md §12, decision 2): there are no tabs, no
+screen. It is the only floating window a screen keeps: there are no tabs, no
 pinned groups and no split-off windows.
 
 Reference: `RightPanel` in
@@ -2301,7 +1993,7 @@ Auto-dismisses after a few seconds with a slide-out animation. Reference:
 ### Floating picker
 
 A small popover near the cursor when a click hits something with
-multiple targetable items (e.g. a tile that contains a platform AND a
+multiple targetable items (e.g. a tile that belongs to a segment AND a
 block). Panel-language styling — `--bg-panel` bg, hairline border, drop
 shadow. Options inside are flat-ghost rows: `--bg-hover` on hover, as §3.
 
@@ -2346,8 +2038,8 @@ cursor and nudges back inside the viewport when it would overflow an edge.
 
 The mechanism is generic: callers pass sections of `{ label, sublabel, icon,
 detail, onSelect, emphasis }` items and nothing in the menu knows about tiles.
-The editor's per-tile menu — every train / switch / block / segment / signal /
-platform on the clicked tile, plus inline actions like throwing a switch — is
+The editor's per-tile menu — every switch / segment / block on the
+clicked tile, plus inline actions like throwing a switch — is
 one caller. Reference: `showContextMenu` in
 [lib/context-menu.ts](../frontend/src/lib/context-menu.ts); `.tile-context-menu`
 (+ `-heading`, `-sep`, `-item`, `-text`, `-sub`, `-item--accent`,
@@ -2380,15 +2072,15 @@ Reference: `MenuButton` in [next/menu.tsx](../frontend/src/next/menu.tsx);
 
 - **No color emoji anywhere in the UI.** The icon system is Tabler (see §3 Icons); monochrome Unicode glyphs (`▸ ▾ ×`) remain fine for tiny structural chrome — carets, a select-arrow decoration, a close-X on a tab. Pictographic glyphs Inter doesn't carry (`⟳` / `↻` rotate arrows, play/pause triangles) fall back to Arial and misalign inside a button box — use Tabler for those. Both render in the CSS `color` property and respect the token palette. Color emoji (`🚦 🚉 📋 📊 🚨`) render as color pictographs regardless of `color:` and fight with the palette — never use them in buttons, headers, labels, or any panel chrome. Quick test: if setting `color: red` on the character turns it red, it's a monochrome symbol and is OK; if it stays a colorful picture, it's an emoji and is not.
 - **No new colors.** If you can't reach for a token, the design doesn't have a slot for it yet — pause and discuss instead of inventing.
-- **Don't cross the canvas/panel hue firewall.** The canvas tokens (`--canvas-*`, `--block-*`, `--train-body-*`) paint canvas geometry and §17 state marks. In panel chrome the `--block-*` tokens appear only through `getBlockStateColor`, on an element that names a block state; the other canvas tokens never appear there. The §1 accent palette tints panel chrome; it never paints canvas geometry. The two palettes deliberately tune the "same" hue differently (OCCUPIED `#ef4444` vs `--danger-color` `#e83f5b`) — mixing them re-merges what was split on purpose. Panel UI that *describes* a block state (a chip, a legend swatch) goes through `getBlockStateColor`, not a hand-picked accent.
-- **Don't let hue carry state alone.** Roughly 8% of male users can't reliably separate red from green, and this product's audience skews male — that's a real slice of the user base, not a compliance checkbox. Every state mark pairs its hue with a second channel: position (the §6 accent is always a left border; a signal lamp sits on its stick), shape or text (the switch badge carries `M`/`D`; chips carry words), or brightness (dim = inactive). A mark whose *only* meaning is red-vs-amber at 6px fails the check — give it a glyph, a label, or a position the eye can read without the hue.
+- **Don't cross the canvas/panel hue firewall.** The canvas tokens (`--canvas-*`, `--block-*`, `--train-*`) paint canvas geometry and §17 state marks. In panel chrome the `--block-*` tokens appear only through `getBlockStateColor`, on an element that names a block state; the other canvas tokens never appear there. The §1 accent palette tints panel chrome; it never paints canvas geometry. The two palettes deliberately tune the "same" hue differently (OCCUPIED `#ef4444` vs `--danger-color` `#e83f5b`) — mixing them re-merges what was split on purpose. Panel UI that *describes* a block state (a chip, a legend swatch) goes through `getBlockStateColor`, not a hand-picked accent.
+- **Don't let hue carry state alone.** Roughly 8% of male users can't reliably separate red from green, and this product's audience skews male — that's a real slice of the user base, not a compliance checkbox. Every state mark pairs its hue with a second channel: position (the §6 accent is always a left border), shape or text (the switch badge carries `M`/`D`; chips carry words), or brightness (dim = inactive). A mark whose *only* meaning is red-vs-amber at 6px fails the check — give it a glyph, a label, or a position the eye can read without the hue.
 - **No freelance ornaments inside a shared shape.** The same logic that bars new colors bars adding visual elements (an inner status dot, a leading icon, a divider rule, a decorative glyph) to a canonical primitive the doc already specifies. The §7 chip is text on a tinted pill — not "text + a glowing dot." If you find yourself reaching for an extra mark to make a component read better, pause: either the component is wrong for the job (pick a different one) or the doc is missing a slot (raise it as a doc question). Quick test: would I have to mint a new class to render this? Then it's freelance.
 - **No solid filled buttons in panels.** Use the ghost + accent-tint pattern.
 - **Don't border the container *and* every child.** If the container has a border (segmented cluster, tool grid, tab strip, card), the children inside are flat ghosts. If the children need their own borders (standalone buttons on the panel body), the container is unbordered. Doubling the borders reads as fenced-off boxes inside fenced-off boxes — the rendered weight is double what the structure needs.
 - **No nested panels.** A panel inside a panel inside a panel is a sign the structure is wrong.
 - **No multi-paragraph banners.** A footer banner is a single line of diagnostic text. Anything longer belongs in a tooltip or a disclosure.
 - **No `box-shadow` for emphasis.** Use border + background tint. The only shadows are the three overlay shadows in §1 Shadows.
-- **Don't hide the audit trail by default.** When the most common next user question is "what just happened?" — after activate, assign, or any state change — the history / audit panel must be visible without a click. Compactness comes from capping per-entity row counts (top 10 per train, top N per session), not from hiding the whole section. Reference: `_historyMaxRunsPerTrain = 10` in `editor-routes.ts`. The wrong polarity (hide-by-default) trains users to assume the data isn't there.
+- **Don't hide the audit trail by default.** When the most common next user question is "what just happened?" — after activate, assign, or any state change — the history / audit panel must be visible without a click. Compactness comes from capping per-entity row counts (top 10 per train, top N per session), not from hiding the whole section. The wrong polarity (hide-by-default) trains users to assume the data isn't there.
 - **Don't render unit-mismatched numbers raw.** When a numeric field is supposed to be a duration but the backend can leak an absolute timestamp through it (different clock units, an off-by-1000 ms-vs-s mix, a wall-clock value where a sim-clock value belongs), sanity-cap the display in the UI: implausible values are hidden, not rendered as "dwell 1779949962s." The backend fix is separate; the UI must not propagate the garbage. Quick test: write down the plausible range for this field and assert against it before formatting (e.g. dwell-remaining: `Number.isFinite(v) && v >= 0 && v <= 3600`).
 
 ---
@@ -2398,12 +2090,8 @@ Reference: `MenuButton` in [next/menu.tsx](../frontend/src/next/menu.tsx);
 When in doubt, copy the structure of one of these:
 
 - **Shared compositional primitives** → [components/status-blocks.css](../static/css/components/status-blocks.css) — the §6 banner, §7 chip, §11 status header, and §6 accent helpers. Editor panels consume these classes directly (`.status-header`, `.chip`, `.banner`, `.accent-*`) instead of redefining the shapes per feature.
-- **Detail-page editor** → `editor-route-runs.ts` + `features/routes-paths.css` — the worked reference for composing a `status-header` + stats block + list of rows inside an editor sidebar. Route-run-specific bits (`.rr-card`, `.rr-summary`, `.rr-task-*`) layer on top of the shared primitives.
-- **Long edit-and-act panel** → `editor-routes.ts` + the `.re-toolbar` / `.atr-*` rules in `features/routes-paths.css` — the worked reference for a panel that mixes editing (tasks, mode, policy) with live monitoring (assigned trains, history). Demonstrates: sticky top toolbar with Save + dirty indicator + Refresh; assigned-trains list as a row-shaped second consumer of the `.rr-task-*` skeleton; history default-visible with per-entity cap; Force checkbox adjacent to the Assign button it modifies.
 - **Floating window chrome** → [layout/floating-window.css](../static/css/layout/floating-window.css) + [window-manager.ts](../frontend/src/lib/window-manager.ts) — the shared header (title + close, or an adopted header with its own buttons) + content area + 8-direction resize handles, draggable, resizable, double-click-to-fit. Header has no border; relies on `--bg-hover` against `--bg-panel`. The right panels' pop-out composes this instead of redefining it.
-- **Logs screen tab content** → `diagnostics.css` — toolbar + scrolling body, shown in the Logs screen's Diagnostics tab. Toolbar keeps `border-bottom` because it shares `--bg-panel` with the body (per the §2 toolbar rule: same surface → hairline separator needed).
-- **Look-ahead graph** → `train-monitor.css` (deleted) — the graph, view-distance control and Upcoming list the Operate train panel's Look-ahead section shows. The segmented view-distance control is a bordered container of flat ghosts (no internal dividers).
-- **Right panel form** → [controls.css](../static/css/features/controls.css) — sectioned vertical stack inside a right panel. Status rows use the 3px left-border accent only, no surrounding 1px box.
+- **Logs screen tab content** → [event-log.css](../static/css/features/event-log.css) — toolbar + scrolling body, shown in the Logs screen's Event log tab. Toolbar keeps `border-bottom` because it shares `--bg-panel` with the body (per the §2 toolbar rule: same surface → hairline separator needed).
 
 **Not a reference — outside this doc.** The standalone debug page
 ([static/debug.html](../static/debug.html), styled by
@@ -2416,74 +2104,40 @@ chrome into the product UI, and don't tokenize it to match.
 
 ## 16. Canvas labels
 
-Labels rendered directly on the canvas (station, platform, train) — distinct
-from the inline field labels in §5. These labels coexist with track chassis,
-block state colors, signals, and moving trains, so they need rules the
-panel-chrome vocabulary doesn't cover: zoom-aware borders, z-order under
-moving things, opaque fills that survive overlap.
+Labels rendered directly on the canvas (the train ID tag, a tunnel mouth's
+pair label) — distinct from the inline field labels in §5. These labels
+coexist with track chassis, block state colors and moving trains, so they
+need rules the panel-chrome vocabulary doesn't cover: zoom-aware borders,
+z-order under moving things, opaque fills that survive overlap.
 
 ### Tier hierarchy
 
 Pick the tier by liveness:
 
-- **Static identity** — quietest, two forms:
-  - **Platform name** — stamped directly on the platform body bar: white
-    text, no box, no border, rotated to run along the bar and sized to the
-    bar thickness (≈ 7px at scale 1). The bar is its own label surface, so a
-    both-sides platform shows the name on both bars.
-  - **Station name** — a small chip (opaque dark fill + thin neutral outline
-    + white text, 9px) at the centre of the platform group. It slides to
-    clear space just outside the group when the centre would sit on a bar, so
-    it never covers a platform's on-bar name.
-- **Live identity** (train ID) — one tier up. Opaque dark base mixed with
-  ~15% accent + thin accent border + white text. The train's motion is what
-  reads as "alive"; the label just carries the categorical color, restrained.
-- **Hover / user attention** — top tier. Opaque dark base mixed with ~15%
-  accent + saturated accent border + full name at one font tier larger.
-  Earns the louder treatment because it's one label at a time and the user
-  is actively pointing.
+- **Static identity** — quietest. A label for something that does not
+  move sits under everything live or state-bearing.
+- **Live identity** (train ID) — one tier up. The train tag is specified
+  in §17 "V2 trains on the layout".
+- **Hover / user attention** — top tier. Earns a louder treatment because
+  it's one label at a time and the user is actively pointing.
 
-State indicators (block colors, signal aspects, route overlays) sit in a
-separate visual channel — saturated hue marks at the entity's location, no
-label box. They coexist with these labels via the brightness vs. hue split
-in §12 "Color channels".
+State indicators (block colors, switch badges) sit in a separate visual
+channel — saturated hue marks at the entity's location, no label box. They
+coexist with these labels via the brightness vs. hue split in §12 "Color
+channels".
 
 ### Fills are opaque; color lives in the border
 
-The platform name has no fill of its own — it rides on the opaque platform
-body bar (the muted structural fill, not a state hue), which already blocks
-what's behind it. The rest of this rule is about the label *chips* (station,
-train).
-
-**Label chips use a near-opaque dark base** (alpha ≥ 0.85) so an overlapping
-chip doesn't bleed through and read as visual mush. The categorical color
-comes from:
-
-1. The **border** — saturated accent (`rgba(R, G, B, 0.9)`).
-2. A **subtle mix into the dark base** — e.g., the train label fill is
-   `rgba(32, 26, 50, 0.92)`, a dark base with ~15% purple mixed in; opaque
-   enough to block what's behind, tinted enough to read as categorically
-   purple.
+**Label chips use a near-opaque base** (alpha ≥ 0.85) so an overlapping
+chip doesn't bleed through and read as visual mush.
 
 The rule rules out §7's state-badge pattern of a saturated solid fill
-(yellow / purple / amber). That treatment is reserved for transient state
-badges, not permanent labels — when a label uses solid saturation, it
-"steals" a state hue from the canvas alert palette and identity ends up
-shouting louder than the actual changing state.
-
-Concrete fills currently in use:
-
-| Label             | Fill                          |
-|-------------------|-------------------------------|
-| Station default   | `rgba(15, 15, 18, 0.92)`      |
-| Station hover     | `rgba(50, 35, 5, 0.92)`       |
-| Train             | `rgba(32, 26, 50, 0.92)`      |
-
-References: `_drawLabel` and `_placeLabel` in
-`renderer-stations.ts`; `drawTrainLabel`
-in `renderer-trains.ts`;
-`drawPlatformNameOnBody` in
-`renderer-platforms.ts`.
+(yellow / purple / amber) on a permanent identity label. That treatment is
+reserved for transient state badges — when a label uses solid saturation,
+it "steals" a state hue from the canvas alert palette and identity ends up
+shouting louder than the actual changing state. The train tag is the
+exception: its fill is the train's state color, so the tag carries state
+as well as identity (§17).
 
 ### Borders are screen-pixel-capped
 
@@ -2502,68 +2156,32 @@ Math.min(Math.max(1.2, s * 0.4), 2.5);
 
 Pick the cap by tier — live and hover are slightly thicker so the visual
 hierarchy survives at every zoom. The same formula shape applies to
-highlight strokes (below).
+highlight strokes, such as a train's emphasis lines (§17).
 
 ### Z-order is liveness-based
 
 Draw order in [renderer.ts](../frontend/src/renderer/renderer.ts) `drawNetwork`:
 
-1. Track chassis + block colors (bottom)
-2. Platform bodies + on-bar names (identity tier)
-3. **Station labels — default, non-hovered** (identity tier)
-4. Signals, debug overlays, block detail labels (state)
-5. Route overlays
-6. Trains + train labels (live)
-7. **Station label — hover overlay** (user attention, top)
-8. Box / lasso select overlay
+1. Grid, track chassis + block colors (bottom)
+2. Switch badges, block boundary dots, debug overlays, block detail labels (state)
+3. Tunnel mouths and their pair labels
+4. The Editor's reachable-tile fill and locate flash
+5. Block direction arrows (Editor only)
+6. Trains: lines and ID tags (live)
+7. Tile direction debug arrows
+8. Box / lasso select overlay and build previews (top)
 
 The rule: **static identity sits under anything live or state-bearing.** A
-train passing through a station paints *over* the station's name — the
-station's identity is permanent context, the train is the thing the user is
+train paints over what it passes; the train is the thing the user is
 watching.
-
-The exception is the hover state. When the user is actively pointing at a
-station label, that one label gets a second pass at the very top of the
-stack so it wins over the moving train. `drawStations()` runs at step 3 for
-all non-hovered labels; `drawHoverOverlay()` runs at step 7 for just the
-hovered one.
 
 **Two-canvas implementation.** The single conceptual stack above is realized on
 two stacked canvases (see [canvas.css](../static/css/layout/canvas.css)): a
-`#rail-world-canvas` (z-index 1, purely visual) painted by `_drawWorld` — track,
-blocks, platform bodies, signals, debug overlays, block-detail labels — and a
-`#rail-canvas` (z-index 2, owns the pointer) painted on top by `_drawLive`
-— the platform/station identity labels (the station chip re-evaluates on every
-mousemove for its hover state), route overlays, trains + train labels, and the
-select overlay.
-`drawNetwork` runs `_drawWorld` then `_drawLive`. Within-canvas order keeps the
-rule above (a train paints over a station name; the hovered label gets its top
-pass). The one consequence of the split: the interactive identity labels on the
-live canvas sit above the world canvas's display-only signal / debug /
-block-detail marks rather than beneath them.
+`#rail-world-canvas` (z-index 1, purely visual) painted by `_drawWorld` —
+steps 1–2 — and a `#rail-canvas` (z-index 2, owns the pointer) painted on top
+by `_drawLive` — steps 3–8. `drawNetwork` runs `_drawWorld` then `_drawLive`.
 
-### Highlight strokes
-
-When a hovered label points to member entities (station label → platform
-bodies), the members get a "highlight stroke" outlining their shape. Rules:
-
-- **Same accent color as the hovered label's border.** The label and its
-  members read as one connected gesture (one focus).
-- **Lower opacity than the label** (~0.7 vs 0.9). Highlights are *context*,
-  not the focus.
-- **Screen-pixel-capped stroke width** — same cap pattern as label borders:
-  `Math.min(Math.max(1.5, s * 0.5), 2.5)`.
-- **Closed paths with round joins and caps**, not per-segment strokes. The
-  naive per-segment form caps each line's endpoint independently and the
-  corners come out chunky.
-- **No fill tint over entity bodies that carry their own state** (trains,
-  blocks). A tint over a train would visually steal the train's state
-  color — the §12 hue-fights-hue problem.
-
-Reference: `_drawPlatformHighlights` in
-`renderer-stations.ts`.
-
-### Overlap and collision avoidance
+### Overlap
 
 Two labels at the same screen position is acceptable when the higher-tier
 label wins via z-order + opaque fill: the lower-tier label is partially
@@ -2571,63 +2189,10 @@ hidden but the foreground label stays fully legible. The opacity rule above
 (no bleed-through) is what makes this work — without opaque fills, two
 overlapping labels mix into illegible mush instead of one winning cleanly.
 
-That fallback alone isn't enough though. A train label parked permanently
-on top of a station label still hides the station — even when fully
-legible, the user can't read what they can't see. So labels with positional
-freedom actively reposition to avoid overlap, on top of the z-order rule.
-
-**The mechanism: shared per-frame label-rect registry.**
-`renderer.labelBounds` is reset at the top of `_drawLive` each frame and
-populated in draw order. Each handler pushes its label's axis-aligned rect
-into the registry right after placement:
-
-| Pushed by | Reads registry? | Tier label |
-|-----------|-----------------|------------|
-| Platform names (first) | no | `'platform'` |
-| Station labels (second, non-hovered only) | no | `'station'` |
-| Train labels (third) | **yes** | `'train'` |
-
-Only the train label currently has positional freedom (4 quadrant
-candidates around the train head, picked by `_pickLabelPosition`), so only
-the train label reads the registry. The picker's existing score adds a
-fourth factor — overlap area with each entry in `labelBounds`, normalised
-to the train label's own area and weighted so a single full overlap (-60)
-outranks the saturated track distance (+30) and direction preference
-(+8 max) combined.
-
-Iteration order matters: trains push their chosen rect into the registry
-*after* picking, so the next train placed this frame sees and avoids it
-too. `network.trains.forEach` is deterministic, so behaviour is stable
-across frames.
-
-**What this rule does NOT cover:**
-
-- **All-quadrants-blocked.** The picker picks the least-bad candidate.
-  Partial overlap remains acceptable; if a layout regularly produces full
-  overlap on every candidate, the next iteration is to expand the
-  candidate set (8 quadrants or candidates further along the leader
-  line). Don't add another candidate set without an actual collision a
-  layout can produce.
-- **Hovered station overlay.** Drawn at the very top of the stack after
-  trains and isn't pushed into the registry — its expanded rect would
-  shift train placement on every cursor move, which is the wrong
-  trade. The hover state is meant to win z-order; that's the documented
-  exception.
-- **Station chip over a platform name.** The platform name lives on the bar,
-  so the station chip — which anchors at the platform-group centre — would
-  cover the nearer bar's name whenever two platforms sit close together. The
-  fix gives the *station* chip the positional freedom: it keeps the centre
-  when that's clear of every bar, else slides to the nearest clear slot just
-  outside the group (`_placeLabel`, candidates = centre + four around the
-  group bounding box). The platform name has no candidates — the bar is a
-  fixed surface — so only one of the two needs to move. This is its own
-  geometry check, separate from the train-label registry above.
-
-References: `_drawLive` reset in [renderer.ts](../frontend/src/renderer/renderer.ts);
-`aabbOverlapArea` utility in the same file;
-`_pickLabelPosition` in `renderer-trains.ts`;
-the push calls in `renderer-platforms.ts`
-and `renderer-stations.ts`.
+Each train tag pushes its rect into `renderer.labelBounds`, a per-frame
+list reset at the top of `_drawLive`. Nothing reads the list now: the tag
+has a fixed place (the middle tile of the front block), so it does not move
+to avoid other labels.
 
 ### Don'ts
 
@@ -2638,8 +2203,7 @@ and `renderer-stations.ts`.
 - **No fill-tint highlight** over an entity that carries its own state
   (train, block). Hue-fights-hue, §12.
 - **No new label tier** for a single new use case. If a fourth tier seems
-  necessary, pause and raise the doc question. Three tiers cover everything
-  the canvas currently has.
+  necessary, pause and raise the doc question.
 
 ---
 
@@ -2647,16 +2211,14 @@ and `renderer-stations.ts`.
 
 §16 covers identity labels; this section covers the canvas's other
 visual channel — the saturated hue marks that show **state**: block
-fills, signal aspects, route overlays, switch position and locks,
-train mode, selection. The two channels coexist by the
+fills, switch position, trains, selection. The two channels coexist by the
 brightness-vs-hue split in §12 "Color channels": identity is quiet
 chrome, state is the saturated mark at the entity's location.
 
 The token rule extends here: state marks consume the §1 canvas tokens —
 `--block-*` through `getBlockStateColor`, every other mark through the
-cached canvas palette (§1 Canvas state marks). The one mark still
-hard-coded at its call site is a Known divergence to burn down, not a
-license to add more.
+cached canvas palette (§1 Canvas state marks). Never hard-code a colour
+at the call site.
 
 ### Block state fills
 
@@ -2668,36 +2230,14 @@ resolves availability first — DISABLED (grey) wins over MANUAL
 An unrecognized state keeps the default track color rather than
 guessing one.
 
-### Signal aspects
+### Locate flash and reachable tiles
 
-A signal is a grey stick perpendicular to its track with a lamp at the
-end (`renderer-signals.ts`):
-an inner circle (3·scale) filled with the aspect color inside a
-4·scale grey ring. Aspects: green `--canvas-success`, yellow
-`--canvas-caution`, red `--canvas-danger` — and red is also the fall-through for any state value the
-renderer doesn't recognize, so an unknown or future aspect
-(`SignalState` also defines `double_yellow`) fails to the most
-restrictive lamp. That polarity is deliberate; keep it. If
-`double_yellow` ever becomes a rendered aspect it gets the railway
-treatment — two stacked yellow lamps — not a recolor.
-
-### Route / path overlays
-
-A route's tiles fill with a diamond per tile, colored by run status
-(`renderer-routes.ts`):
-pending grey, setting yellow, set green, active bright green, clearing
-orange, completed dim grey, cancelled red — fills at ~0.2–0.4 alpha
-with a matching border, plus per-tile direction arrows in the same
-status color. Emphasized routes add brown (`--canvas-hold`) lock circles
-on their locked switches — a separate mark from the switch's own lock ring
-(Switch state, below), drawn only while the route is emphasized. Reachable-destination highlights are amber diamonds. A
-conflict tile flashes — red fill, white outline, white `×`, blinking
-every 200ms — the only blinking mark on the canvas (see §18 Motion). That
-flash is one preset of a general `flashTiles` primitive: `flashConflictTiles`
-is the red-strobe-with-`×` case, and a quieter **locate** flash — a solid
-`--canvas-highlight-locate` fill, one shot, no `×` — fires when the user clicks a tile in an
-editor list to find it on the map. Locate stays solid and non-repeating, so
-the conflict strobe remains the only *blinking* mark.
+Reachable tiles (the valid second ends for the Trace select tool) fill
+with `--canvas-warning`. A **locate** flash — a solid
+`--canvas-highlight-locate` fill, one shot, no blink — fires when the user
+clicks a tile in an editor list to find it on the map. Both are drawn by
+`flashTiles` and the highlight channels in
+[renderer-highlights.ts](../frontend/src/renderer/renderer-highlights.ts).
 
 ### Switch state
 
@@ -2705,9 +2245,7 @@ A switch shows its thrown position as a center badge
 ([renderer-tracks.ts](../frontend/src/renderer/renderer-tracks.ts)):
 a green `M` circle when the main leg is set, a yellow `D` when the
 diverging leg is set. The leg not taken draws thin and dark so the set
-leg reads as the only continuous path. Lock rings around the badge:
-brown (`--canvas-hold`) = a train physically holds the switch, orange
-(`--canvas-lock`) = a path holds it for an upcoming move.
+leg reads as the only continuous path.
 
 ### V2 trains on the layout
 
@@ -2745,71 +2283,12 @@ through, and gives the tag a `--train-highlight` edge. It never changes the
 state color or covers the band. The highlight color is none of the theme's
 block-state or train-state colors.
 
-### Train mode
-
-The train body is a white polyline with a dark outline; the head is a
-white triangle pointing in the direction of travel, the tail a white
-square carrying the car count
-(`renderer-trains.ts`).
-The body tints by state, highest priority first: **saturated purple =
-emergency brake active**, pale lavender = route teardown pending,
-light yellow = manual driving, white = ATO. EB wins over every other
-tint — the most safety-relevant state in the system must be findable
-at a glance on the surface the operator actually watches, and nothing
-else on the canvas paints a train-scale purple body (teardown's pale
-lavender stays clearly lighter, so the two don't read as one). The
-debug-only "stuck waiting" overlay draws a dashed orange leader from
-the train head to the block it is waiting on.
-
-**Unidentified trains.** An unidentified train — something the detectors
-found that the app did not put there and cannot drive — outranks every
-tint above: steel `--train-body-unidentified`, drawn with a **dashed**
-outline and fill instead of the usual solid stroke. The dash carries the
-meaning; the tint alone would read as just one more mode. It takes no
-mode hue at all, because it has no cab, no mode and no brake to report,
-and it must never borrow EB's purple — it is not a fault, it is an
-unknown. In panels the same rule holds: the trains-list card and the
-train panel show an `UNIDENTIFIED` state chip on the muted accent and
-render none of the operator controls, since the API refuses every one of
-them for it. Reference: `trainBodyFill` in
-`renderer-trains.ts`,
-`renderUnidentifiedTrainListItem` / `renderUnidentifiedTrainPanel` in
-`editor-trains.ts`.
-
-Do not confuse this with a **ghosted** train, which is the opposite case
-— a train the operator placed whose detected blocks all read clear, so
-the app holds an identity with no current behind it. It keeps its own
-identity and its retained span, and is marked with a question mark
-rather than the steel dash (design_new.md, **Power** → Ghosted trains).
-"Ghost" elsewhere in this document always means the button pattern (§3)
-or a placement preview (below), never a train.
-
 ### Selection and previews
 
 Box / lasso selection fills tiles amber with an orange outline. Build
 previews draw dashed: orange for track about to be placed, red for the
 eraser, purple for a block path; invalid placements drop opacity.
 These sit at the very top of the live layer (§16 draw order).
-
-**Entity placement ghost.** Previewing a whole entity that will span many
-tiles — a new train being placed — reuses the amber selection fill above,
-not a dashed tool outline: the filled band reads as the footprint the
-entity will occupy. Fill each tile's diamond (its four edge corners),
-never a polyline through tile centers — on the diagonal staircase tiles
-that make up most of the network, center-to-center segments zigzag, while
-abutting diamonds tessellate into a clean band that follows the track. A
-small filled arrow at the head marks the facing direction. The band stays
-amber while the configured length fits and turns danger red when the track
-runs out before the length is covered (consistent with "invalid
-placements" above); the matching "track too short" note in the panel keeps
-the state off hue alone (§14). Amber, **not** the train's purple — a
-train-scale purple body is reserved for EB (see "Train mode" above), so a
-placement aid must never paint one. The ghost is owned by its panel: it
-clears when the panel closes or the placement commits. Reference:
-`_drawTrainGhost` / `setTrainGhostPreview` in
-[renderer.ts](../frontend/src/renderer/renderer.ts), fed by
-`_computeGhostTiles` in
-`editor-trains.ts`.
 
 ### Debug overlays
 
@@ -2828,17 +2307,14 @@ Reference: `RendererDebugHandler` (`drawDebugOverlays`, `highlightDeadEnds`) in
 
 - **State marks consume tokens.** New marks pick from the §1 canvas
   tables (Block / track status, Canvas state marks). A mark that needs a
-  hue they don't have is a doc question first (§14 "No new colors"). The
-  one hard-coded colour left, the route conflict flash, is a Known
-  divergence — not a colour to copy.
+  hue they don't have is a doc question first (§14 "No new colors").
 - **Hue means state, never identity.** Identity stays in the §16 label
   tiers. A mark that doesn't change with state doesn't get a saturated
   hue.
 - **Fail restrictive.** When a state value is unknown, render the most
-  restrictive mark (the signal red fall-through) or no mark at all
-  (the block-fill null) — never guess a permissive state.
-- **Blinking is reserved.** One blinking mark class exists (route
-  conflict). Emergency-tier events only — see §18 Motion.
+  restrictive mark or no mark at all (the block-fill null) — never guess a permissive state.
+- **Blinking is reserved** for emergency-tier events. No canvas mark
+  blinks now — see §18 Motion.
 
 ---
 
@@ -2853,9 +2329,7 @@ motion means. The inventory is deliberately small.
 | Surface feedback | `transition` 0.2s on opacity / border | Row hover, panel show / hide |
 | Toast slide | Slide in from the right, slide out on dismiss (§13) | Transient confirmations |
 | Modal entrance | One short float-in (`floatInFlex` in [modals.css](../static/css/components/modals.css)) | Dialog appearing |
-| Danger pulse | `tc-pulse-danger` — 0.8s infinite, opacity 1 → 0.55 | The EB-active badge (§3). Nothing else |
-| Conflict blink | 200ms on / off | Route conflict tiles on canvas (§17). Nothing else |
-| Field-edit flash | One-shot 0.7s border flash — accent (saved) / danger (rejected) | Auto-save acknowledgement on a panel field (§5C) |
+| Field-edit flash | One-shot 0.7s border flash — accent (saved) / danger (rejected) | Auto-save acknowledgement on a panel field (§5B) |
 | Locate flash | One-shot solid tile fill, ~650ms, `--canvas-highlight-locate` | Pointing at a tile from a list — clicking a block-editor tile row (§17) |
 | Spinner | `restart-spin` | The blocking restart overlay |
 
@@ -2864,18 +2338,17 @@ Rules:
 - **Feedback stays under 200ms.** Hover and active transitions run at
   0.15–0.2s; anything slower reads as lag, not polish.
 - **Continuous motion is emergency-tier.** A pulse or blink that never
-  stops is reserved for states that demand intervention: EB active (the
-  panel badge), route conflict (the canvas tile). At most one pulsing
-  element per panel — two pulsing things cancel each other out.
+  stops is reserved for states that demand intervention. Nothing on the
+  page pulses or blinks now. At most one pulsing element per panel — two
+  pulsing things cancel each other out.
 - **Nothing else loops.** Decorative ambient animation is noise on an
   operations screen.
 - **Reduced motion.** When `prefers-reduced-motion: reduce` is set,
-  looping pulse / blink degrade to their static high-contrast state —
-  the badge holds solid danger, the conflict tile holds solid red + `×`.
+  looping pulse / blink degrade to their static high-contrast state.
   The CSS path is implemented in
   [base/motion.css](../static/css/base/motion.css): a universal reset
-  holds every looping animation and transition at its end state, so the
-  badge stays solid danger. Canvas marks are drawn in the renderer, which
+  holds every looping animation and transition at its end state. Canvas
+  marks are drawn in the renderer, which
   does not yet read the setting.
 
 ---
@@ -2892,16 +2365,13 @@ rules that make the same screens teachable without diluting them.
 
 The first thing a newcomer sees of any panel is its empty state. Use
 the §10 actionable empty state wherever the empty collection has an
-obvious next action, and write the line in plain words ("No routes
-yet — a route is a reusable plan of stops"), never a bare "No data."
+obvious next action, and write the line in plain words ("No trains
+yet. Put one on the track and it appears here."), never a bare "No data."
 
 An empty layout is the biggest empty state, so it gets a card of its own.
 On the Editor and Operate screens, a layout with no track shows a centred
-card with three choices:
+card with two choices:
 
-- **Start from a loop** builds a small oval with one train and a route
-  round it, then opens Operate with that train picked — three clicks from
-  an empty app to a moving train.
 - **Open a layout** opens the saved-layout list.
 - **Draw from scratch** opens the Editor with the Track tool picked and
   keeps the card away.
@@ -2911,18 +2381,16 @@ Reference: `StartCard` in
 
 ### Every edit is reversible or confirmed
 
-The editing contract (§5C) is auto-apply for independent, reversible
+The editing contract (§5B) is auto-apply for independent, reversible
 field edits: segment clicks and field changes save immediately, with no
-Save step to forget. A long editor whose edits only make sense together
-(Route Editor, Path Editor) uses one sticky Save instead (§12). The
-contract has two halves, and the second half is what makes the first safe:
+Save step to forget. The contract has two halves, and the second half is what makes the first safe:
 
-- **Destructive and hard-to-undo actions confirm first** — deleting a
-  route, an edit that removes a dependent entity (§4 "one validated
+- **Destructive and hard-to-undo actions confirm first** — removing a
+  switch, an edit that removes a dependent entity (§4 "one validated
   commit path"). The §13 modal names the consequence in plain words.
 - **Everything else must be undoable by an obvious inverse action,
-  visible where the action was** — Unassign beside Assign (§12), a
-  Reset beside each overridden field (§5C), the list tab that reopens
+  visible where the action was** — a Reset beside each overridden field
+  (§5B), the list tab that reopens
   a closed record. If an auto-applied edit has no visible inverse,
   that is a design bug: add the inverse, or demote the edit to
   confirm-first.
@@ -2937,31 +2405,24 @@ chip, tooltip, and toast:
 | Term | Means |
 |------|-------|
 | Tile | One grid cell of track geometry |
-| Block | A stretch of track the signalling treats as one unit; occupancy and reservation live here |
+| Block | A stretch of track with one power feed and its own occupancy detection |
 | Switch | A junction with a main and a diverging leg |
-| Signal | A lamp guarding entry to the track ahead |
-| Platform | A stopping place on a track edge |
-| Station | A named group of platforms |
-| Train | The vehicle; drives in ATO (automatic) or manual mode |
-| Route | A reusable plan of tasks — stop here, dwell, continue |
-| Route run | One execution of a route by one train |
-| Path | The locked track a train holds for its next movement; created by the system, not drawn by the user |
+| Train | A label the runtime puts on one or more blocks that read occupied (design_v2.md "Terms") |
 
 Never introduce a synonym in UI text ("section" for block, "turnout"
-for switch, "journey" for run). If a label seems to need a different
+for switch). If a label seems to need a different
 word, that is a change to this table first.
 
-**Sentence case for actions** ("Create route", "Apply to 3 blocks");
+**Sentence case for actions** ("Stop all", "Apply to 3 blocks");
 UPPERCASE only for the §5 label tier and §7 state chips. Spell words
 out when there's room (Density follows task); the compact cryptic form
 goes in the `title` tooltip, not on the screen.
 
 **A reason from the server is just the reason.** The panel writes the
-sentence around it ("The pass ended: … Nothing was written."). A server
-reason that carries its own "calibration pass ended:" makes the panel say
-"ended" twice, so the server sends only the reason, and names the thing
-that failed ("the emergency brake is on"), not a general "conditions no
-longer hold".
+sentence around it ("Stop: The session is not Live."). A server reason that
+carries its own lead-in makes the panel say it twice, so the server sends
+only the reason, and names the thing that failed, not a general
+"conditions no longer hold".
 
 **Tooltips carry the how.** Every tool and non-obvious control gets a
 `title`: what it does, then how to use it — the Editor options row's
@@ -2986,7 +2447,7 @@ the control is — in its tooltip, or as the key badge on an Editor tool
 bar button — so there is no hidden-shortcut layer a newcomer must
 discover:
 
-- Number keys 1–8 pick the Editor tool bar's tools, in bar order.
+- Number keys 1–6 pick the Editor tool bar's tools, in bar order.
 - Space clears the selection; Delete removes selected tracks.
 - Alt+Left opens a detail panel's parent list, and Ctrl/Cmd+W closes the
   panel. Both act on the Editor right panel's panels only.
@@ -3004,10 +2465,6 @@ same change.
 
 | What | Where | Target | Trigger |
 |------|-------|--------|---------|
-| Private copies of the segmented control | `.tc-seg-btn` in [controls.css](../static/css/features/controls.css) (also used by Operate's train panel, `next/operate/train-panel.tsx`), `.tm-seg-btn` in `train-monitor.css` (deleted) | Fold onto `.switch-btn` (§3) | Next touch of either panel |
 | Pre-token literals — spacing, type sizes, radii, z-index written as raw values | all of `static/css` | Compose from the §1 scale tokens (`--space-*`, `--font-size-*`, `--radius-*`, `--z-*`); consolidate off-ramp values (13px type, 5/7/9px gaps, 3px small radii) to the nearest step | When touching the declaration |
-| The route conflict flash hard-codes its colour (`232, 63, 91`) | `renderer-routes.ts` | Read `--canvas-danger` from the canvas palette (§17 Rules) | Next touch of renderer-routes.ts |
-| Shapes with two consumers not yet promoted — the `.rr-task-*` / `.atr-*` rows (with their `.rr-task-verb-*` chips) and the two §5C field clusters | `routes-paths.css` | A shared `.list-row*` and `.field-cluster*` family in status-blocks.css; verbs as `.chip-state` (§7, §12) | Next touch of either consumer |
-| Dense-row status dots carry hue only | `.rr-task-status` / `.atr-*` in `routes-paths.css` | Pair each dot with its glyph (§12) | With the `.list-row*` promotion |
 | The top bar's Reset is the accent CTA | [next/top-bar.tsx](../frontend/src/next/top-bar.tsx) | The warning button (Composing the top bar) | Next top-bar touch |
-| Fixed-dark code surface in a panel — JSON viewer well + neon-green text | `.json-viewer-content` / `.json-content-view` (`#0d1020` / `#00ff88`) in `routes-paths.css` | Either tokenize to surface tokens, or formally bless as a constant "code block" surface like the canvas (§1 Themes) | Next View-Full-JSON / routes-paths touch |
+| Fixed-dark code surface in a panel — JSON viewer well + neon-green text | `.json-viewer-content` / `.json-content-view` (`#0d1020` / `#00ff88`) in [editor-lists.css](../static/css/features/editor-lists.css) | Either tokenize to surface tokens, or formally bless as a constant "code block" surface like the canvas (§1 Themes) | Next View-Full-JSON / editor-lists touch |

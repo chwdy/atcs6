@@ -1,7 +1,7 @@
 """Tunnel Routes — CRUD on the network's tunnel table.
 
 Tunnels pair two dead-end edges so they behave as a single tile-to-tile
-connection. See `design_new.md` "Tunnels" canonical home for invariants.
+connection. See design_v2.md "Tunnel" for the invariants.
 """
 
 from flask import jsonify, request

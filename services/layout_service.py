@@ -88,7 +88,7 @@ def load_layout(state: AppState, name: str) -> Dict[str, Any]:
         state.sim_controller.network = state.network
         # A loaded layout may reuse every block id, so the reading log is
         # told outright rather than left to notice a changed block set
-        # (design_new.md "Event log", Detector reading log).
+        # (design_v2.md "Detector reading log", Some lines list every block).
         state.sim_controller.detector_reading_log.request_full(FULL_LAYOUT)
         state.last_autosave_time = time.time()
     return result

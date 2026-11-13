@@ -1,6 +1,6 @@
 """`GET /api/network` sends the layout only when it changed.
 
-design_new.md "Data Flow To UI", **Layout version**: the reply names the layout
+design_v2.md "Layout version": the reply names the layout
 with `layout_version`, a hash of the layout part. When the request carries the
 current version, the reply leaves the layout out and carries only the live
 fields; any other request gets the full snapshot.

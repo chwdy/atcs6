@@ -1,7 +1,7 @@
 /**
  * The event shapes and helper functions behind the Logs screen's Event log tab
  * (frontend/src/next/logs/event-log-tab.tsx), the operator-facing viewer over
- * the one runtime event stream (design_new.md "Event log").
+ * the one runtime event stream (design_v2.md "Event log").
  *
  * Every component that has something to report calls `NotificationCenter.emit`,
  * so there is exactly one stream and this panel is a filter over it. Nothing

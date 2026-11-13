@@ -1,6 +1,6 @@
 """Real hardware driver package — chips, interface adapters, and self-test, all
 exercised against the in-memory `FakeCh347Device` so no USB hardware is needed
-(design_new.md "Power", Hardware interface boundary).
+(design_v2.md "Hardware interface").
 
 Run with:
     /opt/homebrew/anaconda3/envs/general/bin/python -m pytest \
@@ -369,7 +369,8 @@ def test_track_voltage_bipolar_h_bridge(wired):
 
 
 def test_block_voltage_readback_reads_bus_voltage_not_commanded():
-    """design_new.md "Power", the block-voltage read surface: the Real/Virtual
+    """design_v2.md "Hardware interface", The block-voltage readback is not an
+    `OccupancyInput` read: the Real/Virtual
     readback reads the block's bound current-sense channel bus voltage — the
     actual rail voltage — never the commanded value. `get_actual_voltage` stays
     the commanded value the occupancy drive-zone reads."""
@@ -521,7 +522,7 @@ def test_switch_throw_write_order_matches_the_bench_proven_sequence(wired, monke
 
 
 def test_a_re_picked_coil_port_lands_on_the_next_throw(wired, monkeypatch):
-    """design_new.md "Hardware setup", A binding is read per write: the coil
+    """design_v2.md "Hardware setup", A binding is read per write: the coil
     ports are looked up per throw, not captured when the session was built.
 
     An operator wiring a rig up re-picks these ports precisely because the first
@@ -652,9 +653,9 @@ def test_hybrid_occupancy_selects_source_by_drive_state():
 
 
 def test_driven_threshold_judges_only_the_driven_zone():
-    # design_new.md "Occupancy source follows drive state": a channel's driven
-    # threshold judges it while the block is driven, and `threshold_ma` judges
-    # it in the lighting zone. 15 mA sits between the two (10 mA lighting,
+    # design_v2.md "Occupancy source and drive zones", The driven threshold:
+    # a channel's driven threshold judges it while the block is driven, and
+    # `threshold_ma` judges it in the lighting zone. 15 mA sits between the two (10 mA lighting,
     # 25 mA driven) — the stray current a coupled neighbour channel reads.
     dev = FakeCh347Device(present_addresses={0x40, 0x41})
     specs = [
@@ -889,7 +890,8 @@ def test_lighting_zone_without_a_current_channel_falls_back_to_the_digital_bit()
 
 
 # --- the track driver owns the drive zone ------------------------------------
-# design_new.md "Hardware setup", Occupancy source follows drive state: the
+# design_v2.md "Occupancy source and drive zones", The track output driver
+# owns the drive zone: the
 # track driver classifies each block's commanded voltage into a zone and the
 # occupancy driver asks it, rather than comparing the voltage itself.
 
@@ -1332,8 +1334,8 @@ def test_commission_reads_currents():
 
 def test_commission_learns_switch_bits_from_the_saved_setup():
     """The panel posts chips without bindings, so the saved `switch_output` map
-    is what tells the session which shift-out bits drive a coil (design_new.md
-    "The commissioning session", Switch bits). Open reports them, and `output`
+    is what tells the session which shift-out bits drive a coil (design_v2.md
+    "Setup tools", Switch bits). Open reports them, and `output`
     refuses to hold one on; a bit no binding names may be held."""
     from hardware.commission import CommissionSession
     from hardware_config import SwitchBinding
@@ -1358,8 +1360,8 @@ def test_commission_learns_switch_bits_from_the_saved_setup():
 
 def test_commission_current_read_failure_is_an_error_not_zero():
     """A channel that cannot be read fails the whole read: a missing reading is
-    not a clear one (design_new.md "The commissioning session", Every failure
-    reaches the operator)."""
+    not a clear one (design_v2.md "Setup tools", Every failure reaches the
+    operator)."""
     from hardware.commission import CommissionSession
 
     fake = FakeCh347Device(present_addresses={0x41})
@@ -1375,8 +1377,8 @@ def test_commission_current_read_failure_is_an_error_not_zero():
 
 
 def test_commission_open_bounds_the_session_timeout():
-    """design_new.md "Hardware REST payload schemas": the commissioning `enter`
-    body carries `timeout_seconds` with `0 < timeout_seconds <=
+    """design_v2.md "Hardware REST API", Commissioning-session bodies: the
+    commissioning `open` body carries `timeout_seconds` with `0 < timeout_seconds <=
     COMMISSION_MAX_SESSION_SECONDS`. A window just under the ceiling opens the
     session; one just over is rejected before the session opens — a too-long
     window is refused, not silently cut."""
@@ -1432,8 +1434,8 @@ def test_commission_pulse_bounds_the_pulse_width(monkeypatch):
 
 
 # --- loss-of-control watchdog ---------------------------------------------
-# design_new.md "Power -> Hardware interface boundary": a real output
-# implementation arms a watchdog that drops the outputs to the safe state when
+# design_v2.md "Safe state, watchdog and hardware failure", Loss-of-control
+# watchdog: a real output implementation arms a watchdog that drops the outputs to the safe state when
 # the control loop stops refreshing them.
 #
 # These tests run under pytest-xdist, so a scheduling hiccup can stretch any

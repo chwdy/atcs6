@@ -1,9 +1,9 @@
 """The Setup tools that can hold the outputs, closed together.
 
-design_new.md "Hardware setup", Setup: inside Setup the commissioning session
-and the occupancy bench each take the outputs while they drive them. Every way
-they end — a close, a timeout, Emergency stop in Setup, or an activation taking
-the outputs back — completes the safe-state sequence. Both closes are
+design_v2.md "Setup tools": inside Setup the commissioning session and the
+occupancy bench each take the outputs while they drive them. Every way they
+end — a close, a timeout, a failure, or an activation taking the outputs back —
+completes the safe-state sequence. Both closes are
 idempotent, so closing a tool that is not open does nothing.
 """
 
@@ -51,8 +51,8 @@ def any_setup_tool_open() -> bool:
 
 
 def close_idle_setup_tools() -> List[str]:
-    """Close every Setup tool whose idle timeout has passed (design_new.md
-    "Power", Hardware setup, Closing a Setup tool restores the safe state).
+    """Close every Setup tool whose idle timeout has passed (design_v2.md
+    "Setup tools", A timeout closes the tool on time).
     The runtime loop calls this each iteration, so a tool no request reaches
     still closes on time. Returns the failed zeroing writes for the caller to
     report through `report_close_failures(...)`."""
@@ -65,8 +65,8 @@ def close_idle_setup_tools() -> List[str]:
 
 def report_close_failures(sim_controller: Optional[Any], errors: List[str]) -> None:
     """Report a Setup tool's failed closing writes as a hardware I/O failure
-    (design_new.md "Power", Hardware setup, Closing a Setup tool restores the
-    safe state; Hardware I/O failure is fatal to the physical session). The
+    (design_v2.md "Setup tools", A failed closing write is a hardware I/O
+    failure). The
     caller holds `AppState.simulation_lock`. No-op when nothing failed."""
     if not errors or sim_controller is None:
         return

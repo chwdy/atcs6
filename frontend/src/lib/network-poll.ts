@@ -1,7 +1,7 @@
 /**
  * The network poll that sends the layout only when it changed.
  *
- * design_new.md "Data Flow To UI", Layout version: `GET /api/network` names
+ * design_v2.md "Layout version": `GET /api/network` names
  * the layout with `layout_version`. When the poll passes the version it
  * already holds and the layout has not changed, the server leaves the layout
  * out and sends only the live fields (`live_blocks`, `live_switches`,

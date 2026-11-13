@@ -186,8 +186,8 @@ export class SwitchEditorHandler {
 
             ${switchHardwareSectionHtml(hwCfg, switchData.switch_id)}
 
-            <!-- Maintenance — read-only wear counter (design_new.md "Maintenance
-                 counters"); counts real alignment changes during simulation. -->
+            <!-- Maintenance — read-only wear counter; counts real alignment
+                 changes. -->
             <div class="control-section">
                 <div class="control-section-header">Maintenance</div>
                 <div class="input-small-row">
@@ -212,8 +212,7 @@ export class SwitchEditorHandler {
   bindEventHandlers(switchData: any, hwCfg: any = null): void {
     bindSwitchHardwareSection(hwCfg, switchData.switch_id);
     // Availability segment (disabled / manual). Per docs/DESIGN_LANGUAGE.md
-    // §3 segmented control and design_new.md "Availability flag REST API
-    // surface". Toggling `disabled = True` runs admin-reject preconditions
+    // §3 segmented control. Toggling `disabled = True` runs admin-reject preconditions
     // on the server (HTTP 409); toggling `manual` always succeeds.
     bindAvailabilitySegment('switch-availability', async (_state, flags) => {
       try {

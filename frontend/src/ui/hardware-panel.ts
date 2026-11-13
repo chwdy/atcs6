@@ -1,6 +1,5 @@
 /**
- * The sections of Hardware Setup steps 2 and 4 (docs/ui-layout-rewrite-plan.md
- * §7): the bridge, the chip list, the layout tally, the idle threshold and the
+ * The sections of Hardware Setup steps 2 and 4: the bridge, the chip list, the layout tally, the idle threshold and the
  * wiring overview, and the code behind their buttons. The Hardware Setup
  * screen (frontend/src/next/hardware/) shows them; they were the Hardware
  * Setup dialog's body before the screen replaced it.
@@ -85,7 +84,7 @@ interface EnvironmentInfo {
   selected: 'virtual_hardware' | 'real_hardware';
   active: string;
   is_active: boolean;
-  /** The session state (design_new.md "Session state"). */
+  /** The session state (design_v2.md "Session state"). */
   session_state?: SessionStateView;
   /** Saved setup changes the running session is not using yet. */
   awaits_activation?: boolean;
@@ -139,8 +138,8 @@ let scanned = false;
 // every write and an unwired one returns bits without an error. A '165 is
 // proven when Test the rig reads its bits following the rail drive; a '595
 // only when the user watches the board and says it worked. The chips proven
-// this session are recorded here (design_new.md "A shift register is proven
-// by a read-back or by the operator").
+// this session are recorded here (design_v2.md "Setup tools", A shift register
+// is proven by a read-back or by the operator).
 let manualProven = new Set<string>();
 // Shift registers whose test ran without an error and now wait for the user to
 // say whether the board did what the test asked.
@@ -173,8 +172,8 @@ let activityTimer: any = null;
 let sweepAbort = false;
 // The shift-out bits a saved switch binding names, per chip, from the
 // commissioning open. The sweep pulses these only for the switch-coil width,
-// because a held coil burns out (design_new.md "The commissioning session",
-// Switch bits).
+// because a held coil burns out (design_v2.md "Setup tools", The
+// commissioning session, Switch bits).
 let switchPorts: Record<string, number[]> = {};
 // How long the sweep holds every other shift-out bit: long enough to see an LED
 // on the pin light. The switch-coil width (10 ms) is too short to see. It is the
@@ -1468,7 +1467,7 @@ async function activateEnvironment(): Promise<void> {
     editedSinceSave = false;
     activationReadiness = await api.getOperationReadiness();
     // A blocker refuses activation and leaves the session, and any open Setup
-    // tool, in Setup (design_new.md "Hardware setup", Setup). So check first,
+    // tool, in Setup (design_v2.md "Setup tools", Leaving Setup). So check first,
     // and close the commissioning tool only once activation can go ahead.
     if (activationReadiness && activationReadiness.ready === false) {
       render();
@@ -1655,8 +1654,9 @@ export interface ChipProofNote {
   reason?: string;
 }
 
-/** Record what the Hardware Setup screen's Test the rig learned (design_new.md
- *  "A shift register is proven by a read-back or by the operator"), with one
+/** Record what the Hardware Setup screen's Test the rig learned (design_v2.md
+ *  "Setup tools", A shift register is proven by a read-back or by the
+ *  operator), with one
  *  redraw and no toasts: the run shows its own summary. An I²C chip's proof
  *  is the bus scan's, so notes about I²C chips are ignored. */
 export function recordChipProof(notes: ChipProofNote[]): void {
@@ -1787,7 +1787,7 @@ async function save(): Promise<void> {
 }
 
 // --- the Hardware Setup screen ---------------------------------------------
-// The screen (frontend/src/next/hardware/, docs/ui-layout-rewrite-plan.md §7)
+// The screen (frontend/src/next/hardware/)
 // shows the sections above inside its seven steps and runs the same code for
 // every button in them. While it is attached, render() calls the screen's
 // draw function. The Virtual Hardware controls are the Virtual Bench in

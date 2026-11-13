@@ -1,6 +1,5 @@
 /**
- * The Editor screen's right panel: it edits the selection
- * (docs/ui-layout-rewrite-plan.md §4).
+ * The Editor screen's right panel: it edits the selection.
  *
  * One docked panel. Its header holds the selection's title, a list button
  * (all switches, all blocks — they used to be tool-rail

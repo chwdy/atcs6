@@ -51,8 +51,8 @@ def _open_real_device(cfg: Any) -> Any:
 
 def _zero_every_output(chip: Any, chip_id: str) -> List[str]:
     """Write `0` to every output channel of a chip a test drove — the safe-state
-    sequence a Setup tool completes itself when it ends (design_new.md "Power",
-    Hardware setup, Closing a Setup tool restores the safe state). Every channel,
+    sequence a Setup tool completes itself when it ends (design_v2.md "Setup
+    tools", The tool performs its safe-state sequence itself). Every channel,
     not only the ones the test touched. Returns one message when the write
     failed, empty when it landed; a chip with no outputs has nothing to zero.
     """
@@ -68,8 +68,8 @@ def _zero_every_output(chip: Any, chip_id: str) -> List[str]:
 def _after_zeroing(result: Dict[str, Any], zero_failures: List[str]) -> Dict[str, Any]:
     """Fold a failed closing zeroing into a test's result.
 
-    A failed zeroing write is a hardware I/O failure (design_new.md "Power",
-    Hardware I/O failure is fatal to the physical session), so the result says
+    A failed zeroing write is a hardware I/O failure (design_v2.md "Setup
+    tools", A failed closing write is a hardware I/O failure), so the result says
     the test failed and carries `zero_failures` for the route to report through
     `report_close_failures(...)`. The route removes that key before answering.
     """

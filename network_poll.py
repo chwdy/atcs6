@@ -1,7 +1,7 @@
 """
 Network poll reply — sends the layout only when it changed.
 
-Per design_new.md "Data Flow To UI", **Layout version**: the frontend polls
+Per design_v2.md "Layout version": the frontend polls
 `GET /api/network` several times a second while a session runs, and most of
 that payload is the layout (tile geometry, block tile lists),
 which changes only when someone edits it. This module splits the composite

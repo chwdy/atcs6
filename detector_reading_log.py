@@ -178,8 +178,8 @@ class DetectorReadingLog:
         A directory that cannot be created is a failed write like any other:
         it is reported, the log stays on, and each later pass tries again, so
         the first line that does get written is the `"start"` line and resolves
-        the warning (design_new.md "Detector reading log", A failed write never
-        stops the session).
+        the warning (design_v2.md "Detector reading log", A folder that cannot
+        be created is a failed write).
         """
         self._dir = Path(directory)
         self._full_reason = FULL_START

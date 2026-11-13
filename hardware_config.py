@@ -12,8 +12,9 @@ This store answers three questions for the next operation session:
   the hybrid detector — `block_occupancy` (block_id -> '165 digital-detector port) and
   `block_occupancy_current` (block_id -> INA3221 current channel, with its
   per-channel baseline/threshold). This is the logical id -> physical channel map; the
-  concrete driver in `hardware/` is the only consumer of it (design_new.md
-  "Power", Hardware interface boundary).
+  concrete driver in `hardware/` is the only consumer of it (design_v2.md
+  "Hardware setup", The concrete driver alone reads the rest of the binding
+  table, with one exception).
 - **What it does not decide:** the selected operating environment. That lives in
   ``operation_environment.py`` and is persisted independently.
 
@@ -51,8 +52,9 @@ CONFIG_PATH = "hardware_config.json"
 # I2C 7-bit address range for a peripheral (0x00-0x02 and 0x78-0x7F reserved).
 _I2C_MIN, _I2C_MAX = 0x03, 0x77
 
-# Hybrid current-sense occupancy defaults (design_new.md Power, Block occupancy
-# detection). A block powered above the deadband is read by its INA3221 current
+# Hybrid current-sense occupancy defaults (design_v2.md "Occupancy source and
+# drive zones"; the default values themselves are not in the doc). A block
+# powered above the deadband is read by its INA3221 current
 # channel; abs(current - baseline) at/above the threshold marks it occupied. A
 # per-channel `CurrentBinding` may override the threshold/baseline; None on a
 # field means "use the default below".
@@ -159,8 +161,8 @@ class TrackBinding:
     binding edit. The concrete driver swaps the two channels as it resolves the
     binding when it is set; the `forward`/`reverse` channels themselves are
     never rebound, because one of those physical rails may carry the block's
-    idle detection feed (design_new.md "Power", Rail polarity lives on the rail
-    binding)."""
+    idle detection feed (design_v2.md "Hardware setup", The `forward` and
+    `reverse` channels themselves must not change to flip a block)."""
 
     chip_id: str
     forward: int
@@ -206,7 +208,8 @@ class CurrentBinding:
     `baseline_ma` / `threshold_ma` None means "use the module default" — the
     interface resolves them so a user only sets what differs from the norm.
     `driven_threshold_ma` is the threshold used while the block is driven
-    (design_new.md "Occupancy source follows drive state"); None means the
+    (design_v2.md "Occupancy source and drive zones", The driven threshold);
+    None means the
     driven zone uses `threshold_ma` too."""
 
     chip_id: str
@@ -231,9 +234,10 @@ class HardwareConfig:
     switch_output: Dict[str, SwitchBinding] = field(default_factory=dict)
     # switch_id -> block_id whose feed powers that switch's rails. The one
     # binding whose value is another logical id rather than a chip port: a
-    # switch has no track channel of its own, so its rails are wired to the
-    # block at its main entrance and carry that block's `track voltage`
-    # (design_new.md "Power", Switch power-controller role).
+    # switch has no track channel of its own, so its rails are wired to its
+    # feed block (the first block reached out of the switch's toe) and carry
+    # that block's voltage (design_v2.md "Block and switch power controllers",
+    # A switch's rails are fed from one block).
     # `SwitchPowerController` is its only reader.
     switch_track_source: Dict[str, str] = field(default_factory=dict)
     # Optional per-PCA output-enable line: key = track (pca9685) chip_id, value =
@@ -313,13 +317,14 @@ def setup_awaits_activation() -> bool:
     saves and persists, but the running session keeps what it was built with —
     so the operator is looking at a screen that no longer describes the rig that
     is running, with nothing on it saying so. This is that missing signal
-    (design_new.md "Hardware setup", the `GET /api/operation/environment` row).
+    (design_v2.md "Hardware setup", Reporting captured changes).
 
     The comparison covers only what activation captures. The values a driver
     reads per write — a switch's coil ports, a block's rail-polarity flag, a
     switch's rail feed — are already live, so counting them here would report a
     pending change for an edit that has taken effect, which is worse than
-    silence. See `A binding is read per write` in design_new.md for that split.
+    silence. See design_v2.md "Hardware setup", A binding is read per write,
+    for that split.
 
     False whenever no hardware-backed session is up: with nothing running,
     nothing is out of date.
@@ -970,8 +975,8 @@ def coverage_report(
 
     A block counts as detected only when BOTH occupancy sources are bound — the
     digital detector AND the current-sense channel. Both are mandatory for every
-    block before Virtual or Real Hardware may activate (design_new.md "Power",
-    Both occupancy sources are mandatory); a block bound in only one map is
+    block before Virtual or Real Hardware may activate (design_v2.md
+    "Occupancy source and drive zones", Both occupancy sources are mandatory); a block bound in only one map is
     incomplete, never silently covered by the other.
     """
     blocks = sorted(set(block_ids))
@@ -1051,8 +1056,8 @@ def activation_report(
     if not cfg.chips:
         issue("no_chips", "Hardware Setup has no chips")
     missing_track = [block_id for block_id in blocks if block_id not in cfg.block_track]
-    # Both occupancy sources are mandatory for every block (design_new.md
-    # "Power", Both occupancy sources are mandatory): a block missing EITHER the
+    # Both occupancy sources are mandatory for every block (design_v2.md
+    # "Occupancy source and drive zones", Both occupancy sources are mandatory): a block missing EITHER the
     # digital or the current-sense binding is not ready. A missing current
     # binding is an activation blocker, never a silent fall-back to the digital
     # detector.
@@ -1064,7 +1069,8 @@ def activation_report(
         if switch_id not in cfg.switch_output and switch_id not in unavailable_motors
     ]
     # Every switch must name the block feeding its rails, and that block must be
-    # one the layout actually has (design_new.md "Power", Bindings).
+    # one the layout actually has (design_v2.md "Hardware setup",
+    # `switch_track_source` wires a switch to its feed block).
     missing_feed = [
         switch_id for switch_id in switches if switch_id not in cfg.switch_track_source
     ]
@@ -1218,8 +1224,8 @@ def set_track_binding(
 def track_polarity_reversed(block_id: str) -> bool:
     """Whether `block_id`'s rails are wired reversed, per the live configuration.
 
-    The track driver's `polarity_of` read (design_new.md "Power", Rail polarity
-    lives on the rail binding). Reads the module-level `_config` on every call —
+    The track driver's `polarity_of` read (design_v2.md "Hardware setup", A
+    binding is read per write). Reads the module-level `_config` on every call —
     not a snapshot — so an editor flip lands on the next track write without a
     session rebuild. A block with no rail binding has no rails to be reversed:
     False."""
@@ -1233,7 +1239,7 @@ def switch_coil_ports(
     """This switch's `(chip_id, port_main, port_diverge, port_standby)`, per the
     live configuration.
 
-    The switch driver's `binding_of` read (design_new.md "Hardware setup", A
+    The switch driver's `binding_of` read (design_v2.md "Hardware setup", A
     binding is read per write), and the coil-side counterpart of
     `track_polarity_reversed` above. Reads the module-level `_config` on every
     call — not a snapshot — so re-picking a coil port aims the next throw at the
@@ -1641,7 +1647,8 @@ def build_session_interfaces(
             track_polarity_of=track_polarity_of,
             switch_binding_of=switch_coil_ports,
             # A real session drives real track; arm the loss-of-control watchdog
-            # (design_new.md "Hardware interface boundary").
+            # (design_v2.md "Safe state, watchdog and hardware failure",
+            # Loss-of-control watchdog).
             watchdog_timeout_s=DEFAULT_WATCHDOG_TIMEOUT_S,
         )
     except Exception as exc:

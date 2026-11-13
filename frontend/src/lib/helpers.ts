@@ -807,7 +807,8 @@ export function bindDirectionSegment(
 // higher-index end), and this flag fixes which rail carries it. Only the second
 // can be checked by eye, which is what the track Test sweep is for.
 // The flag lives on the block's `block_track` hardware binding and auto-saves
-// with it (design_new.md "Power", Rail polarity lives on the rail binding), so
+// with it (design_v2.md "Hardware setup", The rail binding bonds tile order to
+// rail polarity), so
 // the control is disabled until the rails are bound: with no binding there is
 // no wiring to describe.
 // ============================================================================
