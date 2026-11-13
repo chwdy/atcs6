@@ -114,6 +114,15 @@ def update_switch(
     # Pull the availability flags out before forwarding the rest; we own
     # the admin-reject + BlockManager notify for those two here.
     data = dict(data or {})
+    physical_settings = {
+        name: data.pop(name)
+        for name in ("allow_exit_from_either_leg", "motor_unavailable")
+        if name in data
+    }
+    if physical_settings and state.session_state().is_live:
+        raise ConflictError("Leave Live before changing how the switch works")
+    if any(type(value) is not bool for value in physical_settings.values()):
+        raise ValidationError("Switch motor and exit settings must be true or false")
     disabled_change = data.pop("disabled", None)
     manual_change = data.pop("manual", None)
 
@@ -171,6 +180,8 @@ def update_switch(
     if data:
         switch = state.network.update_switch(switch_id, **data) or switch
 
+    for name, value in physical_settings.items():
+        setattr(switch, name, value)
     return switch
 
 
@@ -257,6 +268,12 @@ def request_position_change(
             switch_id, new_state, manual_override=bool(manual_override)
         )
 
+    if success:
+        from routes.running_trains import _runtime
+
+        runtime = _runtime(state)
+        if runtime is not None:
+            runtime.disable_alternation(switch_id)
     _emit_command_result(state, switch_id, resolved_command_id, success, message)
 
     return resolved_command_id

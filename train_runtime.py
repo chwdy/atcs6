@@ -25,6 +25,7 @@ splitting, and renaming.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
 
@@ -51,12 +52,23 @@ DEFAULT_HOLD_TIME_S: float = 5.0
 # Why a train cannot be given a claim (design_v2.md "When a train waits").
 BLOCK_TAKEN = "block_taken"
 OWN_BLOCK = "own_block"
+SWITCH_HELD = "switch_held"
 
 Result = Tuple[bool, Optional[str]]
 """An operator request's answer: `(success, reason)`."""
 
 EmitFn = Callable[[str, str, str, str, Dict[str, Any]], None]
 SetVoltageFn = Callable[[str, float], Any]
+
+
+@dataclass
+class TimedStops:
+    """The blocks where one train stops and when it can leave."""
+    blocks: Set[str]
+    seconds: float
+    volts: float
+    arrived_at_block: Optional[str] = None
+    resume_at: Optional[float] = None
 
 
 @dataclass
@@ -85,6 +97,7 @@ class RunningTrain:
     claim_block_id: Optional[str] = None
     claim_direction: Optional[str] = None
     claim_switch_ids: Tuple[str, ...] = ()
+    alternating_switch: Optional[Tuple[str, int]] = None
 
     # First come, first served: what the train is asking for and the step on
     # which it first asked.
@@ -104,6 +117,8 @@ class RunningTrain:
     end_of_track_block: Optional[str] = None
     """The front block the runtime has already stopped this train in for End
     of track, so it is not stopped there a second time."""
+
+    timed_stops: Optional[TimedStops] = None
 
     @property
     def front_block(self) -> str:
@@ -132,10 +147,15 @@ class TrainRuntime:
         set_block_voltage: SetVoltageFn,
         emit: Optional[EmitFn] = None,
         hold_time_s: float = DEFAULT_HOLD_TIME_S,
+        throw_switch: Optional[Callable[[str, int], bool]] = None,
+        outputs_active: Callable[[], bool] = lambda: True,
     ) -> None:
         self._network = network
         self._set_block_voltage = set_block_voltage
         self._emit_fn = emit
+        self._throw_switch = throw_switch
+        self._outputs_active = outputs_active
+        self.alternate_next: Dict[str, int] = {}
         self.hold_time_s = float(hold_time_s)
         self.trains: Dict[str, RunningTrain] = {}
         self._next_seq = 1
@@ -219,6 +239,7 @@ class TrainRuntime:
         """One train's entry in the snapshot (design_v2.md "Live fields", A
         train entry)."""
         state = self.state_of(train)
+        stops = train.timed_stops
         walk = self.walk_ahead(train)
         return {
             "train_id": train.train_id,
@@ -226,6 +247,14 @@ class TrainRuntime:
             "length_cm": train.length_cm,
             "direction": train.direction,
             "knob_volts": train.knob_volts,
+            "timed_stops": {
+                "block_ids": sorted(stops.blocks),
+                "seconds": stops.seconds,
+                "resume_in_s": (
+                    max(0, math.ceil(stops.resume_at - self._now))
+                    if stops.resume_at is not None else None
+                ),
+            } if stops is not None else None,
             "destination_block_id": train.destination_block_id,
             "lost": train.lost,
             "stopped_at": train.stopped_at,
@@ -269,9 +298,11 @@ class TrainRuntime:
         if not live:
             return
         self._stop_trains(now)
+        self._apply_timed_stops(now)
         self._end_claims(now)
         self._give_claims(now)
-        self._set_voltages()
+        if self._outputs_active():
+            self._set_voltages()
 
     # --- item 2: update each train's blocks ---------------------------
 
@@ -289,6 +320,11 @@ class TrainRuntime:
             claimer = self.claimer_of_block(block_id)
             if claimer is not None:
                 direction = claimer.claim_direction or FORWARD
+                passage = claimer.alternating_switch
+                if passage is not None:
+                    switch_id, position = passage
+                    if switch_id in self.alternate_next:
+                        self.alternate_next[switch_id] = 1 - position
                 self._end_claim(claimer)
                 self._add_front_block(claimer, block_id, direction)
                 continue
@@ -368,6 +404,12 @@ class TrainRuntime:
         return train
 
     def _add_front_block(self, train: RunningTrain, block_id: str, direction: str) -> None:
+        stops = train.timed_stops
+        if stops is not None:
+            if stops.resume_at is not None:
+                train.timed_stops = None
+            else:
+                stops.arrived_at_block = block_id if block_id in stops.blocks else None
         train.blocks.append(block_id)
         train.directions[block_id] = direction
         train.end_of_track_block = None
@@ -483,6 +525,7 @@ class TrainRuntime:
                 if block_id != kept:
                     self._take_off_block(train, block_id)
             if was_moving:
+                train.timed_stops = None
                 train.lost = True
                 train.knob_volts = 0.0
                 train.stopped_at = now
@@ -503,6 +546,7 @@ class TrainRuntime:
 
     def _take_off_block(self, train: RunningTrain, block_id: str) -> None:
         if block_id == train.front_block and len(train.blocks) > 1:
+            train.timed_stops = None
             # The claim was made from a block the train is no longer in; it
             # asks again from its new front block.
             self._end_claim(train)
@@ -554,11 +598,29 @@ class TrainRuntime:
                     {"block_id": train.front_block},
                 )
 
+    def _apply_timed_stops(self, now: float) -> None:
+        for train in self.trains.values():
+            stops = train.timed_stops
+            if stops is None or stops.arrived_at_block != train.front_block:
+                continue
+            if not self.wholly_in_front_block(train):
+                continue
+            if stops.resume_at is None and train.running:
+                self._stop(train, now)
+                train.timed_stops = stops
+                stops.resume_at = now + stops.seconds
+            elif stops.resume_at is not None and now >= stops.resume_at:
+                train.knob_volts = stops.volts
+                train.stopped_at = None
+                stops.resume_at = None
+                stops.arrived_at_block = None
+
     def _stop(self, train: RunningTrain, now: float) -> None:
         """Set the knob to 0 V."""
         if train.knob_volts > 0.0 or train.stopped_at is None:
             train.stopped_at = now
         train.knob_volts = 0.0
+        train.timed_stops = None
         train.waiting_since = None
         train.waiting_reason = None
         self._clear_asking(train)
@@ -578,6 +640,7 @@ class TrainRuntime:
         train.claim_block_id = None
         train.claim_direction = None
         train.claim_switch_ids = ()
+        train.alternating_switch = None
 
     def _clear_asking(self, train: RunningTrain) -> None:
         train.asked_for = None
@@ -585,24 +648,72 @@ class TrainRuntime:
 
     # --- item 5: give claims ------------------------------------------
 
+    def disable_alternation(self, switch_id: str) -> None:
+        self.alternate_next.pop(switch_id, None)
+        for train in self.trains.values():
+            if train.alternating_switch and train.alternating_switch[0] == switch_id:
+                train.alternating_switch = None
+
+    def _claim_walk(self, train: RunningTrain) -> Tuple[WalkResult, Optional[Tuple[str, int]]]:
+        walk = self.walk_ahead(train)
+        if len(walk.switch_ids) != 1:
+            return walk, None
+        switch_id = walk.switch_ids[0]
+        position = self.alternate_next.get(switch_id)
+        switch = self._network.switches.get(switch_id)
+        if position is None or switch is None or switch.disabled or switch.manual or switch.motor_unavailable:
+            return walk, None
+        # For this layout, each leg leads directly to a different block.
+        # Approaching from a leg cannot produce two different onward blocks.
+        main, siding = (
+            next_block_ahead(self._network, train.front_block, train.direction, {switch_id: side})
+            for side in (0, 1)
+        )
+        if (
+            main.switch_ids != (switch_id,) or siding.switch_ids != (switch_id,)
+            or not main.block_id or not siding.block_id or main.block_id == siding.block_id
+        ):
+            return walk, None
+        return (main, siding)[position], (switch_id, position)
+
     def _give_claims(self, now: float) -> None:
         """Serve the running trains in first-come order (design_v2.md
         "Claiming the next block")."""
-        asking: List[Tuple[RunningTrain, WalkResult]] = []
+        asking: List[RunningTrain] = []
         for train in self.trains.values():
             if not train.running or train.claim_block_id is not None:
                 continue
-            walk = self.walk_ahead(train)
+            if train.timed_stops and train.timed_stops.arrived_at_block == train.front_block:
+                # Keep power on the train's own blocks until its rear clears.
+                continue
+            walk, _ = self._claim_walk(train)
             wanted = walk.block_id or walk.reason or ""
             if train.asked_for != wanted or train.asked_step is None:
                 train.asked_for = wanted
                 train.asked_step = self._step_count
-            asking.append((train, walk))
+            asking.append(train)
 
-        asking.sort(key=lambda pair: (pair[0].asked_step, pair[0].seq))
-        for train, walk in asking:
+        asking.sort(key=lambda train: (train.asked_step, train.seq))
+        for train in asking:
+            # Earlier trains on this step may have thrown or claimed a switch.
+            walk, passage = self._claim_walk(train)
             reason = self._why_no_claim(train, walk)
+            if reason is None and passage is not None:
+                switch_id, position = passage
+                switch = self._network.switches[switch_id]
+                needs_throw = int(switch.position) != position or not switch.position_known
+                if switch_id in self.held_switch_ids() or (
+                    needs_throw and switch_id in self.switches_just_left()
+                ):
+                    reason = SWITCH_HELD
+                elif needs_throw and (
+                    self._throw_switch is None or not self._throw_switch(switch_id, position)
+                ):
+                    if not self._outputs_active():
+                        return
+                    reason = SWITCH_HELD
             if reason is None:
+                train.alternating_switch = passage
                 train.claim_block_id = walk.block_id
                 train.claim_direction = walk.direction
                 train.claim_switch_ids = walk.switch_ids
@@ -684,6 +795,29 @@ class TrainRuntime:
     # Operator requests (design_v2.md "Running a train", "Trains")
     # ------------------------------------------------------------------
 
+    def set_timed_stops(self, train_id: str, block_ids: Any, seconds: Any, live: bool) -> Result:
+        train = self.trains.get(train_id)
+        if train is None:
+            return False, "unknown_train"
+        if not live:
+            return False, "not_live"
+        if block_ids == []:
+            train.timed_stops = None
+            return True, None
+        if train.lost:
+            return False, "train_lost"
+        if not train.running:
+            return False, "start_train_first"
+        if not isinstance(block_ids, list) or any(
+            not isinstance(block_id, str) or block_id not in self._network.blocks
+            for block_id in block_ids
+        ):
+            return False, "unknown_block"
+        if type(seconds) not in (int, float) or not 1 <= seconds <= 3600:
+            return False, "invalid_stop_duration"
+        train.timed_stops = TimedStops(set(block_ids), float(seconds), train.knob_volts)
+        return True, None
+
     def set_knob(self, train_id: str, volts: Any, now: float, live: bool) -> Result:
         train = self.trains.get(train_id)
         if train is None:
@@ -701,6 +835,7 @@ class TrainRuntime:
         if volts <= 0.0:
             self._stop(train, now)
             return True, None
+        train.timed_stops = None
         train.knob_volts = volts
         train.stopped_at = None
         return True, None
@@ -724,6 +859,7 @@ class TrainRuntime:
             return False, "not_stopped"
         if train.claim_block_id is not None:
             return False, "still_claiming"
+        train.timed_stops = None
         train.blocks.reverse()
         train.directions = {
             block_id: opposite_direction(direction)
@@ -756,6 +892,7 @@ class TrainRuntime:
     def leave_live(self, now: float) -> None:
         """Leaving Live stops every train and ends every claim. The trains
         themselves stay."""
+        self.alternate_next.clear()
         for train in self.trains.values():
             self._stop(train, now)
             self._end_claim(train)
@@ -763,6 +900,7 @@ class TrainRuntime:
     def clear(self) -> None:
         """Start with no trains, as an activation does."""
         self.trains.clear()
+        self.alternate_next.clear()
         self.occupied = set()
         self._left_at.clear()
 

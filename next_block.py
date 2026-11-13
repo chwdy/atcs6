@@ -163,6 +163,20 @@ def next_block_ahead(
                 )
                 or ()
             )
+            switch = network.switches.get(switch_id)
+            if switch is not None:
+                if switch.disabled:
+                    exits = []
+                elif entry_edge in neighbour.switch_points:
+                    if switch.motor_unavailable:
+                        exits = []
+                elif switch.allow_exit_from_either_leg:
+                    exits = [
+                        edge for edge in neighbour.get_exits(entry_edge, use_switch_state=False)
+                        if edge in neighbour.switch_points
+                    ]
+                elif switch.motor_unavailable:
+                    exits = []
             if not exits:
                 return WalkResult(None, None, SWITCH_AGAINST, tuple(met))
         else:

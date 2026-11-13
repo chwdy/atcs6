@@ -752,6 +752,8 @@ class SwitchManager:
         and the two cannot drift into disagreeing about what a thrown switch
         did to the layout.
         """
+        if drive and switch.motor_unavailable:
+            return False, "switch motor is unavailable"
         switch_id = switch.switch_id
         old_position = int(switch.position)
         success, message = switch.apply_position_change(
@@ -777,6 +779,7 @@ class SwitchManager:
             # as the operator's `command_result` warning.
             fail_reason = self._drive_throw(switch, int(new_position))
             if fail_reason is not None:
+                switch.position_known = False
                 return (False, fail_reason)
 
         # design_new.md "Event log": a confirmed operator alignment CHANGE is a
@@ -870,6 +873,8 @@ class SwitchManager:
         no controller is wired at all the throw is a no-op and this returns
         `None`.
         """
+        if switch.motor_unavailable:
+            return "switch motor is unavailable"
         controller = self._resolve_switch_power_controller()
         if controller is None:
             return None
@@ -1066,7 +1071,7 @@ class SwitchManager:
         failed: List[str] = []
         for switch_id in sorted(self._switch_registry):
             switch = self._switch_registry[switch_id]
-            if switch.disabled or switch.manual:
+            if switch.disabled or switch.manual or switch.motor_unavailable:
                 skipped.append(switch_id)
                 continue
             if self._drive_throw(switch, int(switch.position), force=True) is None:

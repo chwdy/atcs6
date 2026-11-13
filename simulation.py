@@ -311,6 +311,10 @@ class SimulationController(SwitchOutputOwner):
                 block_id, volts
             ),
             emit=self._emit_train_event,
+            throw_switch=lambda switch_id, position: network.switch_manager.request_position_change(
+                switch_id, position
+            )[0],
+            outputs_active=lambda: not self.runtime_halted,
         )
         self._train_step_was_live = False
         # Attribution needs the tracker's undetected-track walk to decide whether
@@ -4349,6 +4353,7 @@ def add_train_runtime_fields(
     switches = payload.get("switches") or {}
     for switch_id, entry in (switches.items() if isinstance(switches, dict) else ()):
         entry["held"] = switch_id in held
+        entry["alternate_next"] = runtime.alternate_next.get(switch_id)
     payload["running_trains"] = runtime.trains_payload()
 
 

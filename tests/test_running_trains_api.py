@@ -183,3 +183,68 @@ def test_an_activation_starts_with_no_trains(session):
     assert session.sim.train_runtime.trains
     session.sim.finish_activation()
     assert session.sim.train_runtime.trains == {}
+
+
+def test_alternation_waits_for_entry_and_manual_throw_takes_over(session):
+    switch_id = "SW_11_9"
+    switch_url = f"/api/switches/{switch_id}"
+    runtime = session.sim.train_runtime
+    put = session.client.put
+    assert put(f"{switch_url}/alternate", json={"enabled": True}).get_json() == {
+        "alternate_next": 0
+    }
+    session.passes("Right")
+    put("/api/trains/T1/knob", json={"volts": 6})
+    session.passes("Right")
+    assert runtime.trains["T1"].claim_block_id == session.ids["Main"]
+    assert runtime.alternate_next[switch_id] == 0
+    assert put(f"{switch_url}/state", json={"state": 1}).status_code == 409
+    session.passes("Right", "Main")
+    assert runtime.alternate_next[switch_id] == 1
+    assert session.snapshot()["switches"][switch_id]["alternate_next"] == 1
+
+    # A fresh activation and a free switch allow a manual throw to take over.
+    runtime.clear()
+    put(f"{switch_url}/alternate", json={"enabled": True})
+    assert put(f"{switch_url}/state", json={"state": 1}).status_code == 202
+    assert switch_id not in runtime.alternate_next
+
+
+def test_alternation_throws_before_powering_siding(session):
+    switch_id = "SW_11_9"
+    runtime = session.sim.train_runtime
+    runtime.alternate_next[switch_id] = 1
+    session.passes("Right")
+    session.client.put("/api/trains/T1/knob", json={"volts": 6})
+    session.passes("Right")
+    assert session.sim.switch_power_controller.get_last_throw(switch_id) == 1
+    assert runtime.trains["T1"].claim_block_id == session.ids["Sideline"]
+    assert abs(session.volts("Sideline")) == 6
+    assert session.volts("Main") == 0
+
+
+def test_alternation_waits_without_throwing_if_siding_is_taken(session):
+    switch_id = "SW_11_9"
+    runtime = session.sim.train_runtime
+    runtime.alternate_next[switch_id] = 1
+    session.passes("Right", "Sideline")
+    train = runtime.train_of_block(session.ids["Right"])
+    session.client.put(f"/api/trains/{train.train_id}/knob", json={"volts": 6})
+    session.passes("Right", "Sideline")
+    assert train.claim_block_id is None
+    assert train.waiting_reason == "block_taken"
+    assert session.volts("Right") == 0
+    assert session.sim.switch_power_controller.get_last_throw(switch_id) == 0
+    assert runtime.alternate_next[switch_id] == 1
+
+
+def test_failed_automatic_throw_grants_no_claim_or_voltage(session, monkeypatch):
+    switch_id = "SW_11_9"
+    runtime = session.sim.train_runtime
+    runtime.alternate_next[switch_id] = 1
+    monkeypatch.setattr(session.sim.switch_power_controller, "set_throw", lambda *_: False)
+    session.passes("Right")
+    session.client.put("/api/trains/T1/knob", json={"volts": 6})
+    session.passes("Right")
+    assert runtime.trains["T1"].claim_block_id is None
+    assert session.volts("Right") == session.volts("Sideline") == 0

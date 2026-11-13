@@ -12,6 +12,7 @@ import type { Signal } from '@preact/signals';
 import { useState } from 'preact/hooks';
 
 import { api } from '../../lib/api';
+import { stateManager } from '../../lib/state-manager';
 import { showToast } from '../../lib/toast';
 import { blockName, liveVersion, runningTrains, type RunningTrain } from './live';
 
@@ -24,6 +25,9 @@ const REASONS: Record<string, string> = {
   out_of_range: 'The knob goes from 0 to 12 V.',
   not_stopped: 'Stop the train first.',
   still_claiming: 'The train may still be rolling. Try again in a few seconds.',
+  unknown_block: 'Choose blocks on this layout.',
+  start_train_first: 'Turn up the speed knob first.',
+  invalid_stop_duration: 'Enter a stop of 1 to 3600 seconds.',
   unknown_train: 'This train is no longer on the track.',
 };
 
@@ -57,6 +61,8 @@ export function cardTone(state: RunningTrain['state']): string {
 /** The line under the name: where the train is and what it is doing. */
 export function cardLine(train: RunningTrain): string {
   const where = train.blocks.map((b) => blockName(b.block_id)).join(' → ');
+  const remaining = train.timed_stops?.resume_in_s;
+  if (remaining != null) return remaining > 0 ? `${where} · resume in ${remaining}s` : `${where} · waiting for detector`;
   if (train.state === 'lost') return `Lost on ${where}`;
   if (train.state === 'waiting') {
     return `${where} · waiting: ${WAITING[train.waiting_reason ?? ''] ?? train.waiting_reason ?? ''}`;
@@ -168,7 +174,7 @@ export function RunningTrainCard({ train, interaction }: { train: RunningTrain; 
         <button
           type="button"
           class="tc-btn tc-btn-danger op-card-btn"
-          disabled={train.state === 'stopped' || lost}
+          disabled={(train.state === 'stopped' && !train.timed_stops) || lost}
           onClick={() => void send('Stop', api.stopRunningTrain(id))}
         >
           ■ Stop
@@ -185,6 +191,57 @@ export function RunningTrainCard({ train, interaction }: { train: RunningTrain; 
           </button>
         )}
       </div>
+      {!lost && <TrainTimedStops train={train} />}
     </div>
+  );
+}
+
+function TrainTimedStops({ train }: { train: RunningTrain }) {
+  const [editing, setEditing] = useState(false);
+  const [first, setFirst] = useState('');
+  const [second, setSecond] = useState('');
+  const [seconds, setSeconds] = useState(10);
+  const stops = train.timed_stops;
+  if (stops) {
+    return (
+      <button type="button" class="tc-btn op-card-btn"
+        title={stops.block_ids.map(id => blockName(id)).join(', ')}
+        onClick={() => void send('Timed stops', api.setTrainTimedStops(train.train_id, []))}>
+        Turn off timed stops
+      </button>
+    );
+  }
+  if (!editing) {
+    return <button type="button" class="tc-btn op-card-btn" onClick={() => setEditing(true)}>Timed stops</button>;
+  }
+  const blocks = (stateManager.getAll('blocks') as { block_id: string }[])
+    .map(block => ({ id: block.block_id, name: blockName(block.block_id) }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+  return (
+    <form class="control-section" onSubmit={async (event) => {
+      event.preventDefault();
+      await send('Timed stops', api.setTrainTimedStops(train.train_id, second ? [first, second] : [first], seconds));
+    }}>
+      <label>Stop at
+        <select value={first} required onChange={event => setFirst(event.currentTarget.value)}>
+          <option value="">Choose a block</option>
+          {blocks.map(block => <option key={block.id} value={block.id}>{block.name}</option>)}
+        </select>
+      </label>
+      <label>Also stop at
+        <select value={second} onChange={event => setSecond(event.currentTarget.value)}>
+          <option value="">None</option>
+          {blocks.filter(block => block.id !== first).map(block => <option key={block.id} value={block.id}>{block.name}</option>)}
+        </select>
+      </label>
+      <label>Seconds
+        <input type="number" min={1} max={3600} required value={seconds}
+          onInput={event => setSeconds(event.currentTarget.valueAsNumber)} />
+      </label>
+      <button type="submit" class="tc-btn op-card-btn" disabled={train.knob_volts <= 0}>
+        {train.knob_volts > 0 ? 'Enable timed stops' : 'Turn up the knob first'}
+      </button>
+      <button type="button" class="tc-btn op-card-btn" onClick={() => setEditing(false)}>Close</button>
+    </form>
   );
 }

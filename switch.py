@@ -146,6 +146,8 @@ class Switch(TrackResource):
     ``train_id`` traversing it. A new route may be added iff it does not
     conflict (per :func:`routes_conflict`) with any existing entry."""
 
+    allow_exit_from_either_leg: bool = False
+    motor_unavailable: bool = False
     disabled: bool = False
     """When True, the switch is treated as missing track / open circuit. No
     operator override bypasses this; physical entry is a fatal conflict."""
@@ -653,6 +655,8 @@ class Switch(TrackResource):
             "position_known": self.position_known,
             "flip_count": self.flip_count,
             "occupied_by": self.occupied_by,
+            "allow_exit_from_either_leg": self.allow_exit_from_either_leg,
+            "motor_unavailable": self.motor_unavailable,
             "disabled": self.disabled,
             "manual": self.manual,
             "flank_protection": [
@@ -703,6 +707,8 @@ class Switch(TrackResource):
             "switch_type": self.switch_type,
             "name": self.name,
             "notes": self.notes,
+            "allow_exit_from_either_leg": self.allow_exit_from_either_leg,
+            "motor_unavailable": self.motor_unavailable,
             "disabled": self.disabled,
             "manual": self.manual,
             "flip_count": self.flip_count,
@@ -735,6 +741,8 @@ class Switch(TrackResource):
             name=data.get("name", ""),
             notes=data.get("notes", ""),
         )
+        switch.allow_exit_from_either_leg = data.get("allow_exit_from_either_leg") is True
+        switch.motor_unavailable = data.get("motor_unavailable") is True
         switch.disabled = bool(data.get("disabled", False))
         switch.manual = bool(data.get("manual", False))
         switch.flip_count = int(data.get("flip_count", 0))

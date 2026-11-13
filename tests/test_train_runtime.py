@@ -559,7 +559,7 @@ def test_a_train_entry_has_exactly_the_documented_fields(rig):
     rig.step("Left")
     entry = rig.runtime.trains_payload()["T1"]
     assert set(entry) == {
-        "train_id", "name", "length_cm", "direction", "knob_volts",
+        "train_id", "name", "length_cm", "direction", "knob_volts", "timed_stops",
         "destination_block_id", "lost", "stopped_at", "waiting_since",
         "blocks", "state", "waiting_reason", "next_block_id", "claimed_block_id",
     }
@@ -567,3 +567,49 @@ def test_a_train_entry_has_exactly_the_documented_fields(rig):
     assert entry["blocks"] == [{"block_id": rig.ids["Left"], "reads_occupied": True}]
     assert entry["next_block_id"] == rig.ids["Main"]
     assert entry["claimed_block_id"] == rig.ids["Main"]
+
+
+def test_timed_stop_waits_for_rear_and_departs_once(rig):
+    rig.step("Left")
+    rig.knob("T1", 6)
+    assert rig.runtime.set_timed_stops("T1", [rig.ids["Main"]], 2, True) == (True, None)
+    rig.step("Left")
+    rig.step("Left", "Main")
+    assert rig.state("T1") == "moving"
+    assert rig.claim("T1") is None
+    assert rig.volts["Right"] == 0
+
+    rig.step("Main")
+    assert rig.state("T1") == "stopped"
+    assert rig.volts["Main"] == 0
+    assert rig.runtime.train_entry(rig.train("T1"))["timed_stops"]["resume_in_s"] == 2
+    rig.step(seconds=2.1)
+    assert rig.state("T1") == "stopped"
+    rig.step("Main")
+    assert rig.state("T1") == "moving"
+    assert rig.claim("T1") == "Right"
+    assert abs(rig.volts["Main"]) == 6
+    rig.step("Main")
+    assert rig.state("T1") == "moving"
+
+
+@pytest.mark.parametrize("cancel", ["knob", "stop", "stop_all", "reverse", "leave_live"])
+def test_manual_actions_cancel_a_pending_restart(rig, cancel):
+    rig.step("Left")
+    rig.knob("T1", 6)
+    rig.runtime.set_timed_stops("T1", [rig.ids["Main"]], 2, True)
+    rig.step("Left")
+    rig.step("Main")
+    assert rig.train("T1").timed_stops.resume_at is not None
+    actions = {
+        "knob": lambda: rig.knob("T1", 0),
+        "stop": lambda: rig.runtime.stop("T1", rig.now),
+        "stop_all": lambda: rig.runtime.stop_all(rig.now, True),
+        "reverse": lambda: rig.runtime.reverse("T1", True),
+        "leave_live": lambda: rig.runtime.leave_live(rig.now),
+    }
+    actions[cancel]()
+    rig.step("Main", seconds=3)
+    assert rig.train("T1").timed_stops is None
+    assert rig.state("T1") == "stopped"
+    assert rig.volts["Main"] == 0

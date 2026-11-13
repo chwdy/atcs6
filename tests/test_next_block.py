@@ -112,3 +112,22 @@ def test_the_blocks_next_to_a_block_follow_the_switches_as_set(rig):
     _set(network, 1, 0)
     assert neighbour_blocks(network, ids["Left"]) == {ids["Sideline"]: FORWARD, ids["Up"]: FORWARD}
     assert neighbour_blocks(network, ids["Sideline"]) == {ids["Left"]: REVERSE}
+
+
+def test_unavailable_motor_allows_only_configured_exits(rig):
+    network, ids = rig
+    switch = network.switches[LEFT_SWITCH]
+    switch.motor_unavailable = True
+    assert _walk(network, ids, "Main", REVERSE)[2] == SWITCH_AGAINST
+
+    switch.allow_exit_from_either_leg = True
+    for position in (0, 1):
+        switch.position = SwitchState(position)
+        for branch in ("Main", "Sideline"):
+            assert _walk(network, ids, branch, REVERSE) == (
+                "Left", REVERSE, None, (LEFT_SWITCH,)
+            )
+        assert _walk(network, ids, "Left", FORWARD)[2] == SWITCH_AGAINST
+
+    loaded = type(switch).from_dict(switch.to_layout_dict())
+    assert loaded.motor_unavailable and loaded.allow_exit_from_either_leg

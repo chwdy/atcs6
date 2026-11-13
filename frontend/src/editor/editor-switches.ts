@@ -346,6 +346,14 @@ export class SwitchEditorHandler {
                     <input type="text" id="switch-notes" class="property-input" value="${escapeAttr(switchData.notes || '')}" placeholder="Notes...">
                 </div>
 
+                <label class="property-item mb-8">
+                    <input type="checkbox" id="switch-allow-exit" ${switchData.allow_exit_from_either_leg ? 'checked' : ''}>
+                    Allow trains to exit from either branch
+                </label>
+                <label class="property-item mb-8">
+                    <input type="checkbox" id="switch-motor-unavailable" ${switchData.motor_unavailable ? 'checked' : ''}>
+                    Switch motor unavailable
+                </label>
                 ${renderAvailabilitySegment('switch', switchData, { idBase: 'switch-availability' })}
             </div>
 
@@ -427,6 +435,24 @@ export class SwitchEditorHandler {
     const sid = switchData.switch_id;
     const saveSwitchField = (field: string) => (value: unknown) =>
       this.api.updateSwitch(sid, { [field]: value });
+    for (const [id, field] of [
+      ['switch-allow-exit', 'allow_exit_from_either_leg'],
+      ['switch-motor-unavailable', 'motor_unavailable'],
+    ]) {
+      const checkbox = this.editor.$id(id) as HTMLInputElement | null;
+      checkbox?.addEventListener('change', async () => {
+        const checked = checkbox.checked;
+        checkbox.disabled = true;
+        try {
+          await saveSwitchField(field)(checked);
+        } catch (err) {
+          checkbox.checked = !checked;
+          showToast(err instanceof Error ? err.message : 'Could not update switch', 'error', 5000);
+        } finally {
+          checkbox.disabled = false;
+        }
+      });
+    }
     bindFieldAutoSave(this.editor.$id('switch-name') as HTMLInputElement | null, {
       parse: parseText,
       commit: saveSwitchField('name'),

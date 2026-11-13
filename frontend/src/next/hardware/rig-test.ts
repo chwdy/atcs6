@@ -40,7 +40,7 @@ export interface BlockCheckAnswer {
 
 export interface RigTestCalls {
   /** The saved setup, and each switch's position in the loaded layout. */
-  readSetup(): Promise<{ setup: SavedSetup; switchPositions: Record<string, number> }>;
+  readSetup(): Promise<{ setup: SavedSetup; switchPositions: Record<string, number>; unavailableMotors?: string[] }>;
   selfTest(): Promise<ScanAnswer>;
   openBench(): Promise<{ ok: boolean; error?: string }>;
   checkBlock(blockId: string): Promise<BlockCheckAnswer>;
@@ -146,8 +146,9 @@ export async function runRigTest(calls: RigTestCalls): Promise<RigTestReport> {
   calls.progress('Reading the saved setup…');
   let setup: SavedSetup;
   let switchPositions: Record<string, number>;
+  let unavailableMotors: string[];
   try {
-    ({ setup, switchPositions } = await calls.readSetup());
+    ({ setup, switchPositions, unavailableMotors = [] } = await calls.readSetup());
   } catch (e) {
     report.failed.push(`Could not read the saved setup: ${errorText(e)}.`);
     return report;
@@ -253,7 +254,7 @@ export async function runRigTest(calls: RigTestCalls): Promise<RigTestReport> {
   }
 
   // 3. The switch throw test: each bound switch to its other position and back.
-  const switches = Object.keys(setup.switch_output).sort();
+  const switches = Object.keys(setup.switch_output).filter(id => !unavailableMotors.includes(id)).sort();
   const throwFailures = new Map<string, string>();
   const thrown = new Map<string, string[]>();
   let tookController = false;

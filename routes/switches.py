@@ -76,7 +76,8 @@ def register(app, state: AppState) -> None:
         if not data:
             return jsonify({"error": "No data provided"}), 400
         try:
-            switch = switch_service.update_switch(state, switch_id, data=data)
+            with state.simulation_lock:
+                switch = switch_service.update_switch(state, switch_id, data=data)
         except NotFoundError as exc:
             return jsonify({"error": str(exc)}), 404
         except ConflictError as exc:
@@ -113,6 +114,26 @@ def register(app, state: AppState) -> None:
             return jsonify({"error": str(exc)}), 404
         return jsonify({"success": True})
 
+    @app.route("/api/switches/<switch_id>/alternate", methods=["PUT"])
+    def set_alternate(switch_id: str):
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict) or type(data.get("enabled")) is not bool:
+            return jsonify({"error": "enabled must be true or false"}), 400
+        with state.simulation_lock:
+            runtime = running_trains._runtime(state)
+            if runtime is None or not state.session_state().is_live:
+                return jsonify({"error": "The session must be Live"}), 409
+            switch = state.network.switches.get(switch_id)
+            if switch is None:
+                return jsonify({"error": "Switch not found"}), 404
+            if data["enabled"]:
+                if switch.disabled or switch.manual or switch.motor_unavailable:
+                    return jsonify({"error": "This switch is unavailable for automatic throws"}), 409
+                runtime.alternate_next.setdefault(switch_id, 0)
+            else:
+                runtime.disable_alternation(switch_id)
+            return jsonify({"alternate_next": runtime.alternate_next.get(switch_id)})
+
     @app.route("/api/switches/<switch_id>/state", methods=["PUT"])
     def change_switch_state(switch_id: str):
         """Change switch state (MAIN=0, DIVERGE=1).
@@ -133,25 +154,22 @@ def register(app, state: AppState) -> None:
         data = request.get_json(silent=True) or {}
         if "state" not in data:
             return jsonify({"error": "Missing 'state' in request body"}), 400
-        if running_trains.switch_is_held(state, switch_id):
-            return (
-                jsonify(
-                    {
+        try:
+            with state.simulation_lock:
+                runtime = running_trains._runtime(state)
+                if runtime is not None and state.session_state().is_live and switch_id in runtime.held_switch_ids():
+                    return jsonify({
                         "success": False,
                         "reason": "switch_held",
                         "error": "A train may be on this switch, so it is not thrown.",
-                    }
-                ),
-                409,
-            )
-        try:
-            command_id = switch_service.request_position_change(
-                state,
-                switch_id,
-                new_state=data["state"],
-                command_id=data.get("command_id"),
-                manual_override=bool(data.get("manual_override", False)),
-            )
+                    }), 409
+                command_id = switch_service.request_position_change(
+                    state,
+                    switch_id,
+                    new_state=data["state"],
+                    command_id=data.get("command_id"),
+                    manual_override=bool(data.get("manual_override", False)),
+                )
         except ValidationError as exc:
             return jsonify({"error": str(exc)}), 400
         except NotFoundError as exc:

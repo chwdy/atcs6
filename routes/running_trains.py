@@ -49,16 +49,6 @@ def remove_running_train(state: AppState, train_id: str):
         return _answer(_runtime(state).remove(train_id))
 
 
-def switch_is_held(state: AppState, switch_id: str) -> bool:
-    """Whether a throw of this switch is refused because a train may be on it
-    (design_v2.md "Switches", A held switch is not thrown)."""
-    runtime = _runtime(state)
-    if runtime is None or not state.session_state().is_live:
-        return False
-    with state.simulation_lock:
-        return switch_id in runtime.held_switch_ids()
-
-
 def register(app, state: AppState) -> None:
     """Register the v2 train routes."""
 
@@ -74,6 +64,19 @@ def register(app, state: AppState) -> None:
         with state.simulation_lock:
             live = state.session_state().is_live
             return _answer(runtime.set_knob(train_id, data.get("volts"), time.time(), live))
+
+    @app.route("/api/trains/<train_id>/timed-stops", methods=["PUT"])
+    def set_timed_stops(train_id):
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            return _answer((False, "unknown_block"))
+        with state.simulation_lock:
+            runtime = _runtime(state)
+            if runtime is None:
+                return _refuse_without_runtime()
+            return _answer(runtime.set_timed_stops(
+                train_id, data.get("block_ids"), data.get("seconds"), state.session_state().is_live
+            ))
 
     @app.route("/api/trains/<train_id>/reverse", methods=["POST"])
     def reverse_train(train_id):

@@ -477,8 +477,11 @@ def register(app, state: AppState) -> None:
         switch_id = str(switch_id)
         position = int(position)
 
-        if state.network.switches.get(switch_id) is None:
+        switch = state.network.switches.get(switch_id)
+        if switch is None:
             return jsonify({"ok": False, "error": f"unknown switch {switch_id!r}"}), 404
+        if switch.motor_unavailable:
+            return jsonify({"ok": False, "error": "Switch motor is unavailable"}), 409
         switch_manager = getattr(state.network, "switch_manager", None)
         if switch_manager is None:
             return jsonify({"ok": False, "error": "runtime not initialised"}), 503
@@ -1469,7 +1472,11 @@ def register(app, state: AppState) -> None:
             state.network.blocks.keys(),
             state.network.switches.keys(),
             lighting_voltages=lighting_voltages,
-            )
+            unavailable_switch_motors=(
+                switch_id for switch_id, switch in state.network.switches.items()
+                if switch.motor_unavailable
+            ),
+        )
 
     def _activate_locked(selected):
         """Build the session's hardware boundary for `selected` and make it live.

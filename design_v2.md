@@ -112,7 +112,7 @@ Virtual Hardware and Real Hardware share one setup, and Virtual Hardware runs ev
    - **Switch throw test** (`POST /api/hardware/switch-test`) pulses one coil to throw one switch to a named position, then records the result in `Switch.position`. A switch a train stands across is thrown and recorded too, because the coil moves the points before anything is checked. When the session does not own the switch coils, the test runs only in Setup.
    - **Block occupancy test** (`POST /api/hardware/occupancy-test`) drives nothing and reports both occupancy sources, the drive zone, and the verdict.
    - **Occupancy bench** (`POST /api/hardware/bench/open`, then `close`) holds every bound block at one voltage and shows both occupancy sources for every block side by side, so the operator can set the detector calibration. Its block check (`POST /api/hardware/bench/check-block`) pulses one block and reports whether that block's detectors follow the pulse and whether any other block's do.
-   - **Test the rig** is the Hardware Setup panel's one-button run of the tools above: self-test, the block check on every block with a rail binding, and a switch throw test of every bound switch to its other position and back. It asks the operator nothing and ends with one summary.
+   - **Test the rig** is the Hardware Setup panel's one-button run of the tools above: self-test, the block check on every block with a rail binding, and a switch throw test of every bound switch with an available motor to its other position and back. It asks the operator nothing and ends with one summary.
    - See **Setup tools**: Self-test, A shift register is proven by a read-back or by the operator, Port-test, The commissioning session, Track direction sweep, Switch throw test, Block occupancy test, Occupancy bench, and Test the rig. See also **Hardware REST API**, REST surface.
 5. **Close each tool.**
    - **What the operator does.** The operator closes the tool.
@@ -133,7 +133,7 @@ Virtual Hardware and Real Hardware share one setup, and Virtual Hardware runs ev
    - **When it is refused.** While the session is Live. It also runs the readiness check again and refuses on any blocker.
    - **What it does.** Once the readiness check passes, it closes any Setup tool that still holds the outputs. It then builds the interfaces and verifies the environment. It then leaves Setup, clears a latched hardware failure, and goes Live.
    - **What it keeps.** The layout and the setup.
-   - **Switches.** Activation throws every switch once to the position the layout shows, even one a train may stand across, and the event log records which were thrown (see **Operating environment and activation**, Activation throws every switch).
+   - **Switches.** Activation throws every switch with an available motor once to the position the layout shows, even one a train may stand across, and the event log records which were thrown (see **Operating environment and activation**, Activation throws every switch).
    - **When activation is refused or fails.** No environment is active. The session reads Setup if it was in Setup, and otherwise Halted for `hardware_failure` or `not_activated`.
    - **What is true afterwards.** The session is Live. There is no separate start step: the operator goes straight on to **Running a train**.
    - See **Operating environment and activation**; **Session state**; and **Recovery is reactivation**.
@@ -166,6 +166,8 @@ These are all the things the operator can do to trains and switches from the Ope
   - the session state is not Live (`not_live`);
   - the train is lost (`train_lost`);
   - `volts` is below `0` or above `MAX_TRACK_VOLTAGE` (`out_of_range`).
+- **Timed stops.** While a train is running, choose one or more blocks and a stop duration of 1 to 3600 seconds. The runtime remembers the train's current voltage. After a later entry into a chosen block, the train keeps moving on its own blocks without claiming the next one until it is wholly in the chosen block. It then stops and starts the timer. When the timer expires and the detector confirms the train is wholly in that block, the runtime restores the remembered voltage and the ordinary claim rules apply. A train stops once per arrival. An end of track stop, overrun, loss of the train, leaving Live, or an accepted knob, Stop, Reverse or Stop all request clears its timed stops. Turning timed stops off while waiting leaves the train stopped.
+  - `PUT /api/trains/<train_id>/timed-stops` accepts `{ "block_ids": [...], "seconds": number }`. An empty list turns timed stops off. The train's live entry carries its selected blocks, duration, and seconds until it can resume. Timed stops belong to the current train and session.
 - **Stop.** `POST /api/trains/<train_id>/stop` sets the knob to 0 V. It is always accepted.
 - **An unknown train.** Every request that names a `train_id` the runtime does not hold is refused with `unknown_train`.
 - **Reverse.** See **Direction**, Reverse turns the train round.
@@ -178,6 +180,7 @@ These are all the things the operator can do to trains and switches from the Ope
 - **Stop all.** `POST /api/trains/stop-all` stops every train at once. It is always accepted. It is the off switch of a power brick.
   - **While the session is Live**, it sets every train's knob to 0 V and commands every block to 0 V through `BlockPowerController` in the same request, without waiting for the next runtime step. These are ordinary block writes, not the safe state. Each train keeps its claim as any stopped train does (see **Claiming the next block**, A stopped train keeps its claim for the hold time). The session state stays Live, and each train runs again when its knob is turned up.
   - **While the session is not Live**, it writes nothing to the outputs. It closes any Setup tool that holds them (see **Closing a Setup tool restores the safe state**).
+- **Alternate arrivals.** `PUT /api/switches/<switch_id>/alternate` with `{ "enabled": true }` starts alternating arrivals while Live. Sending `false` returns the switch to manual operation. Neither request throws the switch.
 - **Throw a switch.** `PUT /api/switches/<switch_id>/state` throws a switch (see **Switch**, Canonical `Switch.position` mutation workflow). It is refused while the session is not Live (`not_live`), and while the switch is held (`switch_held`, see **Switches**, A held switch is not thrown).
 - **Edit the layout.** The layout is drawn and edited on the Editor screen. Loading a layout, clearing it, and every edit to tiles, segments, blocks, switches and tunnels are refused while the session is Live (`live`), because the rig is wired to the layout it was activated with. Saving a layout is accepted in every session state. Loading or clearing a layout, and any edit that adds, deletes or regroups a block, removes every train; the detectors then find them again.
 - **Save the Hardware Setup.** `PUT /api/hardware/config` is accepted in every session state, so a wiring fix can be saved while trains run (see **A binding is read per write**). The setup is the operator's to get right: a save that takes away a binding the running session needs makes the next write to it fail, and that is a hardware failure like any other.
@@ -258,7 +261,8 @@ Two trains are never let into the same block. To make sure, a train claims a blo
 
 - **The next block ahead.** The runtime finds it by walking the track from the far end of the train's front block, in the train's direction, across each switch it meets, up to the first block.
   - A switch met at its toe (its single end) leads on by the leg it is currently set to.
-  - A switch met from a leg leads on out of its toe when it is set to that leg. When it is set to the other leg, the walk ends and there is no next block ahead.
+  - A switch configured to let trains exit from either leg leads from either leg to its toe without a throw. This does not allow entry from the toe if the motor is unavailable.
+  - Otherwise, a switch met from a leg leads on out of its toe when it is set to that leg. When it is set to the other leg, the walk ends and there is no next block ahead.
   - When the track ends before another block, there is no next block ahead.
   - For a train with a destination, the walk follows **The way to a destination** in place of the switches' current settings.
 - **Who claims.** On each runtime step, every train that is running, is not lost, and holds no claim asks for its next block ahead.
@@ -284,9 +288,12 @@ A claim is one block deep on purpose. It is how "trains don't hit each other" wo
 
 ## Switches
 
+**A switch with an unavailable motor.** The layout saves whether a switch motor is available and whether trains can leave either leg without a throw. Both settings are edited outside Live. A motor marked unavailable needs no motor binding and is skipped by activation and switch throw tests. The switch still needs its track feed. The runtime refuses to lead a train into the single end of this switch because it does not know where the points lie.
+
 How a switch is thrown, and what a throw does on the rig, is under **Switch**. This section says when the runtime throws one and when a throw is refused.
 
-- **Without a destination, the runtime never throws a switch for a train.** The train follows the switches as they are set, and the operator throws them from the page.
+- **Alternate arrivals.** In Live, the operator can enable alternation on a working switch whose two branches lead directly to different blocks. The first arrival takes the main branch. When its claimed block reads occupied, the next arrival takes the other branch. An approaching train waits if its selected block is taken. The runtime throws only when it can grant the claim and the switch is clear. A stopped train that never enters its claimed block does not advance the choice. Turning alternation off leaves existing claims in place. A successful manual throw or leaving Live turns alternation off.
+- **Without a destination or an alternating switch ahead, the runtime never throws a switch for a train.** The train follows the switches as they are set, and the operator throws them from the page.
 - **With a destination, the runtime throws the switches on the way.** Once every condition for the claim holds (see **Claiming the next block**, When a claim is given), and only then, the runtime throws each switch between the train's front block and the block being claimed that is not already set for the way, and gives the claim. A switch that is already set for the way is not thrown. A switch is thrown as part of claiming, not earlier, so a train that is waiting throws nothing.
 - **The way to a destination.** The runtime looks for it forward from the train's front block, in the train's direction.
   - At a switch met at its toe, the way may take either leg. At a switch met from a leg, the way leads on out of the toe.
@@ -314,7 +321,7 @@ A train that cannot be given a claim and is not yet wholly in its front block ke
 
 - `block_taken`: the next block ahead is taken by another train (see **Claiming the next block**, A taken block);
 - `switch_against`: a switch met from a leg is set to the other leg, and the train has no destination;
-- `switch_held`: the train has a destination, and a switch on its way that needs throwing is held;
+- `switch_held`: a switch needed for the train’s destination or for alternation is held, or it cannot yet be thrown.
 - `own_block`: the next block ahead is one of the train's own blocks.
 
 - **A waiting train stays waiting until it is given the claim.** Once a train waits, its blocks stay at 0 V until it is given the claim or it is stopped, whatever its front block reads in between. A train at 0 V does not move, so a front block that reads empty for a moment is a detector flicker, and putting voltage back on the train would drive it toward the train ahead.
@@ -367,7 +374,7 @@ While the session state is Live, the runtime loop runs one runtime step ten time
    3. make each train whose blocks have all read empty for the hold time a lost train, or remove it.
 3. **Stop trains.** Apply **When the runtime stops a train** to every running train.
 4. **End claims.** End every claim that **Claiming the next block** says is over.
-5. **Give claims.** Serve the running trains in first-come order. For each, in this order: find the next block ahead; check the conditions under **Claiming the next block**, When a claim is given; when they all hold, throw the switches a train with a destination needs thrown, then give the claim; otherwise throw nothing and record that the train is waiting, and why.
+5. **Give claims.** Serve the running trains in first-come order. For each, in this order: find the next block ahead; check the conditions under **Claiming the next block**, When a claim is given; when they all hold, throw any switch required by the destination or by alternation, then give the claim; otherwise throw nothing and record that the train is waiting, and why.
 6. **Set every block's voltage** (see **Track power**).
 7. **Publish.** Emit this step's events (see **Event log**, Train events). The page reads the result through the snapshot (see **Data flow to the page**).
 
@@ -521,7 +528,7 @@ Both environments share the runtime step, the notifications, and the detector re
 - **What activation keeps.** The layout and the Hardware Setup.
 - **Activation starts the railway over.** Activation removes every train before it builds the interfaces (step 3). Trains are not carried from one activation to the next: the runtime step finds every train again from the detectors, each as a new train with its knob at 0 V (see **Trains**, Trains are not saved). Activation clears the debounce counts, so a block a train stands on reads occupied `OCCUPANCY_ON_THRESHOLD` reads after the first step. Nothing moves after activation until the operator turns a knob.
 - **Activation sets what v2 knows about each switch.** Before any throw, activation sets `Switch.position_known` (a runtime field that says whether v2 knows which way the points lie) to `False` on every switch. A fresh session has thrown no coil, and the points may lie either way. The throw then sets it `True` on each switch it throws.
-- **Activation throws every switch.** Activation throws every switch once to the position the layout shows, through `SwitchManager.throw_all_to_layout()`, even one a train may stand across. The held-switch rule does not bind this throw: activation has removed every train, so no switch is held (see **Switches**, A held switch is not thrown). The event log records which were thrown.
+- **Activation throws every switch.** Activation throws every switch with an available motor once to the position the layout shows, through `SwitchManager.throw_all_to_layout()`, even one a train may stand across. The held-switch rule does not bind this throw: activation has removed every train, so no switch is held (see **Switches**, A held switch is not thrown). The event log records which were thrown.
 - **Activation goes Live.** A successful activation writes the session flags its row in the **Session state** transition table lists, and the session is Live.
 - **A refused or failed activation leaves no environment active.** The session reads Setup if it was in Setup, and otherwise Halted for `hardware_failure` or `not_activated` (see **Session state**).
 - **Boot activates no environment.** The session boots Halted for `not_activated`, and the operator activates it. Boot runs no readiness check of its own. The operator has to switch the board's power on by hand first, so only the operator knows when the rig is ready.
@@ -1310,6 +1317,7 @@ The live part of the snapshot is these fields and no others.
 - **A tile's live fields.** A tile that holds a switch carries `switch_state`, that switch's `position`, read from the switch when the snapshot is built. No other tile has a live field.
 - **A train entry.** `trains` is a map from `train_id` to an entry with exactly these fields:
   - `train_id`, `name`, `length_cm`, `direction`, `knob_volts`, `destination_block_id`, `lost`, `stopped_at`, `waiting_since` — as **Trains**, What a train holds, defines them;
+  - `timed_stops`: null when off, otherwise `block_ids`, `seconds`, and `resume_in_s`. The last field is null between stops and counts down to zero while stopped.
   - `blocks` — the train's blocks from rear to front, each as `{ "block_id": str, "reads_occupied": bool }`;
   - `state` — one of `"stopped"`, `"moving"`, `"waiting"`, `"lost"` (see **Trains**, Running, stopped, waiting);
   - `waiting_reason` — while `state` is `"waiting"`, one of the reasons under **When a train waits**; otherwise `null`;

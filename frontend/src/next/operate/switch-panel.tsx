@@ -34,7 +34,9 @@ export function SwitchPanel({ host, switchId }: { host: OperateHost; switchId: s
   const position = sw.position === 1 ? 1 : 0;
   const locks: any[] = Array.isArray(sw.locks) ? sw.locks : [];
   const claims: any[] = Array.isArray(sw.train_protection_claims) ? sw.train_protection_claims : [];
-  const held = locks.length > 0 || claims.length > 0;
+  const held = !!sw.held || locks.length > 0 || claims.length > 0;
+  const supportsAlternate = Object.prototype.hasOwnProperty.call(sw, 'alternate_next');
+  const alternating = sw.alternate_next != null;
   const name = String(sw.name || '').trim();
 
   const throwSwitch = async () => {
@@ -83,13 +85,22 @@ export function SwitchPanel({ host, switchId }: { host: OperateHost; switchId: s
           <button
             type="button"
             class="btn btn-sm"
-            disabled={locks.length > 0}
+            disabled={held || !!sw.motor_unavailable}
             title={locks.length > 0 ? 'A path has locked this switch' : `Throw to ${positionName(1 - position).toLowerCase()}`}
             onClick={() => void throwSwitch()}
           >
             <i class="ti ti-switch-horizontal" aria-hidden="true" /> Throw to {positionName(1 - position).toLowerCase()}
           </button>
         </div>
+        {supportsAlternate && !sw.motor_unavailable && (
+          <div class="op-row">
+            <span>{alternating ? `Alternate · next ${sw.alternate_next === 1 ? 'siding' : 'main'}` : 'Manual'}</span>
+            <button type="button" class="btn btn-sm" disabled={!!sw.manual || !!sw.disabled}
+              onClick={() => void sendChange('switch mode', () => api.setSwitchAlternate(switchId, !alternating), host)}>
+              {alternating ? 'Use manual' : 'Alternate arrivals'}
+            </button>
+          </div>
+        )}
         <dl class="op-fields">
           <dt>Occupied by</dt>
           <dd>{sw.occupied_by ? trainLink(sw.occupied_by) : <span class="text-muted">No train</span>}</dd>

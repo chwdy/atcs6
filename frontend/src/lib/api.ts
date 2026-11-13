@@ -449,6 +449,12 @@ export class API implements LayoutDataClient, SimClient {
     return this._trainRequest(`/trains/${encodeURIComponent(trainId)}/knob`, 'PUT', { volts });
   }
 
+  setTrainTimedStops(trainId: string, blockIds: string[], seconds?: number) {
+    return this._trainRequest(`/trains/${encodeURIComponent(trainId)}/timed-stops`, 'PUT', {
+      block_ids: blockIds, seconds,
+    });
+  }
+
   stopRunningTrain(trainId: string) {
     return this._trainRequest(`/trains/${encodeURIComponent(trainId)}/stop`, 'POST');
   }
@@ -1965,6 +1971,14 @@ export class API implements LayoutDataClient, SimClient {
    * Change switch state (MAIN=0, DIVERGE=1).
    * Fails with 409 Conflict if switch is locked by a path.
    */
+  setSwitchAlternate(switchId: string, enabled: boolean) {
+    return this._request(
+      `/switches/${encodeURIComponent(switchId)}/alternate`,
+      { method: 'PUT', body: { enabled } },
+      'setSwitchAlternate',
+    );
+  }
+
   async setSwitchState(switchId: string, state: number): Promise<any> {
     return this._request(
       `/switches/${encodeURIComponent(switchId)}/state`,

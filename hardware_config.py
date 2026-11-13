@@ -1043,6 +1043,8 @@ def activation_report(
     block_ids: Iterable[str],
     switch_ids: Iterable[str],
     lighting_voltages: Optional[Dict[str, float]] = None,
+    *,
+    unavailable_switch_motors: Iterable[str] = (),
 ) -> Dict[str, Any]:
     """Return the fail-closed readiness verdict for one whole environment.
 
@@ -1086,7 +1088,11 @@ def activation_report(
     # detector.
     detected = set(cfg.block_occupancy) & set(cfg.block_occupancy_current)
     missing_occupancy = [block_id for block_id in blocks if block_id not in detected]
-    missing_switch = [switch_id for switch_id in switches if switch_id not in cfg.switch_output]
+    unavailable_motors = set(unavailable_switch_motors)
+    missing_switch = [
+        switch_id for switch_id in switches
+        if switch_id not in cfg.switch_output and switch_id not in unavailable_motors
+    ]
     # Every switch must name the block feeding its rails, and that block must be
     # one the layout actually has (design_new.md "Power", Bindings).
     missing_feed = [

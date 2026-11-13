@@ -622,7 +622,11 @@ function rigTestCalls(): RigTestCalls {
       if (!config) throw new Error('the server sent no setup');
       saved = config;
       const switchPositions: Record<string, number> = {};
-      for (const sw of Array.isArray(switches) ? switches : []) switchPositions[sw.switch_id] = sw.position;
+      const unavailableMotors: string[] = [];
+      for (const sw of Array.isArray(switches) ? switches : []) {
+        switchPositions[sw.switch_id] = sw.position;
+        if (sw.motor_unavailable) unavailableMotors.push(sw.switch_id);
+      }
       return {
         setup: {
           chips: config.chips || [],
@@ -631,6 +635,7 @@ function rigTestCalls(): RigTestCalls {
           switch_output: config.switch_output || {},
         },
         switchPositions,
+        unavailableMotors,
       };
     },
     selfTest: runSelfTest,
