@@ -61,6 +61,11 @@
     --train-body-teardown: #c8a2ff;
     --train-body-eb: #8257e5;
     --train-body-unidentified: #8a8a99;
+    /* v2 train line, by train state (design_v2.md "Seeing trains on the layout") */
+    --train-line-moving: #ffffff;
+    --train-line-waiting: #ffd93d;
+    --train-line-stopped: #a3a3b5;
+    --train-line-lost: #c8a2ff;
     /* "Locate" flash from the LayoutHighlighter — a bright caution-yellow pulse. */
     --canvas-highlight-locate: #ffd93d;
 }
@@ -95,6 +100,11 @@
     --train-body-teardown: #7c3aed;
     --train-body-eb: #7048cf;
     --train-body-unidentified: #5a5a66;
+    /* v2 train line, by train state (design_v2.md "Seeing trains on the layout") */
+    --train-line-moving: #1f1f26;
+    --train-line-waiting: #a86a00;
+    --train-line-stopped: #7d7d8a;
+    --train-line-lost: #7c3aed;
     --canvas-highlight-locate: #b07d00;
 }
 
@@ -128,5 +138,10 @@
     --train-body-teardown: #c8a2ff;
     --train-body-eb: #b07cff;
     --train-body-unidentified: #9a9aa8;
+    /* v2 train line, by train state (design_v2.md "Seeing trains on the layout") */
+    --train-line-moving: #ffffff;
+    --train-line-waiting: #ffe46b;
+    --train-line-stopped: #8fb0d0;
+    --train-line-lost: #d3b4ff;
     --canvas-highlight-locate: #ffe46b;
 }

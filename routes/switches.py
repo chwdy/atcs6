@@ -129,7 +129,8 @@ def register(app, state: AppState) -> None:
             if data["enabled"]:
                 if switch.disabled or switch.manual or switch.motor_unavailable:
                     return jsonify({"error": "This switch is unavailable for automatic throws"}), 409
-                runtime.alternate_next.setdefault(switch_id, 0)
+                if not runtime.enable_alternation(switch_id):
+                    return jsonify({"error": "Each leg of this switch must lead to a block of its own"}), 409
             else:
                 runtime.disable_alternation(switch_id)
             return jsonify({"alternate_next": runtime.alternate_next.get(switch_id)})

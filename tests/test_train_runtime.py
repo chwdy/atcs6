@@ -559,57 +559,66 @@ def test_a_train_entry_has_exactly_the_documented_fields(rig):
     rig.step("Left")
     entry = rig.runtime.trains_payload()["T1"]
     assert set(entry) == {
-        "train_id", "name", "length_cm", "direction", "knob_volts", "timed_stops",
+        "train_id", "name", "length_cm", "direction", "knob_volts",
         "destination_block_id", "lost", "stopped_at", "waiting_since",
         "blocks", "state", "waiting_reason", "next_block_id", "claimed_block_id",
     }
     assert entry["state"] == "moving"
-    assert entry["blocks"] == [{"block_id": rig.ids["Left"], "reads_occupied": True}]
+    assert entry["blocks"] == [{"block_id": rig.ids["Left"], "reads_occupied": True, "direction": "forward"}]
     assert entry["next_block_id"] == rig.ids["Main"]
     assert entry["claimed_block_id"] == rig.ids["Main"]
 
 
-def test_timed_stop_waits_for_rear_and_departs_once(rig):
-    rig.step("Left")
-    rig.knob("T1", 6)
-    assert rig.runtime.set_timed_stops("T1", [rig.ids["Main"]], 2, True) == (True, None)
-    rig.step("Left")
-    rig.step("Left", "Main")
-    assert rig.state("T1") == "moving"
+# --- alternate arrivals ----------------------------------------------------
+
+
+def _throwing(rig):
+    """Let the runtime throw switches on this rig."""
+    def throw(switch_id, position):
+        rig.network.switches[switch_id].position = SwitchState(position)
+        return True
+    rig.runtime._throw_switch = throw
+
+
+def _run_into_main(rig):
+    """T1 runs from Right across the right switch and is wholly in Main."""
+    rig.knob("T1", 6.0)
+    rig.step("Right", "Up")
+    assert rig.claim("T1") == "Main"
+    rig.step("Right", "Main", "Up")
+    rig.step("Main", "Up")
+    assert rig.blocks("T1") == ["Main"]
+
+
+def test_alternate_arrivals_name_the_two_passing_blocks(rig):
+    assert rig.runtime.enable_alternation(RIGHT_SWITCH) is True
+    assert set(rig.runtime.passing_blocks[RIGHT_SWITCH]) == {rig.ids["Main"], rig.ids["Sideline"]}
+    rig.runtime.disable_alternation(RIGHT_SWITCH)
+    assert rig.runtime.passing_blocks == {}
+
+
+def test_a_train_leaves_a_passing_block_only_when_two_blocks_ahead_are_free(rig):
+    _throwing(rig)
+    rig.runtime.enable_alternation(RIGHT_SWITCH)
+    rig.step("Right", "Up")
+    assert rig.blocks("T1") == ["Right"]
+    _run_into_main(rig)
+
+    # Left is free, but a train stands on Up, the block after it.
+    assert rig.state("T1") == "waiting"
+    assert rig.train("T1").waiting_reason == "track_ahead_taken"
     assert rig.claim("T1") is None
-    assert rig.volts["Right"] == 0
-
-    rig.step("Main")
-    assert rig.state("T1") == "stopped"
     assert rig.volts["Main"] == 0
-    assert rig.runtime.train_entry(rig.train("T1"))["timed_stops"]["resume_in_s"] == 2
-    rig.step(seconds=2.1)
-    assert rig.state("T1") == "stopped"
-    rig.step("Main")
-    assert rig.state("T1") == "moving"
-    assert rig.claim("T1") == "Right"
-    assert abs(rig.volts["Main"]) == 6
-    rig.step("Main")
+
+    # The standing train is lifted off: Up is free after the hold time.
+    rig.step("Main", seconds=6)
+    assert rig.claim("T1") == "Left"
     assert rig.state("T1") == "moving"
 
 
-@pytest.mark.parametrize("cancel", ["knob", "stop", "stop_all", "reverse", "leave_live"])
-def test_manual_actions_cancel_a_pending_restart(rig, cancel):
-    rig.step("Left")
-    rig.knob("T1", 6)
-    rig.runtime.set_timed_stops("T1", [rig.ids["Main"]], 2, True)
-    rig.step("Left")
-    rig.step("Main")
-    assert rig.train("T1").timed_stops.resume_at is not None
-    actions = {
-        "knob": lambda: rig.knob("T1", 0),
-        "stop": lambda: rig.runtime.stop("T1", rig.now),
-        "stop_all": lambda: rig.runtime.stop_all(rig.now, True),
-        "reverse": lambda: rig.runtime.reverse("T1", True),
-        "leave_live": lambda: rig.runtime.leave_live(rig.now),
-    }
-    actions[cancel]()
-    rig.step("Main", seconds=3)
-    assert rig.train("T1").timed_stops is None
-    assert rig.state("T1") == "stopped"
-    assert rig.volts["Main"] == 0
+def test_without_alternate_arrivals_a_train_leaves_on_one_free_block(rig):
+    rig.step("Right", "Up")
+    assert rig.blocks("T1") == ["Right"]
+    _run_into_main(rig)
+    assert rig.claim("T1") == "Left"
+

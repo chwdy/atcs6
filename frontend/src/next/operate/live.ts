@@ -110,9 +110,8 @@ export interface RunningTrain {
   name: string;
   direction: 'forward' | 'reverse';
   knob_volts: number;
-  timed_stops?: { block_ids: string[]; seconds: number; resume_in_s: number | null } | null;
   lost: boolean;
-  blocks: { block_id: string; reads_occupied: boolean }[];
+  blocks: { block_id: string; reads_occupied: boolean; direction?: 'forward' | 'reverse' }[];
   state: 'stopped' | 'moving' | 'waiting' | 'lost';
   waiting_reason: string | null;
   next_block_id: string | null;

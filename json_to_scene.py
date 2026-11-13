@@ -95,6 +95,10 @@ def gen_tiles(net) -> str:
     return "\n".join(lines)
 
 
+# Switch settings the scene keeps, in `SWITCH_SETTINGS`.
+_SWITCH_SETTINGS = ("motor_unavailable", "allow_exit_from_either_leg")
+
+
 def gen_switches(net) -> tuple[str, list[str]]:
     warnings = []
     lines = ["SWITCHES = ["]
@@ -106,6 +110,16 @@ def gen_switches(net) -> tuple[str, list[str]]:
                 warnings.append(sid)
                 break
     lines.append("]")
+    lines.append("")
+    lines.append("")
+    lines.append("# Settings a switch carries besides its place (design_v2.md \"Switches\",")
+    lines.append("# A switch with an unavailable motor).")
+    lines.append("SWITCH_SETTINGS = {")
+    for sid in sorted(net.switches.keys(), key=lambda s: (net.switches[s].x, net.switches[s].y)):
+        settings = {name: True for name in _SWITCH_SETTINGS if getattr(net.switches[sid], name, False)}
+        if settings:
+            lines.append(f"    {sid!r}: {settings!r},")
+    lines.append("}")
     return "\n".join(lines), warnings
 
 
@@ -290,7 +304,10 @@ def _add_tracks(network: RailwayNetwork) -> None:
 def _add_switches(network: RailwayNetwork) -> None:
     """Create the Switch entity for each switch tile and link the tile to it."""
     for (switch_id, x, y) in SWITCHES:
-        network.add_switch(Switch(switch_id=switch_id, x=x, y=y))
+        switch = Switch(switch_id=switch_id, x=x, y=y)
+        for name, value in SWITCH_SETTINGS.get(switch_id, {}).items():
+            setattr(switch, name, value)
+        network.add_switch(switch)
         track = network.get_track(x, y)
         if track is not None:
             track.switch_id = switch_id
@@ -534,7 +551,10 @@ def _fingerprint(net) -> dict:
             t.station_id,
             tuple(sorted(t.signal_ids or [])),
         )
-    switches = {sid: (s.x, s.y) for sid, s in net.switches.items()}
+    switches = {
+        sid: (s.x, s.y, *(bool(getattr(s, name, False)) for name in _SWITCH_SETTINGS))
+        for sid, s in net.switches.items()
+    }
     platforms = {}
     for pid, p in net.platforms.items():
         platforms[pid] = (

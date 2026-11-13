@@ -2712,9 +2712,14 @@ brown (`--canvas-hold`) = a train physically holds the switch, orange
 ### V2 trains on the layout
 
 The [v2 train display](../design_v2.md#seeing-trains-on-the-layout) uses one
-track-aligned line style, a direction arrow and an ID. Use the canvas palette's
-train body, background, label and accent colors. The emphasis changes line weight and
-the label border as well as color, so it remains visible across layout themes.
+track-aligned line style, a direction arrow and an ID tag for every train. The
+line's color is the train's state, from four tokens each layout theme sets in
+[layout-themes.css](../static/css/base/layout-themes.css):
+`--train-line-moving`, `--train-line-waiting`, `--train-line-stopped` and
+`--train-line-lost`. None of them is a color that theme gives a block state,
+because the line lies on the block's own color band. The tag's text and the
+line's outline use the canvas background color. Emphasis makes the line
+thicker and gives it an accent outline; it never changes the state color.
 
 ### Train mode
 

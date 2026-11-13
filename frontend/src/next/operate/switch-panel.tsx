@@ -94,10 +94,10 @@ export function SwitchPanel({ host, switchId }: { host: OperateHost; switchId: s
         </div>
         {supportsAlternate && !sw.motor_unavailable && (
           <div class="op-row">
-            <span>{alternating ? `Alternate · next ${sw.alternate_next === 1 ? 'siding' : 'main'}` : 'Manual'}</span>
+            <span>{alternating ? 'Alternate arrivals on' : 'Thrown by hand'}</span>
             <button type="button" class="btn btn-sm" disabled={!!sw.manual || !!sw.disabled}
               onClick={() => void sendChange('switch mode', () => api.setSwitchAlternate(switchId, !alternating), host)}>
-              {alternating ? 'Use manual' : 'Alternate arrivals'}
+              {alternating ? 'Turn off' : 'Alternate arrivals'}
             </button>
           </div>
         )}

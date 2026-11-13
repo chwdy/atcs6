@@ -8,6 +8,7 @@ occupied, and the loop runs real passes on the rig layout.
 
 import logging
 import threading
+import time
 from datetime import datetime
 
 import pytest
@@ -223,7 +224,7 @@ def test_alternation_throws_before_powering_siding(session):
     assert session.volts("Main") == 0
 
 
-def test_alternation_waits_without_throwing_if_siding_is_taken(session):
+def test_an_arrival_gets_the_passing_block_that_is_not_taken(session):
     switch_id = "SW_11_9"
     runtime = session.sim.train_runtime
     runtime.alternate_next[switch_id] = 1
@@ -231,11 +232,23 @@ def test_alternation_waits_without_throwing_if_siding_is_taken(session):
     train = runtime.train_of_block(session.ids["Right"])
     session.client.put(f"/api/trains/{train.train_id}/knob", json={"volts": 6})
     session.passes("Right", "Sideline")
+    assert train.claim_block_id == session.ids["Main"]
+    assert abs(session.volts("Main")) == 6
+    # The turn does not move on until the train enters.
+    assert runtime.alternate_next[switch_id] == 1
+
+
+def test_an_arrival_waits_when_both_passing_blocks_are_taken(session):
+    switch_id = "SW_11_9"
+    runtime = session.sim.train_runtime
+    session.client.put(f"/api/switches/{switch_id}/alternate", json={"enabled": True})
+    session.passes("Right", "Main", "Sideline")
+    train = runtime.train_of_block(session.ids["Right"])
+    session.client.put(f"/api/trains/{train.train_id}/knob", json={"volts": 6})
+    session.passes("Right", "Main", "Sideline")
     assert train.claim_block_id is None
     assert train.waiting_reason == "block_taken"
     assert session.volts("Right") == 0
-    assert session.sim.switch_power_controller.get_last_throw(switch_id) == 0
-    assert runtime.alternate_next[switch_id] == 1
 
 
 def test_failed_automatic_throw_grants_no_claim_or_voltage(session, monkeypatch):
@@ -248,3 +261,75 @@ def test_failed_automatic_throw_grants_no_claim_or_voltage(session, monkeypatch)
     session.passes("Right")
     assert runtime.trains["T1"].claim_block_id is None
     assert session.volts("Right") == session.volts("Sideline") == 0
+
+
+class LapTrain:
+    """A stand-in for one train going clockwise round the rig: Right, then
+    Main or Sideline as the right switch is set, then Left, then Up. Its
+    position is counted in blocks from the start of Right."""
+
+    LENGTH = 0.6
+    SPEED = 0.02
+
+    def __init__(self, passing_block):
+        self.front = 1.8
+        self.passing_block = passing_block
+        self.rear_passing_block = passing_block
+
+    def _block_at(self, position, passing_block):
+        return ("Right", passing_block, "Left", "Up")[int(position % 4)]
+
+    def front_block(self):
+        return self._block_at(self.front, self.passing_block)
+
+    def blocks(self):
+        rear = self.front - self.LENGTH
+        return {self.front_block(), self._block_at(rear, self.rear_passing_block)}
+
+    def move(self, session):
+        if session.volts(self.front_block()) == 0:
+            return
+        before = self.front
+        self.front += self.SPEED
+        if int(before % 4) == 0 and int(self.front % 4) == 1:
+            position = session.network.switches["SW_11_9"].position
+            self.passing_block = "Sideline" if position == SwitchState.DIVERGE else "Main"
+        rear = self.front - self.LENGTH
+        if int(rear % 4) == 1:
+            self.rear_passing_block = self.passing_block
+
+
+def test_two_trains_lap_the_rig_and_wait_only_in_the_passing_blocks(session, monkeypatch):
+    # One pass is a tenth of a second, so the hold time runs as it does on
+    # the rig.
+    clock = {"now": time.time()}
+    monkeypatch.setattr(time, "time", lambda: clock["now"])
+    left = session.network.switches["SW_7_5"]
+    left.motor_unavailable = True
+    left.allow_exit_from_either_leg = True
+    runtime = session.sim.train_runtime
+    models = [LapTrain("Main"), LapTrain("Sideline")]
+    session.passes("Main", "Sideline")
+    session.client.put("/api/switches/SW_11_9/alternate", json={"enabled": True})
+    trains = [runtime.train_of_block(session.ids[m.passing_block]) for m in models]
+    for train in trains:
+        if runtime.walk_ahead(train).block_id != session.ids["Left"]:
+            session.client.post(f"/api/trains/{train.train_id}/reverse")
+        assert runtime.walk_ahead(train).block_id == session.ids["Left"]
+        session.client.put(f"/api/trains/{train.train_id}/knob", json={"volts": 6})
+
+    names = {block_id: name for name, block_id in session.ids.items()}
+    waited_in = set()
+    for _ in range(6000):
+        for model in models:
+            model.move(session)
+        assert not (models[0].blocks() & models[1].blocks()), "two trains in one block"
+        clock["now"] += 0.1
+        session.passes(*(models[0].blocks() | models[1].blocks()), count=1)
+        for train in trains:
+            assert not train.lost
+            if runtime.state_of(train) == "waiting":
+                waited_in.add(names[train.front_block])
+
+    assert all(model.front > 1.8 + 4 * 5 for model in models), [m.front for m in models]
+    assert waited_in <= {"Main", "Sideline"}, waited_in

@@ -65,19 +65,6 @@ def register(app, state: AppState) -> None:
             live = state.session_state().is_live
             return _answer(runtime.set_knob(train_id, data.get("volts"), time.time(), live))
 
-    @app.route("/api/trains/<train_id>/timed-stops", methods=["PUT"])
-    def set_timed_stops(train_id):
-        data = request.get_json(silent=True)
-        if not isinstance(data, dict):
-            return _answer((False, "unknown_block"))
-        with state.simulation_lock:
-            runtime = _runtime(state)
-            if runtime is None:
-                return _refuse_without_runtime()
-            return _answer(runtime.set_timed_stops(
-                train_id, data.get("block_ids"), data.get("seconds"), state.session_state().is_live
-            ))
-
     @app.route("/api/trains/<train_id>/reverse", methods=["POST"])
     def reverse_train(train_id):
         runtime = _runtime(state)

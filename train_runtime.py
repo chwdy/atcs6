@@ -25,7 +25,6 @@ splitting, and renaming.
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
 
@@ -53,22 +52,13 @@ DEFAULT_HOLD_TIME_S: float = 5.0
 BLOCK_TAKEN = "block_taken"
 OWN_BLOCK = "own_block"
 SWITCH_HELD = "switch_held"
+TRACK_AHEAD_TAKEN = "track_ahead_taken"
 
 Result = Tuple[bool, Optional[str]]
 """An operator request's answer: `(success, reason)`."""
 
 EmitFn = Callable[[str, str, str, str, Dict[str, Any]], None]
 SetVoltageFn = Callable[[str, float], Any]
-
-
-@dataclass
-class TimedStops:
-    """The blocks where one train stops and when it can leave."""
-    blocks: Set[str]
-    seconds: float
-    volts: float
-    arrived_at_block: Optional[str] = None
-    resume_at: Optional[float] = None
 
 
 @dataclass
@@ -118,8 +108,6 @@ class RunningTrain:
     """The front block the runtime has already stopped this train in for End
     of track, so it is not stopped there a second time."""
 
-    timed_stops: Optional[TimedStops] = None
-
     @property
     def front_block(self) -> str:
         return self.blocks[-1]
@@ -155,7 +143,13 @@ class TrainRuntime:
         self._emit_fn = emit
         self._throw_switch = throw_switch
         self._outputs_active = outputs_active
+        # Alternate arrivals (design_v2.md "Switches", Alternate arrivals).
+        # `alternate_next` holds, per switch that has them on, the leg the
+        # next arrival gets when neither passing block is taken.
+        # `passing_blocks` holds that switch's two passing blocks, each with
+        # the direction a train that entered it from the switch runs it in.
         self.alternate_next: Dict[str, int] = {}
+        self.passing_blocks: Dict[str, Dict[str, str]] = {}
         self.hold_time_s = float(hold_time_s)
         self.trains: Dict[str, RunningTrain] = {}
         self._next_seq = 1
@@ -239,7 +233,6 @@ class TrainRuntime:
         """One train's entry in the snapshot (design_v2.md "Live fields", A
         train entry)."""
         state = self.state_of(train)
-        stops = train.timed_stops
         walk = self.walk_ahead(train)
         return {
             "train_id": train.train_id,
@@ -247,20 +240,16 @@ class TrainRuntime:
             "length_cm": train.length_cm,
             "direction": train.direction,
             "knob_volts": train.knob_volts,
-            "timed_stops": {
-                "block_ids": sorted(stops.blocks),
-                "seconds": stops.seconds,
-                "resume_in_s": (
-                    max(0, math.ceil(stops.resume_at - self._now))
-                    if stops.resume_at is not None else None
-                ),
-            } if stops is not None else None,
             "destination_block_id": train.destination_block_id,
             "lost": train.lost,
             "stopped_at": train.stopped_at,
             "waiting_since": train.waiting_since,
             "blocks": [
-                {"block_id": b, "reads_occupied": b in self.occupied}
+                {
+                    "block_id": b,
+                    "reads_occupied": b in self.occupied,
+                    "direction": train.directions.get(b, FORWARD),
+                }
                 for b in train.blocks
             ],
             "state": state,
@@ -298,7 +287,6 @@ class TrainRuntime:
         if not live:
             return
         self._stop_trains(now)
-        self._apply_timed_stops(now)
         self._end_claims(now)
         self._give_claims(now)
         if self._outputs_active():
@@ -404,12 +392,6 @@ class TrainRuntime:
         return train
 
     def _add_front_block(self, train: RunningTrain, block_id: str, direction: str) -> None:
-        stops = train.timed_stops
-        if stops is not None:
-            if stops.resume_at is not None:
-                train.timed_stops = None
-            else:
-                stops.arrived_at_block = block_id if block_id in stops.blocks else None
         train.blocks.append(block_id)
         train.directions[block_id] = direction
         train.end_of_track_block = None
@@ -525,7 +507,6 @@ class TrainRuntime:
                 if block_id != kept:
                     self._take_off_block(train, block_id)
             if was_moving:
-                train.timed_stops = None
                 train.lost = True
                 train.knob_volts = 0.0
                 train.stopped_at = now
@@ -546,7 +527,6 @@ class TrainRuntime:
 
     def _take_off_block(self, train: RunningTrain, block_id: str) -> None:
         if block_id == train.front_block and len(train.blocks) > 1:
-            train.timed_stops = None
             # The claim was made from a block the train is no longer in; it
             # asks again from its new front block.
             self._end_claim(train)
@@ -598,29 +578,11 @@ class TrainRuntime:
                     {"block_id": train.front_block},
                 )
 
-    def _apply_timed_stops(self, now: float) -> None:
-        for train in self.trains.values():
-            stops = train.timed_stops
-            if stops is None or stops.arrived_at_block != train.front_block:
-                continue
-            if not self.wholly_in_front_block(train):
-                continue
-            if stops.resume_at is None and train.running:
-                self._stop(train, now)
-                train.timed_stops = stops
-                stops.resume_at = now + stops.seconds
-            elif stops.resume_at is not None and now >= stops.resume_at:
-                train.knob_volts = stops.volts
-                train.stopped_at = None
-                stops.resume_at = None
-                stops.arrived_at_block = None
-
     def _stop(self, train: RunningTrain, now: float) -> None:
         """Set the knob to 0 V."""
         if train.knob_volts > 0.0 or train.stopped_at is None:
             train.stopped_at = now
         train.knob_volts = 0.0
-        train.timed_stops = None
         train.waiting_since = None
         train.waiting_reason = None
         self._clear_asking(train)
@@ -648,33 +610,76 @@ class TrainRuntime:
 
     # --- item 5: give claims ------------------------------------------
 
+    def enable_alternation(self, switch_id: str) -> bool:
+        """Turn alternate arrivals on for a switch. False when its two legs
+        do not each lead to a block of its own with no other switch between."""
+        passing = self._find_passing_blocks(switch_id)
+        if passing is None:
+            return False
+        self.passing_blocks[switch_id] = passing
+        self.alternate_next.setdefault(switch_id, 0)
+        return True
+
     def disable_alternation(self, switch_id: str) -> None:
         self.alternate_next.pop(switch_id, None)
+        self.passing_blocks.pop(switch_id, None)
         for train in self.trains.values():
             if train.alternating_switch and train.alternating_switch[0] == switch_id:
                 train.alternating_switch = None
 
-    def _claim_walk(self, train: RunningTrain) -> Tuple[WalkResult, Optional[Tuple[str, int]]]:
-        walk = self.walk_ahead(train)
-        if len(walk.switch_ids) != 1:
-            return walk, None
-        switch_id = walk.switch_ids[0]
-        position = self.alternate_next.get(switch_id)
-        switch = self._network.switches.get(switch_id)
-        if position is None or switch is None or switch.disabled or switch.manual or switch.motor_unavailable:
-            return walk, None
-        # For this layout, each leg leads directly to a different block.
-        # Approaching from a leg cannot produce two different onward blocks.
+    def _legs_from(
+        self, block_id: str, direction: str, switch_id: str
+    ) -> Optional[Tuple[WalkResult, WalkResult]]:
+        """The walks from a block across `switch_id` set to its main leg and
+        to its diverge leg, when the block leads to the switch's toe and each
+        leg leads to a block of its own with no other switch between."""
         main, siding = (
-            next_block_ahead(self._network, train.front_block, train.direction, {switch_id: side})
+            next_block_ahead(self._network, block_id, direction, {switch_id: side})
             for side in (0, 1)
         )
         if (
             main.switch_ids != (switch_id,) or siding.switch_ids != (switch_id,)
             or not main.block_id or not siding.block_id or main.block_id == siding.block_id
         ):
+            return None
+        return main, siding
+
+    def _find_passing_blocks(self, switch_id: str) -> Optional[Dict[str, str]]:
+        for block_id in sorted(self._network.blocks):
+            for direction in (FORWARD, "reverse"):
+                legs = self._legs_from(block_id, direction, switch_id)
+                if legs is not None:
+                    return {walk.block_id: walk.direction or FORWARD for walk in legs}
+        return None
+
+    def _claim_walk(self, train: RunningTrain) -> Tuple[WalkResult, Optional[Tuple[str, int]]]:
+        """The walk the train claims by, and the alternate-arrivals switch and
+        leg it crosses, if any (design_v2.md "Switches", Which passing block a
+        train gets)."""
+        walk = self.walk_ahead(train)
+        if len(walk.switch_ids) != 1:
             return walk, None
-        return (main, siding)[position], (switch_id, position)
+        switch_id = walk.switch_ids[0]
+        preferred = self.alternate_next.get(switch_id)
+        switch = self._network.switches.get(switch_id)
+        if preferred is None or switch is None or switch.disabled or switch.manual or switch.motor_unavailable:
+            return walk, None
+        legs = self._legs_from(train.front_block, train.direction, switch_id)
+        if legs is None:
+            return walk, None
+        other = 1 - preferred
+        position = preferred
+        if self.block_is_taken(legs[preferred].block_id) and not self.block_is_taken(legs[other].block_id):
+            position = other
+        return legs[position], (switch_id, position)
+
+    def _leaving_passing_block(self, train: RunningTrain) -> bool:
+        """Whether the train's front block is a passing block it runs out of
+        away from the switch."""
+        return any(
+            passing.get(train.front_block) == train.direction
+            for passing in self.passing_blocks.values()
+        )
 
     def _give_claims(self, now: float) -> None:
         """Serve the running trains in first-come order (design_v2.md
@@ -682,9 +687,6 @@ class TrainRuntime:
         asking: List[RunningTrain] = []
         for train in self.trains.values():
             if not train.running or train.claim_block_id is not None:
-                continue
-            if train.timed_stops and train.timed_stops.arrived_at_block == train.front_block:
-                # Keep power on the train's own blocks until its rear clears.
                 continue
             walk, _ = self._claim_walk(train)
             wanted = walk.block_id or walk.reason or ""
@@ -763,6 +765,16 @@ class TrainRuntime:
             return OWN_BLOCK
         if self.block_is_taken(walk.block_id):
             return BLOCK_TAKEN
+        if self._leaving_passing_block(train):
+            # A train leaves a passing block only when two blocks ahead are
+            # free.
+            after = next_block_ahead(self._network, walk.block_id, walk.direction or FORWARD)
+            if (
+                after.block_id is not None
+                and after.block_id not in train.blocks
+                and self.block_is_taken(after.block_id)
+            ):
+                return TRACK_AHEAD_TAKEN
         return None
 
     # --- item 6: set every block's voltage ----------------------------
@@ -795,29 +807,6 @@ class TrainRuntime:
     # Operator requests (design_v2.md "Running a train", "Trains")
     # ------------------------------------------------------------------
 
-    def set_timed_stops(self, train_id: str, block_ids: Any, seconds: Any, live: bool) -> Result:
-        train = self.trains.get(train_id)
-        if train is None:
-            return False, "unknown_train"
-        if not live:
-            return False, "not_live"
-        if block_ids == []:
-            train.timed_stops = None
-            return True, None
-        if train.lost:
-            return False, "train_lost"
-        if not train.running:
-            return False, "start_train_first"
-        if not isinstance(block_ids, list) or any(
-            not isinstance(block_id, str) or block_id not in self._network.blocks
-            for block_id in block_ids
-        ):
-            return False, "unknown_block"
-        if type(seconds) not in (int, float) or not 1 <= seconds <= 3600:
-            return False, "invalid_stop_duration"
-        train.timed_stops = TimedStops(set(block_ids), float(seconds), train.knob_volts)
-        return True, None
-
     def set_knob(self, train_id: str, volts: Any, now: float, live: bool) -> Result:
         train = self.trains.get(train_id)
         if train is None:
@@ -835,7 +824,6 @@ class TrainRuntime:
         if volts <= 0.0:
             self._stop(train, now)
             return True, None
-        train.timed_stops = None
         train.knob_volts = volts
         train.stopped_at = None
         return True, None
@@ -859,7 +847,6 @@ class TrainRuntime:
             return False, "not_stopped"
         if train.claim_block_id is not None:
             return False, "still_claiming"
-        train.timed_stops = None
         train.blocks.reverse()
         train.directions = {
             block_id: opposite_direction(direction)
@@ -893,6 +880,7 @@ class TrainRuntime:
         """Leaving Live stops every train and ends every claim. The trains
         themselves stay."""
         self.alternate_next.clear()
+        self.passing_blocks.clear()
         for train in self.trains.values():
             self._stop(train, now)
             self._end_claim(train)
@@ -901,6 +889,7 @@ class TrainRuntime:
         """Start with no trains, as an activation does."""
         self.trains.clear()
         self.alternate_next.clear()
+        self.passing_blocks.clear()
         self.occupied = set()
         self._left_at.clear()
 
