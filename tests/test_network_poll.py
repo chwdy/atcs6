@@ -75,14 +75,14 @@ def test_request_with_current_version_gets_live_fields_only(client):
     assert set(body["live_blocks"]) == set(full["blocks"])
     for live in body["live_blocks"].values():
         assert not BLOCK_LAYOUT_FIELDS & set(live)
-        assert "state" in live and "occupied_by" in live
+        assert "reads_occupied" in live and "train_id" in live
     assert set(body["live_switches"]) == set(full["switches"])
 
     live_tiles = {(t["x"], t["y"]) for t in body["live_tracks"]}
     expected = {
         (t["x"], t["y"])
         for t in full["tracks"]
-        if t["is_switch"] or t["signal_ids"]
+        if t["is_switch"]
     }
     assert live_tiles == expected
     assert expected, "demo7_2 has switches"
@@ -117,16 +117,16 @@ def test_live_fields_do_not_change_version():
 
     changed = copy.deepcopy(payload)
     block = next(iter(changed["blocks"].values()))
-    block.update(state="occupied", occupied_by="T9", current_voltage=6.0)
+    block.update(reads_occupied=True, train_id="T9", current_voltage=6.0)
     switch = next(iter(changed["switches"].values()))
-    switch.update(position=1, occupied_by="T9")
+    switch.update(position=1, held=True)
     tile = next(t for t in changed["tracks"] if t["is_switch"])
     tile["switch_state"] = 1
 
     assert layout_version(split_network_payload(changed)[0]) == version
     reply = build_network_poll_reply(changed, version)
     assert reply["layout_unchanged"] is True
-    assert reply["live_blocks"][block["block_id"]]["occupied_by"] == "T9"
+    assert reply["live_blocks"][block["block_id"]]["train_id"] == "T9"
 
 
 def test_layout_field_changes_version():

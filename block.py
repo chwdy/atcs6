@@ -1,12 +1,9 @@
 """
-Block — power + occupancy + reservation + availability unit.
+Block — a switch-free run of one or more segments on one power feed.
 
-Definition (design_new.md "block"):
-A `Block` is the power + occupancy + reservation unit: a switch-free connected
-run of one or more `segment`s that share one power feed (one `track voltage`)
-and admit one train at a time. It is the unit the dispatcher reserves and the
-train occupies. It groups its geometry through `segments` (its member
-`Segment`s) and owns the occupancy, reservation, availability, and power state.
+A `Block` is a data container (design_v2.md "Block"): it stores no train
+state. Which train holds a block, and which train claims it, is read from the
+train runtime when the snapshot is built.
 
 Key concepts:
 - Geometry (`ordered_tiles`, `length_cm`, `min_radius_cm`, `grade_percent`,
@@ -14,79 +11,18 @@ Key concepts:
   derived reads (concatenate / sum / min across its segments) so callers can
   keep reading `block.<geom>`. A single-segment block reads through to that one
   segment unchanged.
-- `state` is computed from underlying primitive fields. Priority order:
-  OCCUPIED > CAUTION > RESERVED > FREE.
-- Underlying primitives: `occupied_by`, `caution: Optional[CautionState]`,
-  `reservation: Optional[BlockReservation]`, `disabled`. Convenience reads
-  `_is_caution`, `caution_exit_edge`, `reserved_by_path`, `reserved_direction`,
-  `reserved_for_train` are all derived `@property` reads.
-- `Block` is a data container; `BlockManager` is the sole mutator for physical
-  and CAUTION transitions.
 """
 
-from dataclasses import dataclass
-from typing import List, NamedTuple, Optional, Dict, Any, Set
-from enums import BlockState
+from typing import List, Optional, Dict, Any, Set
 from entity_ids import segment_id_for_block
 from segment import Segment, SegmentTileEntry
 
 
-# Block-relative directions used in the static block-level travel policy.
-_BLOCK_RELATIVE_DIRECTIONS: Set[str] = {"forward", "reverse"}
-
-
-# `ordered_tiles` entries are `SegmentTileEntry` (x, y, entry_edge) records owned
-# by `Segment`. `BlockTileEntry` remains as an alias so existing importers keep
-# working.
-BlockTileEntry = SegmentTileEntry
-
-
-
-class CautionState(NamedTuple):
-    """The v1 caution record; it goes with the other v1 runtime fields."""
-
-    exit_edge: str  # "N" | "E" | "S" | "W"
-
-
-@dataclass
-class BlockReservation:
-    """One active path's dispatcher reservation on a Block.
-
-    Per design_new.md "Block model" — the three fields are always written
-    together by `BlockManager.reserve_blocks_for_path(...)` and cleared
-    together by `Block.release_path_reservation()`, so they live as one
-    Optional record rather than three parallel optional scalars. The
-    convenience reads `reserved_by_path`, `reserved_for_train`, and
-    `reserved_direction` are derived from this record.
-    """
-
-    path_id: str
-    train_id: str
-    exit_edge: str  # "N" | "E" | "S" | "W"
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "path_id": self.path_id,
-            "train_id": self.train_id,
-            "exit_edge": self.exit_edge,
-        }
-
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "BlockReservation":
-        return cls(
-            path_id=str(data["path_id"]),
-            train_id=str(data["train_id"]),
-            exit_edge=str(data["exit_edge"]),
-        )
-
-
 class Block:
-    """
-    Power + occupancy + reservation + availability unit (design_new.md "block").
+    """A switch-free run of one or more `Segment`s on one power feed.
 
-    Groups one or more `Segment`s (its geometry) and owns the runtime state:
-    occupancy, reservation, CAUTION, availability, and power. It represents the
-    minimum control unit for train movement.
+    Groups its member segments (the geometry) and the block's static settings.
+    It stores no train state.
     """
 
     def __init__(
@@ -98,11 +34,6 @@ class Block:
         grade_percent: Optional[float] = None,
         speed_limit_kmh: Optional[float] = None,
         is_holding_point: bool = False,
-        occupied_seconds: float = 0.0,
-        occupied_by: Optional[str] = None,
-        caution: Optional[CautionState] = None,
-        reservation: Optional[BlockReservation] = None,
-        locked_by_path: Optional[str] = None,
         disabled: bool = False,
         manual: bool = False,
         allowed_travel_directions: Optional[Set[str]] = None,
@@ -125,27 +56,6 @@ class Block:
         # like every other wiring edit (design_new.md "Power", Rail polarity
         # lives on the rail binding).
 
-        # Maintenance counter: total unscaled wall-clock seconds a train has
-        # occupied this block (accrued from time.time() deltas, not scaled by
-        # playback speed). Written once per tick by SimulationController.update(...)
-        # and persisted with the layout (see design_new.md "Maintenance counters").
-        self.occupied_seconds = occupied_seconds
-
-        # Underlying primitive state fields. `state` is a computed @property
-        # derived from these (see below).
-        self.occupied_by = occupied_by  # Train ID currently physically present
-        # Single Optional caution record. The `_is_caution` and
-        # `caution_exit_edge` reads are derived @properties below.
-        self.caution = caution
-        # Single Optional reservation record. The reserved_by_path,
-        # reserved_for_train, reserved_direction reads are derived @properties.
-        self.reservation = reservation
-        # The braking-distance lock: the path_id holding this block hard, or
-        # None. A peer to `reservation` (design_new.md "Block" field schema),
-        # not derived from it: a block is locked only by the path that already
-        # reserves it, so `locked_by_path == reserved_by_path` whenever set.
-        # Sole mutator is `BlockManager`; `is_locked` is the convenience read.
-        self.locked_by_path = locked_by_path
         self.disabled = disabled  # Static availability flag (physical-absence)
         self.manual = manual  # Virtual-disable flag (manual_override bypasses)
 
@@ -295,77 +205,14 @@ class Block:
         return self.segments[0]
 
     # ========================================================================
-    # Derived reservation reads
-    # ========================================================================
-
-    @property
-    def reserved_by_path(self) -> Optional[str]:
-        """Path ID currently reserving this block, or None."""
-        return self.reservation.path_id if self.reservation is not None else None
-
-    @property
-    def reserved_for_train(self) -> Optional[str]:
-        """Train ID this reservation is held for, or None."""
-        return self.reservation.train_id if self.reservation is not None else None
-
-    @property
-    def reserved_direction(self) -> Optional[str]:
-        """Reserved exit edge ('N'|'E'|'S'|'W'), or None."""
-        return self.reservation.exit_edge if self.reservation is not None else None
-
-    @property
-    def is_locked(self) -> bool:
-        """True iff a path holds this block's braking-distance lock.
-
-        Convenience read for `locked_by_path is not None` (design_new.md
-        "Block" field schema). A locked block is uncancellable: Preemption may
-        take a reserved block from a lower-priority train only when it is not
-        locked.
-        """
-        return self.locked_by_path is not None
-
-    # ========================================================================
-    # Derived caution reads
-    # ========================================================================
-
-    @property
-    def _is_caution(self) -> bool:
-        """True iff this block is currently in physical CAUTION."""
-        return self.caution is not None
-
-    @property
-    def caution_exit_edge(self) -> Optional[str]:
-        """Departing train's exit edge ('N'|'E'|'S'|'W') while in CAUTION, else None."""
-        return self.caution.exit_edge if self.caution is not None else None
-
-    # ========================================================================
-    # Computed state property
-    # ========================================================================
-
-    @property
-    def state(self) -> BlockState:
-        """Compute current block state from underlying primitives.
-
-        Priority order (per spec): OCCUPIED > CAUTION > RESERVED > FREE.
-        """
-        if self.occupied_by is not None:
-            return BlockState.OCCUPIED
-        if self.caution is not None:
-            return BlockState.CAUTION
-        if self.reservation is not None:
-            return BlockState.RESERVED
-        return BlockState.FREE
-
-    # ========================================================================
     # Serialization
     # ========================================================================
 
     def to_dict(self) -> Dict[str, Any]:
-        """Convert block to dictionary for the live frontend payload.
+        """Convert block to dictionary for the snapshot.
 
-        Includes runtime state (occupied_by, caution, reservation, voltage,
-        computed `state`) for UI rendering. Persistence does NOT use this
-        path; see `to_layout_dict()` instead.
+        The live fields are added by `add_train_runtime_fields`. Persistence
+        does NOT use this path; see `to_layout_dict()` instead.
         """
         return {
             "block_id": self.block_id,
@@ -375,27 +222,6 @@ class Block:
             "grade_percent": self.grade_percent,
             "is_holding_point": self.is_holding_point,
             "speed_limit_kmh": self.speed_limit_kmh,
-            "occupied_seconds": self.occupied_seconds,
-            "state": self.state.value,
-            "occupied_by": self.occupied_by,
-            "caution": (
-                {"exit_edge": self.caution.exit_edge}
-                if self.caution is not None
-                else None
-            ),
-            # Convenience reads (derived from caution).
-            "_is_caution": self._is_caution,
-            "caution_exit_edge": self.caution_exit_edge,
-            "reservation": (
-                self.reservation.to_dict() if self.reservation is not None else None
-            ),
-            # Convenience reads (derived from reservation).
-            "reserved_by_path": self.reserved_by_path,
-            "reserved_direction": self.reserved_direction,
-            "reserved_for_train": self.reserved_for_train,
-            # Braking-distance lock (peer to reservation).
-            "locked_by_path": self.locked_by_path,
-            "is_locked": self.is_locked,
             "disabled": self.disabled,
             "manual": self.manual,
             # `current_voltage` is not a `Block` field: the live frontend payload
@@ -418,8 +244,7 @@ class Block:
 
         Per design_new.md Out of Scope ("Persistence / save-load of runtime
         state | In-memory only"), this writes block geometry and config only.
-        Runtime fields (occupied_by, caution, reservation, computed state) are
-        excluded; track voltage is not a `Block` field at all.
+        Track voltage is not a `Block` field at all.
 
         Member segments nest under the block, so one `blocks` key carries the
         whole grouping — the block's power/occupancy identity plus each member
@@ -433,7 +258,6 @@ class Block:
             "grade_percent": self.grade_percent,
             "is_holding_point": self.is_holding_point,
             "speed_limit_kmh": self.speed_limit_kmh,
-            "occupied_seconds": self.occupied_seconds,
             "disabled": self.disabled,
             "manual": self.manual,
             "allowed_travel_directions": sorted(self.allowed_travel_directions),
@@ -467,10 +291,8 @@ class Block:
     def from_dict(cls, data: Dict[str, Any]) -> "Block":
         """Reconstruct block from a layout snapshot.
 
-        Runtime fields (`occupied_by`, `caution`, `reservation`, computed
-        `state`) are not loaded from disk — they default-initialize and the
-        engine populates them at run time; track voltage is not a `Block` field.
-        Legacy snapshots that carry those keys are silently ignored.
+        Keys this loader does not know, such as runtime fields in an older
+        save, are skipped; track voltage is not a `Block` field.
 
         Member segments come from the nested `segments` list. A snapshot
         written before segments were nested carries the block's geometry inline
@@ -513,7 +335,6 @@ class Block:
                     if atd_nested is not None
                     else {"forward", "reverse"}
                 ),
-                occupied_seconds=float(data.get("occupied_seconds", 0.0)),
                 segments=segments,
             )
 
@@ -554,55 +375,4 @@ class Block:
             manual=bool(data.get("manual", False)),
             allowed_travel_directions=allowed,
             ordered_tiles=ordered_tiles,
-            occupied_seconds=float(data.get("occupied_seconds", 0.0)),
         )
-
-    # ========================================================================
-    # Predicates
-    # ========================================================================
-
-
-
-
-
-
-    # ========================================================================
-    # Mutators - direct primitive writes only.
-    # `BlockManager` is the sole legitimate caller for physical and CAUTION
-    # transitions; these helpers exist so the manager and serialization can
-    # write through one named call rather than poking primitives in many sites.
-    # ========================================================================
-
-
-    def release(self) -> None:
-        """Clear physical occupancy without touching reservation fields.
-
-        This is a primitive-level helper; `BlockManager` decides whether
-        a release should also raise CAUTION via `on_block_tail_vacated()`.
-        """
-        self.occupied_by = None
-
-
-    def clear(self) -> None:
-        """Clear the CAUTION record.
-
-        Does not touch `reserved_by_path` or `occupied_by` - those are
-        independent concerns owned by separate manager calls.
-        """
-        self.caution = None
-
-    # ========================================================================
-    # Path Reservation Helpers (Internal)
-    #
-    # These are private helpers; BlockManager is the only legitimate caller.
-    # They never check or mutate physical occupancy / caution fields.
-    # ========================================================================
-
-
-
-    # ------------------------------------------------------------------
-    # Direction normalization
-    # ------------------------------------------------------------------
-
-
-

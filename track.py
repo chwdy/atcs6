@@ -203,47 +203,19 @@ class Tile:
     _switch_state_local: int = 0
 
     # === FEATURES ===
-    signal_ids: List[str] = field(
-        default_factory=list
-    )  # Max 2 signals per tile (one per direction)
-    # station_id / segment_id are exposed as @property below; the
-    # _-prefixed fields are local fallbacks used only when the track is not
-    # attached to a RailwayNetwork (e.g. unit tests that construct a bare
-    # Tile). When the track is attached, the network's reverse
-    # indices (tile_to_platform_id / tile_to_segment_id) are the source of
-    # truth and these locals stay None.
-    _station_id_local: Optional[str] = None
+    # segment_id is exposed as a @property below; the _-prefixed field is a
+    # local fallback used only when the track is not attached to a
+    # RailwayNetwork (e.g. unit tests that construct a bare Tile). When the
+    # track is attached, the network's reverse index (tile_to_segment_id) is
+    # the source of truth and the local stays None.
     _segment_id_local: Optional[str] = None
     switch_id: Optional[str] = None  # Reference to Switch.switch_id (if is_switch)
     # Back-reference to the owning RailwayNetwork. Set by
-    # RailwayNetwork.add_track. Used by the station_id / segment_id
-    # properties to resolve membership through the network reverse indices.
+    # RailwayNetwork.add_track. Used by the segment_id property to resolve membership through the network reverse indices.
     network: Optional[Any] = None
 
     # === OTHER PROPERTIES ===
     length: float = 1.0
-    # Per design_new.md "Tile role and traversal", `occupied_by` and `reserved_by` are removed
-    # live runtime fields on Tile in v1. Physical occupancy lives on
-    # the owning resource (`Block.occupied_by` / `Switch.occupied_by`) and
-    # reservations live on `Block.reserved_for_train` /
-    # `Block.reserved_by_path`. The `occupied_by` / `reserved_by` reads on
-    # `Tile` are derived `@property` shims defined below. The
-    # `_local` fallbacks are used only when the segment is not attached to a
-    # `RailwayNetwork` (e.g. unit tests with bare Tiles).
-    _occupied_by_local: Optional[str] = None
-    _reserved_by_local: Optional[str] = None
-
-    # === PATH LOCKING (Dispatcher System) ===
-    # Per design_new.md "Tile role and traversal", switch lock
-    # ownership lives entirely on `Switch.locks` (keyed by
-    # `(path_id, source_switch_id)`). `Tile` stores no lock state and
-    # exposes no lock surface; callers resolve the owning `Switch` via
-    # `switch_id` and read `Switch.locks` / `Switch.is_locked()` directly.
-    # Note: pre-v1 also stored `path_direction` on Tile. Per
-    # design_new.md "Tile role and traversal" it is a removed field; traversal direction
-    # is owned by `Block.reserved_direction` (dispatcher reservation) and
-    # `Path.resource_sequence[*].entry_edge` (per-resource frame data). Live
-    # consumers read those instead of any tile-stored direction.
 
     # === DERIVED-GEOMETRY CACHES (not part of the entity's identity) ===
     # `edges` and `switch_points` are pure functions of `track_bits` (and, for
@@ -265,34 +237,11 @@ class Tile:
         # Ensure local fallback switch state is valid (0 or 1)
         self._switch_state_local = 0 if self._switch_state_local == 0 else 1
 
-    # ========== Station / block membership (network-derived) ==========
-    # Per design_new.md: Tile does not store station, platform, or
-    # block membership. The owning RailwayNetwork holds the canonical
-    # tile -> platform_id and tile -> block_id reverse indices. These
-    # property shims keep the existing readers/writers working: when the
-    # track is attached to a network, reads/writes go through the network;
-    # when not attached (bare construction in tests), reads/writes fall
-    # back to a local field stored on the dataclass.
-
-    @property
-    def station_id(self) -> Optional[str]:
-        if self.network is not None:
-            try:
-                return self.network.tile_to_platform_id(self.x, self.y)
-            except AttributeError:
-                pass
-        return self._station_id_local
-
-    @station_id.setter
-    def station_id(self, value: Optional[str]) -> None:
-        if self.network is not None:
-            try:
-                self.network._set_tile_platform(self.x, self.y, value)
-                self._station_id_local = None
-                return
-            except AttributeError:
-                pass
-        self._station_id_local = value
+    # ========== Block membership (network-derived) ==========
+    # A tile does not store its segment or its block (design_v2.md "Tile").
+    # The owning RailwayNetwork holds the tile -> segment reverse index; when
+    # the tile is not attached (bare construction in tests), reads and writes
+    # fall back to a local field.
 
     @property
     def segment_id(self) -> Optional[str]:
@@ -470,47 +419,6 @@ class Tile:
                 return
         self._switch_state_local = normalized
 
-    # ========== Physical occupancy / reservation (network-derived) ==========
-    # Per design_new.md, physical occupancy lives on `Block.occupied_by` /
-    # `Switch.occupied_by`, and dispatcher reservations live on
-    # `Block.reserved_for_train`. `Tile` exposes derived read shims
-    # so the existing UI / API surface (which serialises track tiles) can
-    # show per-tile occupancy without storing it.
-
-    @property
-    def occupied_by(self) -> Optional[str]:
-        """Train ID currently occupying this tile, derived from the owning
-        `Switch.occupied_by` (when the tile is a switch) or
-        `Block.occupied_by` (when the tile is a block member). Returns
-        `_occupied_by_local` when the segment is not attached to a
-        `RailwayNetwork`.
-        """
-        if self.network is None:
-            return self._occupied_by_local
-        # Switch tiles: prefer the owning switch's physical occupancy.
-        if self.switch_id is not None and hasattr(self.network, "switches"):
-            switch = self.network.switches.get(self.switch_id)
-            if switch is not None:
-                return getattr(switch, "occupied_by", None)
-        # Block tiles: read through the owning block.
-        bid = self.block_id
-        if bid is not None and hasattr(self.network, "blocks"):
-            block = self.network.blocks.get(bid)
-            if block is not None:
-                return getattr(block, "occupied_by", None)
-        return self._occupied_by_local
-
-    @occupied_by.setter
-    def occupied_by(self, value: Optional[str]) -> None:
-        """Setter shim for legacy callers / deserialization.
-
-        Writes only the detached-mode fallback. When attached, the canonical
-        store is `Block.occupied_by` / `Switch.occupied_by`; live writers
-        route through `BlockManager` / `SwitchManager`.
-        """
-        self._occupied_by_local = value
-
-
     @property
     def switch_states(self) -> Dict[str, int]:
         """Per-entry-port switch states for display/debugging.
@@ -541,10 +449,6 @@ class Tile:
         """
         if self.track_bits in FORBIDDEN_TRACK_BITS:
             return TrackType.FORBIDDEN
-        if self.signal_ids:
-            return TrackType.SIGNAL
-        if self.station_id is not None:
-            return TrackType.STATION
 
         n = self.num_paths
         if n == 0:
@@ -863,8 +767,6 @@ class Tile:
             "track_bits": self.track_bits,
             "dead_end_ports": sorted(self.dead_end_ports),
             "switch_state": self.switch_state if self.is_switch else None,
-            "signal_ids": self.signal_ids,
-            "station_id": self.station_id,
             # `block_section_id` is the wire name for the owning BLOCK id (the
             # frontend indexes the `blocks` payload with it). `segment_id` is
             # the tile's stored geometry membership; the two differ only for a
@@ -900,8 +802,6 @@ class Tile:
             "y": self.y,
             "track_bits": self.track_bits,
             "dead_end_ports": sorted(self.dead_end_ports),
-            "signal_ids": self.signal_ids,
-            "station_id": self.station_id,
             # Persistence stores the tile's segment membership. Block grouping
             # is restored from each `Block`'s own `segment_ids`.
             "segment_id": self.segment_id,
@@ -922,8 +822,6 @@ class Tile:
             track_bits=data.get("track_bits", 0),
             dead_end_ports=set(data.get("dead_end_ports", [])),
         )
-        tile.signal_ids = data.get("signal_ids", [])
-        tile.station_id = data.get("station_id")
         tile.segment_id = data.get("segment_id")
         tile.switch_id = data.get("switch_id")
         tile.length = data.get("length", 1.0)

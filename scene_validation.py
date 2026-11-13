@@ -81,66 +81,11 @@ def validate_block_rules():
         assert "switch" in str(e).lower(), f"Wrong error message: {e}"
         print(f"  ✓ Correctly rejected: {e}")
 
-    # Test 3: Signals can be in blocks, but cannot monitor own block from middle
-    print(
-        "\n[TEST 3] Verifying signals in blocks can only monitor own block from entry tile..."
-    )
-
-    # First create TEST_BLOCK_1 at (0,0), (1,0) which is also used by Test 4 and Test 5
+    # TEST_BLOCK_1 at (0,0), (1,0) is used by Test 4 and Test 5.
     _make_block(
         test_network,
         block_id="TEST_BLOCK_1", positions=[(0, 0), (1, 0)], name="Test Block 1"
     )
-
-    # Create a 3-tile block for testing
-    _make_block(
-        test_network,
-        block_id="TEST_BLOCK_SIGNAL",
-        positions=[(2, 0), (3, 0), (4, 0)],
-        name="Test Block for Signal",
-    )
-
-    # Add a signal in the MIDDLE of the block (at tile 3,0)
-    # This signal CAN exist in the block, but CANNOT monitor TEST_BLOCK_SIGNAL
-    middle_signal = test_network.add_signal(
-        3, 0, "E", signal_type="block", name="Middle Signal", auto_connect=False
-    )
-
-    # Verify the track still has its block_id
-    middle_track = test_network.get_track(3, 0)
-    assert middle_track.block_id == "TEST_BLOCK_SIGNAL", (
-        "Signal tile should remain in block"
-    )
-    print(
-        f"  ✓ Signal placed in middle of block, tile remains in block: {middle_track.block_id}"
-    )
-
-    # Try to make the signal monitor its own block (should fail - not on entry tile)
-    try:
-        test_network.connect_signal_to_block(
-            middle_signal.signal_id, "TEST_BLOCK_SIGNAL"
-        )
-        assert False, (
-            "Should have raised ValueError for monitoring own block from middle"
-        )
-    except ValueError as e:
-        assert "entry tile" in str(e).lower() or "middle" in str(e).lower(), (
-            f"Wrong error: {e}"
-        )
-        print(f"  ✓ Correctly rejected monitoring own block from middle: {e}")
-
-    # Add a signal at the ENTRY tile (tile 2,0 for eastbound)
-    # Eastbound trains approach from west, so (2,0) is the entry tile
-    entry_signal = test_network.add_signal(
-        2, 0, "E", signal_type="block", name="Entry Signal", auto_connect=False
-    )
-
-    # This signal CAN monitor its own block (TEST_BLOCK_SIGNAL) because it's on entry tile
-    reachable = test_network.get_reachable_blocks(entry_signal.signal_id)
-    assert "TEST_BLOCK_SIGNAL" in reachable, (
-        f"Entry tile signal should be able to monitor own block, got: {reachable}"
-    )
-    print(f"  ✓ Entry tile signal can monitor own block, reachable: {reachable}")
 
     # Test 4: Cannot assign track already in another block
     print("\n[TEST 4] Verifying tracks cannot be in multiple blocks...")

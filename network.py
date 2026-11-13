@@ -9,16 +9,12 @@ coordinator for all railway system components.
 
 from collections import deque
 import logging
-from typing import Any, Dict, Iterable, List, Optional, Set, Tuple, Union
-from track import Tile, EDGE_MASKS, BIT_TO_EDGES
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
+from track import Tile, BIT_TO_EDGES
 from block import Block
 from entity_ids import block_id_for_segment
-from block_manager import BlockManager
 from switch_manager import SwitchManager
-from railway_signal import Signal, SignalType, SignalState
-from station import Station
 from segment import Segment
-from railway_platform import Platform
 from switch_power import SwitchOutputOwner
 
 
@@ -70,10 +66,6 @@ class RailwayNetwork(SwitchOutputOwner):
     def __init__(self):
         self.tracks: Dict[Tuple[int, int], Tile] = {}
         self.blocks: Dict[str, Block] = {}
-        self.signals: Dict[str, Signal] = {}
-        self.platforms: Dict[str, Platform] = {}
-        self.stations = self.platforms
-        self.station_groups: Dict[str, Station] = {}
         self.switches: Dict[str, "Switch"] = {}  # NEW: Switch entity management
         # Segments are geometry; they live inside their owning `Block`
         # (design_new.md "Block": a block is a switch-free connected run of one
@@ -92,7 +84,6 @@ class RailwayNetwork(SwitchOutputOwner):
             Tuple[int, int, str], Tuple[int, int, str]
         ] = {}
 
-        self.block_manager: Optional[BlockManager] = None
         self.switch_manager: Optional[SwitchManager] = None
         self.power_controller: Optional["BlockPowerController"] = None
         self.switch_output_interface: Optional["SwitchOutput"] = None
@@ -101,14 +92,11 @@ class RailwayNetwork(SwitchOutputOwner):
         # power-controller role).
         self.switch_power_controller: Optional["SwitchPowerController"] = None
 
-        # Reverse indices from tile -> owning segment / platform.
-        # A tile belongs to a `Segment`; the segment is grouped into a `Block`.
-        # Maintained in sync by network mutators (segment creation, deletion,
-        # platform creation, platform deletion, etc.). Readers should call
-        # tile_to_segment_id (geometry) / tile_to_block_id (power, occupancy,
-        # reservation) / tile_to_platform_id / tile_to_station_id below.
+        # Reverse index from tile -> owning segment. A tile belongs to a
+        # `Segment`; the segment is grouped into a `Block`. Maintained in sync
+        # by the segment mutators. Readers call tile_to_segment_id (geometry)
+        # and tile_to_block_id (power and occupancy) below.
         self._tile_to_segment: Dict[Tuple[int, int], str] = {}
-        self._tile_to_platform: Dict[Tuple[int, int], str] = {}
 
         # Reverse index block id -> its Tiles, derived from
         # _tile_to_segment and built lazily by _block_tiles_index(). Turns
@@ -122,28 +110,11 @@ class RailwayNetwork(SwitchOutputOwner):
         self._segment_index_cache: Optional[Dict[str, List["Tile"]]] = None
 
 
-        # Helper modules (signal computation, station registry, block
-        # geometry mutation). Lazy-initialised on first access to keep
-        # `__init__` cheap.
-        self._signal_calculator = None
+        # Helper modules (segment geometry, block grouping). Lazy-initialised
+        # on first access to keep `__init__` cheap.
         self._segment_geometry_manager = None
-        self._station_registry = None
         self._block_grouping_manager = None
-        self._signal_registry = None
 
-    def _ensure_block_manager(self):
-        if self.block_manager is None:
-            self.block_manager = BlockManager(self.blocks, network=self)
-
-    def _get_signal_calculator(self):
-        """Lazy-init `SignalCalculator`. The actual signal-state /
-        reachability logic lives in `signal_calculator.py`; this network
-        keeps thin forwarders so existing call sites stay unchanged."""
-        if self._signal_calculator is None:
-            from signal_calculator import SignalCalculator
-
-            self._signal_calculator = SignalCalculator(self)
-        return self._signal_calculator
 
     def _get_segment_geometry_manager(self):
         """Lazy-init `SegmentGeometryManager`. Segment geometry / topology
@@ -155,18 +126,6 @@ class RailwayNetwork(SwitchOutputOwner):
             self._segment_geometry_manager = SegmentGeometryManager(self)
         return self._segment_geometry_manager
 
-    def _get_station_registry(self):
-        """Lazy-init `StationRegistry`. Platform / station CRUD lives in
-        `station_registry.py`; this network keeps doc-canonical method
-        names as forwarders. The `platforms` / `station_groups` /
-        `_tile_to_platform` registries are still owned by `RailwayNetwork`
-        directly — `StationRegistry` reads / writes them through the
-        back-reference."""
-        if self._station_registry is None:
-            from station_registry import StationRegistry
-
-            self._station_registry = StationRegistry(self)
-        return self._station_registry
 
     def _get_block_grouping_manager(self):
         """Lazy-init `BlockGroupingManager`. Block membership (`segment_ids`)
@@ -179,20 +138,9 @@ class RailwayNetwork(SwitchOutputOwner):
             self._block_grouping_manager = BlockGroupingManager(self)
         return self._block_grouping_manager
 
-    def _get_signal_registry(self):
-        """Lazy-init `SignalRegistry`. Signal CRUD lives there; the `signals`
-        dict stays on the network and the registry reads / writes it through its
-        back-reference (signal STATE stays on the SignalCalculator forwarders).
-        """
-        if self._signal_registry is None:
-            from signal_registry import SignalRegistry
-
-            self._signal_registry = SignalRegistry(self)
-        return self._signal_registry
 
     def _ensure_managers(self):
-        """Construct the BlockManager and SwitchManager if not yet wired."""
-        self._ensure_block_manager()
+        """Construct the SwitchManager if not yet wired."""
         if self.switch_manager is None:
             self.switch_manager = SwitchManager(self.switches, network=self)
 
@@ -217,24 +165,19 @@ class RailwayNetwork(SwitchOutputOwner):
         and this returns the grouping block.
 
         All "which block owns this tile?" lookups go through this method —
-        occupancy, reservation, signalling, pathfinding, dispatch and physics
-        are block concerns.
+        power and occupancy are block concerns.
         """
         segment_id = self._tile_to_segment.get((x, y))
         if segment_id is None:
             return None
         return self.segment_to_block_id(segment_id)
 
-    def tile_to_platform_id(self, x: int, y: int) -> Optional[str]:
-        """Forward to `StationRegistry.tile_to_platform_id(x, y)`."""
-        return self._get_station_registry().tile_to_platform_id(x, y)
-
 
     def _set_tile_segment(self, x: int, y: int, segment_id: Optional[str]) -> None:
         """Update the tile -> segment reverse index.
 
         Network-internal helper. Use this whenever a tile's segment membership
-        changes (segment creation, extension, deletion, station split, etc.).
+        changes (segment creation, extension, deletion, split, etc.).
         """
         key = (x, y)
         if segment_id is None:
@@ -246,9 +189,6 @@ class RailwayNetwork(SwitchOutputOwner):
         # affected blocks stale.
         self.invalidate_pathfinding_cache()
 
-    def _set_tile_platform(self, x: int, y: int, platform_id: Optional[str]) -> None:
-        """Forward to `StationRegistry._set_tile_platform(x, y, platform_id)`."""
-        return self._get_station_registry()._set_tile_platform(x, y, platform_id)
 
     # === Pathfinding walk cache (owned here; the static graph lives here) ===
 
@@ -266,8 +206,7 @@ class RailwayNetwork(SwitchOutputOwner):
     def clear(self) -> None:
         """Reset the network to empty.
 
-        Clears every entity dict AND the derived tile->block / tile->platform
-        reverse indices and the walk/block caches. The reverse indices are not
+        Clears every entity dict AND the derived tile->segment reverse index and the walk/block caches. The reverse indices are not
         stored on the entity dicts, so emptying ``tracks`` / ``blocks`` alone
         leaves them stale: a new track drawn on a tile a previous layout used
         would read its old block via ``tile_to_block_id()`` and block creation
@@ -276,16 +215,12 @@ class RailwayNetwork(SwitchOutputOwner):
         """
         self.tracks.clear()
         self.blocks.clear()
-        self.signals.clear()
-        self.platforms.clear()  # self.stations is the same object
-        self.station_groups.clear()
         self.switches.clear()
         self.tunnels.clear()
         # Derived tile -> owner reverse indices. Not held on any entity dict,
-        # so they must be cleared explicitly to avoid stale block/platform
-        # membership on reused tiles.
+        # so they must be cleared explicitly to avoid stale block membership on
+        # reused tiles.
         self._tile_to_segment.clear()
-        self._tile_to_platform.clear()
         # Drops the block and segment tile indices.
         self.invalidate_pathfinding_cache()
 
@@ -294,16 +229,13 @@ class RailwayNetwork(SwitchOutputOwner):
         key = (track.x, track.y)
         self.tracks[key] = track
 
-        # Move any pre-attachment local-fallback values for station_id /
-        # segment_id into the network reverse indices so that reads
-        # via the property continue to see the same value after attach.
+        # Move any pre-attachment local-fallback segment_id into the network
+        # reverse index so that reads via the property continue to see the
+        # same value after attach.
         local_segment = track._segment_id_local
-        local_station = track._station_id_local
         track.network = self
         if local_segment is not None:
             track.segment_id = local_segment
-        if local_station is not None:
-            track.station_id = local_station
 
         # Propagate to this tile and neighbors
         self.propagate_from_tile(track.x, track.y)
@@ -560,10 +492,7 @@ class RailwayNetwork(SwitchOutputOwner):
 
         Rules:
             - The tile is fully removed when `new_bits == 0` and there are
-              no dead-end ports. In that case any platform owning the tile
-              is invalidated.
-            - A signal is orphaned when no segment in `new_bits` touches
-              its `detection_direction` port.
+              no dead-end ports.
             - A switch entity is orphaned when the tile is no longer a
               switch under `new_bits`.
 
@@ -575,8 +504,6 @@ class RailwayNetwork(SwitchOutputOwner):
             return {
                 "tile_will_be_removed": False,
                 "removes_switch": None,
-                "removes_signals": [],
-                "removes_platform": None,
             }
 
         dead_ends = (
@@ -588,27 +515,9 @@ class RailwayNetwork(SwitchOutputOwner):
         if track.switch_id and not _bits_form_switch(new_bits):
             removes_switch = track.switch_id
 
-        removes_signals: List[str] = []
-        for sid in list(track.signal_ids):
-            signal = self.signals.get(sid)
-            if signal is None:
-                continue
-            edge = signal.detection_direction
-            mask = EDGE_MASKS.get(edge, 0)
-            if not (new_bits & mask):
-                removes_signals.append(sid)
-
-        removes_platform: Optional[str] = None
-        if tile_will_be_removed:
-            plat_id = self._tile_to_platform.get((x, y))
-            if plat_id:
-                removes_platform = plat_id
-
         return {
             "tile_will_be_removed": tile_will_be_removed,
             "removes_switch": removes_switch,
-            "removes_signals": removes_signals,
-            "removes_platform": removes_platform,
         }
 
     def remove_track(
@@ -617,15 +526,14 @@ class RailwayNetwork(SwitchOutputOwner):
         """Remove track segment and propagate updates to neighbors.
 
         Cleans up entities anchored to this tile so the layout stays
-        consistent: any signals listed in `track.signal_ids`, the owning
-        switch entity (if `track.switch_id` is set), and the owning
-        platform (if `_tile_to_platform` has an entry) are removed first.
+        consistent: the owning switch entity (if `track.switch_id` is set) is
+        removed first.
         Segment membership is reconciled via `remove_tile_from_segment`.
 
         A tile that is a segment's last one takes the segment with it, so
         erasing it is bound by the rule for deleting that segment (design_new.md,
         "Segment deletion keeps its block connected"). That is judged first,
-        before the signals, switch or platform are touched, so a rejection
+        before the switch is touched, so a rejection
         changes nothing. `also_removing` names the other tiles erased in the
         same edit; a caller erasing a whole block's track passes them all, so
         the block is judged as one edit and not one tile at a time.
@@ -642,19 +550,12 @@ class RailwayNetwork(SwitchOutputOwner):
 
         self.check_tile_removable(x, y, also_removing=also_removing)
 
-        for sid in list(track.signal_ids):
-            self.remove_signal(sid)
-
         if track.switch_id:
             self.remove_switch(track.switch_id)
 
-        plat_id = self._tile_to_platform.get(key)
-        if plat_id:
-            self.delete_station(plat_id)
-
         if track.segment_id:
-            # Block reconciliation can touch signals on OTHER tiles in the
-            # block (split + remap). If that work fails, we still want the
+            # Block reconciliation can touch OTHER tiles in the block (a
+            # split). If that work fails, we still want the
             # tile itself to be removed so the caller doesn't end up with
             # an orphan entry in self.tracks.
             try:
@@ -848,258 +749,11 @@ class RailwayNetwork(SwitchOutputOwner):
                     neighbors.append(neighbor_pos)
         return neighbors
 
-    # === Centralized Signal Management ===
-
-    def add_signal(
-        self,
-        x: int,
-        y: int,
-        detection_direction: str,
-        signal_type: Union[SignalType, str] = SignalType.BLOCK,
-        name: Optional[str] = None,
-        auto_connect: bool = True,
-        signal_id: Optional[str] = None,
-    ) -> Signal:
-        """Forward to `SignalRegistry.add_signal(...)`."""
-        return self._get_signal_registry().add_signal(
-            x, y, detection_direction, signal_type, name, auto_connect, signal_id
-        )
-
-    def get_signal(self, signal_id: str) -> Optional[Signal]:
-        """Forward to `SignalRegistry.get_signal(signal_id)`."""
-        return self._get_signal_registry().get_signal(signal_id)
-
-    def get_signal_at(self, x: int, y: int) -> Optional[Signal]:
-        """Forward to `SignalRegistry.get_signal_at(x, y)`."""
-        return self._get_signal_registry().get_signal_at(x, y)
-
-    def get_signal_at_direction(
-        self, x: int, y: int, detection_direction: str
-    ) -> Optional[Signal]:
-        """Forward to `SignalRegistry.get_signal_at_direction(...)`."""
-        return self._get_signal_registry().get_signal_at_direction(
-            x, y, detection_direction
-        )
-
-    def remove_signal(self, signal_id: str) -> bool:
-        """Forward to `SignalRegistry.remove_signal(signal_id)`."""
-        return self._get_signal_registry().remove_signal(signal_id)
-
-    def remove_signal_at(self, x: int, y: int) -> bool:
-        """Forward to `SignalRegistry.remove_signal_at(x, y)`."""
-        return self._get_signal_registry().remove_signal_at(x, y)
-
-    def update_signal(self, signal_id: str, **kwargs) -> Optional[Signal]:
-        """Forward to `SignalRegistry.update_signal(signal_id, **kwargs)`."""
-        return self._get_signal_registry().update_signal(signal_id, **kwargs)
-
-    def connect_signal_to_block(self, signal_id: str, block_id: str) -> bool:
-        """Forward to `SignalRegistry.connect_signal_to_block(signal_id, block_id)`."""
-        return self._get_signal_registry().connect_signal_to_block(signal_id, block_id)
-
-    def _can_reach_block(self, signal: Signal, target_block_id: str) -> bool:
-        """Forward to `SignalCalculator.can_reach_block(signal, target)`."""
-        return self._get_signal_calculator().can_reach_block(signal, target_block_id)
-
-    def get_reachable_blocks(self, signal_id: str) -> list:
-        """Forward to `SignalCalculator.reachable_blocks(signal_id)`."""
-        return self._get_signal_calculator().reachable_blocks(signal_id)
-
-    def is_signal_on_entry_tile(self, signal: Signal) -> bool:
-        """Forward to `SignalCalculator.is_signal_on_entry_tile(signal)`."""
-        return self._get_signal_calculator().is_signal_on_entry_tile(signal)
-
-    def update_signals_from_blocks(self) -> None:
-        """Forward to `SignalCalculator.update_all()`."""
-        self._get_signal_calculator().update_all()
-
-    def _calculate_signal_state(self, signal: Signal) -> SignalState:
-        """Forward to `SignalCalculator.compute_state(signal)`."""
-        return self._get_signal_calculator().compute_state(signal)
-
-
     def _get_neighbor_coords(self, x: int, y: int, edge: str) -> Tuple[int, int]:
         """Get coordinates of neighbor tile in given direction."""
         dx, dy = _EDGE_OFFSETS.get(edge, (0, 0))
         return (x + dx, y + dy)
 
-
-    # === Centralized Station Management ===
-
-    def _is_track_on_straight_path(self, x: int, y: int) -> bool:
-        """
-        Check if a track tile is part of a logical straight path.
-
-        This function allows stations to be placed on:
-        1. Pure straight tracks (TRACK_NS or TRACK_EW)
-        2. Simple diagonal tracks (NE, NW, SE, SW) that can form zigzag patterns
-
-        Args:
-            x, y: Grid coordinates of the track
-
-        Returns:
-            bool: True if the track is on a straight path (pure or diagonal)
-        """
-        from track import TRACK_NS, TRACK_EW, TRACK_NE, TRACK_NW, TRACK_SE, TRACK_SW
-
-        track = self.get_track(x, y)
-        if not track:
-            return False
-
-        # Pure straight tracks are always valid
-        if track.track_bits in (TRACK_NS, TRACK_EW):
-            return True
-
-        # Simple diagonal tracks are also valid for zigzag patterns
-        # The user can extend the station to cover multiple tiles forming the zigzag
-        if track.track_bits in (TRACK_NE, TRACK_NW, TRACK_SE, TRACK_SW):
-            return True
-
-        # Complex tracks (multiple paths) are not valid
-        return False
-
-    def add_station(self, *args, **kwargs):
-        """Forward to `StationRegistry.add_station(...)`."""
-        return self._get_station_registry().add_station(*args, **kwargs)
-
-    def add_platform(self, *args, **kwargs):
-        """Forward to `StationRegistry.add_platform(...)`."""
-        return self._get_station_registry().add_platform(*args, **kwargs)
-
-
-    def get_platform(self, platform_id: str):
-        """Forward to `StationRegistry.get_platform(platform_id)`."""
-        return self._get_station_registry().get_platform(platform_id)
-
-    def delete_station(self, station_id: str) -> bool:
-        """Forward to `StationRegistry.delete_station(station_id)`."""
-        return self._get_station_registry().delete_station(station_id)
-
-    def delete_platform(self, platform_id: str) -> bool:
-        """Forward to `StationRegistry.delete_platform(platform_id)`."""
-        return self._get_station_registry().delete_platform(platform_id)
-
-    def prune_platforms_for_deleted_block(self, block_id: str) -> None:
-        """Drop a now-deleted block from every platform, deleting any emptied.
-
-        The platform half of the Non-empty parent rule's segment fan-out
-        (design_new.md "Segment's two-parent fan-out"): when a segment's last
-        tile goes away its owning block is deleted, and any platform that was
-        built on that block must lose it too. This removes `block_id` from each
-        `Platform.block_assignments` and deletes a platform left with no
-        assigned block (which cascades up to an emptied `Station` group). It is
-        keyed on the block rather than the segment because by the time the block
-        is deleted the tiles' `segment_id`s are already cleared, so the
-        segment -> platform reverse index no longer resolves, while
-        `block_assignments` still names the owner. `delete_platform` is
-        idempotent, so a caller that already deleted the platform first (for
-        example `remove_track`) leaves nothing here to do.
-        """
-        emptied_platform_ids: List[str] = []
-        for platform in list(self.platforms.values()):
-            assignments = getattr(platform, "block_assignments", None)
-            if not assignments:
-                continue
-            stale_positions = [
-                pos for pos, bid in assignments.items() if bid == block_id
-            ]
-            if not stale_positions:
-                continue
-            for pos in stale_positions:
-                del assignments[pos]
-            if not platform.get_all_assigned_blocks():
-                emptied_platform_ids.append(platform.platform_id)
-        for platform_id in emptied_platform_ids:
-            self.delete_platform(platform_id)
-
-    def extend_station(self, *args, **kwargs):
-        """Forward to `StationRegistry.extend_station(...)`."""
-        return self._get_station_registry().extend_station(*args, **kwargs)
-
-    def extend_platform(self, *args, **kwargs):
-        """Forward to `StationRegistry.extend_platform(...)`."""
-        return self._get_station_registry().extend_platform(*args, **kwargs)
-
-    def get_station_for_platform(self, platform_id: str) -> Optional[str]:
-        """Forward to `StationRegistry.get_station_for_platform(platform_id)`."""
-        return self._get_station_registry().get_station_for_platform(platform_id)
-
-
-    def create_station_group(self, *args, **kwargs):
-        """Forward to `StationRegistry.create_station_group(...)`."""
-        return self._get_station_registry().create_station_group(*args, **kwargs)
-
-    def delete_station_group(self, station_id: str) -> bool:
-        """Forward to `StationRegistry.delete_station_group(station_id)`."""
-        return self._get_station_registry().delete_station_group(station_id)
-
-    def add_platform_to_station_group(
-        self, station_id: str, platform_id: str, force: bool = False
-    ) -> bool:
-        """Forward to `StationRegistry.add_platform_to_station_group(...)`."""
-        return self._get_station_registry().add_platform_to_station_group(
-            station_id, platform_id, force=force
-        )
-
-    def remove_platform_from_station_group(self, *args, **kwargs):
-        """Forward to `StationRegistry.remove_platform_from_station_group(...)`."""
-        return self._get_station_registry().remove_platform_from_station_group(*args, **kwargs)
-
-    def _validate_station_continuity(
-        self, positions: List[Tuple[int, int]]
-    ) -> Tuple[bool, List[str]]:
-        """
-        Validate that station positions form a continuous path.
-
-        Uses BFS similar to block continuity validation.
-
-        Args:
-            positions: List of (x, y) tile positions
-
-        Returns:
-            Tuple of (is_continuous, error_messages)
-        """
-        if len(positions) == 0:
-            return True, []
-
-        if len(positions) == 1:
-            return True, []
-
-        errors = []
-        position_set = set(positions)
-
-        # Start BFS from first position
-        start = positions[0]
-        visited = {start}
-        queue = [start]
-
-        while queue:
-            x, y = queue.pop(0)
-            track = self.get_track(x, y)
-            if not track:
-                continue
-
-            # Check all four neighbors
-            for dx, dy in [(0, 1), (1, 0), (0, -1), (-1, 0)]:
-                nx, ny = x + dx, y + dy
-                neighbor_pos = (nx, ny)
-
-                # Only consider positions that are in the station
-                if neighbor_pos in position_set and neighbor_pos not in visited:
-                    # Check if tracks are actually connected via edges
-                    neighbor = self.get_track(nx, ny)
-                    if neighbor:
-                        # Simplified: just check if neighbor exists in position set
-                        visited.add(neighbor_pos)
-                        queue.append(neighbor_pos)
-
-        # Check if all positions were visited
-        if len(visited) != len(positions):
-            unvisited = position_set - visited
-            errors.append(f"Disconnected tiles: {unvisited}")
-            return False, errors
-
-        return True, []
 
     def remove_tile_from_segment(
         self, x: int, y: int, *, also_removing: Iterable[Tuple[int, int]] = ()
@@ -1136,9 +790,6 @@ class RailwayNetwork(SwitchOutputOwner):
             *args, **kwargs
         )
 
-    def _remap_orphaned_signals(self, *args, **kwargs):
-        """Forward to `SegmentGeometryManager._remap_orphaned_signals(...)`."""
-        return self._get_segment_geometry_manager()._remap_orphaned_signals(*args, **kwargs)
 
     def add_switch(self, switch: "Switch") -> None:
         """
@@ -1270,22 +921,6 @@ class RailwayNetwork(SwitchOutputOwner):
         """Forward to `BlockGroupingManager.segment_to_block_id(segment_id)`."""
         return self._get_block_grouping_manager().segment_to_block_id(segment_id)
 
-    def segment_to_platform_id(self, segment_id: str) -> Optional[str]:
-        """The concrete `Platform` that owns `segment_id`, or None.
-
-        The segment -> platform reverse index (design_new.md "Platform And
-        Station": `RailwayNetwork` owns the segment -> platform lookup, derived
-        from the `Platform.ordered_segments` ownership chain). A segment belongs
-        to at most one platform, so this returns the first platform whose
-        `ordered_segments` lists it. Derived live from each platform's tiles ->
-        segments, never from a stored back-reference on the segment.
-        """
-        for platform_id, platform in self.platforms.items():
-            if segment_id in platform.ordered_segments(self):
-                return platform_id
-        return None
-
-
 
     def add_segment_to_block(self, block_id: str, segment_id: str) -> bool:
         """Forward to `BlockGroupingManager.add_segment_to_block(...)`."""
@@ -1310,12 +945,10 @@ class RailwayNetwork(SwitchOutputOwner):
 
         Membership lives on the tile (`Tile.segment_id`, indexed by
         `_tile_to_segment`); `Segment.ordered_tiles` is the derived read of it.
-        A save written before platform blocks claimed their tiles carries the
-        order but no tile ownership, so those segments would load owning
-        nothing: the block exists and lists its tiles, yet
-        `get_block_positions` is empty and the platform's `block_assignments`
-        never populate. Stamp the ownership back on from the order that
-        survived.
+        An older save can carry the order but no tile ownership, so those
+        segments would load owning nothing: the block exists and lists its
+        tiles, yet `get_block_positions` is empty. Stamp the ownership back on
+        from the order that survived.
 
         Only an unowned tile is claimed, so a tile already belonging to another
         segment is never stolen, and a save that already carries tile ownership
@@ -1459,25 +1092,10 @@ class RailwayNetwork(SwitchOutputOwner):
     def to_dict(self) -> dict:
         """Convert network to dictionary for the live frontend payload.
 
-        Includes runtime state on every sub-entity (block occupancy,
-        signal aspects, switch position/locks, track locks) for UI
-        rendering. Persistence does NOT use this path; see
-        `to_layout_dict()` instead.
+        Persistence does NOT use this path; see `to_layout_dict()` instead.
         """
-        # Enrich tracks with full signal data for frontend
-        enriched_tracks = []
-        for t in self.tracks.values():
-            track_dict = t.to_dict()
-            # Add full signal objects for frontend rendering
-            track_dict["signals"] = [
-                self.signals[sid].to_dict()
-                for sid in t.signal_ids
-                if sid in self.signals
-            ]
-            enriched_tracks.append(track_dict)
-
         return {
-            "tracks": enriched_tracks,
+            "tracks": [t.to_dict() for t in self.tracks.values()],
             # `current_voltage` is the applied-output mirror owned by
             # `BlockPowerController`, not a `Block` field; inject it onto each
             # block's live payload here (design_new.md "Power", Block
@@ -1487,11 +1105,6 @@ class RailwayNetwork(SwitchOutputOwner):
                 k: {**v.to_dict(), "current_voltage": self._recorded_block_voltage(k)}
                 for k, v in self.blocks.items()
             },
-            "signals": {k: v.to_dict() for k, v in self.signals.items()},
-            "platforms": [
-                p.to_dict_with_orientation(self) for p in self.platforms.values()
-            ],
-            "station_groups": [s.to_dict() for s in self.station_groups.values()],
             "switches": {
                 k: v.to_dict() for k, v in self.switches.items()
             },
@@ -1517,21 +1130,13 @@ class RailwayNetwork(SwitchOutputOwner):
     def to_layout_dict(self) -> dict:
         """Layout-only serialization used by persistence.
 
-        Per design_new.md Out of Scope ("Persistence / save-load of
-        runtime state | In-memory only"), this writes only editor /
-        configuration data: track geometry, block / switch / signal
-        definitions, platforms and station groups. Trains are not saved
-        (design_v2.md "Trains", Trains are not saved). Live
-        runtime fields on every sub-entity are excluded.
+        It writes the layout only: tiles, blocks, switches and tunnels.
+        Trains are not saved (design_v2.md "Trains", Trains are not saved),
+        and no runtime field is written.
         """
         return {
             "tracks": [t.to_layout_dict() for t in self.tracks.values()],
             "blocks": {k: v.to_layout_dict() for k, v in self.blocks.items()},
-            "signals": {k: v.to_layout_dict() for k, v in self.signals.items()},
-            "platforms": [
-                p.to_dict_with_orientation(self) for p in self.platforms.values()
-            ],
-            "station_groups": [s.to_dict() for s in self.station_groups.values()],
             "switches": {
                 k: v.to_layout_dict() for k, v in self.switches.items()
             },
@@ -1539,9 +1144,11 @@ class RailwayNetwork(SwitchOutputOwner):
         }
 
     def from_dict(self, data: dict):
-        """Reconstruct network from dictionary"""
+        """Reconstruct network from dictionary. A save may carry sections this
+        version does not read (signals, platforms, station groups, trains);
+        they are skipped (design_v2.md "Code map", Layout files)."""
         # Clear existing — entity dicts plus the tile->owner reverse indices
-        # and caches, so a load can never inherit stale block/platform
+        # and caches, so a load can never inherit stale block
         # membership on tiles the previous layout occupied.
         self.clear()
 
@@ -1558,15 +1165,6 @@ class RailwayNetwork(SwitchOutputOwner):
         # tracks are in place, so heal a save that stored only one of the two.
         self._reconcile_segment_tile_membership()
 
-        # Rebuild signals
-        for signal_id, signal_data in data.get("signals", {}).items():
-            signal = Signal.from_dict(signal_data)
-            self.signals[signal_id] = signal
-            # Update track's signal_ids list
-            track = self.get_track(*signal.position)
-            if track and signal_id not in track.signal_ids:
-                track.signal_ids.append(signal_id)
-
         # Rebuild switches
         from switch import Switch
 
@@ -1574,34 +1172,11 @@ class RailwayNetwork(SwitchOutputOwner):
             switch = Switch.from_dict(switch_data)
             self.switches[switch_id] = switch
 
-        # Rebuild physical platforms
-        platforms_data = data.get("platforms", [])
-
-        for platform_data in platforms_data:
-            platform = Platform.from_dict(platform_data)
-            self.platforms[platform.platform_id] = platform
-            # Establish the canonical block_assignments index from the loaded
-            # tile ownership when a platform was serialized without it, so
-            # ordered_blocks / get_all_assigned_blocks resolve every platform's
-            # block without any read-time tile scan. Tracks are already loaded
-            # above, and this is a no-op when block_assignments came through.
-            if not platform.block_assignments:
-                for px, py in platform.positions:
-                    ptrack = self.get_track(px, py)
-                    if ptrack and ptrack.block_id:
-                        platform.block_assignments[(px, py)] = ptrack.block_id
-
-        # Rebuild logical station groups (optional in legacy saves)
-        for station_data in data.get("station_groups", []):
-            station = Station.from_dict(station_data)
-            self.station_groups[station.station_id] = station
-
         # Fold any grouping from an older save. Those snapshots stored the
         # power grouping separately from the blocks it grouped, so each grouped
         # member loaded above as its own one-segment block; folding replaces
         # that set with the one block the grouping always described, owning each
-        # member's geometry as a member segment. Runs after every block exists
-        # (a grouping may name a platform block).
+        # member's geometry as a member segment. Runs after every block exists.
         self._fold_grouped_blocks(data.get("power_districts", []))
 
         # Rebuild tunnels (after all tracks are in place — add_tunnel

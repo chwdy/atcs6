@@ -3,7 +3,7 @@ Network poll reply — sends the layout only when it changed.
 
 Per design_new.md "Data Flow To UI", **Layout version**: the frontend polls
 `GET /api/network` several times a second while a session runs, and most of
-that payload is the layout (tile geometry, block tile lists, platform shapes),
+that payload is the layout (tile geometry, block tile lists),
 which changes only when someone edits it. This module splits the composite
 runtime snapshot into its layout part and its live part, names the layout with
 `layout_version` (a hash of the layout part), and leaves the layout out of the
@@ -21,8 +21,6 @@ from typing import Any, Dict, Optional, Tuple
 
 # Snapshot keys whose whole section is layout.
 LAYOUT_SECTIONS: Tuple[str, ...] = (
-    "platforms",
-    "station_groups",
     "tunnels",
 )
 
@@ -56,12 +54,12 @@ SWITCH_LAYOUT_FIELDS = frozenset({
 })
 
 # The live fields of a tile. A tile carries live fields only when it holds a
-# switch or a signal; every field of any other tile is layout.
-TRACK_LIVE_FIELDS = frozenset({"switch_state", "switch_states", "signals"})
+# switch; every field of any other tile is layout.
+TRACK_LIVE_FIELDS = frozenset({"switch_state", "switch_states"})
 
 
 def _track_has_live_fields(track: Dict[str, Any]) -> bool:
-    return bool(track.get("is_switch")) or bool(track.get("signal_ids"))
+    return bool(track.get("is_switch"))
 
 
 def _split_fields(
@@ -79,7 +77,7 @@ def split_network_payload(
 
     `live_part` holds `live_blocks` and `live_switches` (maps keyed by id) and
     `live_tracks` (a list of `{x, y, <live fields>}` for the tiles that hold a
-    switch or a signal). Keys outside `blocks`, `switches`, `tracks` and
+    switch). Keys outside `blocks`, `switches`, `tracks` and
     `LAYOUT_SECTIONS` belong to neither part: they are always sent.
     """
     layout: Dict[str, Any] = {

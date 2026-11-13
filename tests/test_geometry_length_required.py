@@ -37,14 +37,3 @@ def test_switch_from_dict_rejects_missing_lengths_allows_zero():
         d2.pop(missing)
         with pytest.raises(ValueError):
             Switch.from_dict(d2)
-
-
-def test_platform_from_dict_rejects_missing_length_allows_zero():
-    from railway_platform import Platform
-
-    d = Platform(platform_id="P1", name="P1", positions=[(0, 0)]).to_dict()
-    d["length_cm"] = 0.0
-    assert Platform.from_dict(d).length_cm == 0.0
-    d.pop("length_cm")
-    with pytest.raises(ValueError):
-        Platform.from_dict(d)

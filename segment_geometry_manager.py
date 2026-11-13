@@ -2,9 +2,7 @@
 SegmentGeometryManager — owns Block topology / geometry mutation pulled out of
 `RailwayNetwork`.
 
-Per design_new.md, `Block` is a data container; `BlockManager` is the sole
-mutator for runtime state (`occupied_by`, `_is_caution`, `reservation`);
-this module is the sole writer of geometry / topology fields
+`Block` is a data container; this module is the sole writer of geometry / topology fields
 (`length_cm`, `speed_limit_kmh`, `ordered_tiles`) and of
 `track.segment_id` for block lifecycle. The `RailwayNetwork` keeps
 the doc-canonical method names as forwarders so existing callers (UI,
@@ -26,12 +24,10 @@ from typing import (
 
 from block import Block
 from entity_ids import block_id_for_segment, segment_id_for_block
-from railway_signal import SignalState, SignalType
 from segment import Segment, SegmentTileEntry
 
 if TYPE_CHECKING:
     from network import RailwayNetwork
-    from railway_signal import Signal
 
 
 class SegmentGeometryManager:
@@ -148,10 +144,8 @@ class SegmentGeometryManager:
 
         Each `entry_edge` is recomputed for the new direction. Returns False
         when the segment is unknown, has fewer than two tiles, or is not the
-        sole member of BOTH its owning `Block` and any `Platform` that contains
-        it (design_new.md "Segment", `reverse_segment_orientation`: reversing one
-        member of a multi-segment block or platform would corrupt that parent's
-        stored orientation).
+        sole member of its owning `Block`: reversing one member of a
+        multi-segment block would corrupt the block's stored orientation.
         """
         segment = self._n.get_segment(segment_id)
         if segment is None or len(segment.ordered_tiles) < 2:
@@ -165,21 +159,6 @@ class SegmentGeometryManager:
         if block_id is not None:
             block = self._n.blocks.get(block_id)
             if block is not None and len(block.segment_ids) > 1:
-                return False
-
-        # Reject likewise unless the segment is the sole member of any Platform
-        # that contains it (design_new.md "Segment", reverse_segment_orientation
-        # requires sole membership of BOTH the owning Block and any containing
-        # Platform). A multi-segment platform stores its segments in one ordered
-        # run, and reversing one member would break the order the others are
-        # ranked against for platform-end selection. Platform membership is read
-        # live through the tile -> segment -> platform chain, so a platform whose
-        # single segment was just split into several children is correctly seen
-        # as multi-segment here.
-        platform_id = self._n.segment_to_platform_id(segment_id)
-        if platform_id is not None:
-            platform = self._n.platforms.get(platform_id)
-            if platform is not None and len(platform.ordered_segments(self._n)) > 1:
                 return False
 
         tiles = [(e.x, e.y) for e in reversed(segment.ordered_tiles)]
@@ -308,7 +287,7 @@ class SegmentGeometryManager:
         - Segment ID uniqueness
         - Segment properties are valid
         - All positions have valid tracks
-        - No tracks are switches, signals, or stations
+        - No tracks are switches
         - No tracks are already in another segment
         - All tracks form a continuous path
 
@@ -345,7 +324,6 @@ class SegmentGeometryManager:
             validate_segment_properties,
             validate_track_for_segment,
             validate_segment_assignment_continuity,
-            validate_station_boundary,
         )
 
         # Validate segment properties
@@ -355,11 +333,6 @@ class SegmentGeometryManager:
             )
             if not is_valid:
                 raise ValueError(f"Invalid block properties: {', '.join(errors)}")
-
-            # Validate station boundaries - segments cannot cross station boundaries
-            valid, error = validate_station_boundary(positions, self._n)
-            if not valid:
-                raise ValueError(f"Station boundary violation: {error}")
 
         # Check the owning block's id doesn't already exist (the segment's own
         # id is checked in create_segment below)
@@ -412,7 +385,6 @@ class SegmentGeometryManager:
         self,
         segment_id: str,
         new_positions: List[Tuple[int, int]],
-        force: bool = False,
         force_overwrite: bool = False,
     ) -> Block:
         """
@@ -420,15 +392,13 @@ class SegmentGeometryManager:
 
         Validates:
         - Segment exists
-        - All new tracks are valid for segments (unless force=True for signals)
+        - All new tracks are valid for segments
         - New tracks are adjacent to the existing segment
         - Extended segment remains continuous
 
         Args:
             segment_id: ID of segment to extend
             new_positions: List of (x, y) positions to add
-            force: If True, removes signals from tiles to allow the extension.
-                   This allows extending a segment past a signal boundary.
             force_overwrite: If True, allows overwriting tracks that belong to
                    other segments (reassigns them to this segment).
 
@@ -448,14 +418,10 @@ class SegmentGeometryManager:
         if segment is None:
             raise ValueError(f"Block {segment_id} not found")
 
-        # Signals monitor blocks, so signal bookkeeping below is against the
-        # block that owns this segment, not the segment itself.
         block_id = self._n.segment_to_block_id(segment_id)
         block = self._n.blocks[block_id]
         existing_positions = self._n.get_segment_positions(segment_id)
 
-        # Track signals that need to be removed when force=True
-        signals_to_remove = []
         # Track segments that will be affected by force_overwrite
         overwritten_segments = set()
 
@@ -477,23 +443,6 @@ class SegmentGeometryManager:
                 raise ValueError(
                     f"Track at ({x}, {y}): Cannot add switch to block - switches are block boundaries"
                 )
-
-            # Check for signals - can be overridden with force
-            # When force=True, we clear the signal's monitored block (shows warning triangle)
-            # but we do NOT remove the signal itself
-            # Only invalidate signals that monitor the block being extended (block_id)
-            if track.signal_ids:
-                if force:
-                    # Collect signals to invalidate (clear monitored block)
-                    # Only invalidate if the signal monitors the block we're extending
-                    for signal_id in track.signal_ids:
-                        signal = self._n.signals.get(signal_id)
-                        if signal and signal.monitored_block_id == block_id:
-                            signals_to_remove.append((signal_id, x, y))
-                else:
-                    raise ValueError(
-                        f"Track at ({x}, {y}): Has signal(s) - use force=true to extend past signal"
-                    )
 
             if track.segment_id and track.segment_id != segment_id:
                 if force_overwrite:
@@ -517,38 +466,6 @@ class SegmentGeometryManager:
         if not is_adjacent and len(existing_positions) > 0:
             raise ValueError("New positions must be adjacent to existing block")
 
-        # Validate station boundaries - segment cannot cross station boundaries
-        from segment_validation import validate_station_boundary
-
-        all_positions = existing_positions + new_positions
-        valid, error = validate_station_boundary(all_positions, self._n)
-        if not valid:
-            raise ValueError(f"Station boundary violation: {error}")
-
-        # Invalidate signals in force mode - clear their monitored block
-        # This causes them to show an orange warning triangle (signal needs reconfiguration)
-        invalidated_signals = []
-        for signal_id, x, y in signals_to_remove:
-            if signal_id in self._n.signals:
-                signal = self._n.signals[signal_id]
-                # detection_direction can be either a string or an enum, handle both
-                detection_direction = signal.detection_direction
-                if hasattr(detection_direction, "name"):
-                    detection_direction = detection_direction.name
-                invalidated_signals.append(
-                    {
-                        "signal_id": signal_id,
-                        "position": [x, y],
-                        "detection_direction": detection_direction,
-                        "approach_direction": signal.approach_direction,
-                        "previous_block": signal.monitored_block_id,
-                    }
-                )
-                # Clear the monitored block - signal will show warning triangle
-                signal.monitored_block_id = None
-                # Set signal to RED since it's no longer monitoring a block
-                signal.state = SignalState.RED
-
         # Validate continuity
         is_continuous, errors = validate_segment_assignment_continuity(
             existing_positions, new_positions, self._n
@@ -568,9 +485,6 @@ class SegmentGeometryManager:
         for os_id in overwritten_segments:
             if os_id != segment_id and self._n.get_segment(os_id) is not None:
                 self.rebuild_segment_ordered_tiles(os_id)
-
-        # Store invalidated signals info on block for API response
-        block._invalidated_signals = invalidated_signals
 
         return block
 
@@ -650,7 +564,7 @@ class SegmentGeometryManager:
         edit that empties one is bound by the same rule as `delete_segment`,
         and a rejected delete rejects the whole edit ("Atomic commit"). Callers
         that change anything else before they reach the tile removal (erasing
-        track, turning a tile into a switch, moving a tile into a platform) call
+        track, turning a tile into a switch) call
         this first, so a rejection changes nothing. Tiles that belong to no
         segment are ignored. Reads only.
         """
@@ -705,9 +619,8 @@ class SegmentGeometryManager:
         Delete a segment and clear its references from all tracks.
 
         The segment is removed from the block that owned it. If that was the
-        block's last member the block goes too, and the signals monitoring it
-        are disconnected; a block that still has other members survives and
-        keeps its signals, because it is still a block those signals monitor.
+        block's last member the block goes too; a block that still has other
+        members survives.
 
         design_new.md, **Tile** > **Non-empty parent rule**, "Segment deletion
         keeps its block connected": a segment that is a non-terminal member of
@@ -751,18 +664,7 @@ class SegmentGeometryManager:
         block.segments = [s for s in block.segments if s.segment_id != segment_id]
 
         if not block.segments:
-            # Disconnect signals monitoring this block (don't delete them)
-            for signal in self._n.signals.values():
-                if signal.monitored_block_id == block_id:
-                    signal.monitored_block_id = None
             del self._n.blocks[block_id]
-            # A segment has two parents; deleting the block covers one, and this
-            # covers the other (design_new.md "Segment's two-parent fan-out"): a
-            # platform built on the now-deleted block is dropped, and deleted if
-            # that leaves it with no geometry. Without this, emptying a platform
-            # tile's segment through remove_tile_from_segment (the switch-bit
-            # edit in track_service) would leave the platform stored empty.
-            self._n.prune_platforms_for_deleted_block(block_id)
 
         self._n.invalidate_pathfinding_cache()
         return True
@@ -884,7 +786,7 @@ class SegmentGeometryManager:
         Remove a tile from its segment and handle the connectivity check.
 
         This is the core lifecycle method for geometry management. When a tile
-        is removed from a segment (due to station/signal placement, or track
+        is removed from a segment (track
         deletion), this method:
         1. Clears the tile's segment_id
         2. Checks if the remaining segment tiles are still connected
@@ -928,7 +830,6 @@ class SegmentGeometryManager:
         1. Gets remaining tile positions
         2. Finds connected components
         3. If multiple components, replaces the segment with child segments
-        4. Remaps orphaned signals to nearest reachable child block
 
         Args:
             segment_id: Segment ID to check
@@ -946,11 +847,6 @@ class SegmentGeometryManager:
 
         # Case 1: Segment is now empty
         if not remaining_positions:
-            # delete_segment drops the owning block too when this was its last
-            # member, and only then are its signals orphaned.
-            was_last_member = len(block.segments) == 1
-            if was_last_member:
-                self._disconnect_signals_for_block_of_segment(block_id)
             # The edit that emptied it was judged as a whole before any tile
             # left (`check_tiles_removable`), so this delete does not judge the
             # block again: a batch that empties several segments deletes them
@@ -969,7 +865,7 @@ class SegmentGeometryManager:
         # Case 3: Multiple components - split into child segments.
         # A block that groups several segments keeps its identity: the children
         # replace the parent segment inside it, so the operator's power grouping
-        # and the signals monitoring that block both survive.
+        # survives.
         if len(block.segments) > 1:
             new_ids = self._create_child_segments(
                 segment, block, components, install_in_parent_block=True
@@ -982,46 +878,14 @@ class SegmentGeometryManager:
 
         # The parent segment was the block's only member, so the block is
         # replaced by one fresh block per child.
-        orphaned_signals = [
-            signal
-            for signal in self._n.signals.values()
-            if signal.monitored_block_id == block_id
-        ]
-
         new_segment_ids = self._create_child_segments(
             segment, block, components, install_in_parent_block=False
         )
-        # The children are geometry ids; a signal monitors a BLOCK, so resolve
-        # each child to the block that now owns it before remapping.
-        new_block_ids = [
-            owner
-            for owner in (
-                self._n.segment_to_block_id(child) for child in new_segment_ids
-            )
-            if owner is not None
-        ]
-
-        # Delete original block (but don't disconnect signals yet - we'll remap them)
         if block_id in self._n.blocks:
             del self._n.blocks[block_id]
 
-        # Remap orphaned signals to nearest reachable child block
-        self._remap_orphaned_signals(orphaned_signals, new_block_ids)
-
         return [segment_id] + new_segment_ids
 
-    def _disconnect_signals_for_block_of_segment(self, block_id: str) -> None:
-        """
-        Disconnect all signals monitoring the specified block.
-
-        Sets monitored_block_id = None for all signals monitoring this block.
-
-        Args:
-            block_id: Block ID to disconnect signals from
-        """
-        for signal in self._n.signals.values():
-            if signal.monitored_block_id == block_id:
-                signal.monitored_block_id = None
 
     # === Unified Segment Lifecycle Management ===
 
@@ -1045,7 +909,7 @@ class SegmentGeometryManager:
             parent_block: The block that owned it
             components: List of connected components (each is list of positions)
             install_in_parent_block: When True the children join `parent_block`,
-                keeping its grouping and its signals. When False (the parent was
+                keeping its grouping. When False (the parent was
                 the block's only member) each child gets its own fresh block,
                 so occupancy resets to FREE — the parent's occupancy does not
                 transfer cleanly across a split.
@@ -1067,7 +931,7 @@ class SegmentGeometryManager:
         )
 
         # Calculate length per tile from the parent segment
-        # Check if parent has stored length_per_tile_cm (from station split)
+        # Check if parent has stored length_per_tile_cm
         length_per_tile_cm = getattr(parent_block, "_length_per_tile_cm", None)
 
         if length_per_tile_cm is None:
@@ -1114,13 +978,10 @@ class SegmentGeometryManager:
             if install_in_parent_block:
                 parent_block.segments.append(child_segment)
             else:
-                # v1: Block.state is a derived @property; do not pass it to the
-                # constructor. occupied_by defaults to None which yields FREE.
                 # `child_name` is derived from the parent SEGMENT's name, so it
                 # names the child segment above; the child block stays unnamed.
                 self._n.blocks[child_block_id] = Block(
                     block_id=child_block_id,
-                    occupied_by=None,
                     segments=[child_segment],
                 )
             self._n._ensure_managers()
@@ -1279,68 +1140,7 @@ class SegmentGeometryManager:
 
         return neighbors
 
-    def _remap_orphaned_signals(
-        self, orphaned_signals: List[Signal], new_block_ids: List[str]
-    ) -> None:
-        """Reassign signals from a split block to the closest of the new
-        child blocks.
 
-        Distance is measured in tile hops, ignoring switch state. A signal
-        that can't reach any of the new blocks has its ``monitored_block_id``
-        cleared.
-        """
-        for signal in orphaned_signals:
-            best_block: Optional[str] = None
-            best_dist: Optional[int] = None
-            for block_id in new_block_ids:
-                dist = self._tile_hops_to_block(tuple(signal.position), block_id)
-                if dist is None:
-                    continue
-                if best_dist is None or dist < best_dist:
-                    best_dist = dist
-                    best_block = block_id
-
-            signal.monitored_block_id = best_block
-
-            if signal.signal_type == SignalType.BLOCK:
-                if signal.monitored_block_id:
-                    signal.state = self._n._calculate_signal_state(signal)
-                else:
-                    signal.state = SignalState.RED
-
-    def _tile_hops_to_block(
-        self, start: Tuple[int, int], block_id: str
-    ) -> Optional[int]:
-        """Fewest track-connected tile hops from `start` to any tile of
-        `block_id`, ignoring switch positions; None when none connects."""
-        from collections import deque
-
-        targets = set(self._n.get_block_positions(block_id))
-        if not targets:
-            return None
-        if start in targets:
-            return 0
-        visited = {start}
-        queue = deque([(start, 0)])
-        while queue:
-            (cx, cy), dist = queue.popleft()
-            track = self._n.get_track(cx, cy)
-            if not track:
-                continue
-            for edge in track.edges:
-                neighbor = self._n.get_neighbor(cx, cy, edge)
-                if not neighbor:
-                    continue
-                npos = (neighbor.x, neighbor.y)
-                if npos in visited:
-                    continue
-                if self._n.get_connection_edges((cx, cy), npos) is None:
-                    continue
-                if npos in targets:
-                    return dist + 1
-                visited.add(npos)
-                queue.append((npos, dist + 1))
-        return None
 
     # === Centralized Switch Management ===
 

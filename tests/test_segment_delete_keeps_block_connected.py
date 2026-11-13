@@ -36,7 +36,7 @@ from app_factory import create_app
 from app_state import AppState
 from network import RailwayNetwork
 from persistence import PersistenceManager
-from services import NotFoundError, ValidationError, platform_service, segment_service
+from services import NotFoundError, ValidationError, segment_service
 from services import track_service
 from simulation import SimulationController
 from track import Tile
@@ -67,7 +67,7 @@ def _snapshot(net: RailwayNetwork):
     return (
         {bid: list(block.segment_ids) for bid, block in net.blocks.items()},
         {
-            pos: (tile.segment_id, tile.track_bits, tuple(tile.signal_ids))
+            pos: (tile.segment_id, tile.track_bits)
             for pos, tile in net.tracks.items()
         },
     )
@@ -438,55 +438,3 @@ def _grouped_line_with_platform_segment() -> RailwayNetwork:
         "G", [platform_segment, "X", "Y"]
     )
     return net
-
-
-class TestPlatforms:
-    def test_building_a_platform_on_the_middle_segments_last_tile_is_rejected(
-        self, net
-    ):
-        before = _snapshot(net)
-
-        with pytest.raises(ValueError, match="middle of block G"):
-            net.add_platform(2, 0, platform_id="PLT", name="P")
-
-        assert "PLT" not in net.platforms
-        assert _snapshot(net) == before
-
-    def test_extending_a_platform_over_the_middle_segments_last_tile_is_rejected(
-        self,
-    ):
-        net = _grouped_line_with_platform_segment()
-        before = _snapshot(net)
-
-        with pytest.raises(ValueError, match="middle of block G"):
-            net.extend_platform("PLT", [(1, 0)])
-
-        assert net.platforms["PLT"].positions == [(0, 0)]
-        assert _snapshot(net) == before
-
-    def test_the_platform_service_reports_it_as_a_validation_error(self):
-        app_state = _app_state(_grouped_line_with_platform_segment())
-
-        with pytest.raises(ValidationError, match="middle of block G"):
-            platform_service.extend_platform(app_state, "PLT", positions=[[1, 0]])
-
-    def test_taking_the_last_tile_out_of_a_middle_platform_is_rejected(self):
-        net = RailwayNetwork()
-        for x in range(5):
-            net.add_track(Tile(x=x, y=0, track_bits=2))
-        net.create_segment_with_tracks("A", [(0, 0), (1, 0)], name="A")
-        net.create_segment_with_tracks("C", [(3, 0), (4, 0)], name="C")
-        net.add_platform(2, 0, platform_id="PLT", name="P")
-        platform_segment = net.tracks[(2, 0)].segment_id
-        net._get_block_grouping_manager().group_into_block(
-            "G", ["A", platform_segment, "C"]
-        )
-        app_state = _app_state(net)
-        before = _snapshot(net)
-
-        with pytest.raises(ValidationError, match="middle of block G"):
-            platform_service.remove_tile(app_state, "PLT", x=2, y=0)
-
-        assert "PLT" in net.platforms
-        assert net.platforms["PLT"].positions == [(2, 0)]
-        assert _snapshot(net) == before

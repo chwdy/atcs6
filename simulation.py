@@ -108,13 +108,9 @@ class SimulationController(SwitchOutputOwner):
         # the active output interface in `_bind_interfaces`.
         self._watchdog_trip_record: Optional[WatchdogTripRecord] = None
 
-        # The block and switch managers, and the narrow callbacks they need.
+        # The switch manager, and the narrow callbacks it needs.
         network._ensure_managers()
-        self.block_manager = network.block_manager
         self.switch_manager = network.switch_manager
-        self.block_manager.notification_emitter = make_notification_emitter(
-            self.notification_center, "BlockManager"
-        )
         self.switch_manager.notification_emitter = make_notification_emitter(
             self.notification_center, "SwitchManager"
         )

@@ -53,11 +53,9 @@ describe('tool registry', () => {
     // Laying/reshaping the layout is frozen in operation mode.
     expect(byId.get('track').availableIn).toEqual(['edit']);
     expect(byId.get('segment').availableIn).toEqual(['edit']);
-    expect(byId.get('platform').availableIn).toEqual(['edit']);
     // Inspect and the read-only viewers stay available while operating.
     expect(byId.get('inspect').availableIn).toContain('sim');
     expect(byId.get('switches-panel').availableIn).toContain('sim');
-    expect(byId.get('stations-panel').availableIn).toContain('sim');
   });
 
   it('the sim plugin contributes path / train / route tools, all available in sim', () => {

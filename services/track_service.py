@@ -3,7 +3,7 @@
 The HTTP layer in ``routes/tracks.py`` parses JSON and shapes responses;
 this layer owns the track-tile mutations:
 
-  * single-tile read / update (bits, dead-ends, switch state, station,
+  * single-tile read / update (bits, dead-ends, switch state,
     block membership) with the orphan-impact pre-check and the auto-
     switch-creation that a bit change implies, and
   * bulk add / delete with the same impact aggregation.
@@ -17,7 +17,6 @@ knowing any status codes:
 
     {"status": "bits_rejected", "message": str}     # invalid bit shape
     {"status": "needs_confirmation", "impact": ...}  # orphans; retry w/ force
-    {"status": "switch_locked", "holder_path", "holder_state"}  # pure editor
     {"status": "switch_change_rejected", "reason": str}  # runtime refused throw
     {"status": "removed"}                            # tile became empty
     {"status": "updated", "track": <Tile>}
@@ -81,7 +80,7 @@ def update_track(
         raise ValidationError("Invalid JSON body")
 
     # Impact pre-check for bit/dead-end changes. If the proposed change would
-    # orphan a switch/signal/platform, surface the impact so the caller can
+    # orphan a switch, surface the impact so the caller can
     # confirm and retry with force=True; the cleanup then happens below.
     if "track_bits" in data or "dead_end_ports" in data:
         new_bits = (
@@ -109,20 +108,13 @@ def update_track(
         impact = state.network.compute_bit_change_impact(
             x, y, new_bits, new_dead_ends
         )
-        has_impact = (
-            impact["removes_switch"] is not None
-            or bool(impact["removes_signals"])
-            or impact["removes_platform"] is not None
-        )
-        if has_impact and not force:
+        if impact["removes_switch"] is not None and not force:
             return {"status": "needs_confirmation", "impact": impact}
 
         # Confirmed (or no orphans). Clean up entities that would otherwise be
         # left dangling. When the tile is being fully removed we leave cleanup
         # to remove_track at the end.
         if not impact["tile_will_be_removed"]:
-            for sid in impact["removes_signals"]:
-                state.network.remove_signal(sid)
             if impact["removes_switch"]:
                 state.network.remove_switch(impact["removes_switch"])
 
@@ -155,40 +147,21 @@ def update_track(
         )
         switch_manager = getattr(state.network, "switch_manager", None)
         if switch_entity is not None and switch_manager is not None:
-            # Runtime is wired: route the alignment change through the canonical
-            # SwitchManager workflow (validate locks/occupancy/protection, write
-            # Switch.position, notify BlockManager, drive the power throw +
-            # continuity check) per design_new.md "Canonical `Switch.position` mutation workflow" — nothing writes
-            # Switch.position directly while a runtime surface exists.
+            # Runtime is wired: route the alignment change through
+            # SwitchManager, which writes Switch.position and drives the throw.
+            # Nothing writes Switch.position directly while a runtime exists.
             success, message = switch_manager.request_position_change(
                 track.switch_id, int(data["switch_state"])
             )
             if not success:
                 return {"status": "switch_change_rejected", "reason": message}
-        elif switch_entity is not None and switch_entity.is_locked():
-            # Pure editor (no runtime surface): keep the lock guard before the
-            # direct geometric write, which design_new.md "Canonical `Switch.position` mutation workflow" exempts.
-            lock_items = list(switch_entity.locks.items())
-            holder_path = lock_items[0][0][0] if lock_items else None
-            holder_state = lock_items[0][1][1] if lock_items else None
-            return {
-                "status": "switch_locked",
-                "holder_path": holder_path,
-                "holder_state": holder_state,
-            }
         else:
             track.switch_state = int(data["switch_state"])
-
-    if "station_name" in data:
-        track.station_name = data["station_name"]
 
     if "segment_id" in data:
         track.segment_id = data["segment_id"]
 
     state.network.propagate_from_tile(x, y)
-
-    if "switch_state" in data or "segment_id" in data:
-        state.network.update_signals_from_blocks()
 
     if track.track_bits == 0 and len(track.dead_end_ports) == 0:
         state.network.remove_track(x, y)
@@ -278,8 +251,6 @@ def add_tracks_bulk(
             if new_bits in FORBIDDEN_TRACK_BITS or is_square_corner_switch(new_bits):
                 continue
             track = Tile(x=tx, y=ty, track_bits=new_bits)
-            if track_data.get("station_name"):
-                track.station_name = track_data["station_name"]
             state.network.add_track(track)
             _ensure_switch_for_tile(state, track, tx, ty)
             added.append(track)
@@ -293,7 +264,7 @@ def delete_tracks_bulk(
     """Delete many track tiles, aggregating the orphan impact first.
 
     Returns ``{"status": "needs_confirmation", "impact": {...}}`` when the
-    deletion would orphan switches/signals/platforms and ``force`` is
+    deletion would orphan switches and ``force`` is
     False, otherwise ``{"status": "done", "deleted": [[x, y], ...]}``.
 
     Raises:
@@ -313,11 +284,7 @@ def delete_tracks_bulk(
     doomed_set = frozenset(doomed)
 
     switches_set: List[str] = []
-    signals_set: List[str] = []
-    platforms_set: List[str] = []
     seen_switches: set = set()
-    seen_signals: set = set()
-    seen_platforms: set = set()
 
     for pos in positions:
         if not isinstance(pos, (list, tuple)) or len(pos) < 2:
@@ -329,25 +296,11 @@ def delete_tracks_bulk(
         if impact["removes_switch"] and impact["removes_switch"] not in seen_switches:
             seen_switches.add(impact["removes_switch"])
             switches_set.append(impact["removes_switch"])
-        for sid in impact["removes_signals"]:
-            if sid not in seen_signals:
-                seen_signals.add(sid)
-                signals_set.append(sid)
-        if (
-            impact["removes_platform"]
-            and impact["removes_platform"] not in seen_platforms
-        ):
-            seen_platforms.add(impact["removes_platform"])
-            platforms_set.append(impact["removes_platform"])
 
-    if (switches_set or signals_set or platforms_set) and not force:
+    if switches_set and not force:
         return {
             "status": "needs_confirmation",
-            "impact": {
-                "removes_switches": switches_set,
-                "removes_signals": signals_set,
-                "removes_platforms": platforms_set,
-            },
+            "impact": {"removes_switches": switches_set},
         }
 
     deleted: List[List[int]] = []

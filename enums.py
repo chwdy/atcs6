@@ -22,7 +22,6 @@ class OperationMode(Enum):
     REAL_HARDWARE = "real_hardware"
 
 
-
 class SwitchState(IntEnum):
     """Switch alignment state.
 
@@ -60,8 +59,6 @@ class TrackType(Enum):
     SCISSORS = "scissors"
     DOUBLE_CROSS = "double_cross"
     FORBIDDEN = "forbidden"
-    SIGNAL = "signal"
-    STATION = "station"
     BLOCK_BOUNDARY = "block_boundary"  # 闭塞分区边界
 
 
@@ -77,22 +74,12 @@ class Direction(Enum):
     WEST = (-1, 0)
 
 
-class SignalState(Enum):
-    """Railway signal states for train control"""
-
-    GREEN = "green"  # 允许通过
-    RED = "red"  # 禁止通过
-    YELLOW = "yellow"  # 注意，准备停车
-    DOUBLE_YELLOW = "double_yellow"  # 下一个信号可能是红灯
-
-
 class BlockState(Enum):
     """Block section occupancy states"""
 
     FREE = "free"  # 空闲
     OCCUPIED = "occupied"  # 占用
     RESERVED = "reserved"  # 预约
-    CAUTION = "caution"  # 警告（列车刚离开，下一区段仍被占用，需减速）
 
 
 class SessionStateValue(Enum):
@@ -114,19 +101,6 @@ class HaltReason(Enum):
     NOT_ACTIVATED = "not_activated"
 
 
-
-
-
-class PlatformSide(Enum):
-    """Which side(s) of the track have platforms"""
-
-    LEFT = "left"
-    RIGHT = "right"
-    BOTH = "both"
-    EITHER = "either"  # For flexible platform selection
-
-
-
 # Direction offsets for coordinate calculations
 DIRECTION_OFFSETS = {
     "N": (0, 1),
@@ -142,7 +116,6 @@ OPPOSITE_DIRECTIONS = {
     "E": "W",
     "W": "E",
 }
-
 
 
 class HandlePosition(Enum):

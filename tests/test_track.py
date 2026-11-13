@@ -21,8 +21,7 @@ from track import (
 from entity_ids import segment_id_for_block
 from network import RailwayNetwork
 from block import Block
-from railway_signal import Signal, SignalType, SignalState
-from enums import BlockState, PlatformSide, Direction
+from enums import BlockState, Direction
 
 
 @pytest.fixture

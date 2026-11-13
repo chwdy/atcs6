@@ -9,18 +9,17 @@ import { BAR_TOOLS, barToolFor, barToolForKey } from './tools';
 const coreTools = (): any[] => Editor.prototype.coreTools.call({});
 
 describe('Editor screen tool bar', () => {
-  it('lists the things you place, in a fixed order with keys 1–8', () => {
+  it('lists the things you place, in a fixed order with keys 1–6', () => {
     expect(BAR_TOOLS.map((t) => t.label)).toEqual([
-      'Select', 'Track', 'Switch', 'Signal', 'Tunnel', 'Platform', 'Segment', 'Block',
+      'Select', 'Track', 'Switch', 'Tunnel', 'Segment', 'Block',
     ]);
-    expect(BAR_TOOLS.map((t) => t.key)).toEqual(['1', '2', '3', '4', '5', '6', '7', '8']);
+    expect(BAR_TOOLS.map((t) => t.key)).toEqual(['1', '2', '3', '4', '5', '6']);
   });
 
   it('shows the variants the plan names for each tool', () => {
     const labels = (id: string) => BAR_TOOLS.find((t) => t.id === id)!.variants.map((v) => v.label);
     expect(labels('select')).toEqual(['Click', 'Box', 'Lasso', 'Brush', 'Trace', 'Entity']);
     expect(labels('track')).toEqual(['Draw', 'Remove']);
-    expect(labels('platform')).toEqual(['New', 'Extend', 'Remove']);
     expect(labels('segment')).toEqual(['New', 'Extend', 'Remove']);
     expect(labels('block')).toEqual(['Assign']);
   });
@@ -49,7 +48,7 @@ describe('Editor screen tool bar', () => {
 
   it('maps number keys to bar tools', () => {
     expect(barToolForKey('1')?.id).toBe('select');
-    expect(barToolForKey('8')?.id).toBe('block');
-    expect(barToolForKey('9')).toBeNull();
+    expect(barToolForKey('6')?.id).toBe('block');
+    expect(barToolForKey('7')).toBeNull();
   });
 });

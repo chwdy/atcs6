@@ -1,64 +1,13 @@
 """
-Segment validation module for the railway signaling system.
+Segment validation: which tiles a segment may hold.
 
 Validates that track geometry — which tiles a `Segment` may hold, and that
-they form one continuous run — is created and modified correctly according to
-railway signaling rules. Blocks group validated segments; that grouping is
-checked by `BlockGroupingManager`.
+they form one continuous run — is created and modified correctly. Blocks group validated segments; that
+grouping is checked by `BlockGroupingManager`.
 """
 
 from typing import Tuple, List, Optional, Set
 from collections import deque
-
-
-def validate_station_boundary(
-    path: List[Tuple[int, int]], network
-) -> Tuple[bool, Optional[str]]:
-    """
-    Validate that a block path respects station boundaries.
-
-    Rules:
-    1. A block cannot span station boundaries (partially in, partially out)
-    2. A block can be fully inside a station
-    3. A block can be fully outside all stations
-
-    Args:
-        path: List of (x, y) tile positions
-        network: RailwayNetwork instance for lookups
-
-    Returns:
-        Tuple of (is_valid, error_message)
-    """
-    if not path:
-        return True, None
-
-    # Collect station_ids for all tiles in the path
-    station_ids = set()
-    for x, y in path:
-        track = network.get_track(x, y)
-        if track and track.station_id:
-            station_ids.add(track.station_id)
-
-    # If no stations involved, block is outside all stations - OK
-    if len(station_ids) == 0:
-        return True, None
-
-    # If exactly one station, all tiles must belong to that station
-    if len(station_ids) == 1:
-        station_id = list(station_ids)[0]
-        # Verify ALL tiles belong to this station
-        for x, y in path:
-            track = network.get_track(x, y)
-            if not track or track.station_id != station_id:
-                return (
-                    False,
-                    f"Block cannot cross station boundary - tile ({x}, {y}) is outside station {station_id}",
-                )
-        return True, None
-
-    # Multiple stations - this is not allowed
-    station_list = ", ".join(sorted(station_ids))
-    return False, f"Block cannot span multiple stations: {station_list}"
 
 
 def is_crossing(track_bits: int) -> bool:
@@ -112,12 +61,6 @@ def validate_track_for_segment(track, network) -> Tuple[bool, str]:
     2. Track cannot be a switch (switches are block boundaries)
     3. Track cannot be a disallowed crossing (diagonal crossings isolate paths;
        the orthogonal NS+EW crossing is allowed - see crossing_disallowed_in_segment)
-
-    Note: This function does NOT validate station boundaries. Station boundary
-    validation is performed separately by validate_station_boundary(), which
-    ensures blocks are fully inside OR fully outside stations.
-
-    Stations are allowed in blocks - a block can exist fully within a station.
 
     Args:
         track: Tile to validate

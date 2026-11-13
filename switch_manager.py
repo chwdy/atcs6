@@ -1,22 +1,10 @@
 """
-Switch State Manager - single source of truth for switch lock and physical
-occupancy events.
+Switch manager - the one entry point for changing a switch's position.
 
-`SwitchManager` is the database-style lock manager for switch resources and
-the single serialization point for atomic multi-switch lock acquisition,
-release, and physical-entry handling. It mirrors `BlockManager`'s contract:
-
-- Path-driven multi-switch lock acquire is atomic / all-or-nothing.
-- Path-driven release is keyed by `path_id` and walks the registry once.
-- Physical-entry handling owns the flank-lock-to-train-protection conversion
-  and the fatal-conflict reporting path that earlier lived inline on
-  `PathDispatcher`.
-- Position-change requests route through `SwitchManager.request_position_change(...)`,
-  which calls `Switch.apply_position_change(...)` for the data update and
-  then notifies `BlockManager.on_switch_position_changed(...)`. Callers must
-  not invoke `Switch.apply_position_change(...)` directly; the manager is
-  the single entry point so the cross-resource notification is never
-  skipped.
+Position-change requests route through `SwitchManager.request_position_change(...)`,
+which calls `Switch.apply_position_change(...)` for the data update, drives
+the throw, and emits the event. Callers must not invoke
+`Switch.apply_position_change(...)` directly.
 """
 
 from typing import Callable, Dict, List, Optional, TYPE_CHECKING
@@ -28,27 +16,12 @@ if TYPE_CHECKING:
     from switch import Switch
 
 
-# ============================================================================
-# Canonical value types
-# ============================================================================
-
-
-
-
-# ============================================================================
-# Manager
-# ============================================================================
-
-
 class SwitchManager:
-    """Centralized switch lock manager.
+    """The one entry point for switch position changes.
 
-    Owns the dispatcher-facing API for path-level switch lock acquire/release,
-    tail-vacate, clean physical entry, and switch-position-change requests.
-    Mirrors `BlockManager`. The underlying `Switch` entity stays the canonical
-    owner of `position` writes via its data-only helper
-    `Switch.apply_position_change(...)`; the manager is the single caller that
-    pairs that write with the cross-resource notification to `BlockManager`.
+    The `Switch` entity stays the owner of `position` writes via its data-only
+    helper `Switch.apply_position_change(...)`; the manager is the single
+    caller that pairs that write with the throw and the event.
     """
 
     def __init__(
@@ -57,33 +30,24 @@ class SwitchManager:
         network: Optional["RailwayNetwork"] = None,
         *,
         notification_emitter: Optional[Callable] = None,
-        fatal_conflict_reporter: Optional[Callable] = None,
         environment_active_getter: Optional[Callable[[], bool]] = None,
-        active_path_getter: Optional[Callable[[str], object]] = None,
     ):
-        """Per design_new.md "Switch-manager model", the manager holds the
-        network plus narrow injected callbacks only; it never receives or looks
-        up `SimulationController`.
+        """The manager holds the network plus narrow injected callbacks only;
+        it never receives or looks up `SimulationController`.
 
         Args:
             switches: fallback switch registry, used when ``network`` is None.
             network: optional `RailwayNetwork`; when wired the manager reads
-                ``network.switches``, ``network.block_manager``, and
+                ``network.switches`` and
                 ``network.switch_power_controller`` from it.
             notification_emitter: narrow
                 `(operation, kind, message, entities, error=None, payload=None)`
                 callback routing a manager-owned event into `NotificationCenter`
                 (runtime-wired with source "SwitchManager"); `None` skips emit.
-            fatal_conflict_reporter: callback taking one
-                `FatalPhysicalEntryConflict`, runtime-wired to
-                `SimulationController.enter_failed_runtime(...)`.
             environment_active_getter: callback returning whether an operating
                 environment is active; gates the operating throw in
                 `request_position_change(...)`. `None` means "not gated"
                 (the pre-runtime / editor default lets the throw proceed).
-            active_path_getter: callback taking a `train_id` and returning that
-                train's active `Path` (or `None`), used only to fill a fatal
-                switch-conflict payload's `incoming_path_id`.
 
         A throw that fails to reach the device is reported by
         `SwitchPowerController`, not here (design_new.md "Power", An unissued
@@ -92,9 +56,7 @@ class SwitchManager:
         self.switches = switches
         self.network = network
         self.notification_emitter = notification_emitter
-        self.fatal_conflict_reporter = fatal_conflict_reporter
         self.environment_active_getter = environment_active_getter
-        self.active_path_getter = active_path_getter
 
     # ------------------------------------------------------------------
     # Registry accessor (prefer network over fallback dict)
@@ -107,25 +69,6 @@ class SwitchManager:
         return self.switches
 
     # ------------------------------------------------------------------
-    # Path-level multi-switch acquire (all-or-nothing)
-    # ------------------------------------------------------------------
-
-
-
-
-    # ------------------------------------------------------------------
-    # Path-level release
-    # ------------------------------------------------------------------
-
-
-
-
-    # ------------------------------------------------------------------
-    # Tail-vacate
-    # ------------------------------------------------------------------
-
-
-    # ------------------------------------------------------------------
     # Switch position change request (admin / API / UI)
     # ------------------------------------------------------------------
 
@@ -135,8 +78,7 @@ class SwitchManager:
         """Request a position change on `switch_id`.
 
         Validates and applies the change via `Switch.apply_position_change(...)`,
-        then notifies `BlockManager.on_switch_position_changed(switch_id)` so
-        the block reachability graph stays in sync. Returns the
+        then drives the throw. Returns the
         `(success, message)` tuple from the data-layer helper.
 
         `manual_override` (default False) is the operator-override flag per
@@ -180,7 +122,7 @@ class SwitchManager:
         output the commissioning session has taken.
 
         So this is that same model write without either half — the position
-        applies and the block reachability graph follows — for a coil the
+        applies — for a coil the
         caller has already pulsed. It commands nothing: no path through here
         reaches a motor, which is why it may run while the outputs belong to
         commissioning. A bench throw is an operator alignment, so it carries
@@ -207,8 +149,8 @@ class SwitchManager:
         drive: bool,
         operation: str,
     ) -> tuple[bool, str]:
-        """Apply one commanded alignment: the position, the block reachability
-        graph, the coil when this caller owns it, and the event.
+        """Apply one commanded alignment: the position, the coil when this
+        caller owns it, and the event.
 
         Shared by the operating throw and the commissioning bench throw, which
         differ only in who drives the coil. Everything else an alignment means
@@ -268,8 +210,7 @@ class SwitchManager:
 
     def _resolve_switch_power_controller(self):
         """Locate the `SwitchPowerController` live off the owning
-        `RailwayNetwork`, the same way this manager reaches `BlockManager`.
-        Reading ``network.switch_power_controller`` live (not a captured
+        `RailwayNetwork`. Reading ``network.switch_power_controller`` live (not a captured
         handle) is required because the runtime swaps it on every interface
         bind/release. Returns None in editor/unit setups that never wired one
         (the throw is then a no-op).
@@ -303,7 +244,7 @@ class SwitchManager:
         throw is issued. That is what aligns the physical layout to the model on
         the first command that names each switch.
 
-        `force` drops even that skip, and lock acquisition uses it. Having
+        `force` drops even that skip, and activation uses it. Having
         driven a coil once is not evidence the points seated: a solenoid can
         stall, bounce back, or be moved by hand afterwards, and the motor
         reports nothing either way. A train is about to run over these points,
@@ -332,27 +273,10 @@ class SwitchManager:
                 return None                # the motor was last driven there
         # `SwitchPowerController.set_throw` reports an unissued throw itself
         # (the warning and the hardware-failure latch); this manager only reads
-        # the False return and lets its caller roll back the software locks.
+        # the False return and passes it to its caller.
         if not controller.set_throw(switch.switch_id, int(target_state)):
             return "throw not issued (no hardware binding or output failure)"
         return None
-
-
-    # ------------------------------------------------------------------
-    # Clean physical entry + flank conversion + fatal-conflict reporting
-    # ------------------------------------------------------------------
-
-
-    @staticmethod
-    def _unclaimed(switch: "Switch", train_id: str) -> bool:
-        """Whether nothing claims `switch` against `train_id`: no path holds any
-        lock on it, and no other train's protection covers it."""
-        if switch.locks:
-            return False
-        return all(
-            claim_train_id == train_id
-            for claim_train_id, _source, _state in switch.train_protection_claims
-        )
 
     def throw_all_to_layout(self) -> List[str]:
         """Throw every switch once to the position the layout shows, at the

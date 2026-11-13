@@ -43,14 +43,6 @@ def register(app, state: AppState) -> None:
             return jsonify(
                 {"requires_confirmation": True, "impact": result["impact"]}
             ), 409
-        if status == "switch_locked":
-            return jsonify(
-                {
-                    "error": f"Switch is locked by path {result['holder_path']}",
-                    "locked_by_path": result["holder_path"],
-                    "locked_state": result["holder_state"],
-                }
-            ), 409
         if status == "switch_change_rejected":
             return jsonify({"error": result["reason"]}), 409
         if status == "removed":

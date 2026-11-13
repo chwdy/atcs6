@@ -13,10 +13,8 @@ mutations:
   * Tile membership — add / remove tiles, with the edge-tile and continuity
     validation that protects segment geometry.
   * ``can_extend`` — the pure "may this tile join the segment?" predicate.
-  * Whole-segment delete — with the downward platform cascade
-    (design_new.md, "Non-empty parent rule"): a segment delete that empties its owning block drops
-    that block from any owning `Platform.block_assignments`, deleting a platform
-    left with no blocks.
+  * Whole-segment delete — a segment delete that empties its owning block
+    deletes that block too.
 
 Lookup raises ``NotFoundError``; bad input raises ``ValidationError``.
 ``update_segment`` takes ``state.simulation_lock`` so the per-tick phase loop
@@ -165,13 +163,9 @@ def extend_segment(
     segment_id: str,
     *,
     positions: List[Any],
-    force: bool = False,
     force_overwrite: bool = False,
 ):
-    """Extend a segment with new tile positions.
-
-    Returns the owning block; ``block._invalidated_signals`` (set by the network
-    when signals were cleared) is left in place for the caller to surface.
+    """Extend a segment with new tile positions. Returns the owning block.
 
     Raises:
         NotFoundError when no segment has that id.
@@ -183,7 +177,6 @@ def extend_segment(
         return state.network.extend_segment(
             segment_id,
             tuple_positions,
-            force=force,
             force_overwrite=force_overwrite,
         )
     except ValueError as exc:
@@ -248,8 +241,7 @@ def remove_tracks_from_segment(
 
     A tile may only be removed if it is an edge tile and its removal keeps the
     remaining segment continuous; emptying the segment deletes it (and, when
-    that was its owning block's last member, the block too — with the downward
-    platform cascade). Returns a result dict (``removed`` / ``errors`` /
+    that was its owning block's last member, the block too). Returns a result dict (``removed`` / ``errors`` /
     ``segment_deleted``).
 
     Raises:
@@ -265,8 +257,7 @@ def remove_tracks_from_segment(
     current_positions = state.network.get_segment_positions(segment_id)
     position_set = set((x, y) for x, y in current_positions)
 
-    # Owning block captured before any delete so the platform cascade can tell
-    # whether the block disappeared when the segment emptied.
+    # Owning block captured before any delete; the result reports it.
     owning_block_id = state.network.segment_to_block_id(segment_id)
 
     for pos in positions:
@@ -325,8 +316,7 @@ def remove_tracks_from_segment(
 
     # Auto-delete the segment when it has no tiles left. This deletes the
     # segment record and, when it was the owning block's last member, that
-    # block too; the platform cascade below then tears down a platform the
-    # block's disappearance left with no assigned blocks.
+    # block too.
     segment_deleted = False
     if len(state.network.get_segment_tracks(segment_id)) == 0:
         try:
@@ -379,13 +369,6 @@ def can_extend_segment(
         return {
             "can_extend": False,
             "reason": "Cannot add switch to segment - switches are block boundaries",
-        }
-
-    if track.signal_ids:
-        return {
-            "can_extend": False,
-            "reason": "Tile has signal(s) - use force=true to extend past signal",
-            "requires_force": True,
         }
 
     if track.segment_id and track.segment_id != segment_id:
@@ -448,8 +431,8 @@ def require_tiles_removable(state: AppState, positions: List[Any]) -> None:
     segment in the middle of a multi-segment block stays (design_new.md,
     "Segment deletion keeps its block connected"), and the rejection rejects
     the whole edit ("Atomic commit"). Callers that change anything else before
-    they reach the tile removal (erasing track, turning a tile into a switch,
-    building a platform) call this first, so a rejection changes nothing.
+    they reach the tile removal (erasing track, turning a tile into a switch)
+    call this first, so a rejection changes nothing.
 
     Raises:
         ValidationError when the edit would empty a segment in the middle of
@@ -464,11 +447,8 @@ def require_tiles_removable(state: AppState, positions: List[Any]) -> None:
 def delete_segment(state: AppState, segment_id: str) -> bool:
     """Delete a segment's geometry and clear its tile references. Returns True.
 
-    Removing a segment fans out per the Non-empty parent rule
-    (design_new.md, "Non-empty parent rule"): the segment leaves its owning `Block`, and if that was
-    the block's last member the block is deleted too. When the block disappears,
-    the downward platform cascade (design_new.md, "Non-empty parent rule") drops it from any owning
-    `Platform.block_assignments` and deletes a platform left with no blocks.
+    The segment leaves its owning `Block`, and if that was the block's last
+    member the block is deleted too.
 
     A segment in the middle of a multi-segment block is not deleted, because
     the block would be left as two pieces (design_new.md, "Segment deletion
@@ -488,22 +468,4 @@ def delete_segment(state: AppState, segment_id: str) -> bool:
     except ValueError as exc:
         raise ValidationError(str(exc)) from exc
 
-    # Only cascade when the owning block itself disappeared (segment was its
-    # last member). A block that still groups other members keeps its identity
-    # and its platform assignments.
-    if owning_block_id not in state.network.blocks:
-        _platform_cascade_for_deleted_block(state, owning_block_id)
     return True
-
-
-def _platform_cascade_for_deleted_block(state: AppState, block_id: str) -> None:
-    """Downward platform cascade for a block that no longer exists.
-
-    Drops `block_id` from any owning `Platform.block_assignments`; if that
-    leaves a platform with no assigned blocks, deletes the platform too (which
-    cascades to an emptied logical `Station` group). The logic is the network's
-    `prune_platforms_for_deleted_block`, the one canonical home for the segment
-    fan-out's platform half, shared with the manager-level `delete_segment` so
-    every path that deletes a block prunes its platforms the same way.
-    """
-    state.network.prune_platforms_for_deleted_block(block_id)

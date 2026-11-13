@@ -34,17 +34,17 @@ describe('Editor tool bar', () => {
     root.remove();
   });
 
-  it('shows the eight tools with their number keys, and marks the one in hand', () => {
+  it('shows the six tools with their number keys, and marks the one in hand', () => {
     const tools = [...root.querySelectorAll('.ned-tool')];
     expect(tools.map((b) => b.textContent)).toEqual([
-      '1Select', '2Track', '3Switch', '4Signal', '5Tunnel', '6Platform', '7Segment', '8Block',
+      '1Select', '2Track', '3Switch', '4Tunnel', '5Segment', '6Block',
     ]);
     expect(root.querySelector('.ned-tool.active')!.textContent).toBe('1Select');
   });
 
   it('picks a tool’s first variant, and leaves the tool in hand alone', () => {
-    buttonNamed(root, 'Platform').click();
-    expect(actions.pick).toHaveBeenCalledWith('platform');
+    buttonNamed(root, 'Segment').click();
+    expect(actions.pick).toHaveBeenCalledWith('segment');
     show('box-select');
     buttonNamed(root, 'Select').click();
     expect(actions.pick).toHaveBeenCalledTimes(1);
@@ -60,9 +60,9 @@ describe('Editor tool bar', () => {
   });
 
   it('gives a one-action tool a plain hint instead of variant buttons', () => {
-    show('signal');
+    show('tunnel');
     expect(root.querySelector('.ned-variants')).toBeNull();
-    expect(root.querySelector('.ned-hint')!.textContent).toContain('place a signal');
+    expect(root.querySelector('.ned-hint')!.textContent).toContain('join them as a tunnel');
   });
 
   it('offers the block list next to Assign', () => {
@@ -86,7 +86,7 @@ describe('Editor screen number keys', () => {
   it('picks the bar tool', () => {
     activeToolId.value = 'inspect';
     const actions = { pick: vi.fn(), showBlockList: vi.fn() };
-    const { e } = press('7');
+    const { e } = press('5');
     onEditorScreenKey(e, actions);
     expect(actions.pick).toHaveBeenCalledWith('segment');
     expect(e.defaultPrevented).toBe(true);

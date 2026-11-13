@@ -792,17 +792,13 @@ export class Editor {
       },
       {
         id: 'entity-select', label: 'Entity', icon: 'ti ti-click',
-        title: 'Entity Select (click a tile, then pick a block / platform / station — or all of them — to add its tracks to the selection. Space clears, Delete removes tracks)',
+        title: 'Entity Select (click a tile, then pick a block to add its tracks to the selection. Space clears, Delete removes tracks)',
         group: 'Selection', availableIn: ['edit'],
         kind: { type: 'mode', factory: () => this.selectModesHandler._buildEntitySelectMode() },
       },
 
       {
         id: 'track', label: 'Track', icon: 'ti ti-track', title: 'Track',
-        group: 'Network', availableIn: ['edit'], kind: { type: 'tool' },
-      },
-      {
-        id: 'signal', label: 'Signal', icon: 'ti ti-traffic-lights', title: 'Signal',
         group: 'Network', availableIn: ['edit'], kind: { type: 'tool' },
       },
       {
@@ -815,28 +811,6 @@ export class Editor {
         title: 'List All Switches',
         group: 'Network', availableIn: ['edit', 'sim'],
         kind: { type: 'action', run: () => this.showSwitchesPanel() },
-      },
-
-      {
-        id: 'platform', label: 'New', icon: 'ti ti-plus',
-        title: 'Place a Platform (click one tile, or drag across several to span multiple tiles)',
-        group: 'Platform', availableIn: ['edit'], kind: { type: 'tool' },
-      },
-      {
-        id: 'extend-platform', label: 'Extend', icon: 'ti ti-arrows-horizontal',
-        title: 'Extend Existing Platform',
-        group: 'Platform', availableIn: ['edit'], kind: { type: 'tool' },
-      },
-      {
-        id: 'remove-platform-tile', label: 'Remove', icon: 'ti ti-minus',
-        title: 'Remove Platform Tile',
-        group: 'Platform', availableIn: ['edit'], kind: { type: 'tool' },
-      },
-      {
-        id: 'stations-panel', label: 'Stations', icon: 'ti ti-home',
-        title: 'Logical Station Groups',
-        group: 'Platform', availableIn: ['edit', 'sim'],
-        kind: { type: 'action', run: () => this.showStationsPanel() },
       },
 
       {

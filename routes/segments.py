@@ -131,11 +131,7 @@ def register(app, state: AppState) -> None:
 
     @app.route("/api/segments/<segment_id>/extend", methods=["POST"])
     def extend_segment_endpoint(segment_id: str):
-        """Extend a segment with new track positions.
-
-        Response includes 'invalidated_signals' when force=true cleared any
-        signals in the path.
-        """
+        """Extend a segment with new track positions."""
         data = request.json or {}
         positions = data.get("positions", [])
         if not positions:
@@ -145,7 +141,6 @@ def register(app, state: AppState) -> None:
                 state,
                 segment_id,
                 positions=positions,
-                force=data.get("force", False),
                 force_overwrite=data.get("force_overwrite", False),
             )
         except NotFoundError:
@@ -154,11 +149,7 @@ def register(app, state: AppState) -> None:
             return jsonify({"error": str(exc)}), 400
 
         segment = state.network.get_segment(segment_id)
-        response = _serialize(segment)
-        if hasattr(block, "_invalidated_signals") and block._invalidated_signals:
-            response["invalidated_signals"] = block._invalidated_signals
-            del block._invalidated_signals
-        return jsonify(response)
+        return jsonify(_serialize(segment))
 
     @app.route("/api/segments/<segment_id>/tracks", methods=["POST"])
     def add_tracks_to_segment(segment_id: str):

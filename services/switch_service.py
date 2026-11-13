@@ -3,14 +3,8 @@
 CRUD over ``Switch`` records plus the two operations that must coordinate
 more than one collaborator:
 
-  * Toggling the ``disabled`` availability flag runs the admin-reject
-    preconditions (occupancy / future locks / train-protection claims)
-    and, when the value actually changes, notifies ``BlockManager`` that
-    connectivity changed -- per design_new.md "Availability flag REST API
-    surface".
   * Changing a switch's commanded position routes through
-    ``SwitchManager`` (so the BlockManager notification stays paired with
-    the position write) and emits a ``command_result`` event on
+    ``SwitchManager`` and emits a ``command_result`` event on
     ``NotificationCenter`` -- so HTTP and non-HTTP callers alike observe
     the outcome on the event stream rather than a synchronous return.
 
@@ -97,22 +91,18 @@ def update_switch(
     """Apply an update to a switch's config and/or availability flags.
 
     ``disabled`` and ``manual`` are handled here; any remaining fields are
-    forwarded to ``RailwayNetwork.update_switch``. Enabling ``disabled``
-    runs the admin-reject preconditions and, when the flag's value really
-    changes, fires ``BlockManager.on_switch_position_changed``.
+    forwarded to ``RailwayNetwork.update_switch``.
 
     Raises:
         NotFoundError when no switch has that id.
-        ConflictError when ``disabled`` is being set True while the switch
-            is occupied, holds future locks, or holds train-protection
-            claims.
+        ConflictError when a physical setting changes while Live.
     """
     switch = state.network.get_switch(switch_id)
     if switch is None:
         raise NotFoundError("Switch not found")
 
     # Pull the availability flags out before forwarding the rest; we own
-    # the admin-reject + BlockManager notify for those two here.
+    # those two here.
     data = dict(data or {})
     physical_settings = {
         name: data.pop(name)
@@ -127,15 +117,7 @@ def update_switch(
     manual_change = data.pop("manual", None)
 
     if disabled_change is not None:
-        new_disabled = bool(disabled_change)
-        if new_disabled and not switch.disabled:
-            if switch.occupied_by is not None:
-                raise ConflictError(f"Switch is occupied by {switch.occupied_by}")
-            if switch.locks:
-                raise ConflictError("Switch has live future locks")
-            if switch.train_protection_claims:
-                raise ConflictError("Switch has live train-protection claims")
-        switch.disabled = new_disabled
+        switch.disabled = bool(disabled_change)
 
     if manual_change is not None:
         switch.manual = bool(manual_change)
@@ -182,8 +164,7 @@ def request_position_change(
 ) -> str:
     """Command a switch to MAIN (0) or DIVERGE (1).
 
-    Routes through ``SwitchManager`` so the BlockManager notification is
-    paired with the position write, then emits a ``command_result`` event
+    Routes through ``SwitchManager``, then emits a ``command_result`` event
     on ``NotificationCenter``. The command outcome surfaces on that event
     stream; this function returns only the (possibly generated) command id
     the caller can correlate against.

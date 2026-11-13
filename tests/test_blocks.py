@@ -15,11 +15,6 @@ from segment_validation import (
     validate_track_for_segment,
     get_adjacent_positions,
 )
-from signal_validation import (
-    can_place_signal,
-    get_valid_directions,
-    FORBIDDEN_SIGNAL_BITS,
-)
 from entity_ids import segment_id_for_block
 from tests.segment_test_helpers import make_segment_block
 
@@ -122,38 +117,6 @@ class TestDisabledBlock:
         assert restored.disabled == True
 
 
-class TestBlockExtension:
-    """Tests for block extension functionality."""
-
-    def test_extend_block_with_force_removes_signal_monitoring(self):
-        network = RailwayNetwork()
-        for i in range(4):
-            network.add_track(Tile(0, i, TRACK_NS))
-        make_segment_block(network, "BLOCK_A")
-        network.assign_track_to_segment(0, 0, segment_id_for_block("BLOCK_A"))
-        network.assign_track_to_segment(0, 1, segment_id_for_block("BLOCK_A"))
-        signal = network.add_signal(0, 2, "N")
-        signal.monitored_block_id = "BLOCK_A"
-
-        block = network.extend_segment(segment_id_for_block("BLOCK_A"), [(0, 2)], force=True)
-        positions = network.get_block_positions("BLOCK_A")
-        assert (0, 2) in positions
-        assert len(positions) == 3
-        signal_after = network.signals.get(signal.signal_id)
-        assert signal_after.monitored_block_id is None
-
-    def test_blocks_can_exist_within_stations(self):
-        network = RailwayNetwork()
-        for x in range(4):
-            network.add_track(Tile(x, 0, TRACK_EW))
-        network.add_station(0, 0, station_id="STA_TEST", name="Test Station")
-        network.extend_station("STA_TEST", [(1, 0), (2, 0), (3, 0)])
-        make_segment_block(network, "PLATFORM_1")
-        network.extend_segment(segment_id_for_block("PLATFORM_1"), [(0, 0), (1, 0)], force_overwrite=True)
-        block = network.get_block("PLATFORM_1")
-        assert block is not None
-        assert len(network.get_block_positions("PLATFORM_1")) == 2
-
 
 class TestBlockValidation:
     """Tests for segment_validation.py functions"""
@@ -202,42 +165,6 @@ class TestBlockValidation:
         assert (6, 5) in adjacent
         assert (5, 6) in adjacent
         assert (4, 5) in adjacent
-
-
-class TestSignalValidation:
-    """Tests for signal_validation.py functions"""
-
-    def test_can_place_signal_on_simple_track(self):
-        result = can_place_signal(TRACK_NS)
-        assert result == True
-        result = can_place_signal(TRACK_EW)
-        assert result == True
-
-    def test_cannot_place_signal_on_switch(self):
-        switch_bits = TRACK_NS | TRACK_NE
-        result = can_place_signal(switch_bits)
-        assert result == False
-
-    def test_cannot_place_signal_on_crossing(self):
-        crossing_bits = TRACK_NS | TRACK_EW
-        result = can_place_signal(crossing_bits)
-        assert result == False
-
-    def test_get_valid_directions(self):
-        directions = get_valid_directions(TRACK_NS)
-        assert "N" in directions
-        assert "S" in directions
-        assert len(directions) == 2
-        directions = get_valid_directions(TRACK_EW)
-        assert "E" in directions
-        assert "W" in directions
-
-    def test_forbidden_signal_bits(self):
-        for forbidden_bits in FORBIDDEN_SIGNAL_BITS:
-            result = can_place_signal(forbidden_bits)
-            assert result == False
-
-
 
 
 

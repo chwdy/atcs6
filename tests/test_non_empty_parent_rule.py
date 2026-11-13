@@ -22,7 +22,7 @@ from app_factory import create_app
 from app_state import AppState
 from network import RailwayNetwork
 from persistence import PersistenceManager
-from services import platform_service, track_service
+from services import track_service
 from simulation import SimulationController
 from track import Tile
 from tests.segment_test_helpers import make_segment_block_with_tracks
@@ -91,117 +91,11 @@ class TestBlockMinimumOneTile:
 # --------------------------------------------------------------------------- #
 
 
-class TestPlatformMinimumOneTile:
-    def test_platform_deleted_when_last_tile_removed(self, app_state):
-        net = app_state.network
-        net.add_platform(0, 0, platform_id="PLT", name="P")
-        assert "PLT" in net.platforms
-        assert "PLT_BLOCK" in net.blocks  # its station block
-
-        result = platform_service.remove_tile(app_state, "PLT", x=0, y=0)
-
-        assert result["status"] == "deleted"
-        assert "PLT" not in net.platforms  # platform auto-deleted
-        assert "PLT_BLOCK" not in net.blocks  # and its now-empty block too
-
-    def test_multi_tile_platform_survives_until_last_tile(self, app_state):
-        net = app_state.network
-        net.add_platform(0, 0, platform_id="PLT", name="P")
-        net.extend_platform("PLT", [(1, 0)])
-        assert len(net.platforms["PLT"].positions) == 2
-
-        first = platform_service.remove_tile(app_state, "PLT", x=1, y=0)
-        assert first["status"] == "removed"
-        assert "PLT" in net.platforms  # still owns (0, 0)
-
-        last = platform_service.remove_tile(app_state, "PLT", x=0, y=0)
-        assert last["status"] == "deleted"
-        assert "PLT" not in net.platforms
-
-    def test_emptying_segment_directly_deletes_platform(self, net):
-        # remove_tile_from_segment is the low-level path an edit takes when a
-        # platform tile stops being track (design_new.md "Auto-delete on
-        # last-child removal" names it explicitly). Emptying the segment must
-        # delete the platform built on it, not just its block.
-        net.add_platform(0, 0, platform_id="PLT", name="P")
-        assert "PLT" in net.platforms and "PLT_BLOCK" in net.blocks
-
-        net.remove_tile_from_segment(0, 0)
-
-        assert "PLT_BLOCK" not in net.blocks  # block auto-deleted
-        assert "PLT" not in net.platforms  # platform auto-deleted, not orphaned
-
-    def test_switch_bit_edit_on_platform_tile_deletes_platform(self, app_state):
-        # Turning a platform tile into a switch removes it from its segment
-        # (track_service.update_track), which empties the platform's only
-        # segment. The platform must be pruned in the same edit.
-        net = app_state.network
-        net.add_platform(0, 0, platform_id="PLT", name="P")
-        assert "PLT" in net.platforms
-
-        result = track_service.update_track(
-            app_state, x=0, y=0, data={"track_bits": 6}  # EW | NE -> switch
-        )
-
-        assert result["status"] == "updated"
-        assert net.get_track(0, 0).is_switch
-        assert "PLT" not in net.platforms  # not left orphaned by the switch edit
-
 
 # --------------------------------------------------------------------------- #
 # Station group >= 1 platform
 # --------------------------------------------------------------------------- #
 
-
-class TestStationGroupMinimumOnePlatform:
-    @staticmethod
-    def _two_platforms(net):
-        net.add_platform(0, 0, platform_id="PLT_A", name="A")
-        net.add_platform(2, 0, platform_id="PLT_B", name="B")
-
-    def test_group_deleted_when_last_platform_removed(self, net):
-        self._two_platforms(net)
-        net.create_station_group(
-            station_id="STA", name="S", platform_ids=["PLT_A", "PLT_B"]
-        )
-
-        assert net.remove_platform_from_station_group("STA", "PLT_B") is True
-        assert "STA" in net.station_groups  # still owns PLT_A
-        assert net.station_groups["STA"].platform_ids == ["PLT_A"]
-
-        assert net.remove_platform_from_station_group("STA", "PLT_A") is True
-        assert "STA" not in net.station_groups  # last platform gone -> deleted
-
-    def test_group_deleted_when_member_platform_deleted(self, net):
-        net.add_platform(0, 0, platform_id="PLT_A", name="A")
-        net.create_station_group(station_id="STA", name="S", platform_ids=["PLT_A"])
-
-        net.delete_platform("PLT_A")  # cascades up through delete_station
-
-        assert "STA" not in net.station_groups
-
-    def test_group_survives_when_one_of_many_platforms_deleted(self, net):
-        self._two_platforms(net)
-        net.create_station_group(
-            station_id="STA", name="S", platform_ids=["PLT_A", "PLT_B"]
-        )
-
-        net.delete_platform("PLT_A")
-
-        assert "STA" in net.station_groups
-        assert net.station_groups["STA"].platform_ids == ["PLT_B"]
-
-    def test_create_rejects_empty_group(self, net):
-        self._two_platforms(net)  # platforms exist, but we group none of them
-        with pytest.raises(ValueError):
-            net.create_station_group(station_id="STA", name="S", platform_ids=[])
-        with pytest.raises(ValueError):
-            net.create_station_group(station_id="STA2", name="S2", platform_ids=None)
-        with pytest.raises(ValueError):
-            net.create_station_group(station_id="STA3", name="S3")
-        assert "STA" not in net.station_groups
-        assert "STA2" not in net.station_groups
-        assert "STA3" not in net.station_groups
 
 
 # --------------------------------------------------------------------------- #
@@ -209,81 +103,7 @@ class TestStationGroupMinimumOnePlatform:
 # --------------------------------------------------------------------------- #
 
 
-class TestFullUpwardCascade:
-    def test_last_tile_removal_cascades_to_platform_and_group(self, app_state):
-        net = app_state.network
-        net.add_platform(0, 0, platform_id="PLT_A", name="A")
-        net.create_station_group(station_id="STA", name="S", platform_ids=["PLT_A"])
-        assert "STA" in net.station_groups
-
-        # Removing the platform's only tile deletes the platform (now blockless),
-        # which removes it from the group, which leaves the group empty and so
-        # deletes the group too — one operation, three entities pruned.
-        result = platform_service.remove_tile(app_state, "PLT_A", x=0, y=0)
-
-        assert result["status"] == "deleted"
-        assert "PLT_A" not in net.platforms
-        assert "PLT_A_BLOCK" not in net.blocks
-        assert "STA" not in net.station_groups
-
 
 # --------------------------------------------------------------------------- #
 # HTTP route surface (routes/stations.py)
 # --------------------------------------------------------------------------- #
-
-
-class TestStationGroupHTTPEndpoints:
-    def test_create_empty_group_rejected(self, client, app_state):
-        app_state.network.add_platform(0, 0, platform_id="PLT_A", name="A")
-        resp = client.post(
-            "/api/station",
-            json={"station_id": "STA", "name": "S", "platform_ids": []},
-        )
-        assert resp.status_code == 400
-        assert "at least one platform" in resp.get_json()["error"]
-
-    def test_remove_nonlast_platform_keeps_group(self, client, app_state):
-        net = app_state.network
-        net.add_platform(0, 0, platform_id="PLT_A", name="A")
-        net.add_platform(2, 0, platform_id="PLT_B", name="B")
-        net.create_station_group(
-            station_id="STA", name="S", platform_ids=["PLT_A", "PLT_B"]
-        )
-
-        resp = client.post(
-            "/api/station/STA/remove-platform", json={"platform_id": "PLT_B"}
-        )
-
-        assert resp.status_code == 200
-        body = resp.get_json()
-        assert body["station_deleted"] is False
-        assert body["platform_ids"] == ["PLT_A"]
-        assert "STA" in net.station_groups
-
-    def test_remove_last_platform_deletes_group(self, client, app_state):
-        net = app_state.network
-        net.add_platform(0, 0, platform_id="PLT_A", name="A")
-        net.create_station_group(station_id="STA", name="S", platform_ids=["PLT_A"])
-
-        resp = client.post(
-            "/api/station/STA/remove-platform", json={"platform_id": "PLT_A"}
-        )
-
-        assert resp.status_code == 200
-        body = resp.get_json()
-        assert body["station_deleted"] is True
-        assert body["removed"] is True
-        assert "STA" not in net.station_groups
-        listing = client.get("/api/station").get_json()
-        assert all(g["station_id"] != "STA" for g in listing["stations"])
-
-    def test_patch_to_empty_rejected(self, client, app_state):
-        net = app_state.network
-        net.add_platform(0, 0, platform_id="PLT_A", name="A")
-        net.create_station_group(station_id="STA", name="S", platform_ids=["PLT_A"])
-
-        resp = client.patch("/api/station/STA", json={"platform_ids": []})
-
-        assert resp.status_code == 400
-        assert "STA" in net.station_groups  # rejected, group unchanged
-        assert net.station_groups["STA"].platform_ids == ["PLT_A"]

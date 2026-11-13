@@ -2,10 +2,8 @@
 
 Auto-generated — do not hand-edit; re-run json_to_scene.py against the source
 layout instead. Layout only: 43 tracks, 2 switches,
-0 platforms (0 station groups),
-5 blocks (0 auto-created platform blocks),
-0 block groups, 0 tunnels,
-0 signals.
+5 blocks,
+0 block groups, 0 tunnels.
 """
 
 import logging
@@ -86,14 +84,6 @@ SWITCH_SETTINGS = {
 }
 
 
-STATIONS = [
-]
-
-
-PLATFORMS = [
-]
-
-
 BLOCKS = [
     ('BLK_4F4CF0', 'SEG_4F4CF0', '', [(9, 13), (10, 13), (11, 12), (11, 13), (12, 9), (12, 10), (12, 11), (12, 12)], 99.6, None, 'Right'),
     ('BLK_4F5CE3', 'SEG_4F5CE3', '', [(3, 8), (4, 8), (4, 9), (5, 9), (5, 10), (6, 10), (6, 11), (7, 11), (7, 12), (8, 12), (8, 13)], 84.0, None, 'Up'),
@@ -108,10 +98,6 @@ BLOCK_GROUPS = [
 
 
 TUNNELS = [
-]
-
-
-SIGNALS = [
 ]
 
 
@@ -133,66 +119,8 @@ def _add_switches(network: RailwayNetwork) -> None:
             track.switch_id = switch_id
 
 
-def _add_stations(network: RailwayNetwork) -> None:
-    """Build each platform from its anchor tile + extensions, then group them.
-
-    add_station auto-creates one ``{platform_id}_BLOCK`` per platform, so those
-    blocks are not listed in BLOCKS.
-    """
-    for (group_id, group_name, platforms) in STATIONS:
-        platform_ids = []
-        for (platform_id, name, first_tile, extra_tiles, side, length_cm, top_speed_kmh) in platforms:
-            platform = network.add_station(
-                x=first_tile[0],
-                y=first_tile[1],
-                station_id=platform_id,
-                name=name,
-                length_cm=length_cm,
-                platform_side=side,
-                top_speed_kmh=top_speed_kmh,
-            )
-            for extra in extra_tiles:
-                network.extend_station(platform.platform_id, [extra])
-            platform_ids.append(platform.platform_id)
-        network.create_station_group(
-            station_id=group_id,
-            name=group_name,
-            platform_ids=platform_ids,
-        )
-
-
-def _add_platforms(network: RailwayNetwork) -> None:
-    """Build platforms that belong to no station group.
-
-    Same anchor-tile + extensions construction as ``_add_stations`` but with no
-    ``create_station_group`` call. Each platform still auto-creates its
-    ``{platform_id}_BLOCK``.
-    """
-    for (platform_id, name, first_tile, extra_tiles, side, length_cm, top_speed_kmh, block_name, segment_name) in PLATFORMS:
-        platform = network.add_station(
-            x=first_tile[0],
-            y=first_tile[1],
-            station_id=platform_id,
-            name=name,
-            length_cm=length_cm,
-            platform_side=side,
-            top_speed_kmh=top_speed_kmh,
-        )
-        for extra in extra_tiles:
-            network.extend_station(platform.platform_id, [extra])
-        # add_station derives both names from the CURRENT platform name; a
-        # platform renamed after creation keeps the older name on its block and
-        # segment, so restore each from the layout rather than leaving the
-        # freshly derived one.
-        station_block = network.blocks.get(f"{platform.platform_id}_BLOCK")
-        if station_block is not None:
-            station_block.name = block_name
-            if station_block.segments:
-                station_block.segments[0].name = segment_name
-
-
 def _add_blocks(network: RailwayNetwork) -> None:
-    """Create the non-platform blocks from their baked tile lists.
+    """Create the blocks from their baked tile lists.
 
     Each row states both ids: a block and its member segment are separate
     records that never share one (see ``entity_ids``). ``block_id`` is ``None``
@@ -222,19 +150,6 @@ def _add_tunnels(network: RailwayNetwork) -> None:
         network.add_tunnel(a, b)
 
 
-def _add_signals(network: RailwayNetwork) -> None:
-    """Rebuild signals via the canonical Signal.from_dict loader."""
-    if not SIGNALS:
-        return
-    from railway_signal import Signal
-    for sig in SIGNALS:
-        signal = Signal.from_dict(sig)
-        network.signals[signal.signal_id] = signal
-        track = network.get_track(*signal.position)
-        if track is not None and signal.signal_id not in track.signal_ids:
-            track.signal_ids.append(signal.signal_id)
-
-
 def _add_block_groups(network: RailwayNetwork) -> None:
     """Fold each baked grouping into one block owning its member segments.
 
@@ -242,7 +157,7 @@ def _add_block_groups(network: RailwayNetwork) -> None:
     re-derivable from geometry, so it is baked. Each member segment already
     exists as its own one-segment block from ``_add_blocks``; grouping moves
     those segments into one block and drops the emptied ones. Runs after every
-    block exists (a grouping may name a platform block).
+    block exists.
 
     A grouping whose members do not chain into one clean run is folded anyway,
     with a warning — the same reading `RailwayNetwork._fold_grouped_blocks`
@@ -279,10 +194,8 @@ def create_comprehensive_demo() -> RailwayNetwork:
     network = RailwayNetwork()
     _add_tracks(network)
     _add_switches(network)
-    _add_stations(network)
-    _add_platforms(network)
     _add_blocks(network)
     _add_block_groups(network)
     _add_tunnels(network)
-    _add_signals(network)
     return network
+

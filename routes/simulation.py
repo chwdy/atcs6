@@ -289,9 +289,6 @@ def register(app, state: AppState) -> None:
             counts = {
                 "tracks": len(state.network.tracks),
                 "blocks": len(state.network.blocks),
-                "signals": len(state.network.signals),
-                "platforms": len(getattr(state.network, "platforms", {})),
-                "stations": len(state.network.station_groups),
                 "trains": len(state.sim_controller.train_runtime.trains),
                 "switches": len(state.network.switches),
                 "tunnels": len(state.network.tunnels_to_list()),
@@ -323,9 +320,6 @@ def register(app, state: AppState) -> None:
                 {
                     "tracks": len(state.network.tracks),
                     "blocks": len(state.network.blocks),
-                    "signals": len(state.network.signals),
-                    "platforms": len(getattr(state.network, "platforms", {})),
-                    "stations": len(state.network.station_groups),
                     "trains": len(state.sim_controller.train_runtime.trains),
                     "switches": len(state.network.switches),
                     "tunnels": len(state.network.tunnels_to_list()),

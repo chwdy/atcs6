@@ -8,7 +8,7 @@ This format records the construction steps used to build a layout, making it:
 - Human-readable: Easy to understand and manually edit
 """
 
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional
 
 from track import Tile
 
@@ -30,9 +30,7 @@ class StepRecorder:
 
         Order matters: tracks must come before switches (network.add_switch
         looks up the underlying tile), switches before blocks (so block
-        creation sees switch-aware tiles). Station-owned blocks
-        are created by `add_platform` itself and are skipped in
-        `_generate_block_steps`.
+        creation sees switch-aware tiles).
         """
         steps: List[dict] = []
         step_id = 1
@@ -40,27 +38,12 @@ class StepRecorder:
             self._generate_track_steps,
             self._generate_switch_steps,
             self._generate_block_steps,
-            self._generate_signal_steps,
-            self._generate_platform_steps,
         ):
             for step in category(network):
                 step["id"] = step_id
                 steps.append(step)
                 step_id += 1
         return steps
-
-    @staticmethod
-    def _platform_owned_block_ids(network: "RailwayNetwork") -> Set[str]:
-        """Block IDs that `add_platform` creates on its own.
-
-        `StationRegistry.add_station` (the implementation behind
-        `network.add_platform`) creates a block named
-        ``f"{platform_id}_BLOCK"`` and assigns the platform's tile to it.
-        The recorder must skip those blocks in `_generate_block_steps`
-        otherwise replay double-creates them and `create_segment_with_tracks`
-        fails with "Block ... already exists".
-        """
-        return {f"{platform_id}_BLOCK" for platform_id in network.platforms.keys()}
 
     def _generate_track_steps(self, network: "RailwayNetwork") -> List[dict]:
         """
@@ -199,18 +182,10 @@ class StepRecorder:
         return steps
 
     def _generate_block_steps(self, network: "RailwayNetwork") -> List[dict]:
-        """Generate block creation steps.
-
-        Skips platform-owned blocks — `add_platform` creates those itself
-        (see `_platform_owned_block_ids`).
-        """
+        """Generate block creation steps."""
         steps = []
-        skip_ids = self._platform_owned_block_ids(network)
 
         for block_id, block in sorted(network.blocks.items()):
-            if block_id in skip_ids:
-                continue
-
             # Find all tracks belonging to this block
             positions = []
             for pos, track in network.tracks.items():
@@ -242,104 +217,6 @@ class StepRecorder:
                     "type": "block",
                     "description": f"Block: {block.name or block_id}",
                     "operations": [op],
-                }
-            )
-
-        return steps
-
-    def _generate_signal_steps(self, network: "RailwayNetwork") -> List[dict]:
-        """Generate signal creation steps."""
-        steps = []
-
-        for signal_id, signal in sorted(network.signals.items()):
-            # Handle both enum and string values for direction/type
-            detection_dir = signal.detection_direction
-            if detection_dir is None:
-                detection_dir = "east"
-            elif hasattr(detection_dir, "name"):
-                detection_dir = detection_dir.name.lower()
-            else:
-                detection_dir = str(detection_dir).lower()
-
-            signal_type = signal.signal_type
-            if signal_type is None:
-                signal_type = "block"
-            elif hasattr(signal_type, "name"):
-                signal_type = signal_type.name.lower()
-            else:
-                signal_type = str(signal_type).lower()
-
-            op = {
-                "op": "add_signal",
-                "x": signal.position[0],
-                "y": signal.position[1],
-                "detection_direction": detection_dir,
-                "signal_type": signal_type,
-            }
-
-            if signal.name:
-                op["name"] = signal.name
-            if signal.monitored_block_id:
-                op["monitored_block_id"] = signal.monitored_block_id
-
-            steps.append(
-                {
-                    "type": "signal",
-                    "description": f"Signal: {signal.name or signal_id}",
-                    "operations": [op],
-                }
-            )
-
-        return steps
-
-    def _generate_platform_steps(self, network: "RailwayNetwork") -> List[dict]:
-        """Generate platform creation steps."""
-        steps = []
-
-        for platform_id, platform in sorted(network.platforms.items()):
-            if not platform.positions:
-                continue
-
-            # First position is the base, rest are extensions
-            sorted_positions = sorted(platform.positions)
-            base_pos = sorted_positions[0]
-            extension_positions = sorted_positions[1:]
-
-            operations = []
-
-            # Base platform creation
-            base_op = {
-                "op": "add_platform",
-                "x": base_pos[0],
-                "y": base_pos[1],
-                "name": platform.name,
-                "platform_id": platform.platform_id,
-            }
-
-            if platform.length_cm > 0:
-                base_op["length_cm"] = platform.length_cm
-            if platform.platform_side:
-                base_op["platform_side"] = platform.platform_side.value
-            if platform.top_speed_kmh is not None:
-                base_op["top_speed_kmh"] = platform.top_speed_kmh
-
-            operations.append(base_op)
-
-            # Extension operations
-            if extension_positions:
-                operations.append(
-                    {
-                        "op": "extend_platform",
-                        "platform_id": platform.platform_id,
-                        "positions": [[p[0], p[1]] for p in extension_positions],
-                    }
-                )
-
-            steps.append(
-                {
-                    "type": "platform",
-                    "description": f"Platform: {platform.name or platform_id}",
-                    "operations": operations,
                 }
             )
 

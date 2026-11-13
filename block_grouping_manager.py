@@ -3,8 +3,7 @@
 Per design_new.md **Block grouping**: block membership — creating a block,
 adding or removing a `Segment` from `segment_ids`, and deleting a block — lives
 here. This manager edits only the power-grouping axis (`segment_ids`); it never
-writes Block runtime state (that is `BlockManager`) and never writes segment
-geometry (that is the geometry manager).
+writes segment geometry (that is the geometry manager).
 
 Rules this module enforces (all from design_new.md **Block grouping**):
 
@@ -30,7 +29,7 @@ Rules this module enforces (all from design_new.md **Block grouping**):
 from __future__ import annotations
 
 import logging
-from typing import Dict, List, Optional, Set, Tuple, TYPE_CHECKING
+from typing import Dict, List, Optional, Tuple, TYPE_CHECKING
 
 from block import Block
 from entity_ids import block_id_for_segment

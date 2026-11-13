@@ -24,7 +24,6 @@ from services import ConflictError, GoneError, NotFoundError, ValidationError
 from tests.segment_test_helpers import make_segment_block
 from services import (
     block_service,
-    platform_service,
     segment_service,
     switch_service,
     track_service,
@@ -198,11 +197,6 @@ class TestBlockService:
         with pytest.raises(NotFoundError):
             block_service.update_block(state, "UNIDENTIFIED", data={"name": "x"})
 
-    def test_update_block_state_field_raises_gone(self, state):
-        """The removed direct `state` mutation surfaces as GoneError (410)."""
-        make_segment_block(state.network, "BLK_G")
-        with pytest.raises(GoneError):
-            block_service.update_block(state, "BLK_G", data={"state": "OCCUPIED"})
 
     def test_update_block_rejects_geometry_field(self, state):
         """A block config PATCH carrying geometry is rejected (edit the
@@ -211,12 +205,6 @@ class TestBlockService:
         with pytest.raises(ValidationError):
             block_service.update_block(state, "BLK_GEO", data={"length_cm": 50.0})
 
-    def test_disable_occupied_block_raises_conflict(self, state):
-        block = make_segment_block(state.network, "BLK_O")
-        block.occupied_by = "TRAIN_A"
-        with pytest.raises(ConflictError):
-            block_service.update_block(state, "BLK_O", data={"disabled": True})
-        assert block.disabled is False  # rejected, not applied
 
     def test_disable_free_block_succeeds(self, state):
         make_segment_block(state.network, "BLK_F")
@@ -320,57 +308,6 @@ class TestSegmentService:
         with pytest.raises(NotFoundError):
             segment_service.update_segment(state, "UNIDENTIFIED", data={"length_cm": 1.0})
 
-    def test_delete_segment_cascades_to_owning_platform(self, state):
-        # A station/platform owning exactly one block: deleting the block's only
-        # segment empties the block, which must drop it from the platform's
-        # block_assignments and, since that empties the platform, delete the
-        # platform too (design_new.md "Platform and station model").
-        from track import TRACK_NS
-
-        state.network.add_track(Tile(0, 0, TRACK_NS))
-        platform = state.network.add_station(
-            0, 0, station_id="STA_CASCADE", name="Cascade", length_cm=200.0
-        )
-        block_id = f"{platform.platform_id}_BLOCK"
-        assert block_id in state.network.blocks
-        assert platform.platform_id in state.network.platforms
-        assert block_id in platform.get_all_assigned_blocks()
-
-        # Deleting is on the geometry axis, and a block id never names a
-        # segment, so the block's one member is addressed by its derived id.
-        assert (
-            segment_service.delete_segment(state, segment_id_for_block(block_id))
-            is True
-        )
-
-        assert block_id not in state.network.blocks
-        # The platform held only this block, so the cascade removed it too.
-        assert platform.platform_id not in state.network.platforms
-
-    def test_remove_last_tile_cascades_to_owning_platform(self, state):
-        # Removing the LAST tile of a platform-owned block empties its segment;
-        # the auto-delete must run the same downward platform cascade, so the
-        # emptied platform is torn down instead of left with a dangling
-        # block_assignments entry (design_new.md "Platform and station model").
-        from track import TRACK_NS
-
-        state.network.add_track(Tile(0, 0, TRACK_NS))
-        platform = state.network.add_station(
-            0, 0, station_id="STA_RMTILE", name="RmTile", length_cm=200.0
-        )
-        block_id = f"{platform.platform_id}_BLOCK"
-        assert block_id in state.network.blocks
-        assert platform.platform_id in state.network.platforms
-
-        # Remove the segment's only tile -> segment empties -> block auto-deleted.
-        segment_service.remove_tracks_from_segment(
-            state, segment_id_for_block(block_id), positions=[[0, 0]]
-        )
-
-        assert block_id not in state.network.blocks
-        # The auto-delete cascaded through the service layer: the now-empty
-        # platform is gone, not left dangling.
-        assert platform.platform_id not in state.network.platforms
 
     def test_delete_segment_unknown_raises_not_found(self, state):
         with pytest.raises(NotFoundError):
@@ -451,81 +388,3 @@ class TestTrackService:
 
 
 # ------------------------------------------------------ platform_service ----
-
-
-class TestPlatformService:
-    def test_get_and_require_platform(self, state):
-        assert platform_service.get_platform(state, "UNIDENTIFIED") is None
-        with pytest.raises(NotFoundError):
-            platform_service.require_platform(state, "UNIDENTIFIED")
-
-    def test_create_platform(self, state):
-        state.network.add_track(Tile(x=0, y=0, track_bits=2))
-        platform = platform_service.create_platform(
-            state, x=0, y=0, platform_id="PLT_1", name="P1"
-        )
-        assert platform.platform_id == "PLT_1"
-        assert state.network.get_platform("PLT_1") is platform
-
-    def test_update_platform(self, state):
-        state.network.add_track(Tile(x=0, y=0, track_bits=2))
-        platform_service.create_platform(state, x=0, y=0, platform_id="PLT_U", name="old")
-        updated = platform_service.update_platform(
-            state, "PLT_U", data={"name": "new", "disabled": True}
-        )
-        assert updated.name == "new"
-        assert updated.disabled is True
-
-    def test_update_unknown_raises_not_found(self, state):
-        with pytest.raises(NotFoundError):
-            platform_service.update_platform(state, "UNIDENTIFIED", data={"name": "x"})
-
-    def test_update_bad_platform_side_raises_validation_error(self, state):
-        # Regression: an invalid platform_side must surface as ValidationError
-        # (-> HTTP 400) rather than a bare ValueError leaking as HTTP 500, so
-        # update_platform matches the create/extend bad-input contract.
-        state.network.add_track(Tile(x=0, y=0, track_bits=2))
-        platform_service.create_platform(state, x=0, y=0, platform_id="PLT_S")
-        with pytest.raises(ValidationError):
-            platform_service.update_platform(
-                state, "PLT_S", data={"platform_side": "sideways"}
-            )
-
-    def test_delete_platform(self, state):
-        state.network.add_track(Tile(x=0, y=0, track_bits=2))
-        platform_service.create_platform(state, x=0, y=0, platform_id="PLT_X")
-        assert platform_service.delete_platform(state, "PLT_X") is True
-        assert platform_service.get_platform(state, "PLT_X") is None
-
-    def test_delete_unknown_raises_not_found(self, state):
-        with pytest.raises(NotFoundError):
-            platform_service.delete_platform(state, "UNIDENTIFIED")
-
-    def test_validate_placement(self, state):
-        assert platform_service.validate_placement(state, 9, 9)["can_place"] is False
-        state.network.add_track(Tile(x=0, y=0, track_bits=2))
-        assert platform_service.validate_placement(state, 0, 0)["can_place"] is True
-
-    def test_can_extend_unknown_platform_raises_not_found(self, state):
-        with pytest.raises(NotFoundError):
-            platform_service.can_extend(state, "UNIDENTIFIED", x=0, y=0)
-
-    def test_assign_tile_unknown_platform_raises_not_found(self, state):
-        with pytest.raises(NotFoundError):
-            platform_service.assign_tile(state, "UNIDENTIFIED", x=0, y=0, block_id="BLK")
-
-    def test_assign_tile_unknown_block_raises_not_found(self, state):
-        state.network.add_track(Tile(x=0, y=0, track_bits=2))
-        platform_service.create_platform(state, x=0, y=0, platform_id="PLT_A")
-        with pytest.raises(NotFoundError):
-            platform_service.assign_tile(
-                state, "PLT_A", x=0, y=0, block_id="UNIDENT_BLK"
-            )
-
-    def test_unassign_tile_unknown_platform_raises_not_found(self, state):
-        with pytest.raises(NotFoundError):
-            platform_service.unassign_tile(state, "UNIDENTIFIED", x=0, y=0)
-
-    def test_remove_tile_unknown_platform_raises_not_found(self, state):
-        with pytest.raises(NotFoundError):
-            platform_service.remove_tile(state, "UNIDENTIFIED", x=0, y=0)

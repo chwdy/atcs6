@@ -36,9 +36,6 @@ class StepPlayer:
         if clear_first:
             network.tracks.clear()
             network.blocks.clear()
-            network.signals.clear()
-            network.platforms.clear()
-            network.station_groups.clear()
 
         steps = step_data.get("steps", [])
         errors = []
@@ -85,9 +82,6 @@ class StepPlayer:
         if clear_first:
             network.tracks.clear()
             network.blocks.clear()
-            network.signals.clear()
-            network.platforms.clear()
-            network.station_groups.clear()
 
         errors = []
         self.context = {}
@@ -146,16 +140,10 @@ class StepPlayer:
             return self._op_add_switch(op, network)
         elif op_type == "create_block_with_tracks":
             return self._op_create_block(op, network)
-        elif op_type == "add_signal":
-            return self._op_add_signal(op, network)
-        elif op_type == "add_platform":
-            return self._op_add_platform(op, network)
-        elif op_type == "extend_platform":
-            return self._op_extend_platform(op, network)
-        elif op_type == "add_train":
-            # Trains are not saved (design_v2.md "Trains"); an older file's
-            # train step is skipped, as the loader skips any field it does not
-            # know.
+        elif op_type in ("add_train", "add_signal", "add_platform", "extend_platform"):
+            # v2 saves no trains, signals or platforms (design_v2.md "Trains",
+            # "Out of scope"); an older file's step for one is skipped, as the
+            # loader skips any field it does not know.
             return None
         else:
             raise ValueError(f"Unknown operation type: {op_type}")
@@ -243,65 +231,6 @@ class StepPlayer:
 
         return block_id
 
-    def _op_add_signal(self, op: dict, network: "RailwayNetwork") -> str:
-        """Execute add_signal operation."""
-        x = op["x"]
-        y = op["y"]
-        detection_direction = op["detection_direction"]
-        signal_type = op.get("signal_type", "block")
-        name = op.get("name")
-
-        signal = network.add_signal(
-            x=x,
-            y=y,
-            detection_direction=detection_direction,
-            signal_type=signal_type,
-            name=name,
-            auto_connect=True,
-        )
-
-        # If a specific monitored_block_id was recorded, try to connect it
-        if "monitored_block_id" in op and op["monitored_block_id"]:
-            try:
-                network.connect_signal_to_block(
-                    signal.signal_id, op["monitored_block_id"]
-                )
-            except Exception:
-                pass  # Best effort
-
-        return signal.signal_id
-
-    def _op_add_platform(self, op: dict, network: "RailwayNetwork") -> str:
-        """Execute add_platform operation."""
-        x = op["x"]
-        y = op["y"]
-        name = op.get("name", "")
-        platform_id = op.get("platform_id")
-        length_cm = op.get("length_cm", 0.0)
-        platform_side = op.get("platform_side", "both")
-        top_speed_kmh = op.get("top_speed_kmh")
-
-        platform = network.add_platform(
-            x=x,
-            y=y,
-            platform_id=platform_id,
-            name=name,
-            length_cm=length_cm,
-            platform_side=platform_side,
-            top_speed_kmh=top_speed_kmh,
-        )
-
-        return platform.platform_id
-
-    def _op_extend_platform(self, op: dict, network: "RailwayNetwork") -> str:
-        """Execute extend_platform operation."""
-        platform_id = self._resolve_ref(op["platform_id"])
-        positions = [tuple(p) for p in op["positions"]]
-
-        network.extend_platform(platform_id, positions)
-
-        return platform_id
-
     def _verify_result(
         self, network: "RailwayNetwork", verification: dict
     ) -> List[dict]:
@@ -343,32 +272,6 @@ class StepPlayer:
                     "field": "block_count",
                     "expected": expected_block_count,
                     "actual": len(network.blocks),
-                }
-            )
-
-        expected_signal_count = verification.get("signal_count")
-        if (
-            expected_signal_count is not None
-            and len(network.signals) != expected_signal_count
-        ):
-            mismatches.append(
-                {
-                    "field": "signal_count",
-                    "expected": expected_signal_count,
-                    "actual": len(network.signals),
-                }
-            )
-
-        expected_platform_count = verification.get("platform_count")
-        if (
-            expected_platform_count is not None
-            and len(network.platforms) != expected_platform_count
-        ):
-            mismatches.append(
-                {
-                    "field": "platform_count",
-                    "expected": expected_platform_count,
-                    "actual": len(network.platforms),
                 }
             )
 

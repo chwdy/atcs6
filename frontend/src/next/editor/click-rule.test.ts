@@ -9,8 +9,6 @@ function fakeEditor(over: Partial<ClickRuleEditor> = {}): ClickRuleEditor {
     _currentEditorId: null,
     showSwitchEditor: vi.fn(),
     showSegmentEditor: vi.fn(),
-    showSignalsEditorForTile: vi.fn(),
-    showPlatformEditor: vi.fn(),
     blockGroupingHandler: { showDetail: vi.fn() },
     hideSecondarySidebar: vi.fn(),
     ...over,
@@ -42,20 +40,6 @@ describe('what a plain click on a tile opens on the Editor screen', () => {
     const ed = fakeEditor();
     expect(openForTileClick(ed, { x: 0, y: 0, isVirtual: true })).toBe(true);
     expect(ed.hideSecondarySidebar).toHaveBeenCalled();
-  });
-
-  it('shows the tile’s signals while the Signal tool is in hand', () => {
-    const ed = fakeEditor({ selectedTool: 'signal' });
-    const tile = { ...track, signals: [{ signal_id: 'SIG_1' }] };
-    expect(openForTileClick(ed, tile)).toBe(true);
-    expect(ed.showSignalsEditorForTile).toHaveBeenCalledWith(tile);
-    expect(ed.showSegmentEditor).not.toHaveBeenCalled();
-  });
-
-  it('shows the platform while a Platform tool is in hand', () => {
-    const ed = fakeEditor({ selectedTool: 'extend-platform' });
-    expect(openForTileClick(ed, { ...track, station_id: 'PLAT_1' })).toBe(true);
-    expect(ed.showPlatformEditor).toHaveBeenCalledWith('PLAT_1');
   });
 
   it('lets the open tile panel re-draw itself for its own tile', () => {

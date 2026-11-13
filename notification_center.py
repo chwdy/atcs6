@@ -97,8 +97,7 @@ class Notification:
             at the moment it emits. Never `simulation_time`: the stream is
             wall-clock by design, so a playback-scaled value would not order
             against its siblings.
-        source: The class that emitted the event ("PathDispatcher",
-            "RouteExecutor", "TrainController", "BlockManager",
+        source: The class that emitted the event (for example
             "SwitchManager", "SimulationController").
         operation: The name of the function that emitted the event
             ("cancel_path", "set_handle"). Every emitting function writes its
@@ -514,14 +513,12 @@ def make_notification_emitter(
 ) -> Callable[..., Optional[Notification]]:
     """Build the narrow notification callback a resource manager is handed.
 
-    `BlockManager` and `SwitchManager` hold only this callback, never
-    `NotificationCenter` or `SimulationController` (design_new.md
-    "BlockManager" / "SwitchManager"). The returned function takes
+    `SwitchManager` holds only this callback, never `NotificationCenter` or
+    `SimulationController`. The returned function takes
     `(operation, kind, message, entities, error=None, payload=None)`, fixes the
     emitting component's `source` name, and forwards the rest to
     `NotificationCenter.emit(...)`, which samples `event_time` itself. The
-    runtime wiring passes one of these (with `source="BlockManager"` /
-    `"SwitchManager"`) in place of the old back-reference.
+    runtime wiring passes one of these with `source="SwitchManager"`.
     """
 
     def emit(operation, kind, message, entities, error=None, payload=None):

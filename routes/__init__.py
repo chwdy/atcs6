@@ -12,9 +12,6 @@ Module map:
 - tracks: /api/track* and /api/tracks/* CRUD and bulk operations
 - segments: /api/segments/* geometry CRUD, tiles, extend, can_extend, end_tiles
 - blocks: /api/blocks/* grouping, config/availability, voltage
-- signals: /api/signal/* CRUD and validation
-- stations: /api/stations/*
-- platforms: /api/platforms/*
 - running_trains: /api/trains/* — the trains' requests (design_v2.md "Running a train")
 - switches: /api/switches/* and /api/tracks/<x>/<y>/switch
 """
@@ -26,9 +23,6 @@ from routes import (
     tracks,
     segments,
     blocks,
-    signals,
-    stations,
-    platforms,
     running_trains,
     switches,
     tunnels,
@@ -50,9 +44,6 @@ def register_all(app, state) -> None:
     tracks.register(app, state)
     segments.register(app, state)
     blocks.register(app, state)
-    signals.register(app, state)
-    stations.register(app, state)
-    platforms.register(app, state)
     running_trains.register(app, state)
     switches.register(app, state)
     tunnels.register(app, state)

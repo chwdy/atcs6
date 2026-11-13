@@ -5,8 +5,8 @@ Usage:
     python json_to_scene.py INPUT.json OUTPUT.py [--scene-id NAME] [--verify]
 
 Reads a layout file (the same JSON the editor saves under ``layouts/``) and emits
-a demo_6-style scene module: readable ``TILES`` / ``SWITCHES`` / ``STATIONS`` /
-``BLOCKS`` / ``TUNNELS`` / ``SIGNALS`` data lists plus the standard builder
+a demo_6-style scene module: readable ``TILES`` / ``SWITCHES`` / ``BLOCKS`` /
+``TUNNELS`` data lists plus the standard builder
 functions, ``SCENE_ID`` and ``create_comprehensive_demo()``.
 
 How it works
@@ -67,11 +67,6 @@ def bits_expr(bits: int) -> str:
     return " | ".join(parts) if parts else "0"
 
 
-def _side_str(platform_side) -> str:
-    """PlatformSide enum (or string) -> the string add_station accepts."""
-    return getattr(platform_side, "value", platform_side)
-
-
 def _xy(t) -> str:
     return f"({t[0]}, {t[1]})"
 
@@ -121,62 +116,6 @@ def gen_switches(net) -> tuple[str, list[str]]:
     return "\n".join(lines), warnings
 
 
-def gen_stations(net) -> tuple[str, list[str]]:
-    grouped = set()
-    lines = ["STATIONS = ["]
-    for group in net.station_groups.values():
-        lines.append(f"    ({group.station_id!r}, {group.name!r}, [")
-        for pid in group.platform_ids:
-            grouped.add(pid)
-            p = net.platforms.get(pid)
-            if p is None:
-                lines.append(f"        # MISSING platform {pid!r}")
-                continue
-            positions = [tuple(pt) for pt in p.positions]
-            first, extras = positions[0], positions[1:]
-            lines.append(
-                f"        ({pid!r}, {p.name!r}, {_xy(first)}, {_xy_list(extras)}, "
-                f"{_side_str(p.platform_side)!r}, {p.length_cm}, {p.top_speed_kmh}),"
-            )
-        lines.append("    ]),")
-    lines.append("]")
-    return "\n".join(lines), grouped
-
-
-def gen_platforms(net, grouped: set) -> str:
-    """Emit the platforms that belong to no station group.
-
-    Grouped platforms are created by ``_add_stations``; these ungrouped ones
-    are created directly by ``_add_platforms`` with the same anchor-tile +
-    extensions construction but no ``create_station_group`` call. Each still
-    auto-creates its ``{platform_id}_BLOCK``.
-    """
-    lines = ["PLATFORMS = ["]
-    for pid in sorted(net.platforms):
-        if pid in grouped:
-            continue
-        p = net.platforms[pid]
-        positions = [tuple(pt) for pt in p.positions]
-        first, extras = positions[0], positions[1:]
-        # The auto-created station block name is reproduced verbatim: a platform
-        # renamed after creation keeps its original id-based block name, which
-        # ``add_station(name=...)`` would not regenerate. `add_station` names the
-        # segment and its block together, so the segment carries the same stale
-        # name and has to be restored alongside it.
-        block = net.blocks.get(f"{pid}_BLOCK")
-        block_name = block.name if block is not None else ""
-        segment_name = (
-            block.segments[0].name if block is not None and block.segments else ""
-        )
-        lines.append(
-            f"    ({pid!r}, {p.name!r}, {_xy(first)}, {_xy_list(extras)}, "
-            f"{_side_str(p.platform_side)!r}, {p.length_cm}, {p.top_speed_kmh}, "
-            f"{block_name!r}, {segment_name!r}),"
-        )
-    lines.append("]")
-    return "\n".join(lines)
-
-
 def _is_grouped(block, bid: str) -> bool:
     """True when `block` groups several segments, so it needs a fold.
 
@@ -213,11 +152,8 @@ def gen_blocks(net) -> str:
     one-segment blocks are derived at replay and then dissolved by the
     ``BLOCK_GROUPS`` fold, which carries the real block's id and name.
     """
-    platform_block_ids = {f"{pid}_BLOCK" for pid in net.platforms}
     lines = ["BLOCKS = ["]
     for bid in sorted(net.blocks.keys()):
-        if bid in platform_block_ids:
-            continue  # auto-created by add_station
         b = net.blocks[bid]
         if _is_grouped(b, bid):
             # A block grouping several segments is baked as those member
@@ -257,15 +193,6 @@ def gen_tunnels(net) -> str:
             f"    (({a['x']}, {a['y']}, {a['edge']!r}), "
             f"({b['x']}, {b['y']}, {b['edge']!r})),"
         )
-    lines.append("]")
-    return "\n".join(lines)
-
-
-def gen_signals(snapshot) -> str:
-    signals = snapshot.get("signals") or {}
-    lines = ["SIGNALS = ["]
-    for sig in signals.values():
-        lines.append(f"    {sig!r},")
     lines.append("]")
     return "\n".join(lines)
 
@@ -311,66 +238,8 @@ def _add_switches(network: RailwayNetwork) -> None:
             track.switch_id = switch_id
 
 
-def _add_stations(network: RailwayNetwork) -> None:
-    """Build each platform from its anchor tile + extensions, then group them.
-
-    add_station auto-creates one ``{platform_id}_BLOCK`` per platform, so those
-    blocks are not listed in BLOCKS.
-    """
-    for (group_id, group_name, platforms) in STATIONS:
-        platform_ids = []
-        for (platform_id, name, first_tile, extra_tiles, side, length_cm, top_speed_kmh) in platforms:
-            platform = network.add_station(
-                x=first_tile[0],
-                y=first_tile[1],
-                station_id=platform_id,
-                name=name,
-                length_cm=length_cm,
-                platform_side=side,
-                top_speed_kmh=top_speed_kmh,
-            )
-            for extra in extra_tiles:
-                network.extend_station(platform.platform_id, [extra])
-            platform_ids.append(platform.platform_id)
-        network.create_station_group(
-            station_id=group_id,
-            name=group_name,
-            platform_ids=platform_ids,
-        )
-
-
-def _add_platforms(network: RailwayNetwork) -> None:
-    """Build platforms that belong to no station group.
-
-    Same anchor-tile + extensions construction as ``_add_stations`` but with no
-    ``create_station_group`` call. Each platform still auto-creates its
-    ``{platform_id}_BLOCK``.
-    """
-    for (platform_id, name, first_tile, extra_tiles, side, length_cm, top_speed_kmh, block_name, segment_name) in PLATFORMS:
-        platform = network.add_station(
-            x=first_tile[0],
-            y=first_tile[1],
-            station_id=platform_id,
-            name=name,
-            length_cm=length_cm,
-            platform_side=side,
-            top_speed_kmh=top_speed_kmh,
-        )
-        for extra in extra_tiles:
-            network.extend_station(platform.platform_id, [extra])
-        # add_station derives both names from the CURRENT platform name; a
-        # platform renamed after creation keeps the older name on its block and
-        # segment, so restore each from the layout rather than leaving the
-        # freshly derived one.
-        station_block = network.blocks.get(f"{platform.platform_id}_BLOCK")
-        if station_block is not None:
-            station_block.name = block_name
-            if station_block.segments:
-                station_block.segments[0].name = segment_name
-
-
 def _add_blocks(network: RailwayNetwork) -> None:
-    """Create the non-platform blocks from their baked tile lists.
+    """Create the blocks from their baked tile lists.
 
     Each row states both ids: a block and its member segment are separate
     records that never share one (see ``entity_ids``). ``block_id`` is ``None``
@@ -400,19 +269,6 @@ def _add_tunnels(network: RailwayNetwork) -> None:
         network.add_tunnel(a, b)
 
 
-def _add_signals(network: RailwayNetwork) -> None:
-    """Rebuild signals via the canonical Signal.from_dict loader."""
-    if not SIGNALS:
-        return
-    from railway_signal import Signal
-    for sig in SIGNALS:
-        signal = Signal.from_dict(sig)
-        network.signals[signal.signal_id] = signal
-        track = network.get_track(*signal.position)
-        if track is not None and signal.signal_id not in track.signal_ids:
-            track.signal_ids.append(signal.signal_id)
-
-
 def _add_block_groups(network: RailwayNetwork) -> None:
     """Fold each baked grouping into one block owning its member segments.
 
@@ -420,7 +276,7 @@ def _add_block_groups(network: RailwayNetwork) -> None:
     re-derivable from geometry, so it is baked. Each member segment already
     exists as its own one-segment block from ``_add_blocks``; grouping moves
     those segments into one block and drops the emptied ones. Runs after every
-    block exists (a grouping may name a platform block).
+    block exists.
 
     A grouping whose members do not chain into one clean run is folded anyway,
     with a warning — the same reading `RailwayNetwork._fold_grouped_blocks`
@@ -457,12 +313,9 @@ def create_comprehensive_demo() -> RailwayNetwork:
     network = RailwayNetwork()
     _add_tracks(network)
     _add_switches(network)
-    _add_stations(network)
-    _add_platforms(network)
     _add_blocks(network)
     _add_block_groups(network)
     _add_tunnels(network)
-    _add_signals(network)
     return network
 
 '''
@@ -475,12 +328,9 @@ def build_module_text(snapshot: dict, scene_id: str, source_name: str) -> tuple[
 
     tiles = gen_tiles(net)
     switches, sw_warn = gen_switches(net)
-    stations, grouped = gen_stations(net)
-    platforms = gen_platforms(net, grouped)
     blocks = gen_blocks(net)
     block_groups = gen_block_groups(net)
     tunnels = gen_tunnels(net)
-    signals = gen_signals(snapshot)
 
     warnings = []
     if sw_warn:
@@ -489,17 +339,12 @@ def build_module_text(snapshot: dict, scene_id: str, source_name: str) -> tuple[
             f"by the (id, x, y) form: {sorted(set(sw_warn))[:10]}"
         )
 
-    n_platform_blocks = sum(
-        1 for bid in net.blocks if bid in {f"{pid}_BLOCK" for pid in net.platforms}
-    )
     header = f'''"""Scene baked from {source_name} by json_to_scene.py.
 
 Auto-generated — do not hand-edit; re-run json_to_scene.py against the source
 layout instead. Layout only: {len(net.tracks)} tracks, {len(net.switches)} switches,
-{len(net.platforms)} platforms ({len(net.station_groups)} station groups),
-{len(net.blocks)} blocks ({n_platform_blocks} auto-created platform blocks),
-{sum(1 for bid, b in net.blocks.items() if _is_grouped(b, bid))} block groups, {len(net.tunnels) // 2} tunnels,
-{len(net.signals)} signals.
+{len(net.blocks)} blocks,
+{sum(1 for bid, b in net.blocks.items() if _is_grouped(b, bid))} block groups, {len(net.tunnels) // 2} tunnels.
 """
 
 import logging
@@ -520,7 +365,7 @@ from switch import Switch
 SCENE_ID = {scene_id!r}'''
 
     body = "\n\n\n".join(
-        [header, tiles, switches, stations, platforms, blocks, block_groups, tunnels, signals]
+        [header, tiles, switches, blocks, block_groups, tunnels]
     )
     return body + "\n\n" + _BUILDERS, warnings
 
@@ -536,23 +381,11 @@ def _fingerprint(net) -> dict:
             tuple(sorted(t.dead_end_ports or [])),
             t.switch_id,
             t.segment_id,
-            t.station_id,
-            tuple(sorted(t.signal_ids or [])),
         )
     switches = {
         sid: (s.x, s.y, *(bool(getattr(s, name, False)) for name in _SWITCH_SETTINGS))
         for sid, s in net.switches.items()
     }
-    platforms = {}
-    for pid, p in net.platforms.items():
-        platforms[pid] = (
-            p.name,
-            tuple(sorted(tuple(pt) for pt in p.positions)),
-            _side_str(p.platform_side),
-            p.length_cm,
-            p.top_speed_kmh,
-        )
-    groups = {g.station_id: (g.name, tuple(g.platform_ids)) for g in net.station_groups.values()}
     blocks = {}
     for bid, b in net.blocks.items():
         blocks[bid] = (
@@ -566,10 +399,6 @@ def _fingerprint(net) -> dict:
         a = (tp["a"]["x"], tp["a"]["y"], tp["a"]["edge"])
         b = (tp["b"]["x"], tp["b"]["y"], tp["b"]["edge"])
         tunnels.add(frozenset([a, b]))
-    signals = {
-        sid: (tuple(s.position), s.detection_direction, s.monitored_block_id)
-        for sid, s in net.signals.items()
-    }
     # Compare the grouping of every block whose identity differs from its
     # geometry — including the one-segment `BLK_* owns SEG_*` case, which a
     # `len(segments) > 1` test would silently skip.
@@ -581,11 +410,8 @@ def _fingerprint(net) -> dict:
     return {
         "tracks": tracks,
         "switches": switches,
-        "platforms": platforms,
-        "groups": groups,
         "blocks": blocks,
         "tunnels": tunnels,
-        "signals": signals,
         "block_groups": block_groups,
     }
 
@@ -622,7 +448,7 @@ def verify(output_path: str, snapshot: dict) -> bool:
 
     fa, fb = _fingerprint(gen_net), _fingerprint(canon)
     all_msgs = []
-    for section in ("tracks", "switches", "platforms", "groups", "blocks", "tunnels", "signals", "block_groups"):
+    for section in ("tracks", "switches", "blocks", "tunnels", "block_groups"):
         all_msgs += _diff_section(section, fa[section], fb[section])
 
     if all_msgs:
@@ -632,8 +458,7 @@ def verify(output_path: str, snapshot: dict) -> bool:
 
     print("VERIFY OK — generated scene is equivalent to the canonical from_dict load:")
     print(f"  tracks={len(fa['tracks'])} switches={len(fa['switches'])} "
-          f"platforms={len(fa['platforms'])} groups={len(fa['groups'])} "
-          f"blocks={len(fa['blocks'])} tunnels={len(fa['tunnels'])} signals={len(fa['signals'])} "
+          f"blocks={len(fa['blocks'])} tunnels={len(fa['tunnels'])} "
           f"block_groups={len(fa['block_groups'])}")
     return True
 

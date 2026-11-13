@@ -41,21 +41,13 @@ def register(app, state: AppState) -> None:
         return block_dict
 
     def _read_block_dict(block) -> dict:
-        """Block runtime dict + track counts, positions and platform names."""
+        """Block runtime dict + track counts and positions."""
         block_dict = _inject_voltage(block.to_dict(), block.block_id)
         tracks = state.network.get_block_tracks(block.block_id)
         block_dict["track_count"] = len(tracks)
         block_dict["track_positions"] = state.network.get_block_positions(
             block.block_id
         )
-        platform_names = set()
-        for track in tracks:
-            if track.station_id:
-                platform = state.network.platforms.get(track.station_id)
-                if platform:
-                    platform_names.add(platform.name)
-        if platform_names:
-            block_dict["platform_names"] = sorted(list(platform_names))
         return block_dict
 
     @app.route("/api/blocks", methods=["GET"])
@@ -89,8 +81,8 @@ def register(app, state: AppState) -> None:
 
     @app.route("/api/blocks/<block_id>", methods=["GET"])
     def get_block(block_id):
-        """Get block details including member segments, continuity status and
-        connected signals."""
+        """Get block details including member segments, and continuity
+        status."""
         block = block_service.get_block(state, block_id)
         if not block:
             return jsonify({"error": "Block not found"}), 404
@@ -111,14 +103,6 @@ def register(app, state: AppState) -> None:
             errors.extend(seg_errors)
         result["is_continuous"] = not errors
         result["validation_errors"] = errors
-
-        # Find signals monitoring this block
-        monitoring_signals = [
-            signal.to_dict()
-            for signal in state.network.signals.values()
-            if signal.monitored_block_id == block_id
-        ]
-        result["monitoring_signals"] = monitoring_signals
 
         return jsonify(result)
 

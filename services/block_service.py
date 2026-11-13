@@ -1,7 +1,7 @@
 """Block grouping + config service — the power/occupancy axis of the model.
 
 The HTTP layer in ``routes/blocks.py`` parses JSON and shapes the read-only
-serialization responses (`to_dict`, monitoring signals, sorted positions);
+serialization responses (`to_dict`, sorted positions);
 this layer owns the block-side mutations:
 
   * Grouping — create a block from a `segment_ids` list, dissolve (ungroup) a
@@ -16,10 +16,8 @@ it lives on the member segments and is written through
 ``services.segment_service``. A config PATCH that carries a geometry field is
 rejected so the caller addresses the segment it means.
 
-Lookup raises ``NotFoundError``; bad input raises ``ValidationError``; a
-disabled-toggle blocked by occupancy/reservation/CAUTION raises
-``ConflictError``; the removed direct ``state`` mutation raises ``GoneError``
-(HTTP 410). ``update_block`` takes ``state.simulation_lock`` so the per-tick
+Lookup raises ``NotFoundError``; bad input raises ``ValidationError``.
+``update_block`` takes ``state.simulation_lock`` so the per-tick
 phase loop cannot observe a torn read.
 """
 
@@ -30,8 +28,6 @@ import uuid
 
 from app_state import AppState
 from services.exceptions import (
-    ConflictError,
-    GoneError,
     NotFoundError,
     ValidationError,
 )
@@ -187,9 +183,6 @@ def update_block(state: AppState, block_id: str, *, data: Dict[str, Any]):
 
     Raises:
         NotFoundError when no block has that id.
-        GoneError when the request carries the removed ``state`` field.
-        ConflictError when enabling ``disabled`` while the block is
-            occupied / reserved / in CAUTION.
         ValidationError when a geometry field is present, or
             ``allowed_travel_directions`` is malformed.
     """
@@ -210,33 +203,9 @@ def update_block(state: AppState, block_id: str, *, data: Dict[str, Any]):
         if "name" in data:
             block.name = data["name"] if data["name"] is not None else ""
 
-        if "state" in data:
-            # Block state is owned by BlockManager / ResourceCoordinator in
-            # v1 and computed from `occupied_by` / `_is_caution` /
-            # `reservation`; there is no admin-side direct-mutation surface.
-            raise GoneError(
-                "Direct block state mutation is not supported in v1. "
-                "Block state is derived from occupied_by / _is_caution / "
-                "reservation, written exclusively by BlockManager and "
-                "ResourceCoordinator."
-            )
-
-        # Availability flags per design_new.md "Availability flag REST API
-        # surface". Setting `disabled = True` runs the Block admin-reject
-        # preconditions (occupancy / reservation / CAUTION); setting
-        # `manual` always succeeds.
+        # Availability flags; both always succeed.
         if "disabled" in data:
-            new_disabled = bool(data["disabled"])
-            if new_disabled and not block.disabled:
-                if block.occupied_by is not None:
-                    raise ConflictError(f"Block is occupied by {block.occupied_by}")
-                if block.reservation is not None:
-                    raise ConflictError(
-                        f"Block is reserved by {block.reserved_by_path}"
-                    )
-                if block.caution is not None:
-                    raise ConflictError("Block is in CAUTION")
-            block.disabled = new_disabled
+            block.disabled = bool(data["disabled"])
         if "manual" in data:
             block.manual = bool(data["manual"])
         # Holding-point config flag (design_new.md "Block"). No

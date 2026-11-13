@@ -5,8 +5,7 @@ Thin HTTP layer over `services.switch_service`: parse JSON, call the
 service, translate `ServiceError` subclasses to status codes
 (ValidationError -> 400, NotFoundError -> 404, ConflictError -> 409,
 ServiceUnavailableError -> 503). The service routes position changes
-through SwitchManager so BlockManager notifications stay paired with
-position writes.
+through SwitchManager.
 """
 
 from routes import running_trains
@@ -66,11 +65,7 @@ def register(app, state: AppState) -> None:
     def update_switch(switch_id: str):
         """Update switch configuration.
 
-        Per design_new.md "Availability flag REST API surface": setting
-        `disabled = True` runs the admin-reject preconditions (occupancy /
-        future locks / train-protection) and returns 409 on rejection;
-        setting `manual` always succeeds. A real `disabled` change also
-        fires `BlockManager.on_switch_position_changed(switch_id)`.
+        Returns 409 when a physical setting changes while Live.
         """
         data = request.get_json(silent=True)
         if not data:
