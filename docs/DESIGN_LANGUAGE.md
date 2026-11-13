@@ -2721,7 +2721,7 @@ train's state color, from four tokens each layout theme sets in
 a block's red or green band and must read against both; none of them is a
 color the theme gives a block state. The tag's edge and text use
 `--train-tag-ink`, which is dark in every theme. The line has no outline and
-is a quarter of the band's width, so the band stays visible. It runs unbroken
+is about a quarter of the band's width, so the band stays visible. It runs unbroken
 through all of the train's blocks. The rear end stops short and finishes with
 a bar across the track; the front of the front block has an open arrowhead,
 drawn as two strokes. The bar and the arrowheads reach past both edges of the

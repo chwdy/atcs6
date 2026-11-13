@@ -198,7 +198,7 @@ or lost. Each layout theme sets its own four colours, and changing the layout
 theme changes them. On the Operate screen each layout theme also draws the
 blocks in calmer colours than on the other screens, so the train's tag and
 line are the strongest marks on the layout and the block colour reads
-underneath them; an empty block is close to the colour of bare track. The line is a quarter of the width of the block's own
+underneath them; an empty block is close to the colour of bare track. The line is about a quarter of the width of the block's own
 colour band, so the band still shows whether the block reads occupied, reads
 empty or is claimed; the tag covers the band only where it sits. When the
 layout is zoomed out so far that the line would fill the track, the line is

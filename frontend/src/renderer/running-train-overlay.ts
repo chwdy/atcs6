@@ -144,6 +144,17 @@ function cutAt(points: Point[], length: number): Point[] {
   return out;
 }
 
+/** The point before `points[index]` (walking toward `step`, -1 or +1) that
+ *  is at least half a pixel away from it. A cut or a set-back can land on a
+ *  tile corner and repeat that point; two equal points give no direction. */
+export function awayFrom(points: Point[], index: number, step: -1 | 1): Point {
+  const end = points[index];
+  for (let i = index + step; i >= 0 && i < points.length; i += step) {
+    if (Math.hypot(points[i].x - end.x, points[i].y - end.y) >= 0.5) return points[i];
+  }
+  return points[index + step] ?? end;
+}
+
 function polylineLength(points: Point[]): number {
   let total = 0;
   for (let i = 0; i + 1 < points.length; i++) {
@@ -187,13 +198,13 @@ export class RunningTrainOverlay implements RendererOverlay {
     });
     const palette = getCanvasPalette();
     const { ctx } = renderer;
-    // A quarter of the block's colour band, so the band still shows what the
+    // About a quarter of the block's colour band, so the band still shows what the
     // block reads. Not drawn once the layout is zoomed out so far that it
     // would fill the track.
-    const lineWidth = TRACK_WIDTH * 0.3 * renderer.scale;
+    const lineWidth = TRACK_WIDTH * 0.4 * renderer.scale;
     const showLine = lineWidth >= 1.2;
     // The widest band (an axial tile's), for the highlight drawn outside it.
-    const bandWidth = TRACK_WIDTH * Math.SQRT2 * renderer.scale;
+    const bandWidth = TRACK_WIDTH * 2 * renderer.scale;
     ctx.save();
     ctx.font = '600 12px monospace';
     ctx.textBaseline = 'middle';
@@ -288,11 +299,11 @@ export class RunningTrainOverlay implements RendererOverlay {
     if (showLine) {
       const inset = TRACK_WIDTH * 0.7 * renderer.scale;
       // The rear bar and both arrowheads reach past the edges of the block's
-      // colour band (at most TRACK_WIDTH * SQRT2 wide), so they read as the
-      // train's ends rather than as part of the band.
-      const bar = TRACK_WIDTH * 1.25 * renderer.scale;
+      // colour band (at most TRACK_WIDTH * 2 wide), so they read as the train's
+      // ends rather than as part of the band.
+      const bar = TRACK_WIDTH * 1.5 * renderer.scale;
       const spread = 0.75;
-      const arm = (TRACK_WIDTH * 1.25 * renderer.scale) / Math.sin(spread);
+      const arm = (TRACK_WIDTH * 1.5 * renderer.scale) / Math.sin(spread);
       const stroke = (points: Point[]) => {
         ctx.beginPath();
         ctx.moveTo(points[0].x, points[0].y);
@@ -323,8 +334,8 @@ export class RunningTrainOverlay implements RendererOverlay {
           if (!points) continue;
           ctx.setLineDash(train.lost ? [lineWidth * 3, lineWidth * 3] : []);
           stroke(points);
-          if (first) rear = [points[0], points[1]];
-          if (last) front = [points[points.length - 1], points[points.length - 2]];
+          if (first) rear = [points[0], awayFrom(points, 0, 1)];
+          if (last) front = [points[points.length - 1], awayFrom(points, points.length - 1, -1)];
         }
         ctx.setLineDash([]);
         if (rear) {
@@ -340,7 +351,7 @@ export class RunningTrainOverlay implements RendererOverlay {
         if (front && !train.lost) arrow(front[0], front[1]);
         if (claim && claim.length > 1) {
           stroke(claim);
-          arrow(claim[claim.length - 1], claim[claim.length - 2]);
+          arrow(claim[claim.length - 1], awayFrom(claim, claim.length - 1, -1));
         }
       }
       ctx.restore();

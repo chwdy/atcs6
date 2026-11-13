@@ -3,7 +3,7 @@ import type { RunningTrain } from '../next/operate/live';
 import type { NetworkPayload } from './payload-types';
 import type { Renderer } from './renderer';
 import { getCanvasPalette } from '../lib/canvas-palette';
-import { RunningTrainOverlay, trainLineColor } from './running-train-overlay';
+import { awayFrom, RunningTrainOverlay, trainLineColor } from './running-train-overlay';
 
 describe('v2 trains on the layout', () => {
   it('draws retained blocks and the claim ahead, and turns the tag\'s point when reversed', () => {
@@ -89,5 +89,13 @@ describe('v2 trains on the layout', () => {
     expect(colour('stopped')).toBe(palette.trainLineStopped);
     expect(colour('lost', true)).toBe(palette.trainLineLost);
     expect(new Set([colour('moving'), colour('waiting'), colour('stopped'), colour('lost', true)]).size).toBe(4);
+  });
+
+  it('takes an end\'s direction from the nearest point that is not the end itself', () => {
+    // A cut that lands on a tile corner repeats the corner point. Two equal
+    // points give no direction, and the arrowhead used to turn sideways.
+    const line = [{ x: 0, y: 60 }, { x: 0, y: 40 }, { x: 0, y: 20 }, { x: 0, y: 20 }];
+    expect(awayFrom(line, 3, -1)).toEqual({ x: 0, y: 40 });
+    expect(awayFrom([{ x: 5, y: 5 }, { x: 5, y: 5.2 }, { x: 9, y: 5 }], 0, 1)).toEqual({ x: 9, y: 5 });
   });
 });
