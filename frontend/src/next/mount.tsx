@@ -10,6 +10,8 @@ import { effect } from '@preact/signals';
 import { render } from 'preact';
 
 import type { Editor } from '../editor/editor';
+import { invalidateCanvasPalette } from '../lib/canvas-palette';
+import { redrawLayout } from '../lib/theme';
 import { mountEditorScreen } from './editor/screen';
 import { mountFirstRun, type FirstRunHost } from './first-run/mount';
 import { mountHardwareSetup } from './hardware/screen';
@@ -74,8 +76,12 @@ export function topBarActions(host: NextHost): TopBarActions {
 export function mountNextUI(host: NextHost): void {
   // <html data-screen> names the picked screen, so each screen's CSS shows
   // its regions only while that screen is the one showing.
+  // Operate has its own, calmer block colours (layout-themes.css), so the
+  // canvas re-reads its colours and repaints whenever the screen changes.
   effect(() => {
     document.documentElement.dataset.screen = screen.value;
+    invalidateCanvasPalette();
+    redrawLayout();
   });
   const container = document.querySelector('.app-container');
   const slot = document.createElement('div');

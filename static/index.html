@@ -7,7 +7,7 @@
     <!-- Theme pre-paint stub — the only theme code that must run before the
          stylesheets apply, so there is no flash of the wrong theme. It sets the
          two independent theme axes from saved preference:
-           data-theme        (editor chrome) — saved, else OS scheme, else dark
+           data-theme        (editor chrome) — saved, else dark
            data-canvas-theme  (layout canvas) — saved, else dark
          Everything else — switching, persistence, the registries, the redraw
          on canvas change — lives in the typed ThemeManager
@@ -20,8 +20,7 @@
       (function () {
         var el = document.documentElement;
         function read(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
-        var osLight = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches;
-        el.setAttribute('data-theme', read('atcs6-theme') || (osLight ? 'light' : 'dark'));
+        el.setAttribute('data-theme', read('atcs6-theme') || 'dark');
         el.setAttribute('data-canvas-theme', read('atcs6-canvas-theme') || 'dark');
       })();
     </script>

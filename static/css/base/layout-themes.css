@@ -64,10 +64,10 @@
     --train-body-unidentified: #8a8a99;
     /* v2 train line and tag, by train state, and the train highlight
        (design_v2.md "Seeing trains on the layout") */
-    --train-line-moving: #e6f0ff;
-    --train-line-waiting: #ffe7a0;
-    --train-line-stopped: #c4c4cf;
-    --train-line-lost: #e2ccff;
+    --train-line-moving: #d6deea;
+    --train-line-waiting: #e8d58f;
+    --train-line-stopped: #a9a9b6;
+    --train-line-lost: #c9b6e6;
     --train-highlight: #ff8a3d;
     /* "Locate" flash from the LayoutHighlighter — a bright caution-yellow pulse. */
     --canvas-highlight-locate: #ffd93d;
@@ -151,4 +151,25 @@
     --train-line-lost: #e2ccff;
     --train-highlight: #ff9a4d;
     --canvas-highlight-locate: #ffe46b;
+}
+
+/* ── OPERATE — calmer block colours on the Operate screen only, so the train
+   display (tag, line, arrowheads) is the loudest thing on the layout and the
+   detector colour reads underneath it. Empty blocks sit close to bare track.
+   Other screens keep the full-strength block colours above.
+   (design_v2.md "Seeing trains on the layout") ── */
+:root[data-screen="operate"][data-canvas-theme="dark"] {
+    --block-occupied: #b5474d;
+    --block-reserved: #3f8f62;
+    --block-free: #4b525c;
+}
+:root[data-screen="operate"][data-canvas-theme="light"] {
+    --block-occupied: #c4636d;
+    --block-reserved: #4f9b6e;
+    --block-free: #8f9099;
+}
+:root[data-screen="operate"][data-canvas-theme="blueprint"] {
+    --block-occupied: #d7707f;
+    --block-reserved: #6fbf8f;
+    --block-free: #6f8fae;
 }

@@ -287,8 +287,12 @@ export class RunningTrainOverlay implements RendererOverlay {
     // that block, which ends in a second open arrowhead.
     if (showLine) {
       const inset = TRACK_WIDTH * 0.7 * renderer.scale;
-      const bar = TRACK_WIDTH * 0.6 * renderer.scale;
-      const arm = TRACK_WIDTH * 0.9 * renderer.scale;
+      // The rear bar and both arrowheads reach past the edges of the block's
+      // colour band (at most TRACK_WIDTH * SQRT2 wide), so they read as the
+      // train's ends rather than as part of the band.
+      const bar = TRACK_WIDTH * 1.25 * renderer.scale;
+      const spread = 0.75;
+      const arm = (TRACK_WIDTH * 1.25 * renderer.scale) / Math.sin(spread);
       const stroke = (points: Point[]) => {
         ctx.beginPath();
         ctx.moveTo(points[0].x, points[0].y);
@@ -298,9 +302,9 @@ export class RunningTrainOverlay implements RendererOverlay {
       const arrow = (tip: Point, before: Point) => {
         const along = Math.atan2(tip.y - before.y, tip.x - before.x);
         ctx.beginPath();
-        ctx.moveTo(tip.x - Math.cos(along - 0.6) * arm, tip.y - Math.sin(along - 0.6) * arm);
+        ctx.moveTo(tip.x - Math.cos(along - spread) * arm, tip.y - Math.sin(along - spread) * arm);
         ctx.lineTo(tip.x, tip.y);
-        ctx.lineTo(tip.x - Math.cos(along + 0.6) * arm, tip.y - Math.sin(along + 0.6) * arm);
+        ctx.lineTo(tip.x - Math.cos(along + spread) * arm, tip.y - Math.sin(along + spread) * arm);
         ctx.stroke();
       };
       ctx.save();
@@ -345,27 +349,49 @@ export class RunningTrainOverlay implements RendererOverlay {
     for (const { train, centre, angle, pointed, text, label, color } of drawings) {
       const active = train.train_id === emphasized;
       const tagPath = () => {
-        ctx.beginPath();
-        ctx.roundRect(label.x, label.y, label.w, label.h, 4);
+        // One outline: the tag's box, with its end (or corner, on a diagonal)
+        // in the direction of travel drawn out to a point. The text stays
+        // level.
+        const x0 = label.x;
+        const y0 = label.y;
+        const x1 = label.x + label.w;
+        const y1 = label.y + label.h;
+        const cx = centre.x;
+        const cy = centre.y;
+        const point = 9;
+        const cut = label.h / 2;
+        const lean = point * 0.75;
+        type Vertex = { x: number; y: number; r: number };
+        const corner = (x: number, y: number): Vertex => ({ x, y, r: 4 });
+        const shoulder = (x: number, y: number): Vertex => ({ x, y, r: 1 });
+        const apex = (x: number, y: number): Vertex => ({ x, y, r: 0 });
+        // Clockwise from the top left (screen y grows downward).
+        let vertices: Vertex[] = [corner(x0, y0), corner(x1, y0), corner(x1, y1), corner(x0, y1)];
         if (pointed) {
-          // The point leaves the tag's edge in the direction of travel.
-          const cos = Math.cos(angle);
-          const sin = Math.sin(angle);
-          const reach = Math.min(
-            Math.abs(cos) > 1e-6 ? label.w / 2 / Math.abs(cos) : Infinity,
-            Math.abs(sin) > 1e-6 ? label.h / 2 / Math.abs(sin) : Infinity,
-          );
-          // As wide as the tag is tall, so it reads as the tag's own end.
-          const half = label.h / 2;
-          const base = { x: centre.x + cos * (reach - 2), y: centre.y + sin * (reach - 2) };
-          ctx.moveTo(base.x - sin * half, base.y + cos * half);
-          ctx.lineTo(centre.x + cos * (reach + 10), centre.y + sin * (reach + 10));
-          ctx.lineTo(base.x + sin * half, base.y - cos * half);
-          ctx.closePath();
+          // Eight ways: 0 east, 1 south-east, 2 south ... 7 north-east.
+          const way = ((Math.round(angle / (Math.PI / 4)) % 8) + 8) % 8;
+          vertices = {
+            0: [corner(x0, y0), shoulder(x1, y0), apex(x1 + point, cy), shoulder(x1, y1), corner(x0, y1)],
+            1: [corner(x0, y0), corner(x1, y0), shoulder(x1, y1 - cut), apex(x1 + lean, y1 + lean), shoulder(x1 - cut, y1), corner(x0, y1)],
+            2: [corner(x0, y0), corner(x1, y0), shoulder(x1, y1), apex(cx, y1 + point), shoulder(x0, y1)],
+            3: [corner(x0, y0), corner(x1, y0), corner(x1, y1), shoulder(x0 + cut, y1), apex(x0 - lean, y1 + lean), shoulder(x0, y1 - cut)],
+            4: [shoulder(x0, y0), corner(x1, y0), corner(x1, y1), shoulder(x0, y1), apex(x0 - point, cy)],
+            5: [apex(x0 - lean, y0 - lean), shoulder(x0 + cut, y0), corner(x1, y0), corner(x1, y1), corner(x0, y1), shoulder(x0, y0 + cut)],
+            6: [shoulder(x0, y0), apex(cx, y0 - point), shoulder(x1, y0), corner(x1, y1), corner(x0, y1)],
+            7: [corner(x0, y0), shoulder(x1 - cut, y0), apex(x1 + lean, y0 - lean), shoulder(x1, y0 + cut), corner(x1, y1), corner(x0, y1)],
+          }[way] as Vertex[];
         }
+        ctx.beginPath();
+        const last = vertices[vertices.length - 1];
+        ctx.moveTo((last.x + vertices[0].x) / 2, (last.y + vertices[0].y) / 2);
+        vertices.forEach((v, k) => {
+          const next = vertices[(k + 1) % vertices.length];
+          ctx.arcTo(v.x, v.y, next.x, next.y, v.r);
+        });
+        ctx.closePath();
       };
-      // Stroke at double width, then fill: the fill hides the inner half, so
-      // the box and its point share one outline.
+      // Stroke at double width, then fill: the fill hides the inner half of
+      // the stroke, so the edge sits outside the fill.
       const edge = active ? 2 : 1.5;
       tagPath();
       ctx.setLineDash(train.lost ? [3, 2] : []);

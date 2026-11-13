@@ -252,8 +252,8 @@ dark override. The surface, text, and accent tokens are defined as two parallel
 **literal-hex** sets — one under `:root[data-theme="dark"]`, one under
 `:root[data-theme="light"]` — and a control selects between them. An inline
 bootstrap script in `index.html` sets `data-theme` on `:root` before first
-paint (default follows the OS `prefers-color-scheme`, then persists to
-localStorage), so there is no flash. The hex columns in the tables below show
+paint (dark until the operator picks a theme, whatever the computer's
+light/dark setting; the pick persists to localStorage), so there is no flash. The hex columns in the tables below show
 the **dark** set; the light set sits beside each one in `tokens.css`. Refer to
 tokens by name and both themes resolve for free.
 
@@ -294,8 +294,8 @@ renderer reads those tokens once into a cached palette
 canvas theme changes (CSS custom properties read back from JS as the unresolved
 `var(...)` string, so the palette must hold concrete hex — the same literal-hex
 rule as the chrome tokens above). Both axes are picked in the top bar's View menu
-(§13 Header-anchored menu); the chrome default follows the OS `prefers-color-scheme`, and the canvas
-defaults to dark — the original drawing-board.
+(§13 Header-anchored menu); both the chrome and the canvas
+default to dark — the original drawing-board.
 
 ### Surfaces
 
@@ -2724,9 +2724,20 @@ color the theme gives a block state. The tag's edge and text use
 is a quarter of the band's width, so the band stays visible. It runs unbroken
 through all of the train's blocks. The rear end stops short and finishes with
 a bar across the track; the front of the front block has an open arrowhead,
-drawn as two strokes. A claim ahead carries the same line on to the middle of
+drawn as two strokes. The bar and the arrowheads reach past both edges of the
+band. The tag is one outline: a box whose end (or corner, on a diagonal) in
+the direction of travel narrows to a point. A claim ahead carries the same line on to the middle of
 the claimed block, which ends in a second open arrowhead. The tag's text
 stays level; only its point turns, to the way the train will leave.
+
+On the Operate screen the block colors are calmer:
+[layout-themes.css](../static/css/base/layout-themes.css) redefines
+`--block-occupied`, `--block-reserved` and `--block-free` under
+`:root[data-screen="operate"]` for each layout theme, with the empty color
+close to bare track. The train display is the loudest layer there; the other
+screens, where the detector reading is what the operator is looking at, keep
+the full-strength block colors. A screen change drops the cached canvas
+palette and repaints, as a theme change does.
 
 Emphasis draws two thin `--train-highlight` lines outside the edges of the
 train's blocks, cut out of the live layer so the band underneath shows

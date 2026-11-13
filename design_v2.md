@@ -195,15 +195,19 @@ The Operate screen draws a thin line along the track of each train's blocks,
 and a tag on the middle tile of its front block. Every train has the same line
 and tag, and their colour shows the train's `state`: moving, waiting, stopped
 or lost. Each layout theme sets its own four colours, and changing the layout
-theme changes them. The line is a quarter of the width of the block's own
+theme changes them. On the Operate screen each layout theme also draws the
+blocks in calmer colours than on the other screens, so the train's tag and
+line are the strongest marks on the layout and the block colour reads
+underneath them; an empty block is close to the colour of bare track. The line is a quarter of the width of the block's own
 colour band, so the band still shows whether the block reads occupied, reads
 empty or is claimed; the tag covers the band only where it sits. When the
 layout is zoomed out so far that the line would fill the track, the line is
 not drawn and the tag remains. The line stays on blocks the train still holds
 when they read empty. The line runs unbroken from the train's rear block to
 its front block, across the switch between two of its blocks. At the rear it
-stops short of the train's end and finishes with a short bar across the
-track. At the far end of the front block it has an open arrowhead. When the
+stops short of the train's end and finishes with a bar across the track. At
+the far end of the front block it has an open arrowhead. The bar and every
+arrowhead are wider than the block's colour band. When the
 train holds a claim, the line carries on from there, across the switch if
 there is one, to the middle of the claimed block, and ends in a second open
 arrowhead. Without a claim, the line stops short of the front block's end at
