@@ -252,8 +252,8 @@ dark override. The surface, text, and accent tokens are defined as two parallel
 **literal-hex** sets — one under `:root[data-theme="dark"]`, one under
 `:root[data-theme="light"]` — and a control selects between them. An inline
 bootstrap script in `index.html` sets `data-theme` on `:root` before first
-paint (default follows the OS `prefers-color-scheme`, then persists to
-localStorage), so there is no flash. The hex columns in the tables below show
+paint (dark until the operator picks a theme, whatever the computer's
+light/dark setting; the pick persists to localStorage), so there is no flash. The hex columns in the tables below show
 the **dark** set; the light set sits beside each one in `tokens.css`. Refer to
 tokens by name and both themes resolve for free.
 
@@ -294,8 +294,8 @@ renderer reads those tokens once into a cached palette
 canvas theme changes (CSS custom properties read back from JS as the unresolved
 `var(...)` string, so the palette must hold concrete hex — the same literal-hex
 rule as the chrome tokens above). Both axes are picked in the top bar's View menu
-(§13 Header-anchored menu); the chrome default follows the OS `prefers-color-scheme`, and the canvas
-defaults to dark — the original drawing-board.
+(§13 Header-anchored menu); both the chrome and the canvas
+default to dark — the original drawing-board.
 
 ### Surfaces
 
@@ -2711,15 +2711,39 @@ brown (`--canvas-hold`) = a train physically holds the switch, orange
 
 ### V2 trains on the layout
 
-The [v2 train display](../design_v2.md#seeing-trains-on-the-layout) uses one
-track-aligned line style, a direction arrow and an ID tag for every train. The
-line's color is the train's state, from four tokens each layout theme sets in
+The [v2 train display](../design_v2.md#seeing-trains-on-the-layout) draws
+every train the same way: a thin line along its blocks and a pointed ID tag
+on the middle tile of its front block. The line and the tag's fill take the
+train's state color, from four tokens each layout theme sets in
 [layout-themes.css](../static/css/base/layout-themes.css):
 `--train-line-moving`, `--train-line-waiting`, `--train-line-stopped` and
-`--train-line-lost`. None of them is a color that theme gives a block state,
-because the line lies on the block's own color band. The tag's text and the
-line's outline use the canvas background color. Emphasis makes the line
-thicker and gives it an accent outline; it never changes the state color.
+`--train-line-lost`. They are pale colors, because the line and the tag lie on
+a block's red or green band and must read against both; none of them is a
+color the theme gives a block state. The tag's edge and text use
+`--train-tag-ink`, which is dark in every theme. The line has no outline and
+is about a quarter of the band's width, so the band stays visible. It runs unbroken
+through all of the train's blocks. The rear end stops short and finishes with
+a bar across the track; the front of the front block has an open arrowhead,
+drawn as two strokes. The bar and the arrowheads reach past both edges of the
+band. The tag is one outline: a box whose end (or corner, on a diagonal) in
+the direction of travel narrows to a point. A claim ahead carries the same line on to the middle of
+the claimed block, which ends in a second open arrowhead. The tag's text
+stays level; only its point turns, to the way the train will leave.
+
+On the Operate screen the block colors are calmer:
+[layout-themes.css](../static/css/base/layout-themes.css) redefines
+`--block-occupied`, `--block-reserved` and `--block-free` under
+`:root[data-screen="operate"]` for each layout theme, with the empty color
+close to bare track. The train display is the loudest layer there; the other
+screens, where the detector reading is what the operator is looking at, keep
+the full-strength block colors. A screen change drops the cached canvas
+palette and repaints, as a theme change does.
+
+Emphasis draws two thin `--train-highlight` lines outside the edges of the
+train's blocks, cut out of the live layer so the band underneath shows
+through, and gives the tag a `--train-highlight` edge. It never changes the
+state color or covers the band. The highlight color is none of the theme's
+block-state or train-state colors.
 
 ### Train mode
 

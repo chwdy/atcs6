@@ -364,8 +364,8 @@ export class RendererTrackHandler {
     const segments = getActiveSegments(trackBits);
 
     // Lay the block-status color on top of the grey bed using the SAME geometry
-    // as the bed (drawTrackBed) — a filled band per segment, narrower so the grey
-    // shows as a frame, and footprint-matched (axial √2 wider) so every segment's
+    // as the bed (drawTrackBed) — a filled band per segment, as wide as the bed,
+    // and footprint-matched (axial √2 wider) so every segment's
     // border footprint is equal and the bands tile with no spike. Each end is
     // EITHER extended past its edge point so the tile clip (set by drawTrack)
     // trims it flush to the border, OR pulled back inside to a square end:
@@ -375,7 +375,7 @@ export class RendererTrackHandler {
     //     two segments of a crossing fill solid instead of leaving a star.
     //   - Every other edge (a different block, or empty) is pulled `capInset`
     //     inside to a square end that stops short of the border, so one block's
-    //     color never bleeds into the next and the grey frames it.
+    //     color never bleeds into the next and a grey gap marks the boundary.
     // (Filling each segment, rather than stroking a joined polyline, lets two
     // same-color bands overlap cleanly — the source of the old corner triangles.)
     const capInset = TRACK_WIDTH * this.scale;
@@ -389,7 +389,7 @@ export class RendererTrackHandler {
       const ux = dx / len;
       const uy = dy / len;
       const isAxial = OPPOSITE_EDGE[e1] === e2;
-      const bandWidth = (isAxial ? TRACK_WIDTH * Math.SQRT2 : TRACK_WIDTH) * this.scale;
+      const bandWidth = (isAxial ? TRACK_WIDTH * 2 : TRACK_WIDTH * Math.SQRT2) * this.scale;
       const start = connectedEdges.has(e1)
         ? { x: a.x - ux * half, y: a.y - uy * half }      // extend; clip trims to border
         : { x: a.x + ux * capInset, y: a.y + uy * capInset }; // square end inside the border

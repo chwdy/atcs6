@@ -48,8 +48,9 @@ export interface ThemeEnv {
   prefersLight(): boolean;
 }
 
-/** Per-channel behavior. chrome follows the OS color scheme when nothing is
- *  saved; canvas just defaults to its drawing-board dark. */
+/** Per-channel behavior: whether the channel follows the OS color scheme
+ *  when nothing is saved, and its default. Both shipped channels default to
+ *  dark and do not follow the OS. */
 export interface ChannelOptions {
   followOsPref?: boolean;
   defaultTheme?: string;
@@ -229,9 +230,10 @@ export class ThemeManager {
   }
 }
 
-/** Force the layout renderer to repaint (after a canvas-theme change). Safe
- *  before the app exists. */
-function redrawLayout(): void {
+/** Force the layout renderer to repaint (after a canvas-theme change, or a
+ *  screen change that swaps the screen's block colours). Safe before the app
+ *  exists. */
+export function redrawLayout(): void {
   if (typeof window === 'undefined') return;
   const app = (window as unknown as { app?: { renderer?: { requestRedraw?: (o: { reason: string }) => void } } }).app;
   app?.renderer?.requestRedraw?.({ reason: 'canvas-theme' });
@@ -245,8 +247,10 @@ export function initThemeManager(mgr: ThemeManager = themeManager): void {
 
 function buildDefaultManager(): ThemeManager {
   const hasDom = typeof document !== 'undefined';
+  // Both channels start dark until the operator picks a theme; neither follows
+  // the computer's light/dark setting.
   const chrome = new ThemeChannel(hasDom ? browserEnv(CHROME_ATTR, CHROME_KEY) : memoryEnv(), {
-    followOsPref: true,
+    followOsPref: false,
     defaultTheme: 'dark',
   })
     .register({ name: 'dark', label: 'Dark', icon: 'ti ti-moon' })
