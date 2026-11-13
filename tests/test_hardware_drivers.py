@@ -127,7 +127,7 @@ def test_virtual_device_refuses_the_bus_after_close_like_the_real_one():
 
 
 def test_virtual_transport_fault_enters_the_runtime_hardware_failure_path():
-    from tests.test_unidentified_trains import build_sim
+    from tests.test_track_output_unreachable import build_sim
 
     network, sim, _detector = build_sim()
     dev = FakeCh347Device(present_addresses={0x40})

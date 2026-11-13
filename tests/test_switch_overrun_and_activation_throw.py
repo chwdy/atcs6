@@ -104,17 +104,3 @@ def test_a_hardware_activation_throws_every_switch_to_the_layout():
         if n.operation == "throw_all_to_layout"
     ]
     assert event.payload == {"thrown": ["SW_A"], "skipped": ["SW_D", "SW_M"], "failed": []}
-
-
-def test_a_simulation_activation_throws_nothing():
-    network, switches = _network_with_switches()
-    sim = SimulationController(network, PathDispatcher(network))
-    sim.activate_interfaces(OperationMode.SIMULATION, None, None, None)
-
-    sim.finish_activation()
-
-    assert sim.switch_power_controller.get_last_throw("SW_A") is None
-    assert not [
-        n for n in sim.notification_center.peek_recent(50)
-        if n.operation == "throw_all_to_layout"
-    ]

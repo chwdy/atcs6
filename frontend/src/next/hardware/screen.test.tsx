@@ -10,7 +10,7 @@ import type { HardwareSetupFacts } from '../../ui/hardware-panel';
 const panel = vi.hoisted(() => {
   const facts: HardwareSetupFacts = {
     loaded: true,
-    selected: 'simulation',
+    selected: 'virtual_hardware',
     awaitsActivation: false,
     chipCount: 0,
     unprovenCount: 0,
@@ -65,9 +65,9 @@ describe('HardwareSetupScreen', () => {
     actions = { activate: vi.fn(async () => {}), showScreen: vi.fn() };
     panel.detach.mockReset();
     panel.attachHardwareScreen.mockReset().mockReturnValue(panel.detach);
-    panel.facts.selected = 'simulation';
+    panel.facts.selected = 'virtual_hardware';
     panel.facts.unsaved = false;
-    sessionState.value = { value: 'paused', halt_reason: null };
+    sessionState.value = { value: 'halted', halt_reason: 'not_activated' };
     operationEnvironment.value = 'virtual_hardware';
     screen.value = 'editor';
     hardwareStep.value = null;
@@ -78,7 +78,7 @@ describe('HardwareSetupScreen', () => {
     root.remove();
   });
 
-  it('lists the seven steps, and Simulation skips steps 2 to 6', () => {
+  it('lists the seven steps and marks the ones already done', () => {
     show();
     const steps = [...root.querySelectorAll('.nhs-step')];
     expect(steps.map((s) => s.querySelector('.nhs-step-title')!.textContent)).toEqual([
@@ -91,7 +91,7 @@ describe('HardwareSetupScreen', () => {
       'Activate',
     ]);
     expect(steps.map((s) => s.getAttribute('data-mark'))).toEqual([
-      'done', 'skipped', 'skipped', 'skipped', 'skipped', 'skipped', 'open',
+      'done', 'open', 'open', 'open', 'open', 'done', 'open',
     ]);
   });
 
@@ -110,13 +110,13 @@ describe('HardwareSetupScreen', () => {
       'Choose the environment'
     );
     act(() => root.querySelector<HTMLButtonElement>('.nhs-choice[aria-checked="false"]')!.click());
-    expect(panel.selectHardwareEnvironment).toHaveBeenCalledWith('virtual_hardware');
+    expect(panel.selectHardwareEnvironment).toHaveBeenCalledWith('real_hardware');
   });
 
   it('Activate is the top bar Activate, or saves the setup first when it has unsaved edits', async () => {
     showHardwareSetup(7);
     show();
-    await act(async () => buttonNamed(root, 'Activate Simulation').click());
+    await act(async () => buttonNamed(root, 'Activate Virtual Hardware').click());
     expect(actions.activate).toHaveBeenCalledTimes(1);
 
     panel.facts.unsaved = true;
@@ -126,14 +126,14 @@ describe('HardwareSetupScreen', () => {
     act(() => {
       hardwareStep.value = 7;
     });
-    await act(async () => buttonNamed(root, 'Activate Simulation').click());
+    await act(async () => buttonNamed(root, 'Activate Virtual Hardware').click());
     expect(panel.activateFromHardwareSetup).toHaveBeenCalledTimes(1);
   });
 
   it('offers no Activate while the session is Live, and says why', () => {
     sessionState.value = { value: 'live', halt_reason: null };
     panel.facts.selected = 'virtual_hardware';
-    operationEnvironment.value = 'simulation';
+    operationEnvironment.value = 'real_hardware';
     showHardwareSetup(7);
     show();
     expect(buttonNamed(root, 'Activate Virtual Hardware').disabled).toBe(true);

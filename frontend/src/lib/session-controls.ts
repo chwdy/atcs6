@@ -1,22 +1,21 @@
 /**
  * What the header shows and offers for the session state.
  *
- * The server derives the session state — Setup, Live, Paused, or Halted with a
- * reason — and serves it as `session_state` on the network snapshot
- * (design_new.md "Session state"). This file only turns that value into a label
+ * The server derives the session state — Setup, Live, or Halted with a reason —
+ * and serves it as `session_state` on the network snapshot (design_v2.md
+ * "Session state"). This file only turns that value into a label
  * and decides which session controls the header offers; it never derives the
  * state itself.
  */
 
 export interface SessionStateView {
-  value: 'setup' | 'live' | 'paused' | 'halted' | string;
+  value: 'setup' | 'live' | 'halted' | string;
   halt_reason: string | null;
 }
 
 /** The operating environments' names, as the header and Hardware Setup show
- *  them (design_new.md "Session mode and operating environment"). */
+ *  them (design_v2.md "Operating environment and activation"). */
 export const ENVIRONMENT_LABELS: Record<string, string> = {
-  simulation: 'Simulation',
   virtual_hardware: 'Virtual Hardware',
   real_hardware: 'Real Hardware',
 };
@@ -34,14 +33,12 @@ const HALT_LABELS: Record<string, string> = {
   not_activated: 'not activated',
 };
 
-/** The header label: "Live", "Paused", "Setup", or "Halted — <reason>". */
+/** The header label: "Live", "Setup", or "Halted — <reason>". */
 export function sessionLabel(state: SessionStateView | null | undefined): string {
   if (!state) return '—';
   switch (state.value) {
     case 'live':
       return 'Live';
-    case 'paused':
-      return 'Paused';
     case 'setup':
       return 'Setup';
     case 'halted': {
@@ -57,7 +54,6 @@ export function sessionLabel(state: SessionStateView | null | undefined): string
 export function sessionHint(state: SessionStateView | null | undefined): string {
   if (!state) return '';
   if (state.value === 'live') return 'Trains may be driven.';
-  if (state.value === 'paused') return 'Time is frozen. Press Play to resume.';
   if (state.value === 'setup') return 'Building and testing the rig. Press Activate to go live.';
   switch (state.halt_reason) {
     case 'layout_emergency_cut_out':
@@ -74,11 +70,6 @@ export function sessionHint(state: SessionStateView | null | undefined): string 
 }
 
 export interface SessionControls {
-  /** Play/Pause and the speed presets exist only in Simulation. */
-  playbackVisible: boolean;
-  /** Which way the Play/Pause button points, and whether it can be pressed. */
-  playPause: 'play' | 'pause';
-  playPauseEnabled: boolean;
   /** Reset appears only after Emergency stop. */
   resetVisible: boolean;
   /** Activate appears in the header when activating is the way to Live: from
@@ -86,17 +77,10 @@ export interface SessionControls {
   activateVisible: boolean;
 }
 
-/** Which session controls the header offers for this state and environment. */
-export function sessionControls(
-  state: SessionStateView | null | undefined,
-  activeEnvironment: string | null | undefined
-): SessionControls {
+/** Which session controls the header offers for this state. */
+export function sessionControls(state: SessionStateView | null | undefined): SessionControls {
   const value = state?.value;
-  const inSimulation = (activeEnvironment || 'simulation') === 'simulation';
   return {
-    playbackVisible: inSimulation,
-    playPause: value === 'live' ? 'pause' : 'play',
-    playPauseEnabled: inSimulation && (value === 'live' || value === 'paused'),
     resetVisible: value === 'halted' && state?.halt_reason === 'layout_emergency_cut_out',
     activateVisible:
       value === 'setup' ||
@@ -126,7 +110,7 @@ export const SETUP_TOOL_HINT = 'Runs only in Setup. Enter Setup from Hardware Se
 export function activateUnavailableReason(
   state: SessionStateView | null | undefined
 ): string | null {
-  if (state?.value === 'live') return 'The session is Live. Pause it, or enter Setup, before activating.';
+  if (state?.value === 'live') return 'The session is Live. Enter Setup before activating.';
   if (state?.value === 'halted' && state.halt_reason === 'runtime_failure') {
     return 'Clear the track conflict first.';
   }

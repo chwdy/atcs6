@@ -1,10 +1,11 @@
 """The detector reading log: one line per pass of what every block detector read.
 
-design_new.md "Event log", Detector reading log. The event log records what the
-runtime decided; this log records the readings it decided from, so a rig run
-that went wrong can be read back pass by pass. These cover:
+design_v2.md "Detector reading log". The event log records what the runtime
+decided; this log records the readings it decided from, so a rig run that went
+wrong can be read back pass by pass. Passes are driven through the runtime step
+(`run_train_step`), live and stopped. These cover:
 
-- the per-pass line (counter, pass kind, wall time, both clocks' deltas, readings);
+- the per-pass line (counter, pass kind, wall time, readings);
 - change-only writing, and the lines that list every block (first line, layout
   change, environment change, new file, after a failed write);
 - what a hardware reading carries (source, zone, mA, raw bit, hold);
@@ -25,7 +26,7 @@ import pytest
 
 import detector_reading_log as drl
 from block import Block
-from block_occupancy import OccupancyInput, SimulatedOccupancyDriver
+from block_occupancy import OccupancyInput
 from constants import OCCUPANCY_OFF_THRESHOLD, OCCUPANCY_ON_THRESHOLD
 from detector_reading_log import (
     FULL_ENVIRONMENT,
@@ -78,6 +79,7 @@ def build_sim(tmp_path, block_ids=("BLK_0", "BLK_1", "BLK_2"), input_interface=N
         PathDispatcher(network),
         operation_mode=mode,
         input_interface=detector,
+        environment_active=True,
     )
     sim._fake_clock = 0.0
     sim.unidentified_clock = lambda: sim._fake_clock
@@ -95,7 +97,7 @@ def lines_of(sim):
 def test_the_log_is_off_until_enabled():
     network = build_network(["BLK_0"])
     sim = SimulationController(network, PathDispatcher(network))
-    sim.update(0.1)
+    sim.run_train_step(live=True)
     assert not sim.detector_reading_log.enabled
     assert sim.detector_reading_log.path is None
 
@@ -107,15 +109,12 @@ def test_a_running_pass_writes_its_timing_and_every_reading_first(tmp_path):
     _network, sim, detector = build_sim(tmp_path)
     detector.current["BLK_1"] = True
 
-    sim.update(0.1, operating_delta_seconds=0.25)
+    sim.run_train_step(live=True)
 
     [line] = lines_of(sim)
     assert line["pass"] == 1
     assert line["pass_kind"] == "tick"
-    assert line["simulation_time"] == pytest.approx(0.1)
-    assert line["delta_seconds"] == pytest.approx(0.1)
-    # The uncapped delta the operating clock advanced by, never its reading.
-    assert line["operating_delta_seconds"] == pytest.approx(0.25)
+    # The log never records an `operating_time` reading.
     assert "operating_time" not in line
     # The wall time the pass started, the same stamp the pass measured from.
     assert line["wall_time"] == sim._pass_started_wall_time
@@ -136,9 +135,9 @@ def test_the_reading_is_recorded_before_the_debounce_confirms_it(tmp_path):
     # yet — but the log already shows what the detector said.
     assert OCCUPANCY_ON_THRESHOLD > 1
     _network, sim, detector = build_sim(tmp_path)
-    sim.update(0.1)
+    sim.run_train_step(live=True)
     detector.current["BLK_2"] = True
-    sim.update(0.1)
+    sim.run_train_step(live=True)
 
     assert "BLK_2" not in sim.block_occupancy_detector.confirmed_occupied
     assert lines_of(sim)[-1]["readings"] == {"BLK_2": {"present": True}}
@@ -146,17 +145,16 @@ def test_the_reading_is_recorded_before_the_debounce_confirms_it(tmp_path):
 
 def test_a_stopped_pass_writes_a_line_with_no_clock_advance(tmp_path):
     _network, sim, detector = build_sim(tmp_path)
-    sim.update(0.1)
+    sim.run_train_step(live=True)
     detector.current["BLK_0"] = True
 
-    sim.poll_hardware_occupancy()
+    sim.run_train_step(live=False)
 
     stopped = lines_of(sim)[-1]
     assert stopped["pass"] == 2
     assert stopped["pass_kind"] == "stopped"
-    assert stopped["delta_seconds"] == 0.0
+    # A stopped pass advances no clock.
     assert stopped["operating_delta_seconds"] == 0.0
-    assert stopped["simulation_time"] == pytest.approx(0.1)
     assert stopped["readings"] == {"BLK_0": {"present": True}}
 
 
@@ -165,14 +163,14 @@ def test_a_stopped_pass_writes_a_line_with_no_clock_advance(tmp_path):
 
 def test_later_lines_carry_only_the_blocks_whose_reading_changed(tmp_path):
     _network, sim, detector = build_sim(tmp_path)
-    sim.update(0.1)                         # full line
-    sim.update(0.1)                         # nothing changed
+    sim.run_train_step(live=True)                         # full line
+    sim.run_train_step(live=True)                         # nothing changed
     detector.current["BLK_1"] = True
-    sim.update(0.1)                         # BLK_1 came on
-    sim.update(0.1)                         # nothing changed
+    sim.run_train_step(live=True)                         # BLK_1 came on
+    sim.run_train_step(live=True)                         # nothing changed
     detector.current["BLK_1"] = False
     detector.current["BLK_2"] = True
-    sim.update(0.1)                         # BLK_1 off, BLK_2 on
+    sim.run_train_step(live=True)                         # BLK_1 off, BLK_2 on
 
     lines = lines_of(sim)
     assert [line["pass"] for line in lines] == [1, 2, 3, 4, 5]
@@ -198,7 +196,7 @@ def test_replaying_the_lines_rebuilds_every_pass_reading(tmp_path):
     expected = []
     for on in script:
         detector.current = {b: b in on for b in ("BLK_0", "BLK_1", "BLK_2")}
-        sim.update(0.1)
+        sim.run_train_step(live=True)
         expected.append(dict(detector.current))
 
     state = {}
@@ -214,11 +212,11 @@ def test_replaying_the_lines_rebuilds_every_pass_reading(tmp_path):
 
 def test_a_requested_layout_change_lists_every_block_again(tmp_path):
     _network, sim, _detector = build_sim(tmp_path)
-    sim.update(0.1)
-    sim.update(0.1)
+    sim.run_train_step(live=True)
+    sim.run_train_step(live=True)
 
     sim.detector_reading_log.request_full(FULL_LAYOUT)
-    sim.update(0.1)
+    sim.run_train_step(live=True)
 
     line = lines_of(sim)[-1]
     assert line["full"] == FULL_LAYOUT
@@ -227,14 +225,14 @@ def test_a_requested_layout_change_lists_every_block_again(tmp_path):
 
 def test_a_changed_set_of_read_blocks_lists_every_block_again(tmp_path):
     network, sim, detector = build_sim(tmp_path)
-    sim.update(0.1)
+    sim.run_train_step(live=True)
 
     # A block added to the layout starts appearing in the read.
     block = Block(block_id="BLK_3", length_cm=100.0)
     block.ordered_tiles = [(3, 0, "W")]
     network.blocks["BLK_3"] = block
     detector.current["BLK_3"] = False
-    sim.update(0.1)
+    sim.run_train_step(live=True)
 
     line = lines_of(sim)[-1]
     assert line["full"] == FULL_LAYOUT
@@ -243,13 +241,13 @@ def test_a_changed_set_of_read_blocks_lists_every_block_again(tmp_path):
 
 def test_a_new_environment_lists_every_block_again(tmp_path):
     network, sim, _detector = build_sim(tmp_path)
-    sim.update(0.1)
+    sim.run_train_step(live=True)
 
     # Activation rebinds the boundary and builds a fresh detector.
     replacement = FakeDetector(network.blocks)
     replacement.current["BLK_0"] = True
     sim.activate_interfaces(OperationMode.VIRTUAL_HARDWARE, replacement, None, None)
-    sim.update(0.1)
+    sim.run_train_step(live=True)
 
     line = lines_of(sim)[-1]
     assert line["full"] == FULL_ENVIRONMENT
@@ -264,13 +262,13 @@ def test_entering_setup_lists_every_block_with_no_environment(tmp_path):
     network, sim, _detector = build_sim(tmp_path)
     hardware = FakeDetector(network.blocks)
     sim.activate_interfaces(OperationMode.VIRTUAL_HARDWARE, hardware, None, None)
-    sim.update(0.1)
+    sim.run_train_step(live=True)
 
     # Setup keeps the detector open; its stopped passes read it.
     sim.deactivate_environment([])
-    sim.poll_hardware_occupancy()
+    sim.run_train_step(live=False)
     hardware.current["BLK_1"] = True
-    sim.poll_hardware_occupancy()
+    sim.run_train_step(live=False)
 
     entering, during = lines_of(sim)[-2:]
     assert entering["full"] == FULL_ENVIRONMENT
@@ -279,20 +277,6 @@ def test_entering_setup_lists_every_block_with_no_environment(tmp_path):
     assert "full" not in during
     assert during["readings"] == {"BLK_1": {"present": True}}
 
-
-def test_the_simulated_driver_is_recorded_too(tmp_path):
-    network = build_network(["BLK_0", "BLK_1"])
-    sim = SimulationController(network, PathDispatcher(network))
-    assert isinstance(sim.input_interface, SimulatedOccupancyDriver)
-    sim.detector_reading_log.enable(tmp_path)
-    sim.update(0.1)
-
-    [line] = lines_of(sim)
-    assert line["environment"] == "simulation"
-    assert line["readings"] == {
-        "BLK_0": {"present": False},
-        "BLK_1": {"present": False},
-    }
 
 
 # ------------------------------------------------------- hardware readings
@@ -330,7 +314,7 @@ def test_a_hardware_reading_carries_its_source_and_measured_value(tmp_path):
     # Driven: the current channel decides and its mA is recorded.
     blk.set_voltage("B1", 9.0)
     dev.set_ina3221_current(0x41, 1, 0.01283)       # 12.83 mA, under the 15 mA trip
-    sim.update(0.1)
+    sim.run_train_step(live=True)
     driven = lines_of(sim)[-1]["readings"]["B1"]
     assert driven == {
         "present": False,
@@ -343,7 +327,7 @@ def test_a_hardware_reading_carries_its_source_and_measured_value(tmp_path):
     # Idle: the '165 decides and its raw bit is recorded.
     blk.set_voltage("B1", 0.0)
     dev.set_input_bit("cs1", 3, True, width=1)
-    sim.update(0.1)
+    sim.run_train_step(live=True)
     idle = lines_of(sim)[-1]["readings"]["B1"]
     assert idle == {
         "present": True,
@@ -394,7 +378,7 @@ def _write_failure_events(sim):
 
 def test_a_failed_write_is_reported_once_and_the_tick_carries_on(tmp_path, monkeypatch):
     _network, sim, detector = build_sim(tmp_path)
-    sim.update(0.1)
+    sim.run_train_step(live=True)
     log = sim.detector_reading_log
 
     # The disk fills: the open file and every reopen fail from here on.
@@ -402,10 +386,9 @@ def test_a_failed_write_is_reported_once_and_the_tick_carries_on(tmp_path, monke
     monkeypatch.setattr(drl, "open", _failing_open, raising=False)
     detector.current["BLK_1"] = True
     for _ in range(OCCUPANCY_ON_THRESHOLD + 2):
-        sim.update(0.1)
+        sim.run_train_step(live=True)
 
-    # The ticks ran: the clock advanced and the detector confirmed the block.
-    assert sim.simulation_time == pytest.approx(0.1 * (OCCUPANCY_ON_THRESHOLD + 3))
+    # The passes ran: the detector confirmed the block.
     assert "BLK_1" in sim.block_occupancy_detector.confirmed_occupied
     assert not sim.runtime_halted
 
@@ -419,7 +402,7 @@ def test_a_failed_write_is_reported_once_and_the_tick_carries_on(tmp_path, monke
     # The disk recovers: the next line restates every block, the gap in `pass`
     # shows the lost lines, and the condition is resolved.
     monkeypatch.undo()
-    sim.update(0.1)
+    sim.run_train_step(live=True)
     lines = lines_of(sim)
     assert [line["pass"] for line in lines] == [1, OCCUPANCY_ON_THRESHOLD + 4]
     assert lines[-1]["full"] == FULL_WRITE_FAILURE
@@ -429,7 +412,7 @@ def test_a_failed_write_is_reported_once_and_the_tick_carries_on(tmp_path, monke
     # A later failure is a new stretch, so it is reported again.
     log._file = _BrokenFile()
     monkeypatch.setattr(drl, "open", _failing_open, raising=False)
-    sim.update(0.1)
+    sim.run_train_step(live=True)
     assert len(_write_failure_events(sim)) == 2
 
 
@@ -441,10 +424,10 @@ def test_a_driver_detail_that_raises_does_not_stop_the_tick(tmp_path):
     _network, sim, _ = build_sim(
         tmp_path, input_interface=_BadDetail(("BLK_0", "BLK_1", "BLK_2"))
     )
-    sim.update(0.1)
-    sim.update(0.1)
+    sim.run_train_step(live=True)
+    sim.run_train_step(live=True)
 
-    assert sim.simulation_time == pytest.approx(0.2)
+    assert not sim.runtime_halted
     assert len(_write_failure_events(sim)) == 1
 
 
@@ -456,19 +439,24 @@ def test_a_directory_that_cannot_be_made_is_a_failed_write_that_retries(tmp_path
     blocker = tmp_path / "not_a_dir"
     blocker.write_text("a file where the directory should be")
     network = build_network(["BLK_0"])
-    sim = SimulationController(network, PathDispatcher(network))
+    sim = SimulationController(
+        network,
+        PathDispatcher(network),
+        input_interface=FakeDetector(["BLK_0"]),
+        environment_active=True,
+    )
 
     sim.detector_reading_log.enable(blocker / "readings")
-    sim.update(0.1)
-    sim.update(0.1)
+    sim.run_train_step(live=True)
+    sim.run_train_step(live=True)
 
     assert sim.detector_reading_log.enabled
-    assert sim.simulation_time == pytest.approx(0.2)
+    assert not sim.runtime_halted
     assert len(_write_failure_events(sim)) == 1
     assert WRITE_FAILED_CONDITION_KEY in sim.notification_center._active_conditions
 
     blocker.unlink()
-    sim.update(0.1)
+    sim.run_train_step(live=True)
 
     [line] = lines_of(sim)
     assert line["full"] == FULL_START
@@ -540,7 +528,7 @@ def test_every_line_is_one_json_object(tmp_path):
     _network, sim, detector = build_sim(tmp_path)
     for i in range(5):
         detector.current["BLK_0"] = i % 2 == 0
-        sim.update(0.1)
+        sim.run_train_step(live=True)
     with open(sim.detector_reading_log.path, encoding="utf-8") as f:
         raw_lines = f.read().splitlines()
     assert len(raw_lines) == 5
@@ -567,9 +555,9 @@ def test_bootstrap_enables_the_log_only_when_given_a_directory(tmp_path):
 def test_only_the_start_line_carries_the_start_state(tmp_path):
     _network, sim, detector = build_sim(tmp_path)
     sim.detector_reading_log.set_start_state({"layout": {"blocks": {}}})
-    sim.update(0.1)
+    sim.run_train_step(live=True)
     sim.detector_reading_log.request_full(FULL_LAYOUT)
-    sim.update(0.1)
+    sim.run_train_step(live=True)
     first, second = lines_of(sim)
     assert first["full"] == FULL_START and first["start_state"] == {"layout": {"blocks": {}}}
     assert second["full"] == FULL_LAYOUT and "start_state" not in second
@@ -583,7 +571,7 @@ def test_bootstrap_records_what_the_server_booted_with(tmp_path):
     )
     start = sim.detector_reading_log._start_state
     assert start["layout"] == network.to_layout_dict()
-    assert start["selected_environment"] == "simulation"
+    assert start["selected_environment"] == "virtual_hardware"
     assert start["trains_on_track"] == []
     assert set(start) == {
         "layout", "hardware", "locomotives", "selected_environment", "trains_on_track",
@@ -592,13 +580,13 @@ def test_bootstrap_records_what_the_server_booted_with(tmp_path):
 
 def test_a_command_line_records_the_pass_it_ran_after(tmp_path):
     _network, sim, _detector = build_sim(tmp_path)
-    sim.update(0.1)
-    sim.update(0.1)
+    sim.run_train_step(live=True)
+    sim.run_train_step(live=True)
     sim.detector_reading_log.record_command(
         method="POST", path="/api/trains/T/power-on", query="", body={"a": 1},
         status=200, after_pass=2,
     )
-    sim.update(0.1)
+    sim.run_train_step(live=True)
     lines = lines_of(sim)
     assert [line.get("pass") for line in lines] == [1, 2, None, 3]
     command = lines[2]
@@ -617,7 +605,7 @@ def test_a_command_before_the_first_pass_leaves_the_start_line_first_among_passe
         method="POST", path="/api/operation/activate", query="", body=None,
         status=200, after_pass=0,
     )
-    sim.update(0.1)
+    sim.run_train_step(live=True)
     command, first_pass = lines_of(sim)
     assert command["after_pass"] == 0
     assert first_pass["full"] == FULL_START
@@ -678,12 +666,11 @@ def test_the_server_records_state_changing_requests_only(tmp_path):
     state = AppState(
         network=network, path_dispatcher=sim.path_dispatcher, sim_controller=sim,
         persistence_manager=PersistenceManager(storage_dir=str(tmp_path / "layouts")),
-        simulation_lock=lock, simulation_running=False, simulation_speed=1.0,
-        last_update_time=datetime.now(),
+        simulation_lock=lock,
     )
     client = create_app(state).test_client()
     with lock:
-        sim.update(0.1)
+        sim.run_train_step(live=True)
     client.get("/api/trains")
     client.post("/api/trains/NOPE/power-on")
     commands = [line for line in lines_of(sim) if "command" in line]
@@ -694,7 +681,7 @@ def test_the_server_records_state_changing_requests_only(tmp_path):
 
 def test_a_failed_command_write_is_reported_and_the_request_carries_on(tmp_path, monkeypatch):
     _network, sim, _detector = build_sim(tmp_path)
-    sim.update(0.1)
+    sim.run_train_step(live=True)
     log = sim.detector_reading_log
     log._file = _BrokenFile()
     monkeypatch.setattr(drl, "open", _failing_open, raising=False)

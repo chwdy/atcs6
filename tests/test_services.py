@@ -51,9 +51,6 @@ def state():
         sim_controller=sim_controller,
         persistence_manager=persistence_manager,
         simulation_lock=threading.Lock(),
-        simulation_running=False,
-        simulation_speed=1.0,
-        last_update_time=datetime.now(),
     )
 
 

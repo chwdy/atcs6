@@ -171,7 +171,7 @@ export class RendererTrackHandler {
     let trackColor = p.track;
     if (track.block_section_id && this.currentBlocks) {
       const mode = this.currentNetwork?.operation_mode;
-      const resolved = blockTrackColor(this.currentBlocks[track.block_section_id], !!mode && mode !== 'simulation');
+      const resolved = blockTrackColor(this.currentBlocks[track.block_section_id], !!mode);
       if (resolved) trackColor = resolved;
     } else if (track.occupied_by) {
       trackColor = p.danger;

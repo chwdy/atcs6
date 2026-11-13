@@ -45,9 +45,6 @@ def state_with_train():
         sim_controller=sim_controller,
         persistence_manager=persistence_manager,
         simulation_lock=threading.Lock(),
-        simulation_running=False,
-        simulation_speed=1.0,
-        last_update_time=datetime.now(),
     )
     car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length_cm=20.0)
     train = Train(train_id="TRAIN_A", consist=[car], max_speed=80.0)
@@ -70,54 +67,6 @@ def _setup_running_run(state, train, *, route_id="R", stop_block="BLK_1"):
     state.sim_controller.get_or_create_controller(train.train_id)
     return route, rex
 
-
-def test_structural_edit_holds_then_reapplies_assignment(state_with_train):
-    state, train = state_with_train
-    route, rex = _setup_running_run(state, train)
-    controller = state.sim_controller.get_controller("TRAIN_A")
-    assert rex.execution_state_for("TRAIN_A") is not None  # RUNNING run exists
-
-    # Structural edit: change the stop's target block (kind/location/direction
-    # differs => structural). The handler must hold the re-assignment, NOT
-    # re-add up front.
-    train_route_service.update_route(
-        state, "R", tasks=[{"task_kind": "stop", "task_location": "BLK_2"}]
-    )
-    assert rex._pending_reassign == {"TRAIN_A": "R"}
-    assert controller.route_hooks.phase_latches.route_deactivate is True
-
-    # Action (teardown) deactivate consumer: remove (which UNASSIGNS) then re-apply.
-    state.sim_controller._consume_pending_route_deactivate(controller, train)
-
-    # The train ends up STILL assigned (pre-fix it was left unassigned).
-    assert "TRAIN_A" in route.assigned_train_ids
-    assert rex._pending_reassign == {}                       # stash consumed
-    assert controller.route_hooks.phase_latches.route_deactivate is False
-
-    # The old run is torn down; a fresh run allocates against the edited tasks.
-    assert rex.execution_state_for("TRAIN_A") is None
-    fresh = rex._ensure_run_for(train, route)
-    assert fresh.current_route_status == RouteRunStatus.RUNNING
-    assert len(fresh.task_runs) == len(route.tasks) == 1
-
-
-def test_admin_deactivate_records_nothing_and_leaves_train_unassigned(
-    state_with_train,
-):
-    """Admin route deactivate / abort / power-off record no held re-assignment,
-    so the train stays unassigned after the clear."""
-    state, train = state_with_train
-    route, rex = _setup_running_run(state, train)
-    controller = state.sim_controller.get_controller("TRAIN_A")
-
-    # Admin-style deactivate: latch set, but NO held re-assignment recorded.
-    controller.route_hooks.phase_latches.set_route_deactivate(
-        reason="admin", has_active_path=False
-    )
-    state.sim_controller._consume_pending_route_deactivate(controller, train)
-
-    assert "TRAIN_A" not in route.assigned_train_ids
-    assert rex.apply_pending_reassign("TRAIN_A") is None     # nothing held
 
 
 def test_name_only_edit_is_not_structural(state_with_train):

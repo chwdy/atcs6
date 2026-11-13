@@ -155,8 +155,7 @@ export interface SimClient {
   atoGo(trainId: string): Promise<any>;
   atoStop(trainId: string): Promise<any>;
 
-  // --- Simulation + server ops ---
-  controlSimulation(action: string, speed?: number | null): Promise<any>;
+  // --- Server ops ---
   restartServer(): Promise<any>;
   healthCheck(): Promise<any>;
 

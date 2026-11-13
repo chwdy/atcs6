@@ -19,11 +19,8 @@ export type Screen = 'editor' | 'hardware' | 'operate' | 'locomotives' | 'logs';
 /** The session state (design_new.md "Session state"); null before the first snapshot. */
 export const sessionState = signal<SessionStateView | null>(null);
 
-/** The active operating environment: `simulation`, `virtual_hardware` or `real_hardware`. */
+/** The active operating environment: `virtual_hardware` or `real_hardware`. */
 export const operationEnvironment = signal<string | null>(null);
-
-/** The Simulation speed multiplier. */
-export const simulationSpeed = signal<number>(1);
 
 /** The screen the top bar's tabs show as picked. */
 export const screen = signal<Screen>('editor');
@@ -56,7 +53,6 @@ export function updateFromNetwork(network: any): void {
   if (!sameSession(sessionState.peek(), session)) sessionState.value = session;
   const env: string | null = network?.operation_environment ?? null;
   if (operationEnvironment.peek() !== env) operationEnvironment.value = env;
-  if (typeof network?.simulation_speed === 'number') simulationSpeed.value = network.simulation_speed;
   const empty = Array.isArray(network?.tracks) ? network.tracks.length === 0 : null;
   if (layoutEmpty.peek() !== empty) layoutEmpty.value = empty;
   updateLocomotivesFromNetwork(network);

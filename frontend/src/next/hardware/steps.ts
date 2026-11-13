@@ -25,7 +25,7 @@ export const SETUP_STEPS: readonly SetupStep[] = [
 ];
 
 /** `done` gets a tick; `skipped` is a step Simulation does not need. */
-export type StepMark = 'done' | 'open' | 'skipped';
+export type StepMark = 'done' | 'open';
 
 /** What the marks are worked out from. */
 export interface StepFacts {
@@ -47,37 +47,30 @@ export interface StepFacts {
 }
 
 /**
- * Whether the selected environment is the one running, and running: Live,
- * or Paused in Simulation. Activate is the only way out of Setup, so once
- * this holds, the steps that lead to activation count as done.
+ * Whether the selected environment is the one running, and Live. Activate is
+ * the only way out of Setup, so once this holds, the steps that lead to
+ * activation count as done.
  */
 export function selectedIsRunning(f: StepFacts): boolean {
-  return (
-    f.selected != null &&
-    f.active === f.selected &&
-    (f.session?.value === 'live' || f.session?.value === 'paused')
-  );
+  return f.selected != null && f.active === f.selected && f.session?.value === 'live';
 }
 
 export function stepMarks(f: StepFacts): Record<StepId, StepMark> {
   const running = selectedIsRunning(f);
   const inSetup = f.session?.value === 'setup';
-  // Simulation never reads the Hardware Setup, so it skips steps 2 to 6.
-  const skip = f.selected === 'simulation';
-  const mark = (done: boolean, skippable = true): StepMark =>
-    skip && skippable ? 'skipped' : done ? 'done' : 'open';
+  const mark = (done: boolean): StepMark => (done ? 'done' : 'open');
   return {
-    1: mark(f.selected != null, false),
+    1: mark(f.selected != null),
     2: mark(f.chipCount > 0 && !f.unsaved && f.coverageComplete === true),
     3: mark(inSetup || running),
     4: mark((f.chipCount > 0 && f.unprovenCount === 0) || running),
     5: mark((inSetup && !f.toolOpen) || running),
     6: mark(f.ready === true),
-    7: mark(running, false),
+    7: mark(running),
   };
 }
 
-/** The first step that is neither done nor skipped, or 7 when all are. */
+/** The first step that is not done, or 7 when all are. */
 export function firstOpenStep(marks: Record<StepId, StepMark>): StepId {
   return SETUP_STEPS.find((s) => marks[s.id] === 'open')?.id ?? 7;
 }

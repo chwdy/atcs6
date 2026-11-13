@@ -175,7 +175,7 @@ export function hardwareSectionHtml(cfg: HwConfig | null, logicalId: string, slo
  * because the edit that makes it true happens while the operator is looking at
  * this panel and a toast alone is missable. */
 function activationNoteHtml(cfg: HwConfig): string {
-  if (!cfg.environment_active || cfg.operation_environment === 'simulation') {
+  if (!cfg.environment_active) {
     const test = setupToolsAllowed(cfg.session_state) ? 'Test works' : 'Test works in Setup';
     return `<p class="text-warning text-xs mt-4">This Hardware Setup is not active. Wiring saves now and ${test}; activate Virtual Hardware or Real Hardware from Run Environment to use it.</p>`;
   }
@@ -186,7 +186,7 @@ function activationNoteHtml(cfg: HwConfig): string {
  * therefore is NOT using yet: toast it, and reveal the standing note so the
  * state survives the toast. */
 function noteBindingSaved(cfg: HwConfig, what: string): void {
-  if (!cfg.environment_active || cfg.operation_environment === 'simulation') return;
+  if (!cfg.environment_active) return;
   cfg.awaits_activation = true;
   document
     .querySelectorAll<HTMLElement>('.hw-pending-note')
@@ -199,7 +199,7 @@ function noteBindingSaved(cfg: HwConfig, what: string): void {
  * "activate again to apply" — is what made re-picking a coil port look like it
  * did nothing. */
 function noteBindingLive(cfg: HwConfig, what: string): void {
-  if (!cfg.environment_active || cfg.operation_environment === 'simulation') return;
+  if (!cfg.environment_active) return;
   showToast(`${what} saved — the next throw uses it.`, 'info', 3000);
 }
 

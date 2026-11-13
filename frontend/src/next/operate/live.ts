@@ -118,10 +118,10 @@ export interface RunningTrain {
   claimed_block_id: string | null;
 }
 
-/** Whether this session runs v2 trains: a Virtual Hardware or Real Hardware
- *  environment. The v1 Simulation environment keeps the v1 train cards. */
+/** Whether this session runs v2 trains: true once the first snapshot names
+ *  its environment. */
 export function usesRunningTrains(sm: StateManager = stateManager): boolean {
-  return sm.operationMode !== null && sm.operationMode !== 'simulation';
+  return sm.operationMode !== null;
 }
 
 /** Every v2 train, oldest first, so the cards keep their places. */

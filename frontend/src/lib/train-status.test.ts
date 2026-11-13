@@ -132,7 +132,6 @@ describe('startRouteUnavailableReason', () => {
 
 describe('holdReasonText for the first question', () => {
   it('names the way back for each session state', () => {
-    expect(holdReasonText({ code: 'paused', question: 1, detail: null })).toMatch(/Press Play/);
     expect(holdReasonText({ code: 'setup', question: 1, detail: null })).toMatch(/Activate/);
     expect(
       holdReasonText({ code: 'halted', question: 1, detail: 'layout_emergency_cut_out' })

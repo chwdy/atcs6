@@ -120,9 +120,6 @@ def test_api_trains_composite_carries_ato_status(tmp_path):
         sim_controller=sim,
         persistence_manager=PersistenceManager(storage_dir=str(tmp_path)),
         simulation_lock=threading.Lock(),
-        simulation_running=False,
-        simulation_speed=1.0,
-        last_update_time=datetime.now(),
     )
     client = create_app(state).test_client()
 

@@ -12,21 +12,16 @@ from typing import Any, Dict, Optional
 
 
 class OperationMode(Enum):
-    """The session's selected operating environment.
+    """The session's operating environment (design_v2.md "Operating
+    environment and activation").
 
-    The three environments share one control core. Simulation bypasses Hardware
-    Setup, Virtual Hardware exercises that setup against a controllable fake
-    device, and Real Hardware uses the physical device. The short names remain
-    aliases for older callers during the migration; their serialized values are
-    the canonical environment names.
+    Both environments use the same Hardware Setup and the same runtime step.
+    Virtual Hardware drives an in-memory stand-in for the rig; Real Hardware
+    drives the rig.
     """
 
-    SIMULATION = "simulation"
     VIRTUAL_HARDWARE = "virtual_hardware"
     REAL_HARDWARE = "real_hardware"
-
-    SIM = SIMULATION
-    REAL = REAL_HARDWARE
 
 
 class PathStatus(Enum):
@@ -124,14 +119,13 @@ class BlockState(Enum):
 
 
 class SessionStateValue(Enum):
-    """The four values of the session state (design_new.md "Session state").
+    """The three values of the session state (design_v2.md "Session state").
 
     Read through `AppState.session_state()`; nothing stores it.
     """
 
-    SETUP = "setup"  # Building and testing the rig; Virtual/Real Hardware only.
-    LIVE = "live"  # Trains may be driven; the whole tick runs.
-    PAUSED = "paused"  # Simulation only: time is frozen.
+    SETUP = "setup"  # Building and testing the rig.
+    LIVE = "live"  # Trains may be driven; the whole runtime step runs.
     HALTED = "halted"  # Nothing drives; always carries a HaltReason.
 
 

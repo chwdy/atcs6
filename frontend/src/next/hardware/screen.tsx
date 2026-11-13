@@ -139,7 +139,6 @@ const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? o
 
 /** The one line under each step's title in the left column. */
 function stepStatus(id: StepId, { panel, facts, marks }: ScreenFacts): string {
-  if (marks[id] === 'skipped') return 'Not needed in Simulation';
   const inSetup = facts.session?.value === 'setup';
   switch (id) {
     case 1:
@@ -172,9 +171,9 @@ function stepStatus(id: StepId, { panel, facts, marks }: ScreenFacts): string {
   }
 }
 
-/** The step after `id` that Simulation does not skip. */
-function nextStepAfter(id: StepId, marks: Record<StepId, StepMark>): StepId | null {
-  const later = SETUP_STEPS.filter((s) => s.id > id && marks[s.id] !== 'skipped');
+/** The step after `id`. */
+function nextStepAfter(id: StepId): StepId | null {
+  const later = SETUP_STEPS.filter((s) => s.id > id);
   return later[0]?.id ?? null;
 }
 
@@ -234,7 +233,7 @@ export function HardwareSetupScreen({ actions }: { actions: HardwareScreenAction
                   onClick={() => goTo(s.id)}
                 >
                   <span class="nhs-step-mark" aria-hidden="true">
-                    {mark === 'done' ? <i class="ti ti-check" /> : mark === 'skipped' ? '–' : s.id}
+                    {mark === 'done' ? <i class="ti ti-check" /> : s.id}
                   </span>
                   <span class="nhs-step-text">
                     <span class="nhs-step-title">{s.title}</span>
@@ -287,7 +286,7 @@ function StepFrame({
   children?: ComponentChildren;
 }) {
   const step = SETUP_STEPS.find((s) => s.id === id)!;
-  const next = nextStepAfter(id, sf.marks);
+  const next = nextStepAfter(id);
   const nextTitle = next ? SETUP_STEPS.find((s) => s.id === next)!.title : null;
   return (
     <div class={`nhs-step-body nhs-step-${id}`}>
@@ -300,12 +299,6 @@ function StepFrame({
           </span>
         )}
       </header>
-      {sf.marks[id] === 'skipped' && (
-        <p class="nhs-note nhs-note-info">
-          Simulation never reads the Hardware Setup, so it skips this step. You can still do it
-          now for Virtual Hardware or Real Hardware.
-        </p>
-      )}
       <div class="nhs-intro">{intro}</div>
       {children}
       {next && nextTitle && (
@@ -336,11 +329,6 @@ function useBusy(): [boolean, (run: () => Promise<void>) => Promise<void>] {
 // --- step 1 -------------------------------------------------------------------
 
 const ENVIRONMENTS: { id: string; icon: string; text: string }[] = [
-  {
-    id: 'simulation',
-    icon: 'ti ti-device-desktop',
-    text: 'Trains run inside the app. It never reads the Hardware Setup, so steps 2 to 6 are skipped.',
-  },
   {
     id: 'virtual_hardware',
     icon: 'ti ti-flask',
@@ -392,7 +380,7 @@ function ChooseEnvironment(props: StepProps) {
         Running now: <strong>{environmentLabel(sf.facts.active) || '—'}</strong>,{' '}
         {sessionLabel(sf.facts.session)}.
       </p>
-      {selected !== 'simulation' && blockers > 0 && (
+      {blockers > 0 && (
         <p class="nhs-note nhs-note-warn">
           {plural(blockers, 'readiness blocker')} would stop activation.{' '}
           <button type="button" class="nhs-link" onClick={() => props.goTo(6)}>
@@ -450,7 +438,6 @@ function BuildSetup(props: StepProps) {
 // --- step 3 -------------------------------------------------------------------
 
 function enterSetupRefusal(facts: StepFacts): string | null {
-  if (facts.selected === 'simulation') return 'Simulation has no rig, so it has no Setup.';
   if (facts.session?.value === 'halted' && facts.session.halt_reason === 'runtime_failure') {
     return 'Clear the track conflict first.';
   }
@@ -462,7 +449,7 @@ function EnterSetup(props: StepProps) {
   const [busy, run] = useBusy();
   const inSetup = sf.facts.session?.value === 'setup';
   const refusal = enterSetupRefusal(sf.facts);
-  const live = sf.facts.session?.value === 'live' || sf.facts.session?.value === 'paused';
+  const live = sf.facts.session?.value === 'live';
   return (
     <StepFrame
       id={3}
@@ -534,7 +521,7 @@ function ProveChips(props: StepProps) {
         </p>
       }
     >
-      {!inSetup && sf.marks[4] !== 'skipped' && (
+      {!inSetup && (
         <p class="nhs-note nhs-note-warn">
           The session is not in Setup, so the tests that drive outputs are off.{' '}
           <button type="button" class="nhs-link" onClick={() => props.goTo(3)}>
@@ -938,7 +925,7 @@ function Activate(props: StepProps) {
   const running = selectedIsRunning(sf.facts);
   const label = environmentLabel(sf.facts.selected);
   const unavailable = activateUnavailableReason(sf.facts.session);
-  const blockers = sf.facts.selected === 'simulation' ? 0 : sf.panel.readiness.issues.length;
+  const blockers = sf.panel.readiness.issues.length;
   // An unsaved setup is saved first, as the dialog's Activate does; otherwise
   // this is the top bar's Activate.
   const activate = () => (sf.panel.unsaved ? activateFromHardwareSetup() : actions.activate());

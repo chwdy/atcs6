@@ -5,7 +5,7 @@ import { firstOpenStep, stepMarks, type StepFacts } from './steps';
 function facts(over: Partial<StepFacts> = {}): StepFacts {
   return {
     selected: 'virtual_hardware',
-    active: 'simulation',
+    active: 'real_hardware',
     session: { value: 'halted', halt_reason: 'not_activated' },
     chipCount: 2,
     unprovenCount: 2,
@@ -18,19 +18,6 @@ function facts(over: Partial<StepFacts> = {}): StepFacts {
 }
 
 describe('stepMarks', () => {
-  it('skips steps 2 to 6 in Simulation', () => {
-    const marks = stepMarks(facts({ selected: 'simulation', session: { value: 'paused', halt_reason: null } }));
-    expect(marks).toEqual({
-      1: 'done',
-      2: 'skipped',
-      3: 'skipped',
-      4: 'skipped',
-      5: 'skipped',
-      6: 'skipped',
-      7: 'done',
-    });
-  });
-
   it('counts the setup as built only when it is saved and binds the whole layout', () => {
     expect(stepMarks(facts())[2]).toBe('done');
     expect(stepMarks(facts({ unsaved: true }))[2]).toBe('open');
@@ -55,18 +42,25 @@ describe('stepMarks', () => {
   });
 
   it('does not count another environment running as activated', () => {
-    expect(stepMarks(facts({ session: { value: 'paused', halt_reason: null } }))[7]).toBe('open');
+    expect(stepMarks(facts({ session: { value: 'live', halt_reason: null } }))[7]).toBe('open');
   });
 });
 
 describe('firstOpenStep', () => {
-  it('is the first step neither done nor skipped', () => {
+  it('is the first step not done', () => {
     expect(firstOpenStep(stepMarks(facts({ chipCount: 0 })))).toBe(2);
     expect(firstOpenStep(stepMarks(facts()))).toBe(3);
   });
 
   it('is Activate when every step is done', () => {
-    const marks = stepMarks(facts({ selected: 'simulation', active: 'simulation', session: { value: 'live', halt_reason: null } }));
+    const marks = stepMarks(
+      facts({
+        active: 'virtual_hardware',
+        session: { value: 'live', halt_reason: null },
+        unprovenCount: 0,
+        ready: true,
+      })
+    );
     expect(firstOpenStep(marks)).toBe(7);
   });
 });

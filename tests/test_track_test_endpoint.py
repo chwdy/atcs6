@@ -56,8 +56,7 @@ def _no_dwell(monkeypatch):
 # Develop mode: the real-mode stack against the in-memory fake device, so the
 # endpoint runs its whole path with no rig attached.
 CONFIG = {
-    "enabled": True,
-    "develop": True,
+    "environment": "virtual_hardware",
     "controller": {"kind": "ch347", "device_port": None},
     "chips": [{"chip_id": "pwm1", "kind": "pca9685", "i2c_address": 0x40}],
     "block_track": {"BLK_A": {"chip_id": "pwm1", "forward": 4, "reverse": 9}},
@@ -78,9 +77,6 @@ def client():
         sim_controller=sim_controller,
         persistence_manager=PersistenceManager(storage_dir="layouts"),
         simulation_lock=threading.Lock(),
-        simulation_running=False,
-        simulation_speed=1.0,
-        last_update_time=datetime.now(),
     )
     # The track direction sweep runs only in Setup (design_new.md "Hardware
     # setup", Track direction sweep).

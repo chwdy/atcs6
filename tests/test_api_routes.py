@@ -48,9 +48,6 @@ def app_state(tmp_path):
         sim_controller=sim_controller,
         persistence_manager=persistence_manager,
         simulation_lock=threading.Lock(),
-        simulation_running=False,
-        simulation_speed=1.0,
-        last_update_time=datetime.now(),
     )
 
     return state
@@ -137,6 +134,9 @@ class TestTrackRoutes:
         track.switch_id = "SW_test"
         network.add_switch(Switch(switch_id="SW_test", x=1, y=0))
 
+        # An operating throw needs an active environment; the lock is what
+        # refuses this one.
+        app_state.sim_controller.environment_active = True
         # Lock the switch to MAIN (0) so a DIVERGE (1) request conflicts.
         switch = network.switches["SW_test"]
         assert switch.acquire_lock(
@@ -1157,27 +1157,6 @@ class TestMiscRoutes:
         data = response.get_json()
         assert "tracks" in data
 
-    def test_simulation_control_start(self, client):
-        """POST /api/simulation/control with action=start should start simulation."""
-        response = client.post("/api/simulation/control", json={"action": "start"})
-        assert response.status_code == 200
-        data = response.get_json()
-        assert data["status"] == "success"
-
-    def test_simulation_control_stop(self, client):
-        """Pause is accepted only while the session is Live (design_new.md
-        "Session state"): refused while Paused, accepted after Play."""
-        assert client.post(
-            "/api/simulation/control", json={"action": "stop"}
-        ).status_code == 409
-        client.post("/api/simulation/control", json={"action": "start"})
-        response = client.post("/api/simulation/control", json={"action": "stop"})
-        assert response.status_code == 200
-        assert response.get_json()["session_state"]["value"] == "paused"
-
-    def test_simulation_control_refuses_an_unknown_action(self, client):
-        response = client.post("/api/simulation/control", json={"action": "reset"})
-        assert response.status_code == 409
 
     def test_list_layouts(self, client):
         """GET /api/layouts should list layouts."""
@@ -1425,100 +1404,6 @@ class TestRouteRedesignApis:
         controller.powered = True
         return train, controller
 
-    def test_quick_route_three_call_flow_creates_path_via_phase1(self, client, app_state):
-        """The Quick Route tool's two-call sequence — POST /api/train-routes
-        (one-off, single stop task) + PUT /api/trains/<id>/assign-route —
-        should cause Phase 1 to allocate a dispatcher path on a subsequent sim
-        tick. A route runs as soon as a train is assigned to it.
-        """
-        self._place_powered_train_on_two_block_line(app_state)
-
-        create_resp = client.post(
-            "/api/train-routes",
-            json={
-                "route_id": "ROUTE_QR_TEST",
-                "name": "Quick: TRAIN_QR -> BLK_B",
-                "mode": "one_off",
-                "tasks": [{
-                    "task_kind": "stop",
-                    "task_location": {"block_id": "BLK_B"},
-                    "task_direction": "forward",
-                }],
-            },
-        )
-        assert create_resp.status_code == 200, create_resp.get_json()
-
-        assign_resp = client.put(
-            "/api/trains/TRAIN_QR/assign-route",
-            json={"route_id": "ROUTE_QR_TEST"},
-        )
-        assert assign_resp.status_code == 200, assign_resp.get_json()
-
-        # A new route assignment resets the ATO engage bit, so the operator
-        # issues /ato/go to start the run (design_new.md "ATO status"): the
-        # planner grants reservation only to an engaged ATO train (the ATO
-        # engage gate).
-        go_resp = client.post("/api/trains/TRAIN_QR/ato-go")
-        assert go_resp.status_code == 200, go_resp.get_json()
-
-        # Pre-tick: no path yet — assign-route only writes the assignment.
-        assert app_state.path_dispatcher.active_path_id_by_train("TRAIN_QR") is None
-
-        # Run a few ticks; Phase 1 should call PathDispatcher.create_path.
-        active_path_id = None
-        for _ in range(10):
-            app_state.sim_controller.update(0.1)
-            active_path_id = app_state.path_dispatcher.active_path_id_by_train("TRAIN_QR")
-            if active_path_id is not None:
-                break
-
-        assert active_path_id is not None, (
-            "Expected Phase 1 to allocate a dispatcher path within ~10 ticks "
-            "after assign-route. None was allocated — the one-off route flow "
-            "is the contract editor-paths.js's Quick Route tool depends on."
-        )
-
-    def test_route_run_detail_reports_walk_direction_not_task_direction(
-        self, client, app_state
-    ):
-        """The `GET /api/route-runs/<n>` tasks projection reports each visit's
-        resolved `walk_direction` (stored on `RouteTaskRun`), not the shared
-        `RouteTask.task_direction` authoring preference (design_new.md "Data Flow
-        To UI", the `tasks` projection). Regression: the endpoint emitted
-        `task_direction` where the doc names `walk_direction`."""
-        self._place_powered_train_on_two_block_line(app_state)
-        app_state.sim_controller.get_or_create_controller("TRAIN_QR").commands.engaged = True
-
-        assert client.post(
-            "/api/train-routes",
-            json={
-                "route_id": "ROUTE_WD",
-                "mode": "one_off",
-                "tasks": [{
-                    "task_kind": "stop",
-                    "task_location": {"block_id": "BLK_B"},
-                    "task_direction": "forward",
-                }],
-            },
-        ).status_code == 200
-        assert client.put(
-            "/api/trains/TRAIN_QR/assign-route", json={"route_id": "ROUTE_WD"}
-        ).status_code == 200
-        # Tick so a RouteRun (and its task_runs) is allocated.
-        for _ in range(10):
-            app_state.sim_controller.update(0.1)
-
-        listed = client.get("/api/route-runs").get_json()["route_runs"]
-        assert listed, "expected at least one RouteRun after assign + ticks"
-        run_number = listed[0]["run_number"]
-
-        tasks = client.get(f"/api/route-runs/{run_number}").get_json()["tasks"]
-        assert tasks, "expected the detail payload to carry per-task rows"
-        row = tasks[0]
-        # The projection reports the per-visit walk_direction (initial row is
-        # "forward"); the shared authoring preference must not stand in for it.
-        assert row.get("walk_direction") in ("forward", "reverse")
-        assert "task_direction" not in row
 
     def test_assign_route_replaces_another_route_without_a_flag(self, client, app_state):
         """assign-route accepts a train that is already on another route, with

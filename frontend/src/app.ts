@@ -129,7 +129,7 @@ class App {
 
   setupControls(): void {
     // The top bar's controls call the session action methods below
-    // (togglePlayPause, emergencyStop, …). The fatal banner keeps its own
+    // (activateEnvironment, emergencyStop, …). The fatal banner keeps its own
     // three buttons.
     const clearFatalBtn = document.getElementById('btn-clear-fatal') as HTMLButtonElement | null;
     clearFatalBtn?.addEventListener('click', () => void this.clearFatalConflict(clearFatalBtn));
@@ -178,32 +178,6 @@ class App {
 
   // ── Session and layout actions ────────────────────────────────────────
   // The top bar (frontend/src/next/top-bar.tsx) calls these.
-
-  /** Play from Paused, Pause from Live; Play/Pause exists only in Simulation
-   *  (design_new.md "Session state"). The server decides; the top bar follows
-   *  the session state the next snapshot carries rather than guessing. */
-  async togglePlayPause(): Promise<void> {
-    const action = this.isSimulationRunning ? 'stop' : 'start';
-    try {
-      await api.controlSimulation(action);
-    } catch (e: any) {
-      console.error('[App] Play/Pause error:', e);
-      showToast(e?.data?.message || e?.message || 'Play/Pause was refused', 'warning', 4000);
-    }
-    await this.refreshNetwork();
-  }
-
-  /** Set the Simulation speed multiplier. */
-  async setSimulationSpeed(speed: number): Promise<void> {
-    try {
-      await api.controlSimulation('set_speed', speed);
-    } catch (err: any) {
-      console.error('[App] set_speed error:', err);
-      showToast(`Failed to set speed: ${err.message}`, 'error', 2000);
-      return;
-    }
-    showToast(`Speed set to ${speed}x`, 'info', 1000);
-  }
 
   /** Emergency stop: the one kill switch, in every environment. It runs at
    *  once — no confirmation — because it is the button pressed when

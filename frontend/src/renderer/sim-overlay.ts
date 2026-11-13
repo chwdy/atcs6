@@ -31,7 +31,7 @@ export class SimRendererOverlay implements RendererOverlay {
         break;
 
       case 'afterBlockDirection':
-        if (network.operation_mode && network.operation_mode !== 'simulation') {
+        if (network.operation_mode) {
           renderer.currentSnapshot = undefined;
           break;
         }

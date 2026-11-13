@@ -13,16 +13,11 @@ import { useState } from 'preact/hooks';
 
 import { canvasLayers, LAYERS, type LayerDef } from '../lib/canvas-layers';
 import { gridPreference } from '../lib/grid-preference';
-import {
-  environmentLabel,
-  sessionControls,
-  sessionHint,
-  sessionLabel,
-} from '../lib/session-controls';
+import { environmentLabel, sessionHint, sessionLabel } from '../lib/session-controls';
 import { themeManager, type ThemeChannel } from '../lib/theme';
 import { MenuButton, type MenuSection } from './menu';
 import { NEXT_STEP_BUTTON, nextStep, type NextStep } from './next-step';
-import { operationEnvironment, screen, sessionState, simulationSpeed, type Screen } from './state';
+import { operationEnvironment, screen, sessionState, type Screen } from './state';
 
 export interface TopBarActions {
   newLayout(): void | Promise<void>;
@@ -31,8 +26,6 @@ export interface TopBarActions {
   showScreen(screen: Screen): void;
   openHardwareSetup(): void;
   activate(): Promise<void>;
-  togglePlayPause(): Promise<void>;
-  setSpeed(speed: number): Promise<void>;
   resetLayout(): Promise<void>;
   clearConflict(): Promise<void>;
   emergencyStop(): Promise<void>;
@@ -47,8 +40,6 @@ const SCREENS: { id: Screen; label: string }[] = [
   { id: 'locomotives', label: 'Locomotives' },
   { id: 'logs', label: 'Logs' },
 ];
-
-const SPEEDS = [0.5, 1, 2, 3];
 
 export function TopBar({ actions }: { actions: TopBarActions }) {
   return (
@@ -126,7 +117,7 @@ function ScreenTabs({ actions }: { actions: TopBarActions }) {
 function StatusControl({ actions }: { actions: TopBarActions }) {
   const state = sessionState.value;
   const env = operationEnvironment.value;
-  const step = nextStep(state, env);
+  const step = nextStep(state);
   const [busy, setBusy] = useState(false);
 
   const envName = environmentLabel(env);
@@ -137,8 +128,6 @@ function StatusControl({ actions }: { actions: TopBarActions }) {
 
   const stepAction: Record<NextStep, () => Promise<void>> = {
     activate: actions.activate,
-    play: actions.togglePlayPause,
-    pause: actions.togglePlayPause,
     reset: actions.resetLayout,
     'clear-conflict': actions.clearConflict,
   };
@@ -167,30 +156,13 @@ function StatusControl({ actions }: { actions: TopBarActions }) {
       {step && (
         <button
           type="button"
-          class={step === 'pause' || step === 'clear-conflict' ? 'btn' : 'btn btn-primary'}
+          class={step === 'clear-conflict' ? 'btn' : 'btn btn-primary'}
           title={NEXT_STEP_BUTTON[step].title}
           disabled={busy}
           onClick={() => void runStep(step)}
         >
           <i class={NEXT_STEP_BUTTON[step].icon} aria-hidden="true" /> {NEXT_STEP_BUTTON[step].label}
         </button>
-      )}
-      {sessionControls(state, env).playbackVisible && (
-        <MenuButton
-          label={`${simulationSpeed.value}x`}
-          title="Simulation speed"
-          sections={() => [
-            {
-              heading: 'Simulation speed',
-              items: SPEEDS.map((v) => ({
-                label: `${v}x`,
-                kind: 'choice' as const,
-                checked: simulationSpeed.value === v,
-                onSelect: () => actions.setSpeed(v),
-              })),
-            },
-          ]}
-        />
       )}
     </div>
   );

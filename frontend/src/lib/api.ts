@@ -389,27 +389,6 @@ export class API implements LayoutDataClient, SimClient {
     );
   }
 
-  /**
-   * Play, Pause and playback speed — Simulation only (design_new.md "Session
-   * state"). Play is accepted only while Paused, Pause only while Live; every
-   * other case is refused with 409.
-   * @param action - 'start' (Play), 'stop' (Pause), or 'set_speed'
-   * @param speed - Simulation speed multiplier, with 'set_speed'
-   */
-  async controlSimulation(action: string, speed: number | null = null): Promise<any> {
-    const data: { action: string; speed?: number } = { action };
-    if (speed !== null) {
-      data.speed = speed;
-    }
-    return this._request(
-      '/simulation/control',
-      {
-        method: 'POST',
-        body: data,
-      },
-      'controlSimulation'
-    );
-  }
 
   /** Emergency stop: the layout emergency cut-out, in every environment. */
   async layoutEmergencyStop(): Promise<any> {

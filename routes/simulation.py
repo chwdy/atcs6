@@ -1,6 +1,6 @@
 """
-Simulation Control Routes - Server lifecycle, simulation start/stop, network
-payload, network stats/clear, and model-scale configuration.
+Session and network routes - server lifecycle, the network payload and its
+stream, network stats/clear, and model-scale configuration.
 """
 
 import os
@@ -28,8 +28,6 @@ def register(app, state: AppState) -> None:
                 state.sim_controller,
                 session_state=state.session_state(),
             )
-        payload["simulation_running"] = state.simulation_running
-        payload["simulation_speed"] = state.simulation_speed
         return payload
 
     @app.route("/api/network", methods=["GET"])
@@ -250,69 +248,6 @@ def register(app, state: AppState) -> None:
             stopped = sim.hold_all()
         return jsonify({"status": "success", "stopped_train_ids": stopped})
 
-    @app.route("/api/simulation/control", methods=["POST"])
-    def control_simulation():
-        """Play, Pause and playback speed, in Simulation only (design_new.md
-        "Session state"; "Running and stopped").
-
-        - `start` (Play) is accepted only while the session is Paused and
-          writes `simulation_running = True`.
-        - `stop` (Pause) is accepted only while it is Live: it enters the safe
-          state, which ends every open calibration run, and writes
-          `simulation_running = False`.
-        - `set_speed` sets `simulation_speed`, the playback multiplier.
-
-        Every other case is refused with 409 and changes nothing, including
-        every request in Virtual Hardware and Real Hardware: those go Live
-        through activation, run at wall-clock speed, and have no Pause.
-        """
-        from enums import OperationMode, SessionStateValue
-
-        data = request.json or {}
-        action = data.get("action")
-        sim = getattr(state, "sim_controller", None)
-
-        def refuse(message):
-            return jsonify({"status": "error", "message": message}), 409
-
-        with state.simulation_lock:
-            if sim is None or sim.operation_mode is not OperationMode.SIMULATION:
-                return refuse(
-                    "Play, Pause and playback speed exist only in Simulation"
-                )
-            session = state.session_state()
-            if action == "start":
-                if session.value is not SessionStateValue.PAUSED:
-                    return refuse(f"Play needs a paused session; it is {session.value.value}")
-                state.simulation_running = True
-            elif action == "stop":
-                if not session.is_live:
-                    return refuse(f"Pause needs a live session; it is {session.value.value}")
-                # Leaving Live enters the safe state (design_new.md "Running
-                # and stopped"): every block voltage goes to 0, every point
-                # motor de-energizes, and every open calibration run ends.
-                sim.enter_output_safe_state()
-                state.simulation_running = False
-            elif action == "set_speed":
-                try:
-                    speed = float(data.get("speed", 1.0))
-                except (TypeError, ValueError):
-                    return jsonify({"status": "error", "message": "speed must be a number"}), 400
-                if speed <= 0:
-                    return jsonify({"status": "error", "message": "speed must be positive"}), 400
-                state.simulation_speed = speed
-            else:
-                return refuse(f"unknown action {action!r}")
-
-        return jsonify(
-            {
-                "status": "success",
-                "running": state.simulation_running,
-                "speed": state.simulation_speed,
-                "session_state": state.session_state().to_dict(),
-            }
-        )
-
     @app.route("/api/runtime/clear-fatal", methods=["POST"])
     def clear_fatal_conflict():
         """Release a fatal-conflict halt, leaving every train off.
@@ -376,14 +311,16 @@ def register(app, state: AppState) -> None:
 
         import shutdown
 
-        state.simulation_running = False
-        # A restart stops the session, so it enters the safe state like a stop
-        # does: every block voltage goes to 0 and every open calibration run ends
-        # (design_new.md "What ends a calibration run").
+        # A restart is a way out of Live, so it enters the safe state
+        # (design_v2.md "Runtime loop", Leaving Live enters the safe state).
+        # Marking the environment inactive in the same lock means the loop runs
+        # no further pass, so nothing drives the outputs again before the
+        # process is replaced.
         sim = getattr(state, "sim_controller", None)
         if sim is not None:
             with state.simulation_lock:
                 sim.enter_output_safe_state()
+                sim.environment_active = False
         try:
             with state.simulation_lock:
                 state.persistence_manager.save_merged_layout(
@@ -444,45 +381,39 @@ def register(app, state: AppState) -> None:
 
         Returns counts of what was cleared for confirmation display.
         """
-        was_running = state.simulation_running
-        state.simulation_running = False
+        with state.simulation_lock:
+            # Count what we're clearing
+            counts = {
+                "tracks": len(state.network.tracks),
+                "blocks": len(state.network.blocks),
+                "signals": len(state.network.signals),
+                "platforms": len(getattr(state.network, "platforms", {})),
+                "stations": len(state.network.station_groups),
+                "trains": len(state.network.trains),
+                "switches": len(state.network.switches),
+                "tunnels": len(state.network.tunnels_to_list()),
+            }
 
-        try:
-            with state.simulation_lock:
-                # Count what we're clearing
-                counts = {
-                    "tracks": len(state.network.tracks),
-                    "blocks": len(state.network.blocks),
-                    "signals": len(state.network.signals),
-                    "platforms": len(getattr(state.network, "platforms", {})),
-                    "stations": len(state.network.station_groups),
-                    "trains": len(state.network.trains),
-                    "switches": len(state.network.switches),
-                    "tunnels": len(state.network.tunnels_to_list()),
-                }
-
-                # The trains are about to be replaced, so every calibration run
-                # ends and every held result is discarded first (design_new.md
-                # "What ends a calibration run").
-                state.sim_controller.speed_calibration.discard_all(
-                    "calibration ended: the network was cleared"
-                )
-
-                # Clear everything — entity dicts plus the derived tile->owner
-                # reverse indices and caches (see RailwayNetwork.clear). Without
-                # the index reset, a new track drawn on a tile the old layout
-                # used keeps reporting its old block, so block creation fails
-                # with "already assigned to block(s)".
-                state.network.clear()
-
-                # Update simulation controller reference
-                state.sim_controller.network = state.network
-
-            return jsonify(
-                {"status": "success", "message": "Network cleared", "cleared": counts}
+            # The trains are about to be replaced, so every calibration run
+            # ends and every held result is discarded first (design_new.md
+            # "What ends a calibration run").
+            state.sim_controller.speed_calibration.discard_all(
+                "calibration ended: the network was cleared"
             )
-        finally:
-            state.simulation_running = was_running
+
+            # Clear everything — entity dicts plus the derived tile->owner
+            # reverse indices and caches (see RailwayNetwork.clear). Without
+            # the index reset, a new track drawn on a tile the old layout
+            # used keeps reporting its old block, so block creation fails
+            # with "already assigned to block(s)".
+            state.network.clear()
+
+            # Update simulation controller reference
+            state.sim_controller.network = state.network
+
+        return jsonify(
+            {"status": "success", "message": "Network cleared", "cleared": counts}
+        )
 
     @app.route("/api/network/stats", methods=["GET"])
     def get_network_stats():

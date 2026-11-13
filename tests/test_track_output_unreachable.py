@@ -12,9 +12,47 @@ track carrying no volts.
 and reports the refusal once per block.
 """
 
+from block import Block
+from block_occupancy import OccupancyInput
 from block_power import BlockPowerController
 from enums import OperationMode
-from tests.test_unidentified_trains import build_sim
+from network import RailwayNetwork
+from path_dispatcher import PathDispatcher
+from entity_ids import segment_id_for_block
+from simulation import SimulationController
+from track import TRACK_EW, Tile
+
+
+class CountingDetectors(OccupancyInput):
+    """Every block reads empty; counts how often the runtime reads."""
+
+    def __init__(self, block_ids):
+        self.block_ids = set(block_ids)
+        self.reads = 0
+
+    def detected_block_ids(self):
+        return set(self.block_ids)
+
+    def read_block_currents(self):
+        self.reads += 1
+        return {block_id: False for block_id in self.block_ids}
+
+
+def build_sim(num_blocks: int = 3):
+    """A straight E-W line, one block per tile (BLK_0 .. BLK_{n-1})."""
+    network = RailwayNetwork()
+    for x in range(num_blocks):
+        track = Tile(x=x, y=0, track_bits=TRACK_EW)
+        track.segment_id = segment_id_for_block(f"BLK_{x}")
+        network.add_track(track)
+        block = Block(block_id=f"BLK_{x}", length_cm=100.0)
+        block.ordered_tiles = [(x, 0, "W")]
+        network.blocks[f"BLK_{x}"] = block
+    detector = CountingDetectors(network.blocks)
+    sim = SimulationController(
+        network, PathDispatcher(network), input_interface=detector
+    )
+    return network, sim, detector
 
 
 class RefusingTrackDriver:
@@ -40,8 +78,8 @@ class RefusingTrackDriver:
         self.written = {k: 0.0 for k in self.written}
 
 
-def power_controller(unreachable):
-    network, sim, _detector = build_sim()
+def power_controller(unreachable, *, with_detector=False):
+    network, sim, detector = build_sim()
     pc = BlockPowerController(
         network=network, output_interface=RefusingTrackDriver(unreachable)
     )
@@ -50,6 +88,8 @@ def power_controller(unreachable):
         controllers=sim.controllers,
         enter_hardware_failure=sim.enter_hardware_failure,
     )
+    if with_detector:
+        return network, sim, pc, detector
     return network, sim, pc
 
 
@@ -102,19 +142,6 @@ def test_a_successful_hardware_activation_clears_the_latch():
     assert cleared is not None
 
 
-def test_activating_simulation_leaves_the_latch_set():
-    """Running Simulation proves nothing about the rig."""
-    _network, sim, pc = power_controller({"BLK_1"})
-    sim.operation_mode = OperationMode.VIRTUAL_HARDWARE
-    pc.set_block_voltage("BLK_1", 10.0)
-
-    sim.operation_mode = OperationMode.SIMULATION
-    sim.environment_active = True
-    sim.finish_activation()
-
-    assert sim.hardware_failure is True
-
-
 def test_the_halt_retains_no_payload():
     """The halt keeps only its bool latch; its diagnostic lives in the event
     stream (design_new.md "Power", Hardware I/O failure; "Error events")."""
@@ -162,21 +189,18 @@ def test_a_refused_write_is_reported_once_not_every_tick():
     assert notes[0].kind == "warning"
 
 
-def test_the_halt_gate_refuses_ticks_while_a_hardware_failure_is_latched():
-    """`update()` refuses all further advancement while either fatal latch is
-    set, on the one gate (design_new.md "Power", Hardware I/O failure)."""
-    _network, sim, pc = power_controller({"BLK_1"})
+def test_the_halt_gate_refuses_a_step_while_a_hardware_failure_is_latched():
+    """A session with a hardware failure latched runs no pass: the runtime
+    stays off the failed device (design_v2.md "Runtime loop", Which pass
+    runs)."""
+    _network, sim, pc, detector = power_controller({"BLK_1"}, with_detector=True)
     pc.set_block_voltage("BLK_1", 10.0)
     assert sim.runtime_halted is True
 
-    before = sim.simulation_time
-    before_operating = sim.operating_clock()
-    sim.update(1.0)
+    sim.run_train_step(live=True)
+    sim.run_train_step(live=False)
 
-    # A halted session is stopped, so neither clock advances and no train or
-    # stopped-observation pass runs behind the gate (design_new.md step `ee19`).
-    assert sim.simulation_time == before
-    assert sim.operating_clock() == before_operating
+    assert detector.reads == 0
 
 
 def test_each_unreachable_block_gets_its_own_report():

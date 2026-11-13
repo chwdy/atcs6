@@ -28,7 +28,6 @@ from types import ModuleType
 
 import hardware_config
 import operation_environment
-from enums import OperationMode
 from network import RailwayNetwork
 from notification_center import NotificationCenter
 from path_dispatcher import PathDispatcher
@@ -221,29 +220,22 @@ def bootstrap_runtime(
     if event_log_path:
         notification_center.enable_event_log(event_log_path)
 
-    # design_new.md "Activation starts the railway over", Boot activates no
-    # hardware environment: with Simulation selected the runtime activates
-    # Simulation and the session boots Paused; a Virtual Hardware or Real
-    # Hardware selection is not activated at boot, so the session boots Halted
-    # for `not_activated` until the operator activates it. Boot runs no
-    # readiness check of its own. The setup and the selection are still loaded,
-    # because activation reads both.
+    # design_v2.md "Session state", Boot: nothing is activated, so the session
+    # boots Halted for `not_activated` until the operator activates it. Boot
+    # runs no readiness check of its own. The setup and the selection are
+    # still loaded, because activation reads both.
     hardware_config.load_from_disk()
     operation_environment.load_from_disk()
     selected_environment = operation_environment.get_selected()
     operation_mode = selected_environment
-    environment_active = selected_environment is OperationMode.SIMULATION
-    activation_issues = (
-        []
-        if environment_active
-        else [{
-            "code": "not_activated",
-            "message": (
-                f"{selected_environment.value} is selected but not activated; "
-                "activate it to go live"
-            ),
-        }]
-    )
+    environment_active = False
+    activation_issues = [{
+        "code": "not_activated",
+        "message": (
+            f"{selected_environment.value} is selected but not activated; "
+            "activate it to go live"
+        ),
+    }]
     input_interface = block_output_interface = switch_output_interface = None
 
     sim_controller = SimulationController(

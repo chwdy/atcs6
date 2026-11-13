@@ -62,9 +62,6 @@ class Session:
             sim_controller=self.sim,
             persistence_manager=PersistenceManager(storage_dir=str(tmp_path / "layouts")),
             simulation_lock=threading.Lock(),
-            simulation_running=True,
-            simulation_speed=1.0,
-            last_update_time=datetime.now(),
         )
         app = create_app(self.state)
         app.config["TESTING"] = True
@@ -73,7 +70,7 @@ class Session:
     def passes(self, *occupied, count=3):
         self.detectors.occupied = {self.ids[name] for name in occupied}
         for _ in range(count):
-            run_loop_iteration(self.state, 0.1)
+            run_loop_iteration(self.state)
 
     def volts(self, name):
         return self.track.get_actual_voltage(self.ids[name])

@@ -106,8 +106,6 @@ def hold_reason_for(
         return _hold("halted", 1, session_state.halt_reason.value)
     if session_state.value is SessionStateValue.SETUP:
         return _hold("setup", 1)
-    if session_state.value is SessionStateValue.PAUSED:
-        return _hold("paused", 1)
     if not controller.is_stopped():
         return None
     train_id = train.train_id

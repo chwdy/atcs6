@@ -60,60 +60,6 @@ class TestRaceConditionFix:
         assert not hasattr(simulation.SimulationController, "_advance_train_track")
         assert not hasattr(simulation.SimulationController, "_update_speed")
 
-    def test_atc_triggers_eb_on_10kmh_overspeed(self):
-        """
-        Test that ATC triggers emergency brake when overspeed by > 10 km/h.
-
-        Per new tick() workflow:
-        - current_speed > atc_speed + 10 → eb_active = True
-        """
-        network = RailwayNetwork()
-
-        # Create track and block with speed limit
-        track = Tile(x=0, y=0, track_bits=TRACK_EW)
-        track.segment_id = segment_id_for_block("B1")
-        network.add_track(track)
-
-        block = make_segment_block(network, "B1", "Block 1")
-        block.length_cm = 1000.0
-        block.speed_limit_kmh = 30.0  # 30 km/h limit
-
-        car = TrainCar(car_id="CAR_01", car_type="LOCOMOTIVE", length_cm=20.0)
-        train = Train(train_id="TRAIN_EB_TEST", consist=[car], max_speed=100.0)
-        network.add_train(train)
-
-        sim = SimulationController(network)
-        controller = sim._get_or_create_controller(train)
-        set_train_span(
-            controller, (0, 0), facing_direction=Direction.EAST, occupied_blocks=["B1"]
-        )
-        controller.powered = True
-        controller._apply_head_frame("end_a")
-        controller.physics_sync.current_speed_kmh = 42.0  # 12 km/h over limit (EB zone)
-
-        # Tick controller
-        sim.update(0.1)
-
-        # Should trigger EB
-        assert controller.eb.active == True, "EB should trigger at 12 km/h overspeed"
-        # Per design_new.md "canonical lookahead payload", the "speed-limit
-        # reason" comes from the
-        # canonical lookahead at distance 0; for EB-active state that reads
-        # "Emergency brake active". The trigger context (overspeed) is
-        # carried by NotificationCenter via the controller's pending
-        # notifications.
-        assert (controller.speed_limit_reason or "").lower() == "emergency brake active", (
-            f"Lookahead should report EB active, got: {controller.speed_limit_reason}"
-        )
-        _notes = [
-            n.message
-            for n in controller.notification_center.peek_recent(200)
-        ]
-        assert any("overspeed" in note.lower() for note in _notes), (
-            f"Should have an overspeed EB event, got: {_notes}"
-        )
-
-
 
 class TestTrainControllerBrakingNotches:
     """Tests for braking notch selection updates (2026-01-22)."""

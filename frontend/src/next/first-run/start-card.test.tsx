@@ -22,7 +22,7 @@ describe('StartCard', () => {
     actions = { startFromLoop: vi.fn(async () => {}), openLayout: vi.fn(), drawFromScratch: vi.fn() };
     startCardDismissed.value = false;
     screen.value = 'operate';
-    operationEnvironment.value = 'simulation';
+    operationEnvironment.value = 'virtual_hardware';
     layoutEmpty.value = true;
     act(() => render(<StartCard actions={actions} />, root));
   });
@@ -69,13 +69,5 @@ describe('StartCard', () => {
       startCardDismissed.value = true;
     });
     expect(root.querySelector('.first-run-card')).toBeNull();
-  });
-
-  it('says it will switch to Simulation when another environment is active', () => {
-    expect(root.textContent).not.toContain('Switches the run environment');
-    act(() => {
-      operationEnvironment.value = 'real_hardware';
-    });
-    expect(root.textContent).toContain('Switches the run environment to Simulation');
   });
 });

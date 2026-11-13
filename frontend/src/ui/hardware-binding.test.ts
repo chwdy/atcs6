@@ -68,7 +68,6 @@ describe('block hardware section', () => {
   it('warns when the Hardware Setup is not the active run environment', () => {
     expect(section(cfg({ environment_active: false }))).toContain('Hardware Setup is not active');
     expect(section(cfg({ environment_active: true }))).not.toContain('Hardware Setup is not active');
-    expect(section(cfg({ operation_environment: 'simulation' }))).toContain('Hardware Setup is not active');
   });
 
   it('carries a standing note for saved changes the running session is not using', () => {

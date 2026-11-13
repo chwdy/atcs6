@@ -61,10 +61,10 @@ def _empty_the_virtual_layout(device=None):
 
 
 def _develop_payload(**overrides):
-    """A full develop-mode configuration: every chip kind, all binding maps."""
+    """A full Virtual Hardware configuration: every chip kind, all binding
+    maps, and the environment the page puts on each commissioning request."""
     payload = {
-        "enabled": True,
-        "develop": True,
+        "environment": "virtual_hardware",
         "controller": {"kind": "ch347", "device_port": None},
         "chips": [
             {"chip_id": "pwm1", "kind": "pca9685", "i2c_address": "0x40"},
@@ -87,31 +87,6 @@ def _develop_payload(**overrides):
     return payload
 
 
-# --- config round-trip ------------------------------------------------------
-def test_develop_defaults_false():
-    assert operation_environment.get_selected() is OperationMode.SIMULATION
-    assert operation_environment.get_selected() is not OperationMode.VIRTUAL_HARDWARE
-
-
-def test_virtual_hardware_round_trips_in_its_separate_store():
-    hardware_config.apply_updates(_develop_payload())
-    assert hardware_config.as_dict()["develop"] is True
-    with open(hardware_config.CONFIG_PATH) as fh:
-        assert "develop" not in json.load(fh)
-    with open(operation_environment.ENVIRONMENT_PATH) as fh:
-        assert json.load(fh)["selected"] == "virtual_hardware"
-    hardware_config.reset_to_defaults()
-    assert operation_environment.get_selected() is OperationMode.SIMULATION
-    hardware_config.load_from_disk()
-    assert operation_environment.get_selected() is not OperationMode.VIRTUAL_HARDWARE
-    operation_environment.load_from_disk()
-    assert operation_environment.get_selected() is OperationMode.VIRTUAL_HARDWARE
-
-
-def test_legacy_develop_flag_selects_virtual_hardware_independently():
-    hardware_config.apply_updates({"develop": True}, persist=False)
-    assert operation_environment.get_selected() is OperationMode.VIRTUAL_HARDWARE
-    assert operation_environment.get_selected() == OperationMode.VIRTUAL_HARDWARE
 
 
 # --- factory ---------------------------------------------------------------
@@ -144,7 +119,8 @@ def test_factory_develop_off_still_needs_real_driver(monkeypatch):
         raise RuntimeError("no device attached")
 
     monkeypatch.setattr(chdev, "open_ch347_device", _boom)
-    hardware_config.apply_updates(_develop_payload(develop=False), persist=False)
+    hardware_config.apply_updates(_develop_payload(), persist=False)
+    operation_environment.select(OperationMode.REAL_HARDWARE, persist=False)
     with pytest.raises(hardware_config.HardwareBackendUnavailable):
         hardware_config.build_session_interfaces()
     assert hardware_config.get_session_device() is None
@@ -228,9 +204,6 @@ def client():
         sim_controller=sim_controller,
         persistence_manager=PersistenceManager(storage_dir="layouts"),
         simulation_lock=threading.Lock(),
-        simulation_running=False,
-        simulation_speed=1.0,
-        last_update_time=datetime.now(),
     )
     app = create_app(state)
     app.config["TESTING"] = True
@@ -571,8 +544,8 @@ def test_readback_verdict_follows_the_debounce_not_the_register(client):
 def test_config_get_reports_session_info(client):
     test_client, state = client
     data = test_client.get("/api/hardware/config").get_json()
-    assert data["session"]["operation_environment"] == "simulation"
-    assert data["session"]["environment_active"] is True
+    assert data["session"]["operation_environment"] == "virtual_hardware"
+    assert data["session"]["environment_active"] is False
     assert data["session"]["virtual_hardware_active"] is False
     _boot_develop_session(state)
     data = test_client.get("/api/hardware/config").get_json()
@@ -593,52 +566,39 @@ def test_scan_runs_on_fake_when_develop_set(client):
     assert data["controller"]["i2c_scan"] == ["0x40", "0x41"]
 
 
-def test_scan_runs_on_fake_before_enable(client):
-    # The pre-enable commissioning flow: develop is persisted but enabled is
-    # still false (you cannot enable until every chip is proven). The gate is
-    # the develop flag alone, so Detect / Rescan still run on the fake.
-    test_client, _ = client
-    payload = _develop_payload(enabled=False)
-    hardware_config.apply_updates(payload, persist=False)
-    assert operation_environment.get_selected() is not OperationMode.VIRTUAL_HARDWARE   # not a running develop session yet
-    resp = test_client.post("/api/hardware/scan", json={"config": payload})
-    data = resp.get_json()
-    assert data["ok"] is True
-    assert data["controller"]["reachable"] is True
 
-
-def test_scan_still_fails_without_develop(client):
+def test_scan_fails_on_real_hardware_with_no_device(client):
     test_client, _ = client
-    payload = _develop_payload(develop=False)
+    payload = _develop_payload(environment="real_hardware")
     hardware_config.apply_updates(payload, persist=False)
     resp = test_client.post("/api/hardware/scan", json={"config": payload})
     # No fake gate, no physical device: the controller line reports unreachable.
     assert resp.get_json()["controller"]["reachable"] is False
 
 
-# The scan follows the flag on the config UNDER TEST, not the persisted one, so
-# the setup panel's Develop toggle changes which device answers with no Save in
-# between. Both directions matter: reading the persisted flag instead made a
-# scan sent with develop off still open the fake and report its seeded addresses
-# as a genuine "Connected".
-def test_scan_follows_payload_develop_off_over_persisted_on(client):
+# The scan follows the environment on the config UNDER TEST, not the selected
+# one, so choosing an environment on the setup panel changes which device
+# answers with no Save in between. Both directions matter: following the
+# selection instead made a Real Hardware scan open the fake and report its
+# seeded addresses as a genuine "Connected".
+def test_scan_follows_the_payload_real_hardware_over_a_virtual_selection(client):
     test_client, _ = client
     hardware_config.apply_updates(_develop_payload(), persist=False)
     assert operation_environment.get_selected() is OperationMode.VIRTUAL_HARDWARE
     resp = test_client.post(
-        "/api/hardware/scan", json={"config": _develop_payload(develop=False)}
+        "/api/hardware/scan", json={"config": _develop_payload(environment="real_hardware")}
     )
     data = resp.get_json()
     assert data["controller"]["reachable"] is False
     assert data["controller"]["i2c_scan"] == []
 
 
-def test_scan_follows_payload_develop_on_over_persisted_off(client):
+def test_scan_follows_the_payload_environment_over_the_selected_one(client):
     test_client, _ = client
-    hardware_config.apply_updates(_develop_payload(develop=False), persist=False)
-    assert operation_environment.get_selected() is not OperationMode.VIRTUAL_HARDWARE
+    hardware_config.apply_updates(_develop_payload(), persist=False)
+    operation_environment.select(OperationMode.REAL_HARDWARE, persist=False)
     resp = test_client.post(
-        "/api/hardware/scan", json={"config": _develop_payload(develop=True)}
+        "/api/hardware/scan", json={"config": _develop_payload()}
     )
     data = resp.get_json()
     assert data["controller"]["reachable"] is True
@@ -711,11 +671,6 @@ def test_entering_setup_keeps_the_session_device_and_detectors(client):
     assert test_client.post("/api/operation/setup").status_code == 409
 
 
-def test_entering_setup_is_refused_in_simulation(client, monkeypatch):
-    test_client, _state = client
-    monkeypatch.setattr(operation_environment, "_selected", OperationMode.SIMULATION)
-    assert test_client.post("/api/operation/setup").status_code == 409
-
 
 def test_the_stopped_pass_reads_the_detectors_in_setup_and_writes_nothing(client):
     test_client, state = client
@@ -734,7 +689,7 @@ def test_the_stopped_pass_reads_the_detectors_in_setup_and_writes_nothing(client
     sim.input_interface.read_block_currents = counting_read
     sim.block_occupancy_detector.input_interface = sim.input_interface
 
-    sim.poll_hardware_occupancy()
+    sim.run_train_step(live=False)
 
     assert reads, "the detectors are read in Setup"
     assert writes == [], "the drain writes no output while the Setup tools own them"

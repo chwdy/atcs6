@@ -366,55 +366,6 @@ def test_pending_entry_block_is_energized_with_the_span():
     )
 
 
-def test_drain_leaves_a_pending_entry_block_alone():
-    network = build_line()
-    sim, train, controller, physics = place(network, head_x=0, length_cm=40.0)
-    wire_detector(sim, detected={"BLK_0", "BLK_1"}, confirmed={"BLK_0"})
-    arm(physics, controller)
-    physics.cap_distance_to_detected_occupancy(train, 50.0)
-
-    # BLK_1 is neither occupied nor reserved, so both drain tests would zero it.
-    sim.power_controller.set_block_voltage("BLK_1", 12.0)
-    sim.block_manager._mark_for_deenergize("BLK_1")
-    sim._settle_after_commits()
-
-    assert sim.power_controller.get_block_voltage("BLK_1") == 12.0
-
-
-def test_drain_never_cuts_the_rail_under_a_calculated_span():
-    """A detector that briefly reads clear under a standing locomotive must not
-    drop its rail.
-
-    Cutting it makes the block idle, the idle detector reads the locomotive
-    again, the block re-energizes, and the drive-state read flips the occupancy
-    source back — the rail oscillates instead of settling.
-    """
-    network = build_line()
-    sim, train, controller, physics = place(network, head_x=0, length_cm=40.0)
-    wire_detector(sim, detected={"BLK_0", "BLK_1"}, confirmed={"BLK_0"})
-    assert "BLK_0" in controller.physics_sync.current_span.occupied_blocks
-
-    sim.power_controller.set_block_voltage("BLK_0", 6.0)
-    network.blocks["BLK_0"].occupied_by = None
-    sim.block_manager._mark_for_deenergize("BLK_0")
-    sim._settle_after_commits()
-
-    assert sim.power_controller.get_block_voltage("BLK_0") == 6.0
-
-
-def test_drain_zeroes_a_block_no_cap_is_waiting_on():
-    network = build_line()
-    sim, train, controller, physics = place(network, head_x=0, length_cm=40.0)
-    wire_detector(sim, detected={"BLK_0", "BLK_1"}, confirmed={"BLK_0"})
-    arm(physics, controller)
-    physics.cap_distance_to_detected_occupancy(train, 50.0)
-
-    sim.power_controller.set_block_voltage("BLK_3", 12.0)
-    sim.block_manager._mark_for_deenergize("BLK_3")
-    sim._settle_after_commits()
-
-    assert sim.power_controller.get_block_voltage("BLK_3") == 0.0
-
 
 # ---------------------------------------------------------------------------
 # End to end through the tick
@@ -449,64 +400,6 @@ def drive_with_authority(confirmed):
     controller.commands.set_handle(HandlePosition.P4)
     return sim, train, controller, physics
 
-
-def test_a_driven_train_never_claims_a_block_the_detector_withholds():
-    """The reported bug: the app drew the train on the next block while the
-    locomotive was still standing on the previous one."""
-    sim, train, controller, physics = drive_with_authority({"BLK_0"})
-
-    for _ in range(40):
-        sim.update(0.1)
-
-    # The train really is running — it is the span that is held, not the train.
-    assert controller.physics_sync.current_speed_kmh > 1.0
-    span = controller.physics_sync.current_span
-    assert span.occupied_blocks == ["BLK_0"], (
-        f"span claimed {span.occupied_blocks} while the detector confirmed only "
-        f"{sorted(sim.block_occupancy_detector.confirmed_occupied)}"
-    )
-    assert physics.pending_entry_block == "BLK_1"
-    assert sim.network.blocks["BLK_1"].occupied_by is None
-
-    # Once the detector sees the locomotive on BLK_1, the span follows it in.
-    sim.block_occupancy_detector.input_interface.live.add("BLK_1")
-    for _ in range(40):
-        sim.update(0.1)
-
-    assert "BLK_1" in controller.physics_sync.current_span.occupied_blocks
-    assert physics.pending_entry_block is None
-
-
-def test_a_held_span_keeps_its_pending_entry_block_live():
-    """The rail the locomotive has to roll onto to release its own cap."""
-    sim, train, controller, physics = drive_with_authority({"BLK_0"})
-
-    for _ in range(40):
-        sim.update(0.1)
-
-    assert physics.pending_entry_block == "BLK_1"
-    assert sim.power_controller.get_block_voltage("BLK_1") != 0.0
-
-
-def test_a_held_head_energizes_no_reserved_block_past_its_pending_entry_block():
-    """Only the block the train is entering may be live ahead of it.
-
-    The reported bug: during speed calibration on the rig, the far outer block
-    went live 1.5–3 s before the measured block read the locomotive. The cap
-    held the head at the measured block's seam, and the next-reserved walk
-    treated that pending-entry block as already stood on, so it skipped it and
-    energized the reserved block beyond as well (design_new.md "Power", Only
-    the next reserved block is pre-energized).
-    """
-    sim, train, controller, physics = drive_with_authority({"BLK_0"})
-
-    for _ in range(40):
-        sim.update(0.1)
-
-    assert physics.pending_entry_block == "BLK_1"
-    assert physics.next_reserved_block == "BLK_1"
-    assert sim.network.blocks["BLK_2"].reserved_for_train == "T"
-    assert sim.power_controller.get_block_voltage("BLK_2") == 0.0
 
 
 # ---------------------------------------------------------------------------

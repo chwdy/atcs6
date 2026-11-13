@@ -9,11 +9,10 @@ question*. Occupancy and drive are a closed loop — a block's commanded voltage
 picks which detector answers, and what the detector answers decides whether the
 block keeps its voltage — and the runtime closes that loop twenty times a second
 on top of the wiring being investigated. Concretely, with an environment active
-and the simulation stopped, `SimulationController.poll_hardware_occupancy` still
-runs every tick: it attributes confirmed entries (minting unidentified trains for
-occupancy nobody owns) and then `_settle_after_commits` drives every block no
-calculated span holds back to 0 V. A bench voltage set from a request would be
-gone before the next read, and every detector that fired would spawn a train.
+the runtime step runs every pass: it turns every block that reads occupied into
+a train and sets every block's voltage from track power (design_v2.md "Runtime
+step"). A bench voltage set from a request would be gone before the next step,
+and every detector that fired would make a train.
 
 So the bench takes the controller instead of sharing it, exactly as commissioning
 does: the caller deactivates the environment and hands over the device, and from

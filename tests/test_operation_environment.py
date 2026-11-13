@@ -55,9 +55,6 @@ def test_environment_api_reports_selected_separately_from_active(
         sim_controller=sim,
         persistence_manager=PersistenceManager(storage_dir=str(tmp_path / "layouts")),
         simulation_lock=threading.Lock(),
-        simulation_running=False,
-        simulation_speed=1.0,
-        last_update_time=datetime.now(),
     )
     app = create_app(state)
     app.config["TESTING"] = True
@@ -70,21 +67,20 @@ def test_environment_api_reports_selected_separately_from_active(
         assert response.get_json() == {
             "status": "success",
             "selected": "real_hardware",
-            "active": "simulation",
-            "is_active": True,
+            "active": "virtual_hardware",
+            "is_active": False,
         }
         assert client.get("/api/operation/environment").get_json() == {
             "selected": "real_hardware",
-            "active": "simulation",
-            "is_active": True,
+            "active": "virtual_hardware",
+            "is_active": False,
             "activation_issues": [],
             # No hardware-backed session has been built, so no saved edit can be
             # pending against one (design_new.md "Hardware setup", A binding is
             # read per write).
             "awaits_activation": False,
-            # Simulation is active and Play is off (design_new.md "Session
-            # state").
-            "session_state": {"value": "paused", "halt_reason": None},
+            # Nothing has been activated (design_v2.md "Session state").
+            "session_state": {"value": "halted", "halt_reason": "not_activated"},
         }
 
 
@@ -136,9 +132,6 @@ def test_incomplete_virtual_setup_is_not_activated(tmp_path, monkeypatch):
         sim_controller=sim,
         persistence_manager=PersistenceManager(storage_dir=str(tmp_path / "layouts")),
         simulation_lock=threading.Lock(),
-        simulation_running=False,
-        simulation_speed=1.0,
-        last_update_time=datetime.now(),
     )
     app = create_app(state)
     app.config["TESTING"] = True

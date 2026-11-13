@@ -15,8 +15,6 @@ function fakeActions(): TopBarActions {
     showScreen: vi.fn(),
     openHardwareSetup: vi.fn(),
     activate: vi.fn(async () => {}),
-    togglePlayPause: vi.fn(async () => {}),
-    setSpeed: vi.fn(async () => {}),
     resetLayout: vi.fn(async () => {}),
     clearConflict: vi.fn(async () => {}),
     emergencyStop: vi.fn(async () => {}),
@@ -60,12 +58,11 @@ describe('TopBar', () => {
 
   it('swaps the next-step button when the session state changes', () => {
     act(() => {
-      sessionState.value = { value: 'paused', halt_reason: null };
-      operationEnvironment.value = 'simulation';
+      sessionState.value = { value: 'halted', halt_reason: 'layout_emergency_cut_out' };
     });
     expect(root.textContent).not.toContain('Activate');
-    buttonNamed(root, 'Play').click();
-    expect(actions.togglePlayPause).toHaveBeenCalledTimes(1);
+    buttonNamed(root, 'Reset').click();
+    expect(actions.resetLayout).toHaveBeenCalledTimes(1);
   });
 
   it('has the five screen tabs and marks the picked one', () => {

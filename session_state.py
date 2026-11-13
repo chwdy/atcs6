@@ -1,15 +1,16 @@
 """The session state: the one answer to "is the layout live?".
 
-design_new.md "Session state": the session reads Setup, Live, Paused, or Halted
-with a reason, derived on every read from six stored flags in this order:
+design_v2.md "Session state": the session reads Setup, Live, or Halted with a
+reason, derived on every read from stored flags in this order:
 
-1. Halted, `runtime_failure`          `SimulationController.failed_runtime`
+1. Halted, `runtime_failure`          `SimulationController.failed_runtime` (v1)
 2. Setup                              `AppState.setup_active`
 3. Halted, `hardware_failure`         `hardware_failure` and no environment active
 4. Halted, `not_activated`            no environment active
-5. Halted, `layout_emergency_cut_out` `SimulationController.layout_cut_out_active`
-6. Paused                             `AppState.simulation_running` is False
-7. Live                               no row above holds
+5. Halted, `layout_emergency_cut_out` `SimulationController.layout_cut_out_active` (v1)
+6. Live                               no row above holds
+
+Rows 1 and 5 belong to v1 code that is still being removed.
 
 No command, stage, or event writes the session state; each writes its own flag.
 """
@@ -44,9 +45,7 @@ class SessionState:
 LIVE = SessionState(SessionStateValue.LIVE)
 
 
-def derive_session_state(
-    sim_controller, *, setup_active: bool, simulation_running: bool
-) -> SessionState:
+def derive_session_state(sim_controller, *, setup_active: bool) -> SessionState:
     """The session state for these flags, per the precedence table above."""
     if getattr(sim_controller, "failed_runtime", False):
         return SessionState(SessionStateValue.HALTED, HaltReason.RUNTIME_FAILURE)
@@ -61,6 +60,4 @@ def derive_session_state(
         return SessionState(
             SessionStateValue.HALTED, HaltReason.LAYOUT_EMERGENCY_CUT_OUT
         )
-    if not simulation_running:
-        return SessionState(SessionStateValue.PAUSED)
     return LIVE

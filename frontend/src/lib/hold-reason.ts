@@ -26,7 +26,6 @@ const HALTED: Record<string, string> = {
 const MESSAGES: Record<string, (detail: string | null) => string> = {
   halted: (detail) => HALTED[detail ?? ''] ?? 'The session is halted.',
   setup: () => 'The session is in Setup. Press Activate to run trains.',
-  paused: () => 'The session is paused. Press Play.',
   unidentified: () => 'This is an unidentified train. The app cannot drive it.',
   detection_lost: () => 'The detectors have lost this train. It accepts no command until it is detected again.',
   powered_off: () => 'The train is powered off.',

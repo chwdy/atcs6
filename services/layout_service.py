@@ -41,21 +41,15 @@ def save_layout(state: AppState, *, name: str, description: str = "") -> Dict[st
     if not name:
         raise ValidationError("Layout name is required")
 
-    was_running = state.simulation_running
-    state.simulation_running = False
-
-    try:
-        with state.simulation_lock:
-            try:
-                result = state.persistence_manager.save_merged_layout(
-                    name, state.network, description
-                )
-            except ValueError as exc:
-                raise ValidationError(str(exc)) from exc
-            state.last_autosave_time = time.time()
-        return result
-    finally:
-        state.simulation_running = was_running
+    with state.simulation_lock:
+        try:
+            result = state.persistence_manager.save_merged_layout(
+                name, state.network, description
+            )
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
+        state.last_autosave_time = time.time()
+    return result
 
 
 def load_layout(state: AppState, name: str) -> Dict[str, Any]:
@@ -73,40 +67,34 @@ def load_layout(state: AppState, name: str) -> Dict[str, Any]:
         NotFoundError when the persistence manager raises FileNotFoundError.
         ValidationError when the load fails for an input reason.
     """
-    was_running = state.simulation_running
-    state.simulation_running = False
-
-    try:
-        with state.simulation_lock:
-            # The trains are about to be replaced, so every calibration run ends
-            # and every held result is discarded first (design_new.md "What ends
-            # a calibration run").
-            state.sim_controller.speed_calibration.discard_all(
-                "calibration ended: a layout was loaded"
+    with state.simulation_lock:
+        # The trains are about to be replaced, so every calibration run ends
+        # and every held result is discarded first (design_new.md "What ends
+        # a calibration run").
+        state.sim_controller.speed_calibration.discard_all(
+            "calibration ended: a layout was loaded"
+        )
+        try:
+            result = state.persistence_manager.load_layout_with_fallback(
+                name, state.network
             )
-            try:
-                result = state.persistence_manager.load_layout_with_fallback(
-                    name, state.network
-                )
-            except FileNotFoundError as exc:
-                raise NotFoundError(str(exc)) from exc
-            except ValueError as exc:
-                raise ValidationError(str(exc)) from exc
+        except FileNotFoundError as exc:
+            raise NotFoundError(str(exc)) from exc
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
 
-            if not result.get("success"):
-                raise ValidationError(
-                    result.get("error", "Failed to load layout"),
-                )
+        if not result.get("success"):
+            raise ValidationError(
+                result.get("error", "Failed to load layout"),
+            )
 
-            state.sim_controller.network = state.network
-            # A loaded layout may reuse every block id, so the reading log is
-            # told outright rather than left to notice a changed block set
-            # (design_new.md "Event log", Detector reading log).
-            state.sim_controller.detector_reading_log.request_full(FULL_LAYOUT)
-            state.last_autosave_time = time.time()
-        return result
-    finally:
-        state.simulation_running = was_running
+        state.sim_controller.network = state.network
+        # A loaded layout may reuse every block id, so the reading log is
+        # told outright rather than left to notice a changed block set
+        # (design_new.md "Event log", Detector reading log).
+        state.sim_controller.detector_reading_log.request_full(FULL_LAYOUT)
+        state.last_autosave_time = time.time()
+    return result
 
 
 def delete_layout(state: AppState, name: str) -> bool:

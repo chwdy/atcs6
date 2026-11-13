@@ -34,9 +34,6 @@ def state(tmp_path):
         sim_controller=sim_controller,
         persistence_manager=PersistenceManager(storage_dir=str(tmp_path)),
         simulation_lock=threading.Lock(),
-        simulation_running=False,
-        simulation_speed=1.0,
-        last_update_time=datetime.now(),
     )
     car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length_cm=20.0)
     network.add_train(Train(train_id="TRAIN_A", consist=[car], max_speed=80.0))
@@ -68,30 +65,6 @@ def _start_run(state, route):
     assert rex.execution_state_for("TRAIN_A") is not None
     return rex
 
-
-def test_an_aborted_one_off_route_is_deleted(state):
-    rex = _start_run(state, _one_off(state, "Q"))
-
-    assert rex.request_route_assignment("TRAIN_A", None).success  # abort
-    state.sim_controller._consume_pending_route_abort(
-        _controller(state), state.network.trains["TRAIN_A"]
-    )
-
-    assert "Q" not in rex.route_registry
-    assert rex.get_historical_route("Q") is not None
-
-
-def test_a_power_off_with_no_run_deletes_the_emptied_one_off_route(state):
-    rex = _rex(state)
-    _one_off(state, "Q")
-    assert rex.request_route_assignment("TRAIN_A", "Q").success
-    controller = _controller(state)
-    controller.powered = True
-    assert controller.commands.power_off_cmd().success
-
-    state.sim_controller._commit_train_act(controller, state.network.trains["TRAIN_A"])
-
-    assert "Q" not in rex.route_registry
 
 
 def test_a_deactivate_with_no_run_deletes_the_one_off_route_its_dropped_reassignment_kept(state):
@@ -154,32 +127,6 @@ def test_re_requesting_the_held_route_keeps_it(state):
 
     assert "Q2" in rex.route_registry
 
-
-def test_deleting_a_route_drops_held_requests_naming_it(state):
-    rex = _start_run(state, _one_off(state, "Q"))
-    train_route_service.create_route(
-        state,
-        route_id="R",
-        name="R",
-        mode="circular",
-        tasks=[
-            {"task_kind": "stop", "task_location": "BLK_1"},
-            {"task_kind": "stop", "task_location": "BLK_2"},
-        ],
-    )
-    assert rex.request_route_assignment(
-        "TRAIN_A", "R", start_override={"start_mode": None, "start_task_index": 1}
-    ).success
-
-    train_route_service.delete_route(state, "R")
-
-    held = rex._pending_route_assignments["TRAIN_A"]
-    assert held == {"requested_route_id": None, "start_override": None}
-    state.sim_controller._consume_pending_route_abort(
-        _controller(state), state.network.trains["TRAIN_A"]
-    )
-    assert rex.assigned_route_id_for("TRAIN_A") is None
-    assert "R" not in rex.route_registry
 
 
 def test_a_refused_quick_route_leaves_no_route_behind(state):

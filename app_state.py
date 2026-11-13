@@ -11,7 +11,6 @@ TODO List:
 """
 
 from dataclasses import dataclass
-from datetime import datetime
 import threading
 
 from session_state import SessionState, derive_session_state
@@ -32,17 +31,11 @@ class AppState:
     sim_controller: SimulationController
     persistence_manager: PersistenceManager
     simulation_lock: threading.Lock
-    simulation_running: bool
-    simulation_speed: float
-    last_update_time: datetime
     last_autosave_time: float = 0.0
-    # Monotonic seconds of *operation* since process start — the clock a
-    # schedule holds against (design_new.md "Clocks"). Each running pass of the
-    # runtime loop adds that pass's wall delta multiplied by
-    # `simulation_speed`; a stopped pass adds nothing, so an operator's stop
-    # neither consumes a dwell nor makes a train late. It lives here rather
-    # than on `SimulationController` because loading a layout builds a fresh
-    # controller and must not reset it; only a process restart does.
+    # Monotonic seconds of operation since process start (design_v2.md
+    # "Operating environment and activation", `operating_time`). It lives here
+    # rather than on `SimulationController` because loading a layout builds a
+    # fresh controller and must not reset it; only a process restart does.
     operating_time: float = 0.0
     # Set while the session is in Setup: the operator is building and testing
     # the rig, and the Setup tools own the outputs (design_new.md "Session
@@ -50,13 +43,11 @@ class AppState:
     setup_active: bool = False
 
     def session_state(self) -> SessionState:
-        """The session state, derived from the six stored flags on every read
-        (design_new.md "Session state"). Every reader asks here rather than
+        """The session state, derived from the stored flags on every read
+        (design_v2.md "Session state"). Every reader asks here rather than
         combining the flags itself."""
         return derive_session_state(
-            self.sim_controller,
-            setup_active=self.setup_active,
-            simulation_running=self.simulation_running,
+            self.sim_controller, setup_active=self.setup_active
         )
 
     def __post_init__(self) -> None:

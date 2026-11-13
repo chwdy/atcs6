@@ -18,7 +18,6 @@ TODO List:
 - [ ] Keep side-effectful initialization behind the app factory entrypoint
 """
 
-from datetime import datetime
 import threading
 
 from flask import Flask
@@ -130,9 +129,6 @@ def _build_state_and_app() -> tuple[AppState, Flask]:
     global sim_controller
     global persistence_manager
     global simulation_lock
-    global simulation_running
-    global simulation_speed
-    global last_update_time
 
     if app is not None and state is not None:
         return state, app
@@ -146,9 +142,6 @@ def _build_state_and_app() -> tuple[AppState, Flask]:
     setup_demo_train(network, path_dispatcher, sim_controller)
     persistence_manager = PersistenceManager()
     simulation_lock = threading.Lock()
-    simulation_running = False
-    simulation_speed = 1.0
-    last_update_time = datetime.now()
 
     state = AppState(
         network=network,
@@ -156,9 +149,6 @@ def _build_state_and_app() -> tuple[AppState, Flask]:
         sim_controller=sim_controller,
         persistence_manager=persistence_manager,
         simulation_lock=simulation_lock,
-        simulation_running=simulation_running,
-        simulation_speed=simulation_speed,
-        last_update_time=last_update_time,
     )
 
     app = create_app(state)
@@ -280,7 +270,7 @@ def main() -> None:
             raise SystemExit(1)
 
     global network, path_dispatcher, sim_controller, persistence_manager
-    global simulation_lock, simulation_running, simulation_speed, last_update_time
+    global simulation_lock
     global state, app
 
     # First thing in the process that owns the hardware, before bootstrap opens
@@ -324,9 +314,6 @@ def main() -> None:
     simulation_lock.count_passes_with(
         lambda: state.sim_controller.detector_reading_log.pass_count
     )
-    simulation_running = False
-    simulation_speed = 1.0
-    last_update_time = datetime.now()
 
     state = AppState(
         network=network,
@@ -334,9 +321,6 @@ def main() -> None:
         sim_controller=sim_controller,
         persistence_manager=persistence_manager,
         simulation_lock=simulation_lock,
-        simulation_running=simulation_running,
-        simulation_speed=simulation_speed,
-        last_update_time=last_update_time,
     )
 
     # design_new.md Power, Hardware interface boundary — loss-of-control

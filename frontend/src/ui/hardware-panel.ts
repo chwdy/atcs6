@@ -82,7 +82,7 @@ interface SessionInfo {
   virtual_hardware_active: boolean;
 }
 interface EnvironmentInfo {
-  selected: 'simulation' | 'virtual_hardware' | 'real_hardware';
+  selected: 'virtual_hardware' | 'real_hardware';
   active: string;
   is_active: boolean;
   /** The session state (design_new.md "Session state"). */
@@ -157,7 +157,7 @@ let adding = false;
 // The running session's info, and the selected environment.
 let sessionInfo: SessionInfo | null = null;
 let environmentInfo: EnvironmentInfo = {
-  selected: 'simulation', active: 'simulation', is_active: true,
+  selected: 'virtual_hardware', active: 'virtual_hardware', is_active: false,
 };
 let activationReadiness: any = { ready: true, issues: [] };
 
@@ -1470,7 +1470,7 @@ async function activateEnvironment(): Promise<void> {
     // A blocker refuses activation and leaves the session, and any open Setup
     // tool, in Setup (design_new.md "Hardware setup", Setup). So check first,
     // and close the commissioning tool only once activation can go ahead.
-    if (environmentInfo.selected !== 'simulation' && activationReadiness && activationReadiness.ready === false) {
+    if (activationReadiness && activationReadiness.ready === false) {
       render();
       const blocked = activationBlockMessage(activationReadiness);
       showToast(blocked || 'Environment activation was blocked.', 'error', 8000);

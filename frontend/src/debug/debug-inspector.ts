@@ -93,9 +93,8 @@ async function refreshSummary() {
             .map(([k, v]) => {
                 let cls = 'summary-val';
                 let display: unknown = v;
-                if (k === 'simulation_running') {
-                    cls += v ? ' running' : ' stopped';
-                    display = v ? 'running' : 'stopped';
+                if (k === 'session_state') {
+                    cls += v === 'live' ? ' running' : ' stopped';
                 }
                 return `<div class="summary-item">
                     <span class="summary-key">${k}</span>

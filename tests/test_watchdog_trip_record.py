@@ -3,8 +3,10 @@ Loss-of-control watchdog).
 
 The watchdog daemon drops the physical outputs to the safe state on its own
 thread and may not touch model state, so it records only the transport result
-in a thread-safe trip record. The runtime thread consumes that record once on
-its next `SimulationController.update(...)` tick: it advances
+in a thread-safe trip record. The runtime loop consumes that record once on
+its next iteration through `SimulationController.consume_watchdog_trip()`
+(design_v2.md "Runtime loop", Every time round consumes a watchdog trip): it
+advances
 `safe_state_generation`, reconciles every block's recorded track voltage to
 zero, and escalates a failed drop to `hardware_failure` — a successful drop
 emits one warning and does not end the session.
@@ -59,19 +61,19 @@ def _sim():
     return sim
 
 
-def test_a_failed_drop_escalates_to_hardware_failure_on_the_next_tick():
+def test_a_failed_drop_escalates_to_hardware_failure_on_the_next_iteration():
     sim = _sim()
     sim._watchdog_trip_record = WatchdogTripRecord()
     generation_before = sim.safe_state_generation
 
     sim._watchdog_trip_record.record(failed=True)
-    sim.update(0.1)
+    sim.consume_watchdog_trip()
 
     assert sim.hardware_failure is True
     assert sim.safe_state_generation == generation_before + 1
-    # Consumed exactly once: a second tick neither re-escalates nor re-advances.
+    # Consumed exactly once: a second iteration neither re-escalates nor re-advances.
     generation_after = sim.safe_state_generation
-    sim.update(0.1)
+    sim.consume_watchdog_trip()
     assert sim.safe_state_generation == generation_after
 
 
@@ -81,7 +83,7 @@ def test_a_successful_drop_warns_without_ending_the_session():
     generation_before = sim.safe_state_generation
 
     sim._watchdog_trip_record.record(failed=False)
-    sim.update(0.1)
+    sim.consume_watchdog_trip()
 
     assert sim.hardware_failure is False
     assert sim.safe_state_generation == generation_before + 1
@@ -94,7 +96,7 @@ def test_no_trip_is_a_no_op():
     sim._watchdog_trip_record = WatchdogTripRecord()
     generation_before = sim.safe_state_generation
 
-    sim.update(0.1)
+    sim.consume_watchdog_trip()
 
     assert sim.hardware_failure is False
     assert sim.safe_state_generation == generation_before

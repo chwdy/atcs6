@@ -12,7 +12,6 @@ import {
 describe('sessionLabel', () => {
   it('names each state, with the halt reason', () => {
     expect(sessionLabel({ value: 'live', halt_reason: null })).toBe('Live');
-    expect(sessionLabel({ value: 'paused', halt_reason: null })).toBe('Paused');
     expect(sessionLabel({ value: 'setup', halt_reason: null })).toBe('Setup');
     expect(sessionLabel({ value: 'halted', halt_reason: 'layout_emergency_cut_out' })).toBe(
       'Halted — Emergency stop'
@@ -37,7 +36,6 @@ describe('sessionHint', () => {
 
 describe('environmentLabel', () => {
   it('names each operating environment', () => {
-    expect(environmentLabel('simulation')).toBe('Simulation');
     expect(environmentLabel('virtual_hardware')).toBe('Virtual Hardware');
     expect(environmentLabel('real_hardware')).toBe('Real Hardware');
   });
@@ -48,47 +46,24 @@ describe('environmentLabel', () => {
 });
 
 describe('sessionControls', () => {
-  it('offers Pause while Live in Simulation', () => {
-    const c = sessionControls({ value: 'live', halt_reason: null }, 'simulation');
-    expect(c).toEqual({
-      playbackVisible: true,
-      playPause: 'pause',
-      playPauseEnabled: true,
-      resetVisible: false,
-      activateVisible: false,
-    });
+  it('offers nothing while Live', () => {
+    const c = sessionControls({ value: 'live', halt_reason: null });
+    expect(c).toEqual({ resetVisible: false, activateVisible: false });
   });
 
-  it('offers Play while Paused', () => {
-    const c = sessionControls({ value: 'paused', halt_reason: null }, 'simulation');
-    expect(c.playPause).toBe('play');
-    expect(c.playPauseEnabled).toBe(true);
-  });
-
-  it('hides playback in a hardware environment', () => {
-    const c = sessionControls({ value: 'live', halt_reason: null }, 'real_hardware');
-    expect(c.playbackVisible).toBe(false);
-    expect(c.playPauseEnabled).toBe(false);
-  });
-
-  it('disables Play/Pause and shows Reset after Emergency stop', () => {
-    const c = sessionControls(
-      { value: 'halted', halt_reason: 'layout_emergency_cut_out' },
-      'simulation'
-    );
-    expect(c.playPauseEnabled).toBe(false);
+  it('shows Reset after Emergency stop', () => {
+    const c = sessionControls({ value: 'halted', halt_reason: 'layout_emergency_cut_out' });
     expect(c.resetVisible).toBe(true);
     expect(c.activateVisible).toBe(false);
   });
 
   it('offers Activate in the header only where activating is the way to Live', () => {
     const shows = (value: string, halt_reason: string | null) =>
-      sessionControls({ value, halt_reason }, 'real_hardware').activateVisible;
+      sessionControls({ value, halt_reason }).activateVisible;
     expect(shows('setup', null)).toBe(true);
     expect(shows('halted', 'not_activated')).toBe(true);
     expect(shows('halted', 'hardware_failure')).toBe(true);
     expect(shows('live', null)).toBe(false);
-    expect(shows('paused', null)).toBe(false);
     expect(shows('halted', 'runtime_failure')).toBe(false);
     expect(shows('halted', 'layout_emergency_cut_out')).toBe(false);
   });
@@ -109,9 +84,8 @@ describe('activateUnavailableReason', () => {
     expect(activateUnavailableReason({ value: 'halted', halt_reason: 'runtime_failure' })).not.toBeNull();
   });
 
-  it('offers Activate from Setup, Paused and the other halts', () => {
+  it('offers Activate from Setup and the other halts', () => {
     expect(activateUnavailableReason({ value: 'setup', halt_reason: null })).toBeNull();
-    expect(activateUnavailableReason({ value: 'paused', halt_reason: null })).toBeNull();
     for (const reason of ['not_activated', 'hardware_failure', 'layout_emergency_cut_out']) {
       expect(activateUnavailableReason({ value: 'halted', halt_reason: reason })).toBeNull();
     }

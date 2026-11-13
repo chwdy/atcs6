@@ -104,9 +104,6 @@ def _state_for(network, sim, dispatcher, tmp_path):
         sim_controller=sim,
         persistence_manager=PersistenceManager(storage_dir=str(tmp_path)),
         simulation_lock=threading.Lock(),
-        simulation_running=False,
-        simulation_speed=1.0,
-        last_update_time=datetime.now(),
     )
 
 

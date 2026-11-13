@@ -5,7 +5,7 @@ import { render } from 'preact';
 
 import { api } from '../../lib/api';
 import { showToast } from '../../lib/toast';
-import { operationEnvironment, type Screen } from '../state';
+import { type Screen } from '../state';
 import { buildStarterLoop } from './starter-loop';
 import { StartCard, startCardDismissed, type FirstRunActions } from './start-card';
 
@@ -30,22 +30,6 @@ function frameTrack(host: FirstRunHost): void {
 }
 
 /**
- * Switch to Simulation when another environment is active: the starter loop
- * has no hardware behind it. Activation starts the railway over and keeps
- * the layout (design_new.md "Activation starts the railway over"); the layout
- * is empty here, so there is nothing to lose.
- */
-async function ensureSimulation(): Promise<void> {
-  if ((operationEnvironment.peek() ?? 'simulation') === 'simulation') return;
-  try {
-    await api.selectOperationEnvironment('simulation');
-    await api.activateOperationEnvironment();
-  } catch (e: any) {
-    throw new Error(`Could not switch to Simulation: ${e?.message ?? e}`);
-  }
-}
-
-/**
  * Train ids the starter loop must not use: every train on the layout, and
  * every id a route still names. Routes outlive a cleared layout and keep
  * their assigned train ids, and a new train with one of those ids would
@@ -64,13 +48,12 @@ export function firstRunActions(host: FirstRunHost, showScreen: (screen: Screen)
   return {
     startFromLoop: async () => {
       try {
-        await ensureSimulation();
         const { trainId } = await buildStarterLoop(api, await takenTrainIds());
         await host.refreshNetwork();
         showScreen('operate');
         frameTrack(host);
         host.selectTrain(trainId);
-        showToast(`Your loop is ready. Press Start route on ${trainId}, then Play.`, 'success', 8000);
+        showToast(`Your loop is ready. Press Start route on ${trainId}.`, 'success', 8000);
       } catch (e: any) {
         await host.refreshNetwork();
         showToast(`${e?.message ?? e}. Start a new layout to try again.`, 'error', 8000);

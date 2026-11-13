@@ -259,12 +259,12 @@ MAX_TRACK_VOLTAGE = 12.0
 
 _config = HardwareConfig()
 
-# The Virtual Hardware session's FakeCh347Device. None in Simulation and Real
-# Hardware. The `/api/debug/hw` endpoints poke this device's
+# The Virtual Hardware session's FakeCh347Device. None in Real Hardware. The `/api/debug/hw` endpoints poke this device's
 # input state on the live session.
 _session_device: Optional[Any] = None
 
-# Whichever device the live session opened — virtual or physical; None in Simulation.
+# Whichever device the live session opened — virtual or physical; None when
+# no session is built.
 # The commissioning tools borrow this rather than opening a second handle: the
 # controller is a single USB HID endpoint, so a transient open while a session
 # holds it fails, and it used to fail with "is it plugged in?" on a bridge that
@@ -447,11 +447,6 @@ def as_dict() -> Dict[str, Any]:
     already carries each chip's stored `bus`) enriched with each chip's derived
     role / direction / port_count / port_kind for the frontend."""
     payload = _persist_dict(_config)
-    # Temporary response projection for the existing setup screen. These are
-    # not Hardware Setup fields and are never persisted in this store.
-    selected = operation_environment.get_selected()
-    payload["enabled"] = selected is not OperationMode.SIMULATION
-    payload["develop"] = selected is OperationMode.VIRTUAL_HARDWARE
     for chip_payload, chip in zip(payload["chips"], _config.chips):
         ck = CHIP_CATALOG.get(chip.kind)
         chip_payload["role"] = chip.role
@@ -944,21 +939,6 @@ def apply_updates(updates: Dict[str, Any], *, persist: bool = True) -> HardwareC
     _prune_dangling_bindings(merged)   # a chip removed on the setup screen drops its bindings
     _validate(merged)   # raises before any commit
     _apply(merged)
-    # Migration bridge for the old setup UI. The canonical API writes the
-    # environment store directly; these flags are ignored by HardwareConfig.
-    if "enabled" in updates or "develop" in updates:
-        selected = operation_environment.get_selected()
-        enabled = updates.get(
-            "enabled", selected is not OperationMode.SIMULATION
-        )
-        develop = updates.get(
-            "develop", selected is OperationMode.VIRTUAL_HARDWARE
-        )
-        if "develop" in updates and bool(develop) and "enabled" not in updates:
-            enabled = True
-        operation_environment.select_from_legacy_flags(
-            enabled=enabled, develop=develop, persist=persist
-        )
     if persist:
         save_to_disk()
     return _config
@@ -1019,8 +999,6 @@ def coverage_report(
     }
 
     return {
-        "enabled": operation_environment.get_selected()
-        is not OperationMode.SIMULATION,
         "blocks": {
             "total": len(blocks),
             "occupancy": split(blocks, detected),
@@ -1053,13 +1031,6 @@ def activation_report(
     optional facility the rig simply does not have is reported, not enforced.
     """
     environment = operation_environment.parse(environment)
-    if environment is OperationMode.SIMULATION:
-        return {
-            "ready": True,
-            "environment": environment.value,
-            "issues": [],
-            "warnings": [],
-        }
 
     blocks = sorted(set(block_ids))
     switches = sorted(set(switch_ids))
@@ -1139,8 +1110,8 @@ def activation_report(
     # lands in the middle zone rather than reading as driven (design_new.md
     # "Power", `current_sense_min_drive_v` must sit above `lighting_voltage`).
     # Checked here at activation the same way a missing binding is, whatever set
-    # the value (a hand edit, a copied set, a Simulation save that
-    # never evaluated this bound).
+    # the value (a hand edit, a copied set, a save that never evaluated this
+    # bound).
     over_floor = sorted(
         train_id
         for train_id, lighting_voltage in (lighting_voltages or {}).items()
@@ -1454,15 +1425,15 @@ def config_from_payload(payload: Dict[str, Any]) -> HardwareConfig:
     (no merge with the singleton). Used by the self-test / port-test endpoints
     to exercise the config a user is editing before it is saved."""
     cfg = _config_from_dict(payload)
-    # Commissioning requests may still arrive from the old two-toggle UI.
     # Carry the requested environment only as transient request metadata; it is
-    # not a Hardware Setup field and is never serialized.
+    # not a Hardware Setup field and is never serialized. The setup panel names
+    # the environment on each request; the block and switch editors send the
+    # config `GET /api/hardware/config` returned, which names none, so their
+    # tests run in the selected environment.
     if "environment" in payload:
         requested = operation_environment.parse(payload.get("environment"))
-    elif bool(payload.get("develop", False)):
-        requested = OperationMode.VIRTUAL_HARDWARE
     else:
-        requested = OperationMode.REAL_HARDWARE
+        requested = operation_environment.get_selected()
     setattr(cfg, "_requested_environment", requested)
     _validate(cfg)
     return cfg
@@ -1527,7 +1498,8 @@ def reset_to_defaults() -> HardwareConfig:
     """Restore test defaults without touching either on-disk store.
 
     Production never couples these stores; this helper resets the separate
-    environment singleton as well so an isolated test starts in Simulation.
+    environment singleton as well so an isolated test starts in the default
+    environment (Virtual Hardware).
     """
     global _config, _session_device, _live_device, _activated_setup
     _config = HardwareConfig()
@@ -1595,9 +1567,8 @@ def build_session_interfaces(
     """Resolve the configuration to the session's interface overrides:
     `(input_interface, block_output_interface, switch_output_interface)`.
 
-    All-`None` in Simulation (the happy-path model interfaces are constructed by
-    `SimulationController`). Virtual Hardware opens the in-memory device and
-    Real Hardware opens the physical controller. Completeness and the removal
+    Virtual Hardware opens the in-memory device and Real Hardware opens the
+    physical controller. Completeness and the removal
     of per-role fallback are enforced by the activation phase.
 
     `track_polarity_of` answers a block's rail-binding `reversed` flag for the
@@ -1617,12 +1588,6 @@ def build_session_interfaces(
         if environment is None
         else operation_environment.parse(environment)
     )
-    if environment is OperationMode.SIMULATION:
-        # Simulation builds no chips from the setup, so no part of it is captured
-        # and no edit to it can be pending.
-        note_activated_setup(None)
-        return None, None, None
-
     global _session_device, _live_device
     if environment is OperationMode.VIRTUAL_HARDWARE:
         # Virtual Hardware: the same setup-aware stack on the in-memory device.

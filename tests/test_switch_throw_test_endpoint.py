@@ -44,8 +44,7 @@ def _isolated_hw_config(tmp_path, monkeypatch):
 
 
 CONFIG = {
-    "enabled": True,
-    "develop": True,
+    "environment": "virtual_hardware",
     "controller": {"kind": "ch347", "device_port": None},
     "chips": [
         {"chip_id": "sw1", "kind": "hc595", "spi_select": "cs0", "chain_length": 3},
@@ -78,9 +77,6 @@ def client():
         sim_controller=sim_controller,
         persistence_manager=PersistenceManager(storage_dir="layouts"),
         simulation_lock=threading.Lock(),
-        simulation_running=False,
-        simulation_speed=1.0,
-        last_update_time=datetime.now(),
     )
     app = create_app(state)
     app.config["TESTING"] = True
@@ -138,6 +134,7 @@ def test_a_live_switch_output_drives_the_throw_itself(client):
     assert isinstance(sw_iface, SwitchDriver)
     state.sim_controller.switch_output_interface = sw_iface
     state.network.switch_output_interface = sw_iface
+    state.sim_controller.environment_active = True
 
     body = _throw(test_client, 1).get_json()
 

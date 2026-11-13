@@ -17,8 +17,6 @@ from datetime import datetime
 from typing import Callable, Optional, Tuple
 
 from app_state import AppState
-from constants import MAX_SIM_DELTA_SECONDS
-from enums import OperationMode
 
 # Configuration
 AUTOSAVE_INTERVAL = 300  # 5 minutes in seconds
@@ -31,14 +29,6 @@ AUTOSAVE_FILENAME = "_autosave"
 # that says when it started, so repeats are counted and summarized instead.
 TICK_INTERVAL_SECONDS = 0.1
 ERROR_REPEAT_SUMMARY_EVERY = 100   # ~10s at the tick interval
-
-
-def _clamp_sim_delta(delta_seconds: float, simulation_speed: float) -> float:
-    """Per-tick sim delta = wall-clock delta x speed, clamped to
-    ``MAX_SIM_DELTA_SECONDS`` (and floored at 0 against clock skew)."""
-    return min(
-        max(delta_seconds, 0.0) * simulation_speed, MAX_SIM_DELTA_SECONDS
-    )
 
 
 class FaultLog:
@@ -101,45 +91,45 @@ class FaultLog:
             )
 
 
-# The passes a runtime-loop iteration can run (design_new.md "Running and
-# stopped", Which pass runs).
-PASS_TICK = "tick"  # the whole tick
-PASS_STOPPED = "stopped"  # the observing steps only
-PASS_WATCHDOG = "watchdog"  # only consume a loss-of-control watchdog trip
+# The passes a runtime-loop iteration can run (design_v2.md "Runtime loop",
+# Which pass runs).
+PASS_TICK = "tick"  # the whole runtime step
+PASS_STOPPED = "stopped"  # the stopped pass: read the detectors, update trains
+PASS_WATCHDOG = "watchdog"  # no pass; only consume a loss-of-control watchdog trip
 
 
 def runtime_pass(state: AppState) -> Optional[str]:
-    """Which pass this iteration runs, read from the session state.
+    """Which pass this iteration runs, read from the session state
+    (design_v2.md "Runtime loop", Which pass runs).
 
-    - Live: the whole tick.
-    - Halted for a runtime or hardware failure: no pass, apart from consuming a
-      watchdog trip record (step `ee19`).
-    - Any other stopped state in Virtual Hardware or Real Hardware — Setup, or
-      Halted for the layout emergency cut-out — the stopped pass, because the
-      detectors go on detecting. Setup with a hardware failure latched runs no
-      pass, since step `ee19` keeps the runtime off the failed device.
-    - Everything else runs no pass: a Paused or cut-out Simulation session has
-      nothing to observe, and a session Halted for `not_activated` has no
-      interfaces built.
+    - Live: the whole runtime step.
+    - Setup: the stopped pass, because the detectors go on detecting. Setup
+      runs no pass while a hardware failure is latched, or while no detector
+      interface is open.
+    - Halted for `hardware_failure` or `not_activated`: no pass.
+    - Halted for the v1 `runtime_failure`: no pass. Halted for the v1 layout
+      emergency cut-out: the stopped pass, as in Setup.
+
+    Every iteration consumes a watchdog trip whatever this returns.
     """
     from enums import HaltReason, SessionStateValue
 
     session = state.session_state()
     if session.is_live:
         return PASS_TICK
-    if session.halt_reason in (HaltReason.RUNTIME_FAILURE, HaltReason.HARDWARE_FAILURE):
+    if session.halt_reason in (
+        HaltReason.RUNTIME_FAILURE,
+        HaltReason.HARDWARE_FAILURE,
+        HaltReason.NOT_ACTIVATED,
+    ):
         return PASS_WATCHDOG
     controller = state.sim_controller
-    hardware = getattr(controller, "operation_mode", None) in (
-        OperationMode.VIRTUAL_HARDWARE,
-        OperationMode.REAL_HARDWARE,
-    )
-    if not hardware or session.halt_reason is HaltReason.NOT_ACTIVATED:
-        return None
     if session.value is SessionStateValue.SETUP and getattr(
         controller, "hardware_failure", False
     ):
-        return None
+        return PASS_WATCHDOG
+    if not getattr(controller, "occupancy_is_real", False):
+        return PASS_WATCHDOG
     return PASS_STOPPED
 
 
@@ -164,79 +154,22 @@ def close_idle_setup_tools(state: AppState) -> None:
         )
 
 
-def runs_train_step(controller) -> bool:
-    """Whether this controller runs the v2 runtime step (design_v2.md
-    "Runtime step"): it has a train runtime and a Virtual Hardware or Real
-    Hardware environment. The v1 Simulation environment keeps the v1 tick
-    until v1 is removed."""
-    return getattr(controller, "train_runtime", None) is not None and getattr(
-        controller, "operation_mode", None
-    ) in (OperationMode.VIRTUAL_HARDWARE, OperationMode.REAL_HARDWARE)
-
-
-def run_loop_iteration(state: AppState, delta_seconds: float) -> None:
+def run_loop_iteration(state: AppState) -> None:
     """One iteration of the runtime loop: the pass `runtime_pass(state)` picks,
-    run under the simulation lock. Every branch consumes a loss-of-control
-    watchdog trip record (design_new.md "Trip-record consumption escalates a
-    failed drop to hardware failure"): a running pass inside `update(...)`, the
-    other branches directly."""
+    run under the simulation lock. Every iteration consumes a loss-of-control
+    watchdog trip record, even when no pass runs (design_v2.md "Runtime
+    loop", Every time round consumes a watchdog trip)."""
     which = runtime_pass(state)
     controller = state.sim_controller
-    if runs_train_step(controller):
-        with state.simulation_lock:
-            controller.note_session_live(which == PASS_TICK)
-            if which == PASS_TICK:
-                controller.run_train_step(live=True)
-            elif which == PASS_STOPPED:
-                controller.consume_watchdog_trip()
-                controller.run_train_step(live=False)
-            else:
-                controller.consume_watchdog_trip()
-                controller.mark_no_pass()
+    if controller is None:
         return
-    if which == PASS_TICK:
-        # The operating clock advances by the uncapped wall x speed
-        # delta (a faithful clock a schedule measures against); the
-        # physics integrator uses the same delta CLAMPED to
-        # MAX_SIM_DELTA_SECONDS so a multi-second hitch can't
-        # integrate one giant jump that spikes speed past max and
-        # trips a spurious overspeed EB (design_new.md "Clocks").
-        # Normal ticks (incl. a few-x speed multiplier) leave the two
-        # equal.
-        operating_delta = max(delta_seconds, 0.0) * state.simulation_speed
-        sim_delta = min(operating_delta, MAX_SIM_DELTA_SECONDS)
-        with state.simulation_lock:
-            state.sim_controller.update(
-                sim_delta, operating_delta_seconds=operating_delta
-            )
-    elif which == PASS_STOPPED:
-        # Stopped, but the detectors have not stopped detecting.
-        # Occupancy is what the hardware says it is, so it is read
-        # and committed on the same cadence whether or not trains
-        # are being ticked; `poll_hardware_occupancy` runs the
-        # Observe read and its commit alone, so nothing else about
-        # "stopped" changes.
-        with state.simulation_lock:
-            # A watchdog may trip while the session is stopped; its
-            # trip record is consumed on every iteration
-            # (design_new.md "Trip-record consumption escalates a
-            # failed drop to hardware failure").
-            state.sim_controller.consume_watchdog_trip()
-            state.sim_controller.poll_hardware_occupancy()
-    elif which == PASS_WATCHDOG:
-        # A failure halt runs no pass, but a watchdog trip is still
-        # consumed so the recorded voltages follow the drop and a
-        # failed drop escalates (design_new.md step `ee19`).
-        with state.simulation_lock:
-            state.sim_controller.consume_watchdog_trip()
-            state.sim_controller.mark_no_pass()
-    elif state.sim_controller is not None:
-        # No pass this iteration: the time adds nothing to
-        # `Block.occupied_seconds` (design_new.md "Maintenance
-        # counters").
-        with state.simulation_lock:
-            state.sim_controller.consume_watchdog_trip()
-            state.sim_controller.mark_no_pass()
+    with state.simulation_lock:
+        controller.consume_watchdog_trip()
+        controller.note_session_live(which == PASS_TICK)
+        if which == PASS_TICK:
+            controller.run_train_step(live=True)
+        elif which == PASS_STOPPED:
+            controller.run_train_step(live=False)
 
 
 def create_simulation_loop(state: AppState) -> Callable[[], None]:
@@ -250,16 +183,11 @@ def create_simulation_loop(state: AppState) -> Callable[[], None]:
     """
 
     def simulation_loop() -> None:
-        last_update_time = datetime.now()
         faults = FaultLog("SimulationLoop")
         tool_faults = FaultLog("SetupToolTimeout")
         while True:
             try:
-                current_time = datetime.now()
-                delta_seconds = (current_time - last_update_time).total_seconds()
-                last_update_time = current_time
-
-                run_loop_iteration(state, delta_seconds)
+                run_loop_iteration(state)
             except Exception as e:
                 faults.report(e)
             else:

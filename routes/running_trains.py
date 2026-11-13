@@ -15,7 +15,6 @@ import time
 from flask import jsonify, request
 
 from app_state import AppState
-from runtime import runs_train_step
 
 
 def _answer(result):
@@ -24,12 +23,11 @@ def _answer(result):
 
 
 def _runtime(state: AppState):
-    """The train runtime when this session runs the v2 runtime step, else
-    None."""
+    """The session's train runtime, or None when no runtime is built."""
     controller = getattr(state, "sim_controller", None)
-    if controller is None or not runs_train_step(controller):
+    if controller is None:
         return None
-    return controller.train_runtime
+    return getattr(controller, "train_runtime", None)
 
 
 def holds_train(state: AppState, train_id: str) -> bool:

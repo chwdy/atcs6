@@ -476,7 +476,9 @@ def _simulation_summary(state: Any) -> dict[str, Any]:
     try:
         network = getattr(state, "network", None)
         return {
-            "running": bool(getattr(state, "simulation_running", False)),
+            "running": bool(
+                getattr(state, "session_state", None) and state.session_state().is_live
+            ),
             "train_count": len(getattr(network, "trains", {}) or {}),
         }
     except Exception:

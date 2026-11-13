@@ -47,9 +47,6 @@ def app(tmp_path):
         sim_controller=SimulationController(network, path_dispatcher),
         persistence_manager=PersistenceManager(storage_dir=str(tmp_path)),
         simulation_lock=threading.Lock(),
-        simulation_running=False,
-        simulation_speed=1.0,
-        last_update_time=datetime.now(),
     )
     app = create_app(state)
     app.config["TESTING"] = True

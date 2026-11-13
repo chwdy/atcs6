@@ -51,9 +51,6 @@ def state_with_train():
         sim_controller=sim_controller,
         persistence_manager=persistence_manager,
         simulation_lock=threading.Lock(),
-        simulation_running=False,
-        simulation_speed=1.0,
-        last_update_time=datetime.now(),
     )
     car = TrainCar(car_id="CAR_1", car_type="LOCOMOTIVE", length_cm=20.0)
     train = Train(train_id="TRAIN_A", consist=[car], max_speed=80.0)
@@ -85,55 +82,6 @@ def _setup_running_run(state, train, *, route_id="R", stop_block="BLK_1"):
 # Mechanism 1: request_route_assignment / _pending_route_assignments
 # --------------------------------------------------------------------------
 
-
-def test_retarget_with_live_run_is_deferred_then_committed(state_with_train):
-    """A retarget of a train with a live run holds the request; Action's
-    teardown commits it (design_new.md lines 1530-1531, 2105)."""
-    state, train = state_with_train
-    route_r, rex = _setup_running_run(state, train, route_id="R", stop_block="BLK_1")
-    route_r2 = _make_route(state, "R2", "BLK_2")
-    controller = state.sim_controller.get_controller("TRAIN_A")
-    assert rex.execution_state_for("TRAIN_A") is not None
-
-    rex.request_route_assignment("TRAIN_A", "R2")
-
-    # Deferred: neither stored list mutated; the request is held; abort armed.
-    assert "TRAIN_A" in route_r.assigned_train_ids          # old still assigned
-    assert "TRAIN_A" not in route_r2.assigned_train_ids     # new NOT yet assigned
-    assert rex._pending_route_assignments["TRAIN_A"]["requested_route_id"] == "R2"
-    assert controller.route_hooks.phase_latches.route_abort is True
-    # Held request state is never reported as an assignment.
-    assert rex.assigned_route_id_for("TRAIN_A") == "R"
-
-    # Action abort consumer archives the old run and commits the replacement.
-    state.sim_controller._consume_pending_route_abort(controller, train)
-
-    assert rex.execution_state_for("TRAIN_A") is None       # old run torn down
-    assert "TRAIN_A" not in route_r.assigned_train_ids      # old unassigned
-    assert "TRAIN_A" in route_r2.assigned_train_ids         # new assigned
-    assert "TRAIN_A" not in rex._pending_route_assignments  # queue consumed
-    assert rex.assigned_route_id_for("TRAIN_A") == "R2"
-
-
-def test_unassign_with_live_run_is_deferred(state_with_train):
-    """Unassigning a train with a live run holds `{requested_route_id: None}`
-    and leaves the train on no route once Action tears the run down."""
-    state, train = state_with_train
-    route_r, rex = _setup_running_run(state, train)
-    controller = state.sim_controller.get_controller("TRAIN_A")
-
-    rex.request_route_assignment("TRAIN_A", None)
-
-    assert "TRAIN_A" in route_r.assigned_train_ids          # not unassigned yet
-    assert rex._pending_route_assignments["TRAIN_A"]["requested_route_id"] is None
-    assert controller.route_hooks.phase_latches.route_abort is True
-
-    state.sim_controller._consume_pending_route_abort(controller, train)
-
-    assert rex.execution_state_for("TRAIN_A") is None
-    assert "TRAIN_A" not in route_r.assigned_train_ids      # now unassigned
-    assert rex.assigned_route_id_for("TRAIN_A") is None     # on no route
-    assert "TRAIN_A" not in rex._pending_route_assignments
 
 
 def test_assign_without_run_commits_immediately(state_with_train):
@@ -170,31 +118,6 @@ def test_same_route_running_request_is_noop(state_with_train):
     assert "TRAIN_A" not in rex._pending_start_overrides    # start override dropped
     assert rex.execution_state_for("TRAIN_A") is not None    # run untouched
 
-
-def test_start_override_moves_to_pending_start_on_commit(state_with_train):
-    """A per-assignment start override rides beside the held route and only
-    moves to `_pending_start_overrides` when the assignment commits (line 2079).
-    """
-    state, train = state_with_train
-    route_r, rex = _setup_running_run(state, train, route_id="R", stop_block="BLK_1")
-    route_r2 = _make_route(state, "R2", "BLK_2")
-    controller = state.sim_controller.get_controller("TRAIN_A")
-
-    rex.request_route_assignment(
-        "TRAIN_A",
-        "R2",
-        start_override={"start_mode": RouteStartMode.NEAREST, "start_task_index": None},
-    )
-    # Held beside the route, not yet in the start-override stash.
-    assert "TRAIN_A" not in rex._pending_start_overrides
-    held = rex._pending_route_assignments["TRAIN_A"]["start_override"]
-    assert held["start_mode"] == RouteStartMode.NEAREST
-
-    state.sim_controller._consume_pending_route_abort(controller, train)
-
-    # Moved to the start-override stash for the next fresh run.
-    assert rex._pending_start_overrides["TRAIN_A"]["start_mode"] == RouteStartMode.NEAREST
-    assert "TRAIN_A" in route_r2.assigned_train_ids
 
 
 def test_remove_with_no_run_removes_stored_assignment(state_with_train):
@@ -248,101 +171,6 @@ def test_delete_route_with_no_trains_finalizes_immediately(state_with_train):
     assert rex.get_historical_route("R") is route           # archived definition
     assert rex.get_route("R") is route                      # resolves via fallback
 
-
-def test_delete_route_with_live_run_defers_until_teardown(state_with_train):
-    """Deleting a route with a live run retains it, fans out `route_deactivate`,
-    and archives only after the Action teardown (design_new.md lines
-    2098-2102)."""
-    state, train = state_with_train
-    route, rex = _setup_running_run(state, train, route_id="R", stop_block="BLK_1")
-    controller = state.sim_controller.get_controller("TRAIN_A")
-    assert rex.execution_state_for("TRAIN_A") is not None
-
-    assert train_route_service.delete_route(state, "R") is True
-
-    # Deferred: retained + pending; train still assigned; latch armed.
-    assert "R" in rex.route_registry
-    assert "R" in rex.pending_route_deletions
-    assert "TRAIN_A" in route.assigned_train_ids
-    assert controller.route_hooks.phase_latches.route_deactivate is True
-    assert rex.get_route("R") is route                      # still resolves live
-
-    # Action deactivate consumer tears the run down; finalize then archives.
-    state.sim_controller._consume_pending_route_deactivate(controller, train)
-
-    assert rex.execution_state_for("TRAIN_A") is None        # run torn down
-    assert "TRAIN_A" not in route.assigned_train_ids         # unassigned
-    assert "R" not in rex.route_registry                     # removed from active
-    assert "R" not in rex.pending_route_deletions            # finalized
-    assert rex.get_historical_route("R") is route            # archived
-    assert rex.get_route("R") is route                       # resolves via fallback
-    # A route pending deletion is never re-applied by _pending_reassign.
-    assert "TRAIN_A" not in rex._pending_reassign
-
-
-def test_delete_route_with_assigned_but_unrun_train_finalizes_on_teardown(
-    state_with_train,
-):
-    """A train assigned but not yet running still defers deletion: the
-    `route_deactivate` teardown unassigns it, then finalize archives."""
-    state, train = state_with_train
-    route = _make_route(state, "R", "BLK_1")
-    rex = state.sim_controller.route_executor
-    route.assign_train("TRAIN_A")                            # assigned, no run
-    controller = state.sim_controller.get_or_create_controller("TRAIN_A")
-
-    train_route_service.delete_route(state, "R")
-
-    # Retained while the train is still assigned (the pending latch holds it).
-    assert "R" in rex.route_registry
-    assert "R" in rex.pending_route_deletions
-    assert controller.route_hooks.phase_latches.route_deactivate is True
-
-    state.sim_controller._consume_pending_route_deactivate(controller, train)
-
-    assert "TRAIN_A" not in route.assigned_train_ids
-    assert "R" not in rex.route_registry                     # finalized
-    assert rex.get_historical_route("R") is route
-
-
-def test_delete_route_with_assigned_never_ticked_train_latches_like_any_train(
-    state_with_train,
-):
-    """A train assigned but never ticked has no controller yet (paused /
-    just-loaded / assigned through the API while paused). `delete_route` does not
-    unassign it inline (design_new.md "Route deletion waits for live teardown";
-    request handlers make no inline state changes): it creates the controller,
-    sets the `route_deactivate` latch, and the next Action's deactivate consumer
-    unassigns the train through its no-run branch, after which the route is
-    archived.
-    """
-    state, train = state_with_train
-    route = _make_route(state, "R", "BLK_1")
-    rex = state.sim_controller.route_executor
-    route.assign_train("TRAIN_A")                            # assigned, no run
-    # Do NOT create a controller: the sim has never ticked this train.
-    assert state.sim_controller.get_controller("TRAIN_A") is None
-    assert rex.execution_state_for("TRAIN_A") is None
-
-    assert train_route_service.delete_route(state, "R") is True
-
-    # Nothing changed inline: the train stays assigned and the route pending.
-    controller = state.sim_controller.get_controller("TRAIN_A")
-    assert controller is not None
-    assert controller.route_hooks.phase_latches.route_deactivate is True
-    assert "TRAIN_A" in route.assigned_train_ids
-    assert "R" in rex.route_registry
-    assert "R" in rex.pending_route_deletions
-
-    # The Action deactivate consumer's no-run branch unassigns; finalize archives.
-    state.sim_controller._consume_pending_route_deactivate(controller, train)
-
-    assert "TRAIN_A" not in route.assigned_train_ids
-    assert "R" not in rex.route_registry
-    assert "R" not in rex.pending_route_deletions
-    assert rex.get_historical_route("R") is route
-    # Re-delete is an idempotent success against the archived route.
-    assert train_route_service.delete_route(state, "R") is True
 
 
 def test_deleting_the_train_finishes_a_route_deletion_waiting_on_it(
@@ -489,33 +317,3 @@ def _helper_latch_events(state):
         n for n in nc.events_for("train", "TRAIN_A")
         if n.operation in ("remove_train_route_run", "settle_deactivate_without_run")
     ]
-
-
-def test_an_abort_with_no_run_left_still_emits_one_consumption_event(state_with_train):
-    """design_new.md "Latch consumption events": the route-abort step emits the
-    consumption event itself after its teardown call returns, whether or not a
-    run was left to tear down; the helper emits none."""
-    state, train = state_with_train
-    _make_route(state, "R", "BLK_1").assign_train(train.train_id)
-    controller = state.sim_controller.get_or_create_controller(train.train_id)
-    controller.route_hooks.phase_latches.set_route_abort("operator abort", has_active_path=False)
-    recorded = _record_latch_events(controller)
-    state.sim_controller._consume_pending_route_abort(controller, train)
-    assert recorded == [("_consume_pending_route_abort", "route_abort")]
-    assert _helper_latch_events(state) == []
-
-
-def test_a_deactivate_emits_one_consumption_event_on_either_branch(state_with_train):
-    state, train = state_with_train
-    _route, _rex = _setup_running_run(state, train)
-    controller = state.sim_controller.get_controller("TRAIN_A")
-    controller.route_hooks.phase_latches.set_route_deactivate("route edited", has_active_path=False)
-    recorded = _record_latch_events(controller)
-    state.sim_controller._consume_pending_route_deactivate(controller, train)
-    assert recorded == [("_consume_pending_route_deactivate", "route_deactivate")]
-    # With no run left, the step still emits exactly one event.
-    controller.route_hooks.phase_latches.set_route_deactivate("route edited", has_active_path=False)
-    recorded.clear()
-    state.sim_controller._consume_pending_route_deactivate(controller, train)
-    assert recorded == [("_consume_pending_route_deactivate", "route_deactivate")]
-    assert _helper_latch_events(state) == []

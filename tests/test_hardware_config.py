@@ -52,7 +52,7 @@ def _isolated_hw_config(tmp_path, monkeypatch):
 # --- example configs -------------------------------------------------------
 def _real_payload(**overrides):
     payload = {
-        "enabled": True,
+        "environment": "real_hardware",
         "controller": {"kind": "ch347", "device_port": None},
         "chips": [
             {"chip_id": "pwm1", "kind": "pca9685", "i2c_address": "0x40"},
@@ -75,17 +75,17 @@ def _real_payload(**overrides):
 
 
 # --- defaults / serialization ---------------------------------------------
-def test_defaults_are_all_virtual_sim_mode():
+def test_defaults_are_an_empty_setup_and_virtual_hardware():
     cfg = hardware_config.get_hardware_config()
     assert cfg.chips == []
     assert cfg.controller.kind == "ch347"
-    assert operation_environment.get_selected() == OperationMode.SIMULATION
+    assert operation_environment.get_selected() == OperationMode.VIRTUAL_HARDWARE
 
 
 def test_as_dict_shape():
     keys = set(hardware_config.as_dict().keys())
     assert keys == {
-        "enabled", "develop", "controller", "chips",
+        "controller", "chips",
         "block_track", "block_occupancy", "block_occupancy_current",
         "switch_output", "switch_track_source", "idle_deadband_v",
         "current_sense_min_drive_v",
@@ -103,19 +103,7 @@ def test_as_dict_enriches_chips_with_derived_fields():
 
 
 # --- operation-mode derivation --------------------------------------------
-def test_enabled_with_chip_is_real():
-    hardware_config.apply_updates(_real_payload(), persist=False)
-    assert operation_environment.get_selected() == OperationMode.REAL
 
-
-def test_environment_selection_is_independent_of_setup_completeness():
-    hardware_config.apply_updates({"enabled": True, "chips": []}, persist=False)
-    assert operation_environment.get_selected() == OperationMode.REAL_HARDWARE
-
-
-def test_chips_but_not_enabled_is_sim():
-    hardware_config.apply_updates(_real_payload(enabled=False), persist=False)
-    assert operation_environment.get_selected() == OperationMode.SIM
 
 
 # --- validation ------------------------------------------------------------
@@ -545,14 +533,14 @@ def test_apply_updates_persist_false_does_not_write():
 
 def test_load_missing_file_keeps_defaults():
     hardware_config.load_from_disk()
-    assert operation_environment.get_selected() == OperationMode.SIM
+    assert operation_environment.get_selected() == OperationMode.VIRTUAL_HARDWARE
 
 
 def test_load_corrupt_file_keeps_defaults():
     with open(hardware_config.CONFIG_PATH, "w") as fh:
         fh.write("{ not json ]")
     hardware_config.load_from_disk()
-    assert operation_environment.get_selected() == OperationMode.SIM
+    assert operation_environment.get_selected() == OperationMode.VIRTUAL_HARDWARE
 
 
 def test_load_invalid_config_keeps_defaults():
@@ -564,16 +552,16 @@ def test_load_invalid_config_keeps_defaults():
                        "SW": {"chip_id": "unidentified train", "port_main": 0, "port_diverge": 1},
                    }}, fh)
     hardware_config.load_from_disk()
-    assert operation_environment.get_selected() == OperationMode.SIM
+    assert operation_environment.get_selected() == OperationMode.VIRTUAL_HARDWARE
 
 
-def test_legacy_flat_file_loads_as_sim():
+def test_legacy_flat_file_loads_as_the_default():
     # The previous coarse schema (output_backend/...) has no recognized keys, so
     # it loads as the all-virtual default rather than crashing.
     with open(hardware_config.CONFIG_PATH, "w") as fh:
         json.dump({"output_backend": "gpio", "device_target": "ch347"}, fh)
     hardware_config.load_from_disk()
-    assert operation_environment.get_selected() == OperationMode.SIM
+    assert operation_environment.get_selected() == OperationMode.VIRTUAL_HARDWARE
 
 
 # --- interface factory -----------------------------------------------------
@@ -628,6 +616,7 @@ def test_factory_device_open_failure_raises_backend_unavailable(monkeypatch):
 
     monkeypatch.setattr(chdev, "open_ch347_device", _boom)
     hardware_config.apply_updates(_real_payload(), persist=False)
+    operation_environment.select(OperationMode.REAL_HARDWARE, persist=False)
     with pytest.raises(hardware_config.HardwareBackendUnavailable):
         hardware_config.build_session_interfaces()
 
@@ -724,9 +713,6 @@ def client():
         sim_controller=sim_controller,
         persistence_manager=PersistenceManager(storage_dir="layouts"),
         simulation_lock=threading.Lock(),
-        simulation_running=False,
-        simulation_speed=1.0,
-        last_update_time=datetime.now(),
     )
     app = create_app(state)
     app.config["TESTING"] = True
@@ -738,7 +724,6 @@ def test_get_returns_current_config(client):
     resp = client.get("/api/hardware/config")
     assert resp.status_code == 200
     cfg = resp.get_json()["config"]
-    assert cfg["enabled"] is False
     assert cfg["chips"] == []
 
 
@@ -1032,6 +1017,7 @@ def test_bootstrap_keeps_real_environment_inactive_when_device_unavailable(monke
     hardware_config.apply_updates(_real_payload(
         block_track={}, switch_output={}, switch_track_source={}, block_occupancy={}
     ))
+    operation_environment.select(OperationMode.REAL_HARDWARE)
     _network, _dispatcher, sim, _persistence = bootstrap.bootstrap_runtime(
         demo=False, setup_train=False
     )
@@ -1048,26 +1034,20 @@ def test_bootstrap_activates_no_hardware_environment(monkeypatch):
     """A Real Hardware selection is not activated at boot: the session boots
     Halted for `not_activated` until the operator activates it, and boot runs no
     readiness check of its own (design_new.md "Activation starts the railway
-    over", Boot activates no hardware environment)."""
+    over", Boot activates no hardware environment; design_v2.md "Session state",
+    Boot)."""
     import bootstrap
     _patch_fake_device(monkeypatch)
     hardware_config.apply_updates(_real_payload(
         block_track={}, switch_output={}, switch_track_source={}, block_occupancy={}
     ))
+    operation_environment.select(OperationMode.REAL_HARDWARE)
     _network, _dispatcher, sim, _persistence = bootstrap.bootstrap_runtime(
         demo=False, setup_train=False
     )
-    assert sim.operation_mode == OperationMode.REAL
+    assert sim.operation_mode == OperationMode.REAL_HARDWARE
     assert sim.environment_active is False
     assert isinstance(sim.input_interface, SimulatedOccupancyDriver)
     assert [issue["code"] for issue in sim.activation_issues] == ["not_activated"]
 
 
-def test_bootstrap_sim_config_wires_sim_mode():
-    import bootstrap
-    hardware_config.apply_updates({"enabled": False})
-    _network, _dispatcher, sim, _persistence = bootstrap.bootstrap_runtime(
-        demo=False, setup_train=False
-    )
-    assert sim.operation_mode == OperationMode.SIM
-    assert isinstance(sim.input_interface, SimulatedOccupancyDriver)

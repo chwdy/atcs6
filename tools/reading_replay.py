@@ -1,6 +1,6 @@
 """Play the readings of a detector reading log back into a SimulationController.
 
-The detector reading log (design_new.md "Event log", Detector reading log) writes
+The detector reading log (design_v2.md "Detector reading log") writes
 one line per pass, and most lines list only the blocks whose reading changed.
 This module turns those lines back into what each pass actually read, and feeds
 them to the runtime one pass at a time, so a rig run that went wrong can be
@@ -17,17 +17,19 @@ Three pieces:
   a hardware driver: the runtime then treats occupancy as coming from real
   detectors, exactly as it did on the rig.
 - `ReadingPlayer` steps the controller through the passes: a `"tick"` pass runs
-  `update(...)` with the deltas the rig used, a `"stopped"` pass runs
-  `poll_hardware_occupancy()`. A test calls `play_to(n)`, does what the operator
-  did between pass n and pass n+1 (adopt a train, power it on, ...), and plays on.
+  a full runtime step, a `"stopped"` pass runs the stopped pass, each with the
+  pass's recorded `wall_time` (design_v2.md "Detector reading log", A recorded
+  run can be replayed in a test). A test calls `play_to(n)`, does what the
+  operator did between pass n and pass n+1 (turn a knob, set a destination,
+  ...), and plays on.
 
 What a replay can and cannot show: the readings are played back exactly as the
 rig recorded them. They do not react to what the replayed app does. If the code
 under test drives a train differently from the rig run, the recorded train still
-moves as it did on the rig. A replay is therefore a faithful test of what the app
-decides from a given series of readings — attribution, unidentified trains, the
-clear rule, detector noise — and not of how a train responds to the voltage the
-app sets.
+moves as it did on the rig. A replay is therefore a faithful test of what the
+runtime decides from a given series of readings — which blocks each train
+holds, claims, the hold time, detector noise — and not of how a train responds
+to the voltage the runtime sets.
 
 If the controller runs no detector read on a pass the rig read (for example, the
 test left the session not active), `ReadingPlayer` raises `ReplayDiverged` naming
@@ -272,19 +274,16 @@ class ReadingPlayer:
 def play_pass(sim: Any, replay_input: ReplayOccupancyInput, recorded: RecordedPass) -> None:
     """Run one recorded pass on `sim`, reading `recorded`'s readings.
 
-    A `"stopped"` pass runs `poll_hardware_occupancy()`; any other runs
-    `update(...)` with the pass's two deltas. Raises `ReplayDiverged` when the
-    pass did not read `replay_input` exactly once, as the rig's pass did.
+    A `"tick"` pass runs a full runtime step and a `"stopped"` pass runs the
+    stopped pass, both at the pass's recorded `wall_time`, as the runtime loop
+    ran them on the rig. Raises `ReplayDiverged` when the pass did not read
+    `replay_input` exactly once, as the rig's pass did.
     """
     replay_input.load(recorded)
     before = replay_input.read_count
-    if recorded.pass_kind == PASS_STOPPED:
-        sim.poll_hardware_occupancy()
-    else:
-        sim.update(
-            recorded.delta_seconds,
-            operating_delta_seconds=recorded.operating_delta_seconds,
-        )
+    live = recorded.pass_kind != PASS_STOPPED
+    sim.note_session_live(live)
+    sim.run_train_step(live=live, wall_time=recorded.wall_time)
     reads = replay_input.read_count - before
     if reads != 1:
         raise ReplayDiverged(
@@ -444,7 +443,6 @@ class RunReplay:
 
     def __enter__(self) -> "RunReplay":
         import contextlib
-        from datetime import datetime
         from unittest import mock
 
         import bootstrap
@@ -455,7 +453,6 @@ class RunReplay:
         from app_factory import create_app
         from app_state import AppState
         from detector_reading_log import SimulationLock
-        from enums import OperationMode
         from network import RailwayNetwork
         from persistence import PersistenceManager
 
@@ -488,13 +485,6 @@ class RunReplay:
             replay_input = self.input
 
             def build_session_interfaces(cfg=None, *, environment=None, track_polarity_of=None):
-                chosen = (
-                    operation_environment.get_selected()
-                    if environment is None
-                    else operation_environment.parse(environment)
-                )
-                if chosen is OperationMode.SIMULATION:
-                    return None, None, None
                 return replay_input, None, None
 
             stack.enter_context(mock.patch.object(
@@ -529,9 +519,6 @@ class RunReplay:
                     storage_dir=os.path.join(self.work_dir, "layouts")
                 ),
                 simulation_lock=lock,
-                simulation_running=False,
-                simulation_speed=1.0,
-                last_update_time=datetime.now(),
             )
             lock.count_passes_with(
                 lambda: self.state.sim_controller.detector_reading_log.pass_count
@@ -622,7 +609,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     Prints how many passes and commands were replayed, each command whose
     answer differed from the recorded one, the commands it did not send, and
-    which train holds which block at the end. Exits 1 when the replay diverged.
+    which blocks each train holds at the end. Exits 1 when the replay diverged.
     """
     import argparse
     import sys
@@ -647,12 +634,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         )
         for text in replay.divergences:
             print(f"DIVERGED  {text}")
-        for train_id, train in sorted(replay.network.trains.items()):
-            blocks = sorted(
-                b for b, block in replay.network.blocks.items() if block.occupied_by == train_id
-            )
-            kind = "unidentified" if train.is_unidentified else "train"
-            print(f"{kind:12} {train_id:16} {' '.join(blocks) or '(no blocks)'}")
+        for train_id, train in sorted(replay.sim.train_runtime.trains.items()):
+            state = "lost" if train.lost else "train"
+            print(f"{state:12} {train_id:16} {' '.join(train.blocks) or '(no blocks)'}")
         return 1 if replay.divergences else 0
 
 

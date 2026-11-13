@@ -270,18 +270,3 @@ COMMISSION_MAX_SESSION_SECONDS: float = 3600.0
 
 # The longest the commissioning `pulse` action may drive a shift-out bit is
 # MAX_COIL_PULSE_S in hardware/catalog.py: any such bit may be wired to a coil.
-
-
-# Hard ceiling on a single per-tick sim delta. Normal operation — including a
-# few-times `simulation_speed` multiplier — stays well under this, so it is a
-# pass-through in the common case and the loop runs ONE update() per tick. It
-# only ever caps a multi-second hitch: the loop stalled (lock contention with
-# request handlers, GC, a host that fell behind) and resumed with a huge
-# accumulated wall-clock delta. Integrated in one step, such a delta overshoots
-# the train's max speed and teleports the head past its authority, tripping a
-# spurious ATC overspeed EB. Empirically the EB only appears around a ~3.5s
-# step with a full demo trainset, so this sits below that with margin. When a
-# hitch is clamped the surplus sim-time is dropped (the sim briefly runs slower
-# than real time) rather than teleporting; sub-second steps are physically fine.
-# design_new.md "Clocks" names constants.py as its home.
-MAX_SIM_DELTA_SECONDS: float = 1.0

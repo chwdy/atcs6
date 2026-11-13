@@ -10,7 +10,7 @@
 import { signal } from '@preact/signals';
 import { useState } from 'preact/hooks';
 
-import { layoutEmpty, operationEnvironment, screen } from '../state';
+import { layoutEmpty, screen } from '../state';
 
 export interface FirstRunActions {
   startFromLoop(): Promise<void>;
@@ -27,7 +27,6 @@ export function StartCard({ actions }: { actions: FirstRunActions }) {
   if (layoutEmpty.value !== true || startCardDismissed.value) return null;
   if (screen.value !== 'editor' && screen.value !== 'operate') return null;
 
-  const inSimulation = (operationEnvironment.value ?? 'simulation') === 'simulation';
   const startFromLoop = async () => {
     setBusy(true);
     try {
@@ -48,7 +47,6 @@ export function StartCard({ actions }: { actions: FirstRunActions }) {
           <span class="first-run-label">{busy ? 'Building the loop…' : 'Start from a loop'}</span>
           <span class="first-run-sub">
             An oval with one train and a route round it, ready to run.
-            {!inSimulation && ' Switches the run environment to Simulation.'}
           </span>
         </span>
       </button>

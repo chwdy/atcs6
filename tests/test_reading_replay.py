@@ -135,7 +135,9 @@ def test_a_replayed_run_reads_what_the_rig_read(tmp_path):
     assert len(replayed) == len(passes)
     for original, again in zip(passes, replayed):
         assert again.pass_kind == original.pass_kind
-        assert again.delta_seconds == original.delta_seconds
+        # Each pass runs at its recorded wall time (design_v2.md "Detector
+        # reading log", A recorded run can be replayed in a test).
+        assert again.wall_time == original.wall_time
         assert again.readings == original.readings, f"pass {original.pass_no}"
 
 

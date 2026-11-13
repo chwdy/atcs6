@@ -51,8 +51,11 @@ class FakeSim:
 
 class FakeState:
     def __init__(self, running=True, trains=None):
-        self.simulation_running = running
+        self._live = running
         self.network = type("N", (), {"trains": trains or {}})()
+
+    def session_state(self):
+        return type("S", (), {"is_live": self._live})()
 
 
 # --- run marker -----------------------------------------------------------
@@ -288,7 +291,9 @@ def test_sigint_safes_the_outputs_of_a_session_activated_after_boot(
         input_interface=interfaces[0],
         block_output_interface=interfaces[1],
         switch_output_interface=interfaces[2],
-        environment_active=True,
+        # Activation is accepted only from a session that is not Live, so the
+        # case activated after boot boots with nothing activated.
+        environment_active=not activated_after_boot,
         activation_issues=[],
     )
     state = AppState(
@@ -297,9 +302,6 @@ def test_sigint_safes_the_outputs_of_a_session_activated_after_boot(
         sim_controller=sim,
         persistence_manager=PersistenceManager(storage_dir=str(tmp_path / "layouts")),
         simulation_lock=threading.Lock(),
-        simulation_running=False,
-        simulation_speed=1.0,
-        last_update_time=datetime.now(),
     )
     shutdown.install_shutdown_reporting(sim, state=state, port=None)
 

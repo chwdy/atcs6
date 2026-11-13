@@ -186,8 +186,7 @@ def test_detector_diagnostic_is_stamped_wall_clock():
 
     network = RailwayNetwork()
     sim = SimulationController(network, PathDispatcher(network))
-    sim.update(0.1)
-    assert sim.simulation_time > 0.0  # the sim clock is small and nonzero
+    sim.simulation_time = 0.1  # a small, nonzero simulation clock
 
     sim.block_occupancy_detector.notify("block_attribution_unknown", "probe")
     emitted = sim.notification_center.peek_recent(10)

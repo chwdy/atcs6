@@ -1392,11 +1392,6 @@ def register(app, state: AppState) -> None:
         from enums import HaltReason, SessionStateValue
 
         selected = operation_environment.get_selected()
-        if selected is OperationMode.SIMULATION:
-            return jsonify({
-                "status": "error",
-                "error": "Simulation has no rig; Setup exists only in Virtual Hardware and Real Hardware",
-            }), 409
         sim = state.sim_controller
         with state.simulation_lock:
             session = state.session_state()
@@ -1407,7 +1402,7 @@ def register(app, state: AppState) -> None:
                     "status": "error",
                     "error": "clear the runtime failure before entering Setup",
                 }), 409
-            if session.value in (SessionStateValue.LIVE, SessionStateValue.PAUSED):
+            if session.value is SessionStateValue.LIVE:
                 sim.layout_emergency_cut_out()
             from hardware.safety import SafeStateError
 
@@ -1565,10 +1560,7 @@ def register(app, state: AppState) -> None:
         `runtime_failure`, which the operator clears first. Otherwise it builds
         the interfaces, verifies the environment, starts the railway over, and
         writes the flags of a successful activation: it leaves Setup, clears the
-        layout emergency cut-out, clears a latched hardware failure when the
-        environment is Virtual Hardware or Real Hardware, and writes
-        `simulation_running = True`. A Virtual Hardware or Real Hardware session
-        runs at wall-clock speed, so `simulation_speed` goes back to `1.0`. A
+        layout emergency cut-out, and clears a latched hardware failure. A
         refused or failed activation leaves no environment active and changes
         nothing else.
         """
@@ -1595,9 +1587,6 @@ def register(app, state: AppState) -> None:
                 state.sim_controller.start_railway_over()
                 state.sim_controller.finish_activation()
                 state.setup_active = False
-                if selected is not OperationMode.SIMULATION:
-                    state.simulation_speed = 1.0
-                state.simulation_running = True
         if blocked is not None:
             return jsonify(blocked), 409
         return jsonify({

@@ -74,34 +74,17 @@ def test_failed_current_read_raises_instead_of_reading_clear():
 
 
 def test_failed_detector_read_latches_hardware_failure():
-    """A failed detector transaction inside Observe escalates to
+    """A failed detector read in the runtime step escalates to
     `enter_hardware_failure` and halts the session, rather than propagating out
-    of the tick as a software runtime failure (design_new.md "Power", Hardware
-    I/O failure)."""
+    of the step (design_v2.md "Detector reading log", A failed read gets no
+    line; "Safe state, watchdog and hardware failure")."""
     network = _line()
     sim = SimulationController(network, input_interface=_RaisingInput())
+    sim.environment_active = True
     assert sim.occupancy_is_real
 
     # Must not raise: the read failure is caught and escalated.
-    sim._detect_block_occupancy()
+    sim.run_train_step(live=True)
 
     assert sim.hardware_failure is True
     assert sim.runtime_halted is True
-
-
-def test_simulation_read_error_is_not_masked_as_hardware():
-    """In Simulation the model detector never raises; if one somehow does it is a
-    real defect that must surface, not be silently latched as a hardware
-    failure."""
-    network = _line()
-    sim = SimulationController(network)  # SimulatedOccupancyDriver
-    assert not sim.occupancy_is_real
-
-    def boom():
-        raise RuntimeError("model bug")
-
-    sim.block_occupancy_detector.input_interface.read_block_currents = boom
-
-    with pytest.raises(RuntimeError):
-        sim._detect_block_occupancy()
-    assert sim.hardware_failure is False

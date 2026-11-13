@@ -42,9 +42,6 @@ def state(tmp_path):
         sim_controller=SimulationController(network, dispatcher),
         persistence_manager=None,
         simulation_lock=threading.Lock(),
-        simulation_running=False,
-        simulation_speed=1.0,
-        last_update_time=datetime.now(),
     )
 
 
