@@ -97,20 +97,6 @@ def test_an_unreadable_file_is_renamed_and_reported(tmp_path):
     assert recorder.events[0]["payload"]["renamed_to"] == "locomotives.json.unreadable"
 
 
-def test_the_file_is_read_before_the_scene_so_scene_trains_take_fresh_numbers(tmp_path):
-    path = tmp_path / "locomotives.json"
-    path.write_text(json.dumps({
-        "version": 2, "models": [], "sets": [],
-        "next_profile_id": 50, "next_model_id": 7,
-    }))
-    network, *_ = bootstrap_runtime(
-        demo=True, scene="demo_main", locomotive_file_path=str(path)
-    )
-    train = network.trains["DEMO_TRAIN"]
-    assert train.speed_profile_id >= 50
-    assert network.speed_profiles.get(train.speed_profile_id).parent_profile_id is None
-
-
 def _state_for(network, sim, dispatcher, tmp_path):
     return AppState(
         network=network,

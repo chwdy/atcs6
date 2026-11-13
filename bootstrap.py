@@ -6,8 +6,9 @@ This module provides functions to initialize the RailwayNetwork with either
 demo data (default) or an empty state, based on configuration flags.
 
 Scene selection:
-The demo network is built from a *scene module* (one of `demo_main`,
-`demo_3`, `demo_4`, `demo_5`). Each scene module exports a `SCENE_ID`
+The demo network is built from a *scene module* (`demo7_1`, the rig with
+both switch motors working, or `demo7_2`, the same rig with the left switch
+moved by hand). Each scene module exports a `SCENE_ID`
 constant, a `create_comprehensive_demo()` factory, and a `setup_demo_train()`
 helper. The active scene is the value of `CURRENT_SCENE` below; callers may
 override per call by passing `scene="..."` to any of the bootstrap entry
@@ -38,7 +39,7 @@ from simulation import SimulationController
 # Environment variable that overrides the default scene. `set_current_scene()`
 # (called e.g. by `server.py --scene ...`) exports it so a subprocess pytest
 # run inherits the same default for its *unmarked* tests. You can also export
-# it directly: `ATCS_SCENE=demo_4 python -m pytest tests/`. Tests tagged with
+# it directly: `ATCS_SCENE=demo7_1 python -m pytest tests/`. Tests tagged with
 # `@pytest.mark.scene(...)` force their own scene regardless of this default.
 SCENE_ENV_VAR = "ATCS_SCENE"
 
@@ -53,27 +54,18 @@ _DEFAULT_SCENE: str = "demo7_2"
 CURRENT_SCENE: str = os.environ.get(SCENE_ENV_VAR, _DEFAULT_SCENE)
 
 # Registry of known scene IDs to their importable module names. Scene IDs may
-# contain characters illegal in module names (e.g. the dot in "demo_5.1"), so
+# contain characters illegal in module names (e.g. a dot), so
 # the value is the importable module file, not a transform of the key.
 _SCENE_MODULES: dict[str, str] = {
-    "demo_main": "demo_main",
-    "demo_3": "demo_3",
-    "demo_4": "demo_4",
-    "demo_5": "demo_5",
-    "demo_5.1": "demo_5_1",
-    "demo_6": "demo_6",
-    "demo6_1": "demo6_1",
-    "demo7": "demo7",
     "demo7_1": "demo7_1",
     "demo7_2": "demo7_2",
-    "demo_test": "demo_test",
 }
 
 
 def get_current_scene_id() -> str:
     """Return the currently configured scene ID.
 
-    Tests use this to gate themselves — a test built for `demo_main` should
+    Tests use this to gate themselves — a test built for `demo7_1` should
     skip (with a clear reason) when the active scene is anything else.
     """
     return CURRENT_SCENE

@@ -38,7 +38,7 @@ import bootstrap
 # --------------------------------------------------------------------------- #
 #
 # A test tied to a specific demo scene marks itself with
-# `pytestmark = pytest.mark.scene("demo_5")` (module level) instead of skipping
+# `pytestmark = pytest.mark.scene("demo7_1")` (module level) instead of skipping
 # when the process default scene does not match. Before each marked test we
 # switch the active scene to the marked value via `bootstrap.set_current_scene`
 # (the same call `server.py --scene ...` makes), so the test builds its own
@@ -61,7 +61,7 @@ def pytest_configure(config):
     config.addinivalue_line(
         "markers",
         "scene(scene_id): build this test under the named demo scene "
-        "(demo_main / demo_3 / demo_4 / demo_5), overriding the process "
+        "(demo7_1 / demo7_2), overriding the process "
         "default for the test's duration so the test runs instead of being "
         "skipped. Replaces the old module-level get_current_scene_id() gate.",
     )
@@ -77,7 +77,7 @@ def pytest_runtest_setup(item):
     if marker is not None and not marker.args:
         raise pytest.UsageError(
             f"{item.nodeid}: @pytest.mark.scene requires a scene id, "
-            "e.g. @pytest.mark.scene('demo_5')."
+            "e.g. @pytest.mark.scene('demo7_1')."
         )
     target = marker.args[0] if marker is not None else _DEFAULT_SCENE
     bootstrap.set_current_scene(target)

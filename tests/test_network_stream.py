@@ -39,7 +39,7 @@ SIBLING_GROUPS = (
 @pytest.fixture
 def app(tmp_path):
     with contextlib.redirect_stdout(io.StringIO()):
-        network = bootstrap.create_demo_network("demo_main")
+        network = bootstrap.create_demo_network("demo7_2")
     path_dispatcher = PathDispatcher(network)
     state = AppState(
         network=network,

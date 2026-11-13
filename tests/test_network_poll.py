@@ -41,7 +41,7 @@ SIBLING_GROUPS = (
 @pytest.fixture
 def client(tmp_path):
     with contextlib.redirect_stdout(io.StringIO()):
-        network = bootstrap.create_demo_network("demo_main")
+        network = bootstrap.create_demo_network("demo7_2")
     path_dispatcher = PathDispatcher(network)
     state = AppState(
         network=network,
@@ -97,7 +97,7 @@ def test_request_with_current_version_gets_live_fields_only(client):
         if t["is_switch"] or t["signal_ids"]
     }
     assert live_tiles == expected
-    assert expected, "demo_main has switches and signals"
+    assert expected, "demo7_2 has switches"
 
 
 def test_request_with_other_version_gets_full_snapshot(client):
@@ -117,7 +117,7 @@ def test_layout_edit_changes_version(client):
 
 def _payload():
     with contextlib.redirect_stdout(io.StringIO()):
-        network = bootstrap.create_demo_network("demo_main")
+        network = bootstrap.create_demo_network("demo7_2")
     return build_network_payload(
         network, SimulationController(network, PathDispatcher(network))
     )
@@ -148,29 +148,3 @@ def test_layout_field_changes_version():
     changed = copy.deepcopy(payload)
     next(iter(changed["blocks"].values()))["ordered_tiles"].append([99, 99, "E"])
     assert layout_version(split_network_payload(changed)[0]) != version
-
-
-@pytest.mark.scene("demo_5")
-def test_version_holds_while_trains_run():
-    """Four trains running the demo_5 loop change block state on many ticks
-    and never change the layout version."""
-    from tests.journey.scenes.demo_5_scene import Demo5Scene
-
-    fixture = Demo5Scene().build()
-    network, sim = fixture.network, fixture.sim_controller
-
-    def read():
-        payload = build_network_payload(network, sim)
-        live = {
-            bid: (b["state"], b["occupied_by"]) for bid, b in payload["blocks"].items()
-        }
-        return layout_version(split_network_payload(payload)[0]), live
-
-    version, live_before = read()
-    for tick in range(300):
-        sim.update(0.1)
-        if tick % 20 == 0:
-            assert read()[0] == version, f"layout version changed at tick {tick}"
-    version_after, live_after = read()
-    assert version_after == version
-    assert live_after != live_before, "trains should have moved"

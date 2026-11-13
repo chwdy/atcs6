@@ -161,24 +161,17 @@ Useful flags:
 | --- | --- |
 | `--port PORT` | Override Flask's default port (5001); coding agents use 5007 |
 | `--no-demo` | Start with an empty layout to build from scratch |
-| `--scene demo_3` | Boot a specific example layout (`demo_main`, `demo_3`, `demo_4`, `demo_5`) |
+| `--scene demo7_1` | Boot a specific layout (`demo7_1`, `demo7_2`) |
 | `--skip-startup-tests` | Skip the boot-time test gate (faster, for iterating) |
 | `--no-sim` / `--no-autosave` | Don't start the simulation / autosave threads |
 
-There's also a headless demo that builds a layout and runs trains in the terminal:
+### The layouts
 
-```bash
-conda run -n general python demo_main.py
-```
+Two layouts ship as "scenes" you can boot with `--scene`. Both are the rig's
+loop with a passing siding:
 
-### The example layouts
-
-Several worked layouts ship as "scenes" you can boot with `--scene`:
-
-- **`demo_main`** — a main line with stations, signals, and a branch off a turnout.
-- **`demo_3`** — a four-station double-track loop with scissors crossovers between platforms.
-- **`demo_4`** — the same loop closed into a continuous circle through a pair of tunnels.
-- **`demo_5`** *(default)* — the four-station loop plus a depot, with a one-way double-track corridor worked by convention.
+- **`demo7_1`** — the rig with both switch motors working.
+- **`demo7_2`** *(default)* — the same rig with the left switch (`SW_7_5`) moved by hand only.
 
 ### Run the verification suite
 

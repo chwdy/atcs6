@@ -27,7 +27,6 @@ BACKEND_TEST_MODULES = [
     "tests.test_trains_ato",
     "tests.test_trains_lookahead",
     "tests.test_trains_routes",
-    "tests.test_demo_train_journey",
 ]
 
 
