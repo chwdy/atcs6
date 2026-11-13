@@ -1,6 +1,6 @@
 // popover-anchor.ts — Anchor a floating element beside a set of grid tiles.
 //
-// Used by the block- and platform-creation popups so the dialog hovers next to
+// Used by the block-creation popups so the dialog hovers next to
 // the tiles being edited and follows them as the user pans/zooms the canvas,
 // instead of sitting as a full-screen centered modal.
 //

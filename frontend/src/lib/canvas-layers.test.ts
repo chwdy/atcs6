@@ -3,9 +3,9 @@ import { describe, expect, it, vi } from 'vitest';
 import { CanvasLayers, LAYERS, layerDef, memoryLayersEnv } from './canvas-layers';
 
 describe('CanvasLayers', () => {
-  it('starts with only the train position details on, as the Settings checkboxes did', () => {
+  it('starts with every layer off', () => {
     const layers = new CanvasLayers(memoryLayersEnv());
-    expect(LAYERS.filter((l) => layers.isOn(l.id)).map((l) => l.id)).toEqual(['train-position']);
+    expect(LAYERS.filter((l) => layers.isOn(l.id)).map((l) => l.id)).toEqual([]);
     // The renderer used to treat a missing tile-direction checkbox as on; the
     // checkbox itself started unchecked, so the arrows were off. They stay off.
     expect(layers.isOn('tile-directions')).toBe(false);
@@ -15,18 +15,19 @@ describe('CanvasLayers', () => {
     const env = memoryLayersEnv();
     const first = new CanvasLayers(env);
     first.set('coords', true);
-    first.set('train-position', false);
+    first.set('bits', true);
+    first.set('bits', false);
     const reloaded = new CanvasLayers(env);
     expect(reloaded.isOn('coords')).toBe(true);
-    expect(reloaded.isOn('train-position')).toBe(false);
+    expect(reloaded.isOn('bits')).toBe(false);
   });
 
   it('falls back to the defaults when the stored value is unreadable, and drops unknown layers', () => {
-    expect(new CanvasLayers(memoryLayersEnv('not json')).isOn('train-position')).toBe(true);
-    expect(new CanvasLayers(memoryLayersEnv('{"coords":true}')).isOn('train-position')).toBe(true);
+    expect(new CanvasLayers(memoryLayersEnv('not json')).isOn('coords')).toBe(false);
+    expect(new CanvasLayers(memoryLayersEnv('{"coords":true}')).isOn('coords')).toBe(false);
     const layers = new CanvasLayers(memoryLayersEnv('["coords","gone-layer"]'));
     expect(layers.isOn('coords')).toBe(true);
-    expect(layers.isOn('train-position')).toBe(false);
+    expect(layers.isOn('bits')).toBe(false);
   });
 
   it('tells subscribers about each change, and only real changes', () => {
@@ -46,6 +47,5 @@ describe('CanvasLayers', () => {
     expect(new Set(ids).size).toBe(ids.length);
     expect(layerDef('tile-directions').redraw).toBe('live');
     expect(layerDef('coords').redraw).toBe('world');
-    expect(layerDef('train-position').redraw).toBe('none');
   });
 });

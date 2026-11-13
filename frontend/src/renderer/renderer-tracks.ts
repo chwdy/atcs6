@@ -13,7 +13,6 @@
 import { getActiveSegments, trackBitsToEdges, isCrossing, TRACK_WIDTH, EDGE_MASKS, OPPOSITE_EDGE } from '../lib/constants';
 import { getBlockStateColor } from '../lib/helpers';
 import { getCanvasPalette, withAlpha } from '../lib/canvas-palette';
-import type { Signal } from './renderer-signals';
 
 export interface EdgePoint {
   x: number;
@@ -22,7 +21,7 @@ export interface EdgePoint {
 
 /**
  * Colors for drawTileExtentHighlight — the track-aware overlay used for the
- * box/lasso/paint selection and the block/platform drag-build preview. Both
+ * box/lasso/paint selection and the block drag-build preview. Both
  * flows share the geometry; only these four colors differ between them.
  */
 export interface TileExtentStyle {
@@ -36,25 +35,16 @@ export interface TileExtentStyle {
   cap: string;
 }
 
-interface SwitchEntity {
-  occupied_by?: unknown;
-  train_protection_claims?: unknown[];
-  locks?: unknown[];
-}
-
 export interface Track {
   x: number;
   y: number;
   track_bits?: number;
   block_section_id?: string | null;
-  occupied_by?: unknown;
-  reserved_by?: unknown;
   is_switch?: boolean;
   switch_state?: number;
   is_diagonal_only_switch?: boolean;
   switch_points?: Record<string, string[]>;
   switch_id?: string;
-  signals?: Signal[];
   dead_end_ports?: string[];
 }
 
@@ -72,13 +62,12 @@ export interface TrackHandlerRenderer {
   scale: number;
   gridSize: number;
   currentBlocks?: Record<string, TrackBlock | undefined> | null;
-  currentNetwork?: { switches?: Record<string, SwitchEntity | undefined>; operation_mode?: string } | null;
+  currentNetwork?: { operation_mode?: string } | null;
   // "x,y" -> track, used by drawTileExtentHighlight to read each selected
   // tile's track_bits so it can light the real stroke (not just the cell).
   trackMap?: Record<string, { track_bits?: number; block_section_id?: string | null } | undefined>;
   gridToScreenX(x: number, y: number): number;
   gridToScreenY(x: number, y: number): number;
-  signalHandler: { drawSingleSignal(signal: unknown, trackBits: number | undefined, half: number): void };
   debugHandler: { highlightDeadEnds(x: number, y: number, deadEnds: string[], trackBits?: number): void };
 }
 
@@ -130,7 +119,7 @@ export class RendererTrackHandler {
   get currentBlocks(): Record<string, TrackBlock | undefined> | null | undefined {
     return this.renderer.currentBlocks;
   }
-  get currentNetwork(): { switches?: Record<string, SwitchEntity | undefined>; operation_mode?: string } | null | undefined {
+  get currentNetwork(): { operation_mode?: string } | null | undefined {
     return this.renderer.currentNetwork;
   }
 
@@ -141,7 +130,7 @@ export class RendererTrackHandler {
     return this.renderer.gridToScreenY(x, y);
   }
 
-  drawTrack(track: Track, drawSignals = true): void {
+  drawTrack(track: Track): void {
     const p = getCanvasPalette();
     const cellSize = this.gridSize * this.scale;
     const cx = this.gridToScreenX(track.x, track.y);
@@ -173,10 +162,6 @@ export class RendererTrackHandler {
       const mode = this.currentNetwork?.operation_mode;
       const resolved = blockTrackColor(this.currentBlocks[track.block_section_id], !!mode);
       if (resolved) trackColor = resolved;
-    } else if (track.occupied_by) {
-      trackColor = p.danger;
-    } else if (track.reserved_by) {
-      trackColor = p.caution;
     }
 
     const isSwitch = track.is_switch || false;
@@ -216,27 +201,17 @@ export class RendererTrackHandler {
     // below is only for plain (non-switch) track.
     if (isSwitch) {
       this.drawTrackWithSwitches(trackBits, half, trackColor, switchState, isDiagonalOnly, switchPoints);
-      // The lock/occupied dot is NOT drawn here. Like the M/D badge it's drawn
-      // unclipped in a later pass (drawSwitchLockAt) so it can sit flush at the
-      // branch root without the tile diamond clipping it.
     } else {
       this.drawTrackBed(trackBits, half);
       this.drawTrackFromBits(trackBits, half, trackColor, track.dead_end_ports || [], connectedEdges);
     }
 
-    if (drawSignals && track.signals && track.signals.length > 0) {
-      for (const signal of track.signals) {
-        this.renderer.signalHandler.drawSingleSignal(signal, track.track_bits, half);
-      }
-    }
-
     this.ctx.restore();
 
-    // NOTE: the switch M/D badge and the lock/occupied dot are NOT drawn here.
-    // Each is drawn in a separate pass after every tile's rails (renderer
-    // _drawWorld -> drawSwitchLockAt / drawSwitchBadgeAt), so a neighbouring
-    // tile's rail or bed can't paint over them, and both are unclipped so they
-    // sit flush against the branch root (the switch entry edge).
+    // NOTE: the switch M/D badge is NOT drawn here. It is drawn in a separate
+    // pass after every tile's rails (renderer _drawWorld -> drawSwitchBadgeAt),
+    // so a neighbouring tile's rail or bed can't paint over it, and it is
+    // unclipped so it sits flush against the branch root (the switch entry edge).
 
     if (track.dead_end_ports && track.dead_end_ports.length > 0) {
       this.renderer.debugHandler.highlightDeadEnds(track.x, track.y, track.dead_end_ports, track.track_bits || 0);
@@ -703,48 +678,6 @@ export class RendererTrackHandler {
     this.ctx.restore();
   }
 
-  /**
-   * Draw a switch's lock/occupied dot: a solid circle at the root of its
-   * branches, a little wider than the rail, in a pass AFTER every tile's rails
-   * so a neighbour can't paint over it (the M/D badge follows the same rule).
-   * Two states per design/120-switch.md:32 — a train-owned physical hold
-   * (occupied_by / train_protection_claims, brown) wins over a path-owned
-   * future lock (Switch.locks, orange). Nothing is drawn when the switch is
-   * neither locked nor occupied.
-   */
-  drawSwitchLockAt(track: Track): void {
-    if (!track.is_switch || !track.switch_id) return;
-    const switches = this.currentNetwork?.switches;
-    const switchEntity = switches ? switches[track.switch_id] : null;
-    if (!switchEntity) return;
-
-    const trainOwned = !!(
-      switchEntity.occupied_by ||
-      (Array.isArray(switchEntity.train_protection_claims) && switchEntity.train_protection_claims.length > 0)
-    );
-    const pathLocked = Array.isArray(switchEntity.locks) && switchEntity.locks.length > 0;
-    if (!trainOwned && !pathLocked) return;
-
-    const p = getCanvasPalette();
-    const half = (this.gridSize * this.scale) / 2;
-    const cx = this.gridToScreenX(track.x, track.y);
-    const cy = this.gridToScreenY(track.x, track.y);
-    const { x: bx, y: by } = this.switchRootAnchor(
-      half,
-      track.switch_state || 0,
-      track.is_diagonal_only_switch || false,
-      track.switch_points || {},
-    );
-
-    this.ctx.save();
-    this.ctx.translate(cx, cy);
-    this.ctx.fillStyle = trainOwned ? p.hold : p.lock; // brown hold wins over orange lock
-    this.ctx.beginPath();
-    this.ctx.arc(bx, by, TRACK_WIDTH * 1.25 * this.scale, 0, Math.PI * 2); // a little wider than the rail
-    this.ctx.fill();
-    this.ctx.restore();
-  }
-
   drawPreviewPath(path: Array<{ x: number; y: number }> | null | undefined): void {
     if (!path || path.length === 0) return;
 
@@ -784,7 +717,7 @@ export class RendererTrackHandler {
 
   // Drawn when a track drag has no clean route: a red dashed line from the
   // start tile to the cursor, so the operator sees the tool is tracking but
-  // cannot build here (e.g. a platform in the way, or a forced segment that
+  // cannot build here (e.g. a forced segment that
   // can't turn without a square corner). Nothing is committed in this state.
   drawInvalidPreviewPath(path: Array<{ x: number; y: number }> | null | undefined): void {
     if (!path || path.length === 0) return;
@@ -871,147 +804,6 @@ export class RendererTrackHandler {
     }
   }
 
-  drawHoverPreview(
-    gridPos: { x: number; y: number },
-    toolType: string,
-    isValid: boolean,
-    signalDirection: string | null = null,
-    trackBits: number | null = null,
-  ): void {
-    const p = getCanvasPalette();
-    const cx = this.gridToScreenX(gridPos.x, gridPos.y);
-    const cy = this.gridToScreenY(gridPos.x, gridPos.y);
-    const half = (this.gridSize * this.scale) / 2;
-
-    this.ctx.save();
-
-    this.ctx.strokeStyle = isValid ? withAlpha(p.success, 0.8) : withAlpha(p.danger, 0.5);
-    this.ctx.fillStyle = isValid ? withAlpha(p.success, 0.2) : withAlpha(p.danger, 0.1);
-    this.ctx.lineWidth = 2 * this.scale;
-
-    this.ctx.beginPath();
-    this.ctx.moveTo(cx, cy - half);
-    this.ctx.lineTo(cx + half, cy);
-    this.ctx.lineTo(cx, cy + half);
-    this.ctx.lineTo(cx - half, cy);
-    this.ctx.closePath();
-    this.ctx.fill();
-    this.ctx.stroke();
-
-    if (isValid) {
-      if (toolType === 'signal' && signalDirection) {
-        this.ctx.translate(cx, cy);
-
-        const detectionDir = signalDirection.charAt(0).toUpperCase();
-        const travelEdge = detectionDir;
-        const edgePoints = this.getEdgePoints(half);
-        const isLongPath = (trackBits === 1 || trackBits === 2);
-        const isDiagonal = (trackBits === 4 || trackBits === 8 || trackBits === 16 || trackBits === 32);
-
-        let sx, sy;
-        if (isLongPath) {
-          const rightSide = ({
-            N: 'E', S: 'W', E: 'S', W: 'N',
-          } as Record<string, string>)[travelEdge] || 'E';
-          const sidePoint = edgePoints[rightSide] || { x: 0, y: 0 };
-          sx = sidePoint.x * 0.5;
-          sy = sidePoint.y * 0.5;
-        } else {
-          sx = 0;
-          sy = 0;
-        }
-
-        let dirX, dirY;
-        if (isDiagonal) {
-          let diagonalX, diagonalY;
-          switch (trackBits) {
-            case 4: diagonalX = 0; diagonalY = -1; break;
-            case 8: diagonalX = 1; diagonalY = 0; break;
-            case 16: diagonalX = -1; diagonalY = 0; break;
-            case 32: diagonalX = 0; diagonalY = 1; break;
-            default: diagonalX = 1; diagonalY = 0; break;
-          }
-
-          let edge1, edge2;
-          switch (trackBits) {
-            case 4: edge1 = 'N'; edge2 = 'E'; break;
-            case 8: edge1 = 'N'; edge2 = 'W'; break;
-            case 16: edge1 = 'S'; edge2 = 'E'; break;
-            case 32: edge1 = 'S'; edge2 = 'W'; break;
-            default: edge1 = 'N'; edge2 = 'E'; break;
-          }
-
-          if (detectionDir === edge1) {
-            diagonalX = -diagonalX;
-            diagonalY = -diagonalY;
-          }
-
-          const len = Math.sqrt(diagonalX * diagonalX + diagonalY * diagonalY);
-          dirX = diagonalX / len;
-          dirY = diagonalY / len;
-        } else {
-          const approachEdge = ({ N: 'S', S: 'N', E: 'W', W: 'E' } as Record<string, string>)[detectionDir] || 'W';
-          const dirPoint = edgePoints[approachEdge] || { x: 1, y: 0 };
-          const len = Math.sqrt(dirPoint.x * dirPoint.x + dirPoint.y * dirPoint.y);
-          dirX = dirPoint.x / len;
-          dirY = dirPoint.y / len;
-        }
-
-        this.ctx.strokeStyle = withAlpha(p.textDim, 0.8);
-        this.ctx.lineWidth = 1.5 * this.scale;
-        this.ctx.beginPath();
-        this.ctx.arc(sx, sy, 4 * this.scale, 0, Math.PI * 2);
-        this.ctx.stroke();
-
-        const stickLength = half * 0.4;
-        const stickEndX = sx + dirX * stickLength;
-        const stickEndY = sy + dirY * stickLength;
-
-        this.ctx.strokeStyle = withAlpha(p.textDim, 0.8);
-        this.ctx.lineWidth = 2 * this.scale;
-        this.ctx.beginPath();
-        this.ctx.moveTo(sx, sy);
-        this.ctx.lineTo(stickEndX, stickEndY);
-        this.ctx.stroke();
-
-        const innerRadius = 3 * this.scale;
-        this.ctx.fillStyle = withAlpha(p.success, 0.7);
-        this.ctx.beginPath();
-        this.ctx.arc(sx, sy, innerRadius, 0, Math.PI * 2);
-        this.ctx.fill();
-
-        const orthoX = -dirY;
-        const orthoY = dirX;
-        const orthoLen = half * 0.15;
-
-        this.ctx.beginPath();
-        this.ctx.moveTo(stickEndX - orthoX * orthoLen, stickEndY - orthoY * orthoLen);
-        this.ctx.lineTo(stickEndX + orthoX * orthoLen, stickEndY + orthoY * orthoLen);
-        this.ctx.stroke();
-
-        this.ctx.fillStyle = withAlpha(p.text, 0.9);
-        this.ctx.font = `bold ${8 * this.scale}px sans-serif`;
-        this.ctx.textAlign = 'center';
-        this.ctx.textBaseline = 'middle';
-        const labelX = sx - dirX * half * 0.3;
-        const labelY = sy - dirY * half * 0.3;
-        this.ctx.fillText(signalDirection.charAt(0), labelX, labelY);
-      } else {
-        this.ctx.font = `${16 * this.scale}px sans-serif`;
-        this.ctx.textAlign = 'center';
-        this.ctx.textBaseline = 'middle';
-        this.ctx.fillStyle = withAlpha(p.text, 0.8);
-        // Monochrome glyphs, not color emoji (DESIGN_LANGUAGE §14): an emoji
-        // ignores fillStyle and paints its own colors, fighting the canvas
-        // palette; these geometric glyphs honor the token color set above.
-        const icon = toolType === 'signal' ? '◉' : '⌂';
-        this.ctx.fillText(icon, cx, cy);
-      }
-    }
-
-    this.ctx.restore();
-  }
-
   drawEraserPreviewPath(path: Array<{ x: number; y: number }> | null | undefined): void {
     if (!path || path.length === 0) return;
 
@@ -1063,7 +855,7 @@ export class RendererTrackHandler {
 
   /**
    * Track-aware overlay for a set of grid tiles (the box/lasso/paint selection,
-   * and the block/platform drag preview). Filling each tile diamond makes a run
+   * and the block drag preview). Filling each tile diamond makes a run
    * of diagonal tiles read as a zigzag of cells even when the track through them
    * is a straight line, so instead this:
    *   1. dims the tile diamond (faint), so a tile that carries no track still

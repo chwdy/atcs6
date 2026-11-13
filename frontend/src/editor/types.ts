@@ -38,7 +38,7 @@ export interface DragBuildHost {
   previewPath: any;
   previewTracks: any;
   previewInvalid: boolean;
-  cachedNetwork: { tracks: any[]; platforms?: any[] } | null;
+  cachedNetwork: { tracks: any[] } | null;
 
   // Collaborators — the enforced coupling surface.
   pathfinder: {
@@ -60,21 +60,12 @@ export interface DragBuildHost {
       options: Record<string, unknown>
     ): Promise<any>;
     addTracksToSegment(segmentId: string, positions: number[][], force?: boolean): Promise<any>;
-    extendSegment(
-      segmentId: string,
-      positions: number[][],
-      hasSignals: boolean,
-      hasOtherSegments: boolean
-    ): Promise<any>;
-    createPlatform(payload: any): Promise<any>;
-    extendPlatform(platformId: any, positions: number[][]): Promise<any>;
-    removePlatformTile(stationId: any, x: number, y: number): Promise<any>;
+    extendSegment(segmentId: string, positions: number[][], forceOverwrite: boolean): Promise<any>;
     removeSegmentTiles(segmentId: string, positions: number[][]): Promise<{ removed?: number; errors?: string[] }>;
   };
 
   _tracksByKey(): Map<string, any>;
   showSegmentModal(opts: any): Promise<any>;
-  showPlatformModal(opts: any): Promise<any>;
   refreshSegmentsList(): Promise<void>;
   refreshAndSelect(target: any): Promise<void>;
 }
@@ -104,12 +95,6 @@ export interface SelectModesHost {
   // The unified highlighter — the trace tool's reachable cue and its committed
   // selection outline both go through it.
   highlighter: LayoutHighlighter;
-  routeHandler?: {
-    _resourceOptionsAtTile(gridPos: any, track: any): any[];
-    getBlockPositionSet(id: any): Set<string>;
-    getPlatformPositionSet(ids: any[]): Set<string>;
-    getStationGroups(): any[];
-  };
 
   _applyBoxSelection(keys: Set<string>): void;
   // Outline a single entity's tiles on the canvas as a "show me where this is"

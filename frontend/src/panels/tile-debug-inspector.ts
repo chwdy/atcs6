@@ -73,14 +73,6 @@ export function updateTileDetails(gridX: number, gridY: number, network: any): v
   const isForbidden = FORBIDDEN_TRACK_BITS.has(track.track_bits);
   html += `<tr><td class="debug-label">Valid:</td><td class="${isForbidden ? 'debug-value-invalid' : 'debug-value-valid'}">${isForbidden ? 'FORBIDDEN' : 'Valid'}</td></tr>`;
 
-  // Occupation
-  if (track.occupied_by) {
-    html += `<tr><td class="debug-label">Occupied:</td><td class="debug-value-occupied">${track.occupied_by}</td></tr>`;
-  }
-  if (track.reserved_by) {
-    html += `<tr><td class="debug-label">Reserved:</td><td class="debug-value-reserved">${track.reserved_by}</td></tr>`;
-  }
-
   html += '</table>';
   detailsDiv.innerHTML = html;
 }

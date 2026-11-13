@@ -20,11 +20,7 @@ const LAYOUT_KEYS = [
   'tracks',
   'blocks',
   'switches',
-  'platforms',
-  'station_groups',
   'tunnels',
-  'speed_profiles',
-  'locomotive_models',
 ] as const;
 
 type Entity = Record<string, any>;

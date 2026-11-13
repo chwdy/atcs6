@@ -11,18 +11,11 @@
 // the sim handlers each draw from a named, swappable surface.
 
 import type { StateManager } from '../lib/state-manager';
-import { trainDisplayStatus } from '../lib/train-status';
 import { showToast } from '../lib/toast';
 import { showContextMenu, type ContextMenuItem } from '../lib/context-menu';
 import { copyIdButton } from '../lib/copy-id';
 import type { FullDataClient } from '../lib/layout-data-client';
-import {
-  ConstructionPathfinder,
-  pathToTracks,
-  tileSkipsSegment,
-  validateSegmentPath,
-  getValidSignalDirections,
-} from '../lib/pathfinders';
+import { ConstructionPathfinder } from '../lib/pathfinders';
 import {
   showConfirmModal,
   renderBitToggle,
@@ -32,19 +25,9 @@ import {
 import { FORBIDDEN_TRACK_BITS, isSquareCornerSwitch } from '../lib/constants';
 import { blockColorCss } from '../lib/block-color';
 import { SegmentEditorHandler } from './editor-segments';
-import { SignalEditorHandler } from './editor-signals';
-import { PlatformEditorHandler, StationGroupEditorHandler } from './editor-stations';
 import { BlockGroupingEditorHandler } from './editor-block-grouping';
-// Sim-editor handlers are provided by the SimEditorPlugin (sim-plugin.ts), not
-// instantiated by the core editor — imported as types only so a layout-only
-// build does not pull in their code.
-import type { TrainEditorHandler } from './editor-trains';
-import type { PathEditorHandler } from './editor-paths';
-import type { RouteEditorHandler } from './editor-routes';
-import type { RouteRunEditorHandler } from './editor-route-runs';
 import { SwitchEditorHandler } from './editor-switches';
 import { TunnelEditorHandler } from './editor-tunnels';
-import type { SpeedProfileEditorHandler } from './editor-speed-profiles';
 import { EditorUIHandler } from './editor-ui';
 import { MultiSelectActionsHandler } from './editor-multi-select';
 import { SelectModesHandler } from './editor-select-modes';
@@ -52,21 +35,6 @@ import { DragBuildHandler } from './editor-drag-build';
 import { ToolbarHandler } from './editor-toolbar';
 import { LayoutHighlighter } from './layout-highlighter';
 import type { ToolContribution, ToolMode } from './tool-registry';
-
-/**
- * A plugin that augments the editor with extra handlers and tools. The sim
- * (trains, paths, routes, route-runs, speed profiles) is registered this way
- * (see sim-plugin.ts), keeping the core editor a layout-only editor.
- */
-export interface EditorPlugin {
-  register(editor: Editor): void;
-  /**
-   * Tool contributions this plugin adds. Merged with the core editor's tools
-   * (see Editor.refreshTools). Optional: a behavior-only plugin may register
-   * handlers without contributing any tools.
-   */
-  tools?(editor: Editor): ToolContribution[];
-}
 
 /**
  * The host the editor calls back into. The editor never reaches a global
@@ -77,8 +45,6 @@ export interface HostApp {
   refreshNetwork(): Promise<void> | void;
   currentNetwork?: any;
   isSimulationRunning?: boolean;
-  selectTrain?(trainId: string): void;
-  updateTrainDebugPanel?(train: any): void;
 }
 
 /**
@@ -90,8 +56,6 @@ export interface HostApp {
 export interface NextPanelHost {
   /** A tile was picked on the map. */
   selectTile(tile: any): boolean;
-  /** A train's controls were asked for. */
-  showTrain(trainId: string): boolean;
   /** A panel's HTML, as today's inspector would show it. */
   showPanel(title: string, content: string): boolean;
   /** The open panel was asked to close. */
@@ -134,21 +98,13 @@ export class Editor {
   cachedNetwork: any;
   cachedSegments: any[];
   selectedSegmentId: string | null;
-  // Lazy per-block cache on the OTHER axis (power / occupancy). Signals monitor
-  // blocks, so the signal editor fills this from `getBlock` on demand; it is
-  // deliberately separate from `cachedSegments` so a block id and a segment id
-  // can never be looked up in the same map.
+  // Lazy per-block cache on the OTHER axis (power / occupancy), kept
+  // separate from `cachedSegments` so a block id and a segment id can never be
+  // looked up in the same map.
   cachedBlocks: any[];
-  hoverPosition: any;
-  hoverValid: boolean;
-  previewSignalDirection: string | null;
-  previewSignalDirectionIndex: number;
-  validSignalDirections: string[] = [];
   avoidConnectMode: boolean;
   forcedStartSegment: string | null;
   forcedEndSegment: string | null;
-  pathToolState: any;
-  cachedPaths: any[];
   boxSelectState: any;
   lassoSelectState: any;
   paintSelectState: any;
@@ -156,20 +112,11 @@ export class Editor {
   activeMode: any;
   pathfinder: ConstructionPathfinder;
   segmentHandler: SegmentEditorHandler;
-  signalHandler: SignalEditorHandler;
-  platformHandler: PlatformEditorHandler;
-  stationGroupHandler: StationGroupEditorHandler;
   blockGroupingHandler: BlockGroupingEditorHandler;
   // The block the assign tool targets (set when a block detail is open).
   _activeBlockId: string | null = null;
-  // Sim handlers — present only when the SimEditorPlugin is registered.
-  trainHandler?: TrainEditorHandler;
-  pathHandler?: PathEditorHandler;
-  routeHandler?: RouteEditorHandler;
-  routeRunHandler?: RouteRunEditorHandler;
   switchHandler: SwitchEditorHandler;
   tunnelEditorHandler: TunnelEditorHandler;
-  speedProfileHandler?: SpeedProfileEditorHandler;
   uiHandler: EditorUIHandler;
   multiSelectHandler: MultiSelectActionsHandler;
   selectModesHandler: SelectModesHandler;
@@ -178,10 +125,11 @@ export class Editor {
   // Single front door for "show me where this is on the layout" highlights.
   // Wired here; call sites migrate onto it phase by phase.
   highlighter: LayoutHighlighter;
-  _plugins: EditorPlugin[] = [];
   // Tool id → contribution, rebuilt on every refreshTools(). Picking a tool
   // (ToolbarHandler.selectTool) looks it up here to dispatch by kind.
   _toolsById: Map<string, ToolContribution> = new Map();
+  // Tools a screen adds to the core tools (see addTools).
+  _extraTools: ToolContribution[] = [];
   // Editor mode or Operate mode. The host (app.ts) sets this when the screen
   // changes; a tool whose availableIn excludes it stops being the active tool.
   editorMode: ToolMode = 'edit';
@@ -198,8 +146,6 @@ export class Editor {
   nextPanelHost: NextPanelHost | null = null;
   // Assigned lazily by event handlers.
   hasPanned = false;
-  signalValidationTimeout: any = null;
-  _lastValidatedPosition: any = null;
   _pendingTunnelEndpoint: any = null;
   // Set by the layout (frontend/src/next/). onToolChange hears every change
   // of the active tool, so the Editor tool bar can show it. tileClickPanel decides what a plain Select click on a tile
@@ -226,30 +172,12 @@ export class Editor {
     this.selectedSegmentId = null; // Currently selected segment
     this.cachedBlocks = []; // Lazy block cache (power / occupancy axis)
 
-    // Hover preview for signal/platform tools
-    this.hoverPosition = null;
-    this.hoverValid = false;
-    this.previewSignalDirection = null;
-    this.previewSignalDirectionIndex = 0;
-
     // Shift-key avoid-connect mode.
     this.avoidConnectMode = false;
 
     // R/T-key forced-segment override for track drag.
     this.forcedStartSegment = null;
     this.forcedEndSegment = null;
-
-    // Route tool state
-    this.pathToolState = {
-      active: false,
-      startBlockId: null,
-      startPosition: null,
-      reachableEndpoints: [],
-      reachablePositions: new Set(),
-      priority: 5,
-      trainId: null,
-    };
-    this.cachedPaths = []; // List of active routes
 
     // Box/lasso/paint select state.
     this.boxSelectState = {
@@ -279,12 +207,7 @@ export class Editor {
 
     this.pathfinder = new ConstructionPathfinder();
     this.segmentHandler = new SegmentEditorHandler(this);
-    this.signalHandler = new SignalEditorHandler(this);
-    this.platformHandler = new PlatformEditorHandler(this);
-    this.stationGroupHandler = new StationGroupEditorHandler(this);
     this.blockGroupingHandler = new BlockGroupingEditorHandler(this);
-    // Sim handlers (train/path/route/routeRun/speedProfile) are instantiated by
-    // the SimEditorPlugin via registerPlugin(), not here — see sim-plugin.ts.
     this.switchHandler = new SwitchEditorHandler(this);
     this.tunnelEditorHandler = new TunnelEditorHandler(this);
     this.uiHandler = new EditorUIHandler(this);
@@ -310,25 +233,13 @@ export class Editor {
     // onChange on every viewport mutation.
     this.renderer.camera.onChange(() => this._syncZoomLabel());
     this.setupSegmentManager();
-    this._currentEditorType = null; // 'segment', 'signal', or 'platform'
+    this._currentEditorType = null; // e.g. 'segment', 'switch', 'tile'
     this._currentEditorId = null; // The ID of the item being edited
 
     this.setupSecondarySidebar();
   }
 
   // === Secondary Sidebar Management ===
-
-  /**
-   * Register a plugin that augments the editor (e.g. the SimEditorPlugin). The
-   * plugin instantiates its handlers and assigns them onto the editor. Call
-   * after construction, before the first network refresh.
-   */
-  registerPlugin(plugin: EditorPlugin): void {
-    this._plugins.push(plugin);
-    plugin.register(this);
-    // A plugin may contribute tools; rebuild the lookup so they can be picked.
-    this.refreshTools();
-  }
 
   /** Scoped element-by-id lookup within `root` (matches document.getElementById). */
   $id(id: string): HTMLElement | null {
@@ -354,30 +265,19 @@ export class Editor {
     // A new panel makes the old panel's pointer highlights stale — the inspect
     // peek and the selected tunnel pair both go.
     this.highlighter.clear(['peek', 'pair']);
-    // Opening any panel other than Add Train drops a lingering train-placement
-    // ghost and exits the place-train mode, so neither can outlive its panel.
-    if (title !== 'Add Train') {
-      this.renderer?.setTrainGhostPreview?.(null);
-      if (['place-train', 'adopt-front'].includes(this.activeMode?.toolName)) this.exitMode();
-    }
     if (this.nextPanelHost?.showPanel(title, content)) return;
     return this.uiHandler.showSecondarySidebar(title, content);
   }
 
   // Re-run the structural lock on the open inspector after the editor mode
   // flips. Each structural panel already locks itself on render; this catches
-  // the case where the user toggles Editor <-> Simulation while a panel stays
-  // open. Operational panels (path / route / train / speed profile) are not in
-  // the set — the dispatcher edits those freely while simulating.
+  // the case where the user toggles Editor <-> Operate while a panel stays
+  // open.
   reapplyStructuralLock(): void {
     const STRUCTURAL = new Set([
       'segment',
       'switch',
-      'signal',
       'tunnel',
-      'platform',
-      'station-group-list',
-      'station-group-detail',
       'block-list',
       'block-detail',
     ]);
@@ -390,11 +290,6 @@ export class Editor {
     // uiHandler.hideSecondarySidebar() takes no args (it ignored `options` in
     // the classic code too); keep the param on the facade for callers.
     this.highlighter.clear(['peek', 'pair']);
-    // The train-placement ghost and the front-end markers belong to the panel
-    // being closed (Add Train or an unidentified train's adoption form).
-    this.renderer?.setTrainGhostPreview?.(null);
-    this.renderer?.requestRedraw?.();
-    if (['place-train', 'adopt-front'].includes(this.activeMode?.toolName)) this.exitMode();
     if (this.nextPanelHost?.hidePanel()) return;
     return this.uiHandler.hideSecondarySidebar();
   }
@@ -431,14 +326,6 @@ export class Editor {
         if (!id) return false;
         await this.showSegmentEditor(id);
         return true;
-      case 'signal':
-        if (!id) return false;
-        await this.showSignalEditor(id);
-        return true;
-      case 'platform':
-        if (!id) return false;
-        await this.showPlatformEditor(id);
-        return true;
       case 'switch':
         if (!id) return false;
         await this.showSwitchEditor(id);
@@ -446,61 +333,12 @@ export class Editor {
       case 'switches-list':
         await this.showSwitchesPanel();
         return true;
-      case 'train-control':
-        if (!id) return false;
-        await this.showTrainControlPanel(id);
-        return true;
-      case 'trains-list':
-        await this.showTrainsPanel();
-        return true;
-      case 'paths-list':
-        await this.showPathsPanel();
-        return true;
-      case 'path':
-        if (!id) return false;
-        await this.showPathEditor(id);
-        return true;
-      case 'path-setup':
-        this.showRoutePrioritySelector();
-        return true;
-      case 'extend-path-setup':
-        this.showExtendRoutePanel();
-        return true;
-      case 'station-group-detail':
-        if (!id) return false;
-        await this.stationGroupHandler.showStationDetail(id);
-        return true;
-      case 'station-group':
-      case 'station-group-list':
-        await this.showStationsPanel();
-        return true;
       case 'block-detail':
         if (!id) return false;
         await this.blockGroupingHandler.showDetail(id);
         return true;
       case 'block-list':
         await this.showBlocksPanel();
-        return true;
-      case 'routes-list':
-        await this.showRoutesPanel();
-        return true;
-      case 'route-editor':
-        if (!id) return false;
-        await this.routeHandler?.showRouteEditor(id);
-        return true;
-      case 'route-runs-list':
-        await this.routeRunHandler?.showRouteRunsPanel();
-        return true;
-      case 'route-run-editor':
-        if (!id) return false;
-        await this.routeRunHandler?.showRouteRunEditor(parseInt(id, 10));
-        return true;
-      case 'speed-profiles-list':
-        await this.showSpeedProfilesPanel();
-        return true;
-      case 'speed-profile':
-        if (!id) return false;
-        await this.showSpeedProfileEditor(id);
         return true;
       default:
         return false;
@@ -511,8 +349,8 @@ export class Editor {
    *  One entry for list panels; `[parent list, entity]` for detail panels. The
    *  last entry's label is the panel's entity-titled tab label; the first
    *  entry, when navigable (non-null editorType), backs the header's
-   *  `← Parent` button. A null-editorType parent is context only — signals and
-   *  platforms have no list panel to go to. */
+   *  `← Parent` button. A null-editorType parent is context only: it has no
+   *  list panel to go to. */
   getPanelLineage(entityView: any): any[] {
     const type = entityView?.editorType || entityView?.type || null;
     const id = entityView?.editorId || entityView?.id || null;
@@ -531,75 +369,12 @@ export class Editor {
           { label: 'Blocks', editorType: 'block-list', editorId: null },
           { label: title && title !== 'Block' ? title : id || 'Block', editorType: 'block-detail', editorId: id },
         ];
-      case 'signal':
-        return [
-          { label: 'Signals', editorType: null, editorId: null },
-          { label: id || 'Signal', editorType: 'signal', editorId: id },
-        ];
-      case 'platform':
-        return [
-          { label: 'Platforms', editorType: null, editorId: null },
-          { label: id || 'Platform', editorType: 'platform', editorId: id },
-        ];
       case 'switches-list':
         return [{ label: 'Switches', editorType: 'switches-list', editorId: null }];
       case 'switch':
         return [
           { label: 'Switches', editorType: 'switches-list', editorId: null },
           { label: id || 'Switch', editorType: 'switch', editorId: id },
-        ];
-      case 'trains-list':
-        return [{ label: 'Trains', editorType: 'trains-list', editorId: null }];
-      case 'train-control':
-        return [
-          { label: 'Trains', editorType: 'trains-list', editorId: null },
-          { label: id || 'Train', editorType: 'train-control', editorId: id },
-        ];
-      case 'paths-list':
-        return [{ label: 'Paths', editorType: 'paths-list', editorId: null }];
-      case 'path':
-        return [
-          { label: 'Paths', editorType: 'paths-list', editorId: null },
-          { label: id || 'Path', editorType: 'path', editorId: id },
-        ];
-      case 'path-setup':
-        return [
-          { label: 'Paths', editorType: 'paths-list', editorId: null },
-          { label: 'Create Path', editorType: 'path-setup', editorId: null },
-        ];
-      case 'extend-path-setup':
-        return [
-          { label: 'Paths', editorType: 'paths-list', editorId: null },
-          { label: 'Extend Path', editorType: 'extend-path-setup', editorId: id || null },
-        ];
-      case 'routes-list':
-        return [{ label: 'Routes', editorType: 'routes-list', editorId: null }];
-      case 'route-editor':
-        return [
-          { label: 'Routes', editorType: 'routes-list', editorId: null },
-          { label: id || 'Route', editorType: 'route-editor', editorId: id },
-        ];
-      case 'route-runs-list':
-        return [{ label: 'Route Runs', editorType: 'route-runs-list', editorId: null }];
-      case 'route-run-editor':
-        return [
-          { label: 'Route Runs', editorType: 'route-runs-list', editorId: null },
-          { label: id ? `#${id}` : 'Run', editorType: 'route-run-editor', editorId: id },
-        ];
-      case 'station-group-detail':
-        return [
-          { label: 'Stations', editorType: 'station-group-list', editorId: null },
-          { label: id || 'Station', editorType: 'station-group-detail', editorId: id },
-        ];
-      case 'station-group-list':
-      case 'station-group':
-        return [{ label: 'Stations', editorType: 'station-group-list', editorId: null }];
-      case 'speed-profiles-list':
-        return [{ label: 'Speed Profiles', editorType: 'speed-profiles-list', editorId: null }];
-      case 'speed-profile':
-        return [
-          { label: 'Speed Profiles', editorType: 'speed-profiles-list', editorId: null },
-          { label: id || 'Profile', editorType: 'speed-profile', editorId: id },
         ];
       default:
         return [{ label: entityView?.title || 'Editor', editorType: type, editorId: id }];
@@ -619,10 +394,6 @@ export class Editor {
     return this.uiHandler.updateSecondaryEditorForTile(track);
   }
 
-  async showSignalsEditorForTile(track: any): Promise<any> {
-    return this.signalHandler.showSignalsEditorForTile(track);
-  }
-
   /** Validate that the currently open editor still refers to a valid item. */
   validateCurrentEditor(): void {
     if (!this._currentEditorType) {
@@ -639,53 +410,15 @@ export class Editor {
           (b?.segment_ids || []).includes(id)
         );
         break;
-      case 'signal':
-        if (!id) return;
-        itemExists = this.cachedNetwork?.signals && id in this.cachedNetwork.signals;
-        break;
-      case 'platform':
-        if (!id) return;
-        itemExists =
-          Array.isArray(this.cachedNetwork?.platforms) &&
-          this.cachedNetwork.platforms.some((p: any) => p.platform_id === id);
-        break;
-      case 'station-group':
-      case 'station-group-detail':
-        if (!id) return;
-        itemExists =
-          Array.isArray(this.cachedNetwork?.station_groups) &&
-          this.cachedNetwork.station_groups.some((s: any) => s.station_id === id);
-        break;
       case 'block-detail':
         if (!id) return;
         itemExists = !!this.cachedNetwork?.blocks?.[id];
-        break;
-      case 'train':
-      case 'train-control':
-        if (!id) return;
-        itemExists =
-          Array.isArray(this.cachedNetwork?.trains) &&
-          this.cachedNetwork.trains.some((t: any) => t.id === id);
         break;
       case 'switch':
         if (!id) return;
         itemExists = this.cachedNetwork?.switches && id in this.cachedNetwork.switches;
         break;
-      case 'trains-list':
-      case 'path-setup':
-      case 'extend-path-setup':
-      case 'paths-list':
-      case 'routes-list':
-      case 'route-runs-list':
-      case 'speed-profiles-list':
       case 'switches-list':
-        itemExists = true;
-        break;
-      case 'path':
-      case 'route-editor':
-      case 'route-run-editor':
-      case 'speed-profile':
-        if (!id) return;
         itemExists = true;
         break;
       default:
@@ -710,53 +443,22 @@ export class Editor {
     return this.segmentHandler.showEditor(segmentId);
   }
 
-  showPlatformEditor(platformId: any): any {
-    return this.platformHandler.showEditor(platformId);
-  }
-
   async showSwitchEditor(switchId: any): Promise<any> {
     return this.switchHandler.showEditor(switchId);
-  }
-
-  async showStationsPanel(): Promise<any> {
-    return this.stationGroupHandler.showPanel();
   }
 
   async showBlocksPanel(): Promise<any> {
     return this.blockGroupingHandler.showPanel();
   }
 
-  showAddTrainDialog(): any {
-    return this.trainHandler?.showAddTrainDialog();
-  }
-
-  async showTrainsPanel(): Promise<any> {
-    return this.trainHandler?.showTrainsPanel();
-  }
-
   async showSwitchesPanel(): Promise<any> {
     return this.switchHandler.showSwitchesPanel();
-  }
-
-  async showSpeedProfilesPanel(): Promise<any> {
-    return this.speedProfileHandler?.showProfilesPanel();
-  }
-
-  async showSpeedProfileEditor(profileId: string): Promise<any> {
-    return this.speedProfileHandler?.showProfileEditor(profileId);
-  }
-
-  async showTrainControlPanel(trainId: any): Promise<any> {
-    if (this.nextPanelHost?.showTrain(trainId)) return;
-    return this.trainHandler?.showTrainControlPanel(trainId);
   }
 
   // Tools that activate a multi-step EditorMode.
   /**
    * The layout tools the core editor always provides: inspect, the selection
-   * tools, and the network / platform / block build tools. Simulation tools
-   * (path, train, route) are contributed by the SimEditorPlugin, not here, so a
-   * layout-only host gets a clean palette.
+   * tools, and the network, segment and block build tools.
    */
   coreTools(): ToolContribution[] {
     return [
@@ -842,12 +544,16 @@ export class Editor {
     ];
   }
 
-  /** Core tools plus every registered plugin's tools, in registration order. */
+  /** Add tools a screen offers on top of the core tools (the Editor screen's
+   *  Switch pick and Remove track, next/editor/modes.ts). */
+  addTools(tools: ToolContribution[]): void {
+    this._extraTools.push(...tools);
+    this.refreshTools();
+  }
+
+  /** Every tool the editor offers: the core tools, then any added ones. */
   _collectToolContributions(): ToolContribution[] {
-    return [
-      ...this.coreTools(),
-      ...this._plugins.flatMap((p) => p.tools?.(this) ?? []),
-    ];
+    return [...this.coreTools(), ...this._extraTools];
   }
 
   // Picking a tool lives on ToolbarHandler (editor-toolbar.ts).
@@ -951,13 +657,8 @@ export class Editor {
       const y = e.clientY - rect.top;
       const gridPos = this.renderer.screenToGrid(x, y);
 
-      // Middle mouse, select tool, or route-related tools = pan
-      const pathTools = ['path', 'extend-path', 'cancel-path'];
-      if (
-        e.button === 1 ||
-        (e.button === 0 && this.selectedTool === 'inspect') ||
-        (e.button === 0 && pathTools.includes(this.selectedTool))
-      ) {
+      // Middle mouse or the select tool = pan
+      if (e.button === 1 || (e.button === 0 && this.selectedTool === 'inspect')) {
         this.isPanning = true;
         this.hasPanned = false;
         this.lastMouseX = e.clientX;
@@ -966,9 +667,7 @@ export class Editor {
       // Left mouse + path-based tools = start drag
       else if (
         e.button === 0 &&
-        ['track', 'segment', 'extend-segment', 'platform', 'extend-platform', 'remove-platform-tile', 'remove-segment-tile'].includes(
-          this.selectedTool
-        )
+        ['track', 'segment', 'extend-segment', 'remove-segment-tile'].includes(this.selectedTool)
       ) {
         this.isDraggingBuild = true;
         this.dragStart = gridPos;
@@ -1002,8 +701,8 @@ export class Editor {
           this.renderer.requestRedraw();
         }
       }
-      // Left click with signal/tunnel = single click placement
-      else if (e.button === 0 && ['signal', 'tunnel'].includes(this.selectedTool)) {
+      // Left click with the tunnel tool = single click placement
+      else if (e.button === 0 && this.selectedTool === 'tunnel') {
         this.handleSingleClickPlace(gridPos, e);
       }
     });
@@ -1061,27 +760,9 @@ export class Editor {
           this.paintSelectState.lastKey = key;
         }
       }
-      // Hover preview for signal/platform tools
-      else if (['signal', 'platform'].includes(this.selectedTool)) {
-        this.updateHoverPreview(gridPos);
-      }
-      // Any active mode with an onHover hook (e.g. train placement) gets the
-      // hovered tile so it can update its own canvas preview.
+      // Any active mode with an onHover hook gets the hovered tile so it can update its own canvas preview.
       else if (this.activeMode?.onHover) {
         this.activeMode.onHover(gridPos);
-      }
-    });
-
-    // Mouse leaves the canvas - drop the signal/platform hover ghost so it
-    // doesn't stick at its last position (the renderer holds preview state
-    // now, so it won't clear on its own). A build drag keeps going via the
-    // document-level mouseup, so its preview is intentionally left alone.
-    canvas.addEventListener('mouseleave', () => {
-      if (this.hoverPosition) {
-        this.hoverPosition = null;
-        this.hoverValid = false;
-        this.renderer.setHoverPreview(null);
-        this.renderer.requestRedraw();
       }
     });
 
@@ -1168,16 +849,9 @@ export class Editor {
         if (onCanvas) {
           const isSingleClick = this.dragStart.x === this.dragEnd.x && this.dragStart.y === this.dragEnd.y;
 
-          if (
-            ['remove-platform-tile', 'remove-segment-tile'].includes(this.selectedTool) &&
-            isSingleClick
-          ) {
+          if (this.selectedTool === 'remove-segment-tile' && isSingleClick) {
             await this.handleRemovalClick(this.dragStart);
-          } else if (
-            ['segment', 'track', 'extend-segment', 'platform', 'extend-platform', 'remove-platform-tile', 'remove-segment-tile'].includes(
-              this.selectedTool
-            )
-          ) {
+          } else if (['segment', 'track', 'extend-segment', 'remove-segment-tile'].includes(this.selectedTool)) {
             await this.commitDragBuild();
           }
         }
@@ -1257,13 +931,6 @@ export class Editor {
 
       if (this.operateTrainClick?.(x, y)) return;
 
-      // Station labels float above the grid — give them first shot.
-      const stationId = this.renderer.stationHandler?.stationAt?.(x, y);
-      if (stationId) {
-        await this.stationGroupHandler.showStationDetail(stationId);
-        return;
-      }
-
       const gridPos = this.renderer.screenToGrid(x, y);
 
       // Any active EditorMode gets the first shot at the click.
@@ -1288,7 +955,7 @@ export class Editor {
       if (this.selectedTool !== 'inspect') return;
 
       // Tunnel mouths are overlay glyphs sitting on a tile's edge — give them
-      // first shot before tile selection, mirroring station labels above.
+      // first shot before tile selection.
       const tunnelHit = this.renderer.tunnelHandler?.tunnelMouthAt?.(x, y);
       if (tunnelHit) {
         const current = this.renderer.selectedTunnel;
@@ -1543,11 +1210,8 @@ export class Editor {
     this.previewPath = null;
     this.previewTracks = null;
     this.isDraggingBuild = false;
-    this.hoverPosition = null;
-    this.hoverValid = false;
     this.renderer.showSegmentColorsOnly = false;
     this.renderer.setBuildPreview(null);
-    this.renderer.setHoverPreview(null);
   }
 
   // Pure DOM + state update. Does NOT call enter/exitMode (no recursion).
@@ -1580,14 +1244,11 @@ export class Editor {
   }
 
   // Group the selected tiles by the entity each belongs to, so the renderer can
-  // trace one coloured perimeter per entity (segment / platform / switch /
-  // signal) instead of a field of tiles. A tile can land in several groups (a
-  // switch tile is also in a segment); each group carries only its own tiles, so
-  // its outline is exactly that entity's footprint. Colours match the
-  // selection-panel chips. The segment outline is thin, light, and drawn last
-  // (on top) so it stays a delicate border; platform / switch / signal are a
-  // touch wider and drawn first, so they still peek around the segment when they
-  // share its tiles. The outlined geometry unit is the SEGMENT — a block groups
+  // trace one coloured perimeter per entity (segment / switch) instead of a
+  // field of tiles. Each group carries only its own tiles, so its outline is
+  // exactly that entity's footprint. Colours match the selection-panel chips.
+  // The segment outline is thin, light, and drawn last (on top) so it stays a
+  // delicate border; a switch is a touch wider and drawn first. The outlined geometry unit is the SEGMENT — a block groups
   // segments and has no footprint of its own to trace.
   _buildSelectionOutlineGroups(keys: Set<string>): any[] {
     if (!keys || keys.size === 0) return [];
@@ -1596,9 +1257,7 @@ export class Editor {
     for (const t of tracks) byKey.set(`${t.x},${t.y}`, t);
 
     const segments = new Map<string, Set<string>>();
-    const platforms = new Map<string, Set<string>>();
     const switches = new Map<string, Set<string>>();
-    const signals = new Map<string, Set<string>>();
     const add = (m: Map<string, Set<string>>, id: string, key: string): void => {
       let s = m.get(id);
       if (!s) {
@@ -1611,11 +1270,7 @@ export class Editor {
       const t = byKey.get(key);
       if (!t) continue;
       if (t.segment_id) add(segments, t.segment_id, key);
-      // A tile's `station_id` holds the platform it belongs to (historically
-      // named; see _summarize in editor-multi-select.ts).
-      if (t.station_id) add(platforms, t.station_id, key);
       if (t.switch_id) add(switches, t.switch_id, key);
-      for (const sid of t.signal_ids || []) add(signals, sid, key);
     }
 
     const hue = (token: string, fallback: string): string => {
@@ -1636,17 +1291,12 @@ export class Editor {
       return `rgb(${mix(ch(0))}, ${mix(ch(2))}, ${mix(ch(4))})`;
     };
     const segmentColor = lighten(hue('--accent-hover', '#9466ff'), 0.45);
-    const platformColor = hue('--info-color', '#00d4ff');
     const switchColor = hue('--warning-color', '#ffcd1e');
-    const signalColor = hue('--success-color', '#04d361');
 
-    // Draw platform / switch / signal first (a touch wider) and the segment last
-    // (thin + light, on top) so the segment stays a delicate border that never
-    // hides the entities sharing its tiles.
+    // Draw the switch first (a touch wider) and the segment last (thin + light,
+    // on top) so the segment stays a delicate border.
     const groups: any[] = [];
-    for (const s of platforms.values()) groups.push({ keys: s, color: platformColor, width: 3.5, dash: [7, 5] });
     for (const s of switches.values()) groups.push({ keys: s, color: switchColor, width: 3.5, dash: [2, 4] });
-    for (const s of signals.values()) groups.push({ keys: s, color: signalColor, width: 3.5, dash: [7, 4, 2, 4] });
     for (const s of segments.values()) groups.push({ keys: s, color: segmentColor, width: 2, dash: [] });
     return groups;
   }
@@ -1690,18 +1340,6 @@ export class Editor {
     return this.segmentHandler.showModal(options);
   }
 
-  showPlatformModal(options: any): any {
-    return this.platformHandler.showModal(options);
-  }
-
-  renderSignalList(signals: any): any {
-    return this.signalHandler.renderSignalList(signals);
-  }
-
-  async invalidateSignalsInPath(signalsInPath: any): Promise<any> {
-    return this.signalHandler.invalidateSignalsInPath(signalsInPath);
-  }
-
   // === End Block Manager Methods ===
 
   updatePreviewPath(): void {
@@ -1729,13 +1367,7 @@ export class Editor {
       if (err.status !== 409 || !err.requires_confirmation) throw err;
       const impact = err.impact || {};
       const switches = (impact.removes_switches || []).length;
-      const signals = (impact.removes_signals || []).length;
-      const platforms = (impact.removes_platforms || []).length;
-      const parts = [];
-      if (switches) parts.push(`${switches} switch${switches !== 1 ? 'es' : ''}`);
-      if (signals) parts.push(`${signals} signal${signals !== 1 ? 's' : ''}`);
-      if (platforms) parts.push(`${platforms} platform${platforms !== 1 ? 's' : ''}`);
-      const detail = parts.length ? `This will also remove ${parts.join(', ')}.` : '';
+      const detail = switches ? `This will also remove ${switches} switch${switches !== 1 ? 'es' : ''}.` : '';
       const confirmed = await showConfirmModal({
         title: 'Confirm bulk delete',
         message: `Delete ${positions.length} track${positions.length !== 1 ? 's' : ''}?`,
@@ -1759,19 +1391,7 @@ export class Editor {
         return;
       }
 
-      if (this.selectedTool === 'remove-platform-tile') {
-        if (!existingTrack.station_id) {
-          showToast('No platform at this position', 'error', 3000);
-          return;
-        }
-
-        try {
-          await this.api.removePlatformTile(existingTrack.station_id, gridPos.x, gridPos.y);
-          showToast('Platform tile removed', 'success');
-        } catch (err: any) {
-          showToast(`Failed to remove platform tile: ${err.message}`, 'error', 5000);
-        }
-      } else if (this.selectedTool === 'remove-segment-tile') {
+      if (this.selectedTool === 'remove-segment-tile') {
         if (!existingTrack.segment_id) {
           showToast('No segment at this position', 'error', 3000);
           return;
@@ -1798,7 +1418,7 @@ export class Editor {
     }
   }
 
-  // Single click placement for signal/platform/tunnel tools
+  // Single click placement for the tunnel tool
   async handleSingleClickPlace(gridPos: any, ev?: MouseEvent): Promise<void> {
     const existingTrack = this.cachedNetwork?.tracks?.find(
       (t: any) => t.x === gridPos.x && t.y === gridPos.y
@@ -1811,199 +1431,15 @@ export class Editor {
 
     if (this.selectedTool === 'tunnel') {
       await this.handleTunnelClick(gridPos, existingTrack, ev);
-      return;
-    }
-
-    if (this.selectedTool === 'signal') {
-      if (existingTrack.station_name) {
-        showToast('Cannot place signal on a platform', 'error', 5000);
-        return;
-      }
-
-      try {
-        const validation = await this.api.validateSignalPlacement(gridPos.x, gridPos.y);
-
-        if (!validation.can_place) {
-          showToast(validation.error || 'Cannot place signal at this position', 'error', 5000);
-          return;
-        }
-
-        let detectionDirection;
-        if (
-          this.previewSignalDirection &&
-          this._lastValidatedPosition?.x === gridPos.x &&
-          this._lastValidatedPosition?.y === gridPos.y &&
-          validation.available_directions?.includes(this.previewSignalDirection)
-        ) {
-          detectionDirection = this.previewSignalDirection;
-        } else {
-          detectionDirection = validation.available_directions?.[0] || validation.valid_directions?.[0];
-        }
-
-        if (!detectionDirection) {
-          showToast('No valid detection direction available for signal placement', 'error', 5000);
-          return;
-        }
-
-        await this.api.createSignal(gridPos.x, gridPos.y, detectionDirection, 'block', null, true);
-
-        this.previewSignalDirection = null;
-        this.previewSignalDirectionIndex = 0;
-        this._lastValidatedPosition = null;
-      } catch (err: any) {
-        console.error('[Editor] Signal creation failed:', err);
-        showToast('Failed to create signal: ' + err.message, 'error', 5000);
-        return;
-      }
-    }
-
-    // Clear the placement ghost before the refresh redraw repaints the live
-    // layer, otherwise the stale hover preview would survive the flush.
-    this.hoverPosition = null;
-    this.hoverValid = false;
-    this.renderer.setHoverPreview(null);
-    await this.refreshAndSelect(gridPos);
-  }
-
-  // Update hover preview for signal/platform tools
-  updateHoverPreview(gridPos: any): void {
-    if (!['signal', 'platform'].includes(this.selectedTool)) {
-      this.hoverPosition = null;
-      this.hoverValid = false;
-      this.renderer.setHoverPreview(null);
-      return;
-    }
-
-    this.hoverPosition = gridPos;
-
-    const existingTrack = this.cachedNetwork?.tracks?.find(
-      (t: any) => t.x === gridPos.x && t.y === gridPos.y
-    );
-
-    if (!existingTrack) {
-      this.hoverValid = false;
-      this.previewSignalDirection = null;
-      this.validSignalDirections = [];
-      this.drawWithHoverPreview();
-      return;
-    }
-
-    if (this.selectedTool === 'signal') {
-      this.validateSignalPreviewAsync(gridPos, existingTrack);
-    } else if (this.selectedTool === 'platform') {
-      this.hoverValid = !existingTrack.is_switch && !existingTrack.signal_state;
-      this.previewSignalDirection = null;
-      this.drawWithHoverPreview();
     }
   }
 
-  // Async API validation for signal preview - debounced.
-  async validateSignalPreviewAsync(gridPos: any, existingTrack: any): Promise<void> {
-    if (this.signalValidationTimeout) {
-      clearTimeout(this.signalValidationTimeout);
-    }
-
-    const trackBits = existingTrack.track_bits || 0;
-    const localDirections = getValidSignalDirections(trackBits);
-    const hasStation = !!existingTrack.station_name;
-
-    if (localDirections.length === 0 || hasStation) {
-      this.hoverValid = false;
-      this.previewSignalDirection = null;
-      this.validSignalDirections = [];
-      this.drawWithHoverPreview();
-      return;
-    }
-
-    if (
-      this.validSignalDirections.length === 0 ||
-      this._lastValidatedPosition?.x !== gridPos.x ||
-      this._lastValidatedPosition?.y !== gridPos.y
-    ) {
-      this.validSignalDirections = localDirections;
-      this.hoverValid = localDirections.length > 0;
-      if (this.hoverValid && !this.previewSignalDirection) {
-        this.previewSignalDirectionIndex = 0;
-        this.previewSignalDirection = localDirections[0];
-      }
-      this.drawWithHoverPreview();
-    }
-
-    // Debounce the API call (50ms)
-    this.signalValidationTimeout = setTimeout(async () => {
-      try {
-        const validation = await this.api.validateSignalPlacement(gridPos.x, gridPos.y);
-
-        if (!this.hoverPosition || this.hoverPosition.x !== gridPos.x || this.hoverPosition.y !== gridPos.y) {
-          return; // User moved away, ignore result
-        }
-
-        this._lastValidatedPosition = { x: gridPos.x, y: gridPos.y };
-
-        if (!validation.can_place) {
-          this.hoverValid = false;
-          this.previewSignalDirection = null;
-          this.validSignalDirections = [];
-        } else {
-          const availableDirections = validation.available_directions || [];
-
-          this.validSignalDirections = availableDirections;
-          this.hoverValid = availableDirections.length > 0;
-
-          if (this.hoverValid && availableDirections.length > 0) {
-            if (!this.previewSignalDirection || !availableDirections.includes(this.previewSignalDirection)) {
-              this.previewSignalDirectionIndex = 0;
-              this.previewSignalDirection = availableDirections[0];
-            }
-          } else {
-            this.previewSignalDirection = null;
-          }
-        }
-
-        this.drawWithHoverPreview();
-      } catch (err) {
-        console.warn('[Editor] Signal validation API failed, using local validation:', err);
-      }
-    }, 50);
-  }
-
-  // Check if a tool is actively being used that needs hover preview preservation
+  // Whether a build drag is in progress (its preview must survive a refresh).
   isToolActive(): boolean {
-    const previewTools = ['signal', 'platform'];
-    if (previewTools.includes(this.selectedTool) && this.hoverPosition) {
-      return true;
-    }
     if (this.isDraggingBuild && this.previewPath && this.previewPath.length > 0) {
       return true;
     }
     return false;
-  }
-
-  // Push the hover preview overlay to the renderer (painted in _drawLive so
-  // it survives the rAF-coalesced flush) and request a redraw.
-  drawWithHoverPreview(): void {
-    if (!this.cachedNetwork) return;
-
-    if (this.hoverPosition) {
-      let trackBits = null;
-      if (this.selectedTool === 'signal') {
-        const existingTrack = this.cachedNetwork?.tracks?.find(
-          (t: any) => t.x === this.hoverPosition.x && t.y === this.hoverPosition.y
-        );
-        trackBits = existingTrack?.track_bits || null;
-      }
-
-      this.renderer.setHoverPreview({
-        gridPos: this.hoverPosition,
-        toolType: this.selectedTool,
-        isValid: this.hoverValid,
-        signalDirection: this.previewSignalDirection,
-        trackBits,
-      });
-    } else {
-      this.renderer.setHoverPreview(null);
-    }
-    this.renderer.requestRedraw();
   }
 
   async handleRightClick(gridPos: any, clientX = 0, clientY = 0): Promise<void> {
@@ -2013,28 +1449,6 @@ export class Editor {
     if (this._isSelectionTool(this.selectedTool)) {
       if (this.boxSelectState.selectedKeys.size > 0) this.clearMultiSelection();
       return;
-    }
-
-    if (this.activeMode?.name === 'Route creation' && this.pathToolState?.active) {
-      await this.resetRouteToolState();
-      showToast('Route creation cancelled', 'info', 3000);
-      return;
-    }
-
-    if (
-      this.selectedTool === 'signal' &&
-      this.hoverPosition &&
-      this.hoverPosition.x === gridPos.x &&
-      this.hoverPosition.y === gridPos.y &&
-      this.hoverValid
-    ) {
-      const validDirections = this.validSignalDirections || [];
-      if (validDirections.length > 1) {
-        this.previewSignalDirectionIndex = (this.previewSignalDirectionIndex + 1) % validDirections.length;
-        this.previewSignalDirection = validDirections[this.previewSignalDirectionIndex];
-        this.drawWithHoverPreview();
-        return;
-      }
     }
 
     try {
@@ -2051,25 +1465,13 @@ export class Editor {
 
   /**
    * Build and show the right-click menu for a tile: one entry per entity on the
-   * tile (train / switch / signal / block / platform), each opening that
+   * tile (switch / segment / block), each opening that
    * entity's editor, plus a Throw action for switches and an "Inspect tile"
    * fallback. Entity resolution mirrors the properties panel.
    */
   showTileContextMenu(gridPos: any, track: any, clientX: number, clientY: number): void {
     const entityItems: ContextMenuItem[] = [];
 
-    const trainsAtTile = (this.cachedNetwork?.trains || []).filter((t: any) => {
-      const span = this.stateManager?.getController(t.id)?.span;
-      return span?.occupied_tiles?.some((tile: any) => tile[0] === track.x && tile[1] === track.y);
-    });
-    for (const train of trainsAtTile) {
-      entityItems.push({
-        label: train.id,
-        detail: 'Train',
-        icon: 'ti ti-train',
-        onSelect: () => this.showTrainControlPanel(train.id),
-      });
-    }
     if (track.is_switch && track.switch_id) {
       const sw = this.cachedNetwork?.switches?.[track.switch_id];
       entityItems.push({
@@ -2077,22 +1479,6 @@ export class Editor {
         detail: 'Switch',
         icon: 'ti ti-arrows-split-2',
         onSelect: () => this.switchHandler.showEditor(track.switch_id),
-      });
-    }
-    // GET /api/track carries `signal_ids` only — the enriched `signals` array
-    // is built on the network payload's tiles (RailwayNetwork.to_dict). Take
-    // whichever the caller handed us, and resolve names through the network's
-    // signal map so an id with no record still gets its row.
-    const signalsById = this.cachedNetwork?.signals || {};
-    const tileSignals: any[] = track.signals?.length
-      ? track.signals
-      : (track.signal_ids || []).map((sid: string) => signalsById[sid] || { signal_id: sid });
-    for (const signal of tileSignals) {
-      entityItems.push({
-        ...entityIdentity(signal.name, signal.signal_id),
-        detail: 'Signal',
-        icon: 'ti ti-traffic-lights',
-        onSelect: () => this.signalHandler.showSignalEditor(signal.signal_id),
       });
     }
     // A tile belongs to a segment (geometry) and to the block that owns it
@@ -2119,18 +1505,6 @@ export class Editor {
         onSelect: () => this.blockGroupingHandler.showDetail(track.block_section_id),
       });
     }
-    if (track.station_id) {
-      const platform = (this.cachedNetwork?.platforms || []).find(
-        (p: any) => p.platform_id === track.station_id,
-      );
-      entityItems.push({
-        ...entityIdentity(platform?.name, track.station_id),
-        detail: 'Platform',
-        icon: 'ti ti-building',
-        onSelect: () => this.platformHandler.showEditor(track.station_id),
-      });
-    }
-
     const actionItems: ContextMenuItem[] = [];
     if (track.is_switch) {
       const toDiverge = track.switch_state === 0;
@@ -2228,9 +1602,6 @@ export class Editor {
       const track = await this.api.getTrack(gridPos.x, gridPos.y);
       if (track && !track.error) {
         tile = track;
-        if (track.signals && track.signals.length > 0) {
-          await this.refreshSegmentsList();
-        }
       } else {
         tile = virtualTile;
       }
@@ -2318,77 +1689,24 @@ export class Editor {
 
     setTimeout(() => this.initBitEditor(track), 0);
     setTimeout(() => this.initVisualTrackEditor(editorId, track), 0);
-    setTimeout(() => this.initSignalEditor(track), 0);
     setTimeout(() => this.initBlockEditor(track), 0);
     setTimeout(() => this.initSwitchEditor(track), 0);
-    setTimeout(() => this.initStationCardButton(), 0);
-    setTimeout(() => this.initPlatformButtonHandlers(), 0);
-    setTimeout(() => this.initTrainEditor(track), 0);
     setTimeout(() => this.initViewFullJSONButton(track), 0);
   }
 
-  /** The entity cards for a tile — train, switch, signals, block, platform,
-   *  station, plus occupancy / dead-end notes and the View Full JSON button.
+  /** The entity cards for a tile — switch, segment and block, plus the
+   *  dead-end note and the View Full JSON button.
    *  Rendered inside the Tile Editor; the per-card Edit buttons are wired by the
    *  init*Editor handlers that showTileEditor schedules. */
   _tilePropertiesHTML(track: any): string {
     return `
-            ${(() => {
-              const trainsAtTile =
-                this.cachedNetwork && this.cachedNetwork.trains
-                  ? this.cachedNetwork.trains.filter((t: any) => {
-                      const span = this.stateManager?.getController(t.id)?.span;
-                      if (span && span.occupied_tiles) {
-                        return span.occupied_tiles.some((tile: any) => tile[0] === track.x && tile[1] === track.y);
-                      }
-                      return false;
-                    })
-                  : [];
-              if (trainsAtTile.length === 0) return '';
-              return `
-                <div class="property-group-header">Train</div>
-                ${trainsAtTile
-                  .map((train: any) => {
-                    const controller: any = this.stateManager?.getController(train.id);
-                    const status = trainDisplayStatus(
-                      controller,
-                      this.stateManager?.getOperatorStatus(train.id),
-                    );
-                    const dotColor =
-                      status === 'eb'
-                        ? 'var(--danger-color)'
-                        : status === 'running'
-                          ? 'var(--success-color)'
-                          : status === 'dwelling'
-                            ? 'var(--info-color)'
-                            : status === 'manual'
-                              ? 'var(--warning-color)'
-                              : 'var(--text-secondary)';
-                    return `
-                <div class="property-item-row">
-                    <div class="entity-card" style="--card-accent: var(--accent-color)">
-                        <div class="entity-card-dot" style="background-color: ${dotColor}"></div>
-                        <div class="entity-card-body">
-                            <span class="entity-card-id">${train.id}</span>
-                            <span class="entity-card-state">${status}</span>
-                        </div>
-                        ${copyIdButton(train.id, 'Train ID')}
-                        <button class="edit-btn edit-train-btn" data-train-id="${train.id}">Edit</button>
-                    </div>
-                </div>
-                `;
-                  })
-                  .join('')}
-                `;
-            })()}
-
             ${
               track.switch_points && Object.keys(track.switch_points).length > 0
                 ? (() => {
                     const switchStateColor = track.switch_state === 0 ? 'var(--success-color)' : 'var(--warning-color)';
                     const switchStateText = track.switch_state === 0 ? 'MAIN' : 'DIVERGE';
-                    const lockSwitchEntity = this.cachedNetwork?.switches?.[track.switch_id] || null;
-                    const isLocked = !!(lockSwitchEntity && Array.isArray(lockSwitchEntity.locks) && lockSwitchEntity.locks.length > 0);
+                    const switchEntity = this.cachedNetwork?.switches?.[track.switch_id] || null;
+                    const isLocked = !!switchEntity?.held;
                     const hasSwitchId = track.switch_id && track.switch_id !== '';
                     return `
                 <div class="property-group-header">Switch</div>
@@ -2410,37 +1728,6 @@ export class Editor {
                   })()
                 : ''
             }
-            ${
-              track.signals && track.signals.length > 0
-                ? `
-            <div class="property-group-header">Signals</div>
-            ${track.signals
-              .map((signal: any) => {
-                const signalColor =
-                  signal.signal_state === 'green' || signal.signal_state === 'GREEN'
-                    ? 'var(--success-color)'
-                    : signal.signal_state === 'yellow' || signal.signal_state === 'YELLOW'
-                      ? 'var(--warning-color)'
-                      : 'var(--danger-color)';
-                return `
-            <div class="property-item-row">
-                <div class="entity-card" style="--card-accent: ${signalColor}">
-                    <div class="entity-card-dot" style="background-color: ${signalColor}"></div>
-                    <div class="entity-card-body">
-                        <span class="entity-card-id">${signal.signal_id}</span>
-                        <span class="entity-card-meta">→${signal.detection_direction}</span>
-                    </div>
-                    ${copyIdButton(signal.signal_id, 'Signal ID')}
-                    <button class="edit-btn edit-signal-btn" data-signal-id="${signal.signal_id}">Edit</button>
-                </div>
-            </div>
-            `;
-              })
-              .join('')}
-            `
-                : ''
-            }
-
             ${
               track.segment_id
                 ? (() => {
@@ -2486,68 +1773,6 @@ export class Editor {
             }
 
             ${
-              track.station_id
-                ? (() => {
-                    const platform =
-                      this.cachedNetwork && this.cachedNetwork.platforms
-                        ? this.cachedNetwork.platforms.find((p: any) => p.platform_id === track.station_id)
-                        : null;
-                    return `
-                <div class="property-group-header">Platform</div>
-                <div class="property-item-row">
-                    <div class="entity-card" style="--card-accent: var(--info-color)">
-                        <div class="entity-card-body">
-                            <span class="entity-card-id">${track.station_id}</span>
-                            ${platform && platform.name ? `<span class="entity-card-meta" style="color: var(--info-color)">${platform.name}</span>` : ''}
-                        </div>
-                        ${copyIdButton(track.station_id, 'Platform ID')}
-                        <button class="edit-btn edit-platform-btn" data-platform-id="${track.station_id}">Edit</button>
-                    </div>
-                </div>
-                `;
-                  })()
-                : ''
-            }
-
-            ${
-              track.station_id
-                ? (() => {
-                    const groups = Array.isArray(this.cachedNetwork?.station_groups)
-                      ? this.cachedNetwork.station_groups
-                      : [];
-                    const group = groups.find((g: any) =>
-                      (g.platform_ids || []).includes(track.station_id)
-                    );
-                    if (!group) return '';
-                    return `
-                <div class="property-group-header">Station</div>
-                <div class="property-item-row">
-                    <div class="entity-card" style="--card-accent: var(--info-color)">
-                        <div class="entity-card-dot" style="background-color: var(--info-color)"></div>
-                        <div class="entity-card-body">
-                            <span class="entity-card-id">${group.station_id}</span>
-                            ${group.name ? `<span class="entity-card-meta" style="color: var(--info-color)">${group.name}</span>` : ''}
-                        </div>
-                        ${copyIdButton(group.station_id, 'Station ID')}
-                        <button class="edit-btn edit-station-btn" data-station-id="${group.station_id}">Edit</button>
-                    </div>
-                </div>
-                `;
-                  })()
-                : ''
-            }
-
-            ${
-              track.occupied_by
-                ? `
-            <div class="property-item">
-                <label>Occupied By:</label>
-                <span class="text-danger">${track.occupied_by}</span>
-            </div>
-            `
-                : ''
-            }
-            ${
               track.dead_end_ports && track.dead_end_ports.length > 0
                 ? `
             <div class="property-item">
@@ -2568,18 +1793,6 @@ export class Editor {
 
   initViewFullJSONButton(track: any): any {
     return this.uiHandler.initViewFullJSONButton(track);
-  }
-
-  initPlatformButtonHandlers(): any {
-    return this.uiHandler.initPlatformButtonHandlers();
-  }
-
-  initSignalEditor(track: any): any {
-    return this.signalHandler.initSignalEditor(track);
-  }
-
-  async showSignalEditor(signalId: any): Promise<any> {
-    return this.signalHandler.showSignalEditor(signalId);
   }
 
   // Initialize the segment (geometry) and block (grouping) summary edit buttons.
@@ -2623,44 +1836,6 @@ export class Editor {
     }
   }
 
-  // Initialize the logical-station card Edit button shown on a platform tile —
-  // jumps to the Station Editor for the station that owns the platform.
-  initStationCardButton(): void {
-    document.querySelectorAll<HTMLElement>('.edit-station-btn').forEach((btn) => {
-      btn.onclick = () => {
-        const sid = btn.dataset.stationId;
-        if (sid) this.stationGroupHandler.showStationDetail(sid);
-      };
-    });
-  }
-
-  // Initialize train summary edit button handler
-  initTrainEditor(track: any): void {
-    const trainsAtTile =
-      this.cachedNetwork && this.cachedNetwork.trains
-        ? this.cachedNetwork.trains.filter((t: any) => {
-            const span = this.stateManager?.getController(t.id)?.span;
-            if (span && span.occupied_tiles) {
-              return span.occupied_tiles.some((tile: any) => tile[0] === track.x && tile[1] === track.y);
-            }
-            return false;
-          })
-        : [];
-
-    if (trainsAtTile.length === 0) return;
-
-    trainsAtTile.forEach((train: any) => {
-      const editBtn = this.$q(
-        `.edit-train-btn[data-train-id="${train.id}"]`
-      ) as HTMLElement | null;
-      if (editBtn) {
-        editBtn.onclick = () => {
-          this.host?.selectTrain?.(train.id);
-        };
-      }
-    });
-  }
-
   initBitEditor(track: any): any {
     return this.uiHandler.initBitEditor(track);
   }
@@ -2675,10 +1850,6 @@ export class Editor {
 
   setCachedNetwork(network: any): void {
     this.cachedNetwork = network;
-
-    if (this.hoverPosition && ['signal', 'platform'].includes(this.selectedTool)) {
-      this.updateHoverPreview(this.hoverPosition);
-    }
   }
 
   /** Close the panel for a now-missing entity (matched by type + id), so a
@@ -2690,120 +1861,10 @@ export class Editor {
   }
 
   /** Close the panel with this editor type + id if it is showing. `id` is
-   *  null for panels with no entity, such as the Create Path setup panel. */
+   *  null for panels with no entity. */
   closeEditorTab(editorType: string, id: string | null): Promise<void> {
     this.nextPanelHost?.closePanel(editorType, id);
     return this.uiHandler.closeStaleSecondaryTab(editorType, id);
-  }
-
-  enterRouteToolMode(): any {
-    return this.pathHandler?.enterRouteToolMode();
-  }
-
-  async exitRouteToolMode(): Promise<any> {
-    return await this.pathHandler?.exitRouteToolMode();
-  }
-
-  async resetRouteToolState(): Promise<any> {
-    return await this.pathHandler?.resetRouteToolState();
-  }
-
-  async handleRouteToolClick(gridPos: any): Promise<any> {
-    return this.pathHandler?.handleRouteToolClick(gridPos);
-  }
-
-  async handleRouteFirstClick(gridPos: any, track: any): Promise<any> {
-    return this.pathHandler?.handleRouteFirstClick(gridPos, track);
-  }
-
-  buildReachablePositionsSet(): any {
-    return this.pathHandler?.buildReachablePositionsSet();
-  }
-
-  async handleRouteSecondClick(gridPos: any, track: any): Promise<any> {
-    return this.pathHandler?.handleRouteSecondClick(gridPos, track);
-  }
-
-  showRoutePrioritySelector(): any {
-    return this.pathHandler?.showRoutePrioritySelector();
-  }
-
-  async showPathsPanel(): Promise<any> {
-    return this.pathHandler?.showPathsPanel();
-  }
-
-  renderPathListItem(path: any): any {
-    return this.pathHandler?.renderPathListItem(path);
-  }
-
-  getPathStatusColor(status: any): any {
-    return this.pathHandler?.getPathStatusColor(status);
-  }
-
-  initRoutesPanelHandlers(): any {
-    return this.pathHandler?.initRoutesPanelHandlers();
-  }
-
-  async showPathEditor(pathId: any): Promise<any> {
-    return this.pathHandler?.showPathEditor(pathId);
-  }
-
-  initPathEditorHandlers(pathId: any, path: any): any {
-    return this.pathHandler?.initPathEditorHandlers(pathId, path);
-  }
-
-  enterExtendRouteMode(): any {
-    return this.pathHandler?.enterExtendRouteMode();
-  }
-
-  async exitExtendRouteMode(): Promise<any> {
-    return await this.pathHandler?.exitExtendRouteMode();
-  }
-
-  async resetExtendRouteState(): Promise<any> {
-    return await this.pathHandler?.resetExtendRouteState();
-  }
-
-  async handleExtendRouteToolClick(gridPos: any): Promise<any> {
-    return this.pathHandler?.handleExtendRouteToolClick(gridPos);
-  }
-
-  async handleExtendRouteFirstClick(gridPos: any, track: any): Promise<any> {
-    return this.pathHandler?.handleExtendRouteFirstClick(gridPos, track);
-  }
-
-  buildExtendRoutePositionsSet(): any {
-    return this.pathHandler?.buildExtendRoutePositionsSet();
-  }
-
-  async handleExtendRouteSecondClick(gridPos: any, track: any): Promise<any> {
-    return this.pathHandler?.handleExtendRouteSecondClick(gridPos, track);
-  }
-
-  showExtendRoutePanel(): any {
-    return this.pathHandler?.showExtendRoutePanel();
-  }
-
-  getDirectionName(dir: any): any {
-    return this.pathHandler?.getDirectionName(dir);
-  }
-
-  enterCancelRouteMode(): any {
-    return this.pathHandler?.enterCancelRouteMode();
-  }
-
-  exitCancelRouteMode(): any {
-    return this.pathHandler?.exitCancelRouteMode();
-  }
-
-  async handleCancelRouteToolClick(gridPos: any): Promise<any> {
-    return this.pathHandler?.handleCancelRouteToolClick(gridPos);
-  }
-
-  // === Train Routes Panel Methods ===
-
-  async showRoutesPanel(): Promise<any> {
-    return this.routeHandler?.showRoutesPanel();
   }
 
   // === Tunnel Tool ===

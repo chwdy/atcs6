@@ -12,7 +12,7 @@ import { render } from 'preact';
 import type { Editor } from '../../editor/editor';
 import { screen } from '../state';
 import { openForTileClick } from './click-rule';
-import { editorScreenPlugin } from './modes';
+import { editorScreenTools } from './modes';
 import { EditorPanel, type PanelActions } from './right-panel';
 import { activeToolId } from './state';
 import { EditorToolBar, pickBarTool, type ToolBarActions } from './tool-bar';
@@ -37,7 +37,6 @@ export function panelActions(editor: Editor): PanelActions {
   return {
     close: () => void editor.hideSecondarySidebar(),
     showSwitches: () => void editor.showSwitchesPanel(),
-    showStations: () => void editor.showStationsPanel(),
     showBlocks: () => void editor.showBlocksPanel(),
     openTileKey: () => (editor._currentEditorType === 'tile' ? editor._currentEditorId : null),
   };
@@ -50,7 +49,7 @@ function typingInField(): boolean {
   return tag === 'input' || tag === 'textarea' || tag === 'select' || !!el?.isContentEditable;
 }
 
-/** Number keys 1–8 pick the bar's tools. */
+/** Number keys 1–6 pick the bar's tools. */
 export function onEditorScreenKey(e: KeyboardEvent, actions: ToolBarActions): void {
   if (e.key < '1' || e.key > '9' || e.metaKey || e.ctrlKey || e.altKey || typingInField()) return;
   const tool = barToolForKey(e.key);
@@ -60,7 +59,7 @@ export function onEditorScreenKey(e: KeyboardEvent, actions: ToolBarActions): vo
 }
 
 export function mountEditorScreen(editor: Editor): void {
-  editor.registerPlugin(editorScreenPlugin);
+  editor.addTools(editorScreenTools(editor));
   activeToolId.value = editor.selectedTool;
   editor.onToolChange = (toolId) => {
     activeToolId.value = toolId;

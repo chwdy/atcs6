@@ -4,10 +4,6 @@
 // this module owns the two measurements that rule needs and cannot make itself:
 // where the drawn track layout currently sits on screen, and how much of the
 // viewport the app's own floating chrome has already claimed.
-//
-// Mirrors App._canvasChromeInsets, which does the same live-chrome measurement
-// for Camera.fitToContent — Camera stays free of DOM knowledge for exactly the
-// same reason FloatingWindow does.
 
 import { computeOpenPlacement, type FloatRect } from './window-geometry';
 

@@ -109,16 +109,14 @@ html[data-screen="logs"] #train-monitor-bar {
 
 /* The old windows' scrolling regions need a min-height to scroll inside a
    flex column instead of pushing the footer off the bottom. */
-.nlp-pane .occ-body,
-.nlp-pane .diagnostics-panel-body {
+.nlp-pane .occ-body{
     min-height: 0;
 }
 
 /* In a floating window each picker shares the window's width. Across the
    screen that would stretch two selects over the whole tab, so they keep a
    fixed width here. */
-.next-logs .occ-field,
-.next-logs .diagnostics-panel-field {
+.next-logs .occ-field{
     flex: 0 0 180px;
 }
 
@@ -133,42 +131,8 @@ html[data-screen="logs"] #train-monitor-bar {
 
 /* The floating window's 11em name column cut most property names short; the
    screen has the width to show them whole. */
-.nlp-diagnostics .diagnostics-row {
-    grid-template-columns: 20em 4.5em 1fr;
-}
 
 /* ---- Diagnostics: the Train Monitor readings above the groups ---- */
-.nlp-readout {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 6px 20px;
-    padding: 8px 10px;
-    border-bottom: 1px solid var(--border-color);
-    flex: 0 0 auto;
-}
-
-.nlp-readout-item {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    min-width: 0;
-}
-
-.nlp-readout-label {
-    font-size: var(--font-size-label);
-    color: var(--text-secondary);
-}
-
-.nlp-readout-value {
-    font-family: var(--font-mono);
-    color: var(--text-primary);
-    white-space: nowrap;
-}
-
-.nlp-readout-json {
-    margin-left: auto;
-}
 
 /* ---- Detectors: the block picked on the canvas is not in the table ---- */
 .occ-picked-note {

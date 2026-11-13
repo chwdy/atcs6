@@ -1,7 +1,7 @@
 // editor-block-grouping.ts — Block grouping editor handler.
 //
 // A `Block` groups one or more `Segment`s onto one shared power feed and owns
-// the occupancy / reservation state for that whole run (design_new.md "block").
+// the occupancy state for that whole run (design_v2.md "Block").
 // The stored grouping is just an id, a name, and member segment ids; track
 // voltage and occupancy are runtime state driven by whichever train holds the
 // block. A segment the operator has not grouped sits in a block of its own.

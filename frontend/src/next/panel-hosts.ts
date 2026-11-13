@@ -11,7 +11,6 @@ export function combinePanelHosts(...hosts: (NextPanelHost | null | undefined)[]
   const list = hosts.filter((h): h is NextPanelHost => !!h);
   return {
     selectTile: (tile) => list.some((h) => h.selectTile(tile)),
-    showTrain: (trainId) => list.some((h) => h.showTrain(trainId)),
     showPanel: (title, content) => list.some((h) => h.showPanel(title, content)),
     hidePanel: () => list.some((h) => h.hidePanel()),
     closePanel: (editorType, editorId) => list.forEach((h) => h.closePanel(editorType, editorId)),

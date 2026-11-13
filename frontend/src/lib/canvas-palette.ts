@@ -23,7 +23,7 @@ export interface CanvasPalette {
   // track linework
   track: string;
   trackDim: string;
-  // shared status hues (blocks, routes, signals, switches, previews)
+  // shared status hues (blocks, switches, previews)
   success: string;
   successBright: string;
   caution: string;
@@ -39,7 +39,7 @@ export interface CanvasPalette {
   textDim: string;
   ink: string;
   onAccent: string;
-  // info panels drawn on the canvas (block/train/station labels)
+  // info panels drawn on the canvas (block/train labels)
   overlayBg: string;
   overlayBorder: string;
   // block-state palette (consumed via getBlockStateColor)

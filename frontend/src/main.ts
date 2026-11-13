@@ -14,7 +14,6 @@ import './lib/helpers';
 import './lib/pathfinders';
 import './lib/camera';
 import './renderer';
-import './panels/train-monitor';
 import './panels/occupancy-bench';
 import './panels/virtual-bench';
 // The Editor facade (item #7, Wave 3) imports the 11 handler classes directly.

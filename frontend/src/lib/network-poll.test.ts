@@ -9,19 +9,15 @@ function fullReply(version: string, overrides: Record<string, any> = {}) {
     simulation_time: 1,
     trains: [{ id: 'T1' }],
     tracks: [
-      { x: 0, y: 0, type: 'track', is_switch: false, signal_ids: [], switch_state: null, signals: [] },
-      { x: 1, y: 0, type: 'switch', is_switch: true, signal_ids: [], switch_state: 0, signals: [] },
+      { x: 0, y: 0, type: 'track', is_switch: false, switch_state: null },
+      { x: 1, y: 0, type: 'switch', is_switch: true, switch_state: 0 },
     ],
     blocks: {
-      B1: { block_id: 'B1', ordered_tiles: [[0, 0, 'E']], state: 'free', occupied_by: null },
-      B2: { block_id: 'B2', ordered_tiles: [[1, 0, 'E']], state: 'free', occupied_by: null },
+      B1: { block_id: 'B1', ordered_tiles: [[0, 0, 'E']], reads_occupied: false, train_id: null },
+      B2: { block_id: 'B2', ordered_tiles: [[1, 0, 'E']], reads_occupied: false, train_id: null },
     },
-    switches: { SW1: { switch_id: 'SW1', x: 1, y: 0, position: 0, locks: [] } },
-    platforms: [{ platform_id: 'P1' }],
-    station_groups: [],
+    switches: { SW1: { switch_id: 'SW1', x: 1, y: 0, position: 0 } },
     tunnels: [],
-    speed_profiles: {},
-    train_roster: {},
     ...overrides,
   };
 }
@@ -33,11 +29,11 @@ function liveReply(version: string, overrides: Record<string, any> = {}) {
     simulation_time: 2,
     trains: [{ id: 'T1' }],
     live_blocks: {
-      B1: { state: 'free', occupied_by: null },
-      B2: { state: 'free', occupied_by: null },
+      B1: { reads_occupied: false, train_id: null },
+      B2: { reads_occupied: false, train_id: null },
     },
-    live_switches: { SW1: { position: 0, locks: [] } },
-    live_tracks: [{ x: 1, y: 0, switch_state: 0, signals: [] }],
+    live_switches: { SW1: { position: 0 } },
+    live_tracks: [{ x: 1, y: 0, switch_state: 0 }],
     ...overrides,
   };
 }
@@ -79,13 +75,13 @@ describe('NetworkPoller', () => {
   it('rebuilds the full network shape from a live-only reply', async () => {
     const { poller } = pollerWith([
       fullReply('v1'),
-      liveReply('v1', { live_blocks: { B1: { state: 'occupied', occupied_by: 'T1' }, B2: { state: 'free', occupied_by: null } } }),
+      liveReply('v1', { live_blocks: { B1: { reads_occupied: true, train_id: 'T1' }, B2: { reads_occupied: false, train_id: null } } }),
     ]);
     await poller.poll();
     const { network } = await poller.poll();
     expect(network.simulation_time).toBe(2);
-    expect(network.blocks.B1).toEqual({ block_id: 'B1', ordered_tiles: [[0, 0, 'E']], state: 'occupied', occupied_by: 'T1' });
-    expect(network.platforms).toEqual([{ platform_id: 'P1' }]);
+    expect(network.blocks.B1).toEqual({ block_id: 'B1', ordered_tiles: [[0, 0, 'E']], reads_occupied: true, train_id: 'T1' });
+    expect(network.tunnels).toEqual([]);
     expect(network.tracks).toHaveLength(2);
     expect(network.live_blocks).toBeUndefined();
   });

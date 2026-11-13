@@ -4,23 +4,18 @@
  * While the Operate screen shows, the Editor hands it (through
  * `Editor.nextPanelHost`) what would have gone to today's secondary sidebar:
  *
- * - a click on the map: a train under it opens that train, otherwise the
- *   switch or the block the tile belongs to. The tile itself is an Editor
- *   matter (plan §5).
- * - a request for a train's controls, which this screen draws itself.
- * - any other panel's HTML (a route, a path, a route run, a station, Add
- *   Train, …). Those are not rebuilt yet, so their HTML is shown as it is,
- *   inside the right panel. They look their own elements up by id straight
+ * - a click on the map: the switch or the block the tile belongs to. The tile
+ *   itself is an Editor matter (plan §5). A click on a train is taken first,
+ *   by the train overlay (mount-operate.tsx).
+ * - any other panel's HTML, shown as it is, inside the right panel. They look their own elements up by id straight
  *   after they are drawn, so the element they are drawn into is kept in the
  *   page for as long as the Operate screen is mounted.
  */
 import { signal } from '@preact/signals';
 
 import { applyStructuralLock } from '../../lib/helpers';
-import { stateManager } from '../../lib/state-manager';
 import type { NextPanelHost } from '../../editor/editor';
 import { screen } from '../state';
-import { trainsOnTile } from './live';
 import { selection, type OperateHost, type OperateSelection } from './operate-state';
 
 /** Today's panels that edit layout structure. In Operate they show
@@ -28,11 +23,7 @@ import { selection, type OperateHost, type OperateSelection } from './operate-st
 const STRUCTURAL = new Set([
   'segment',
   'switch',
-  'signal',
   'tunnel',
-  'platform',
-  'station-group-list',
-  'station-group-detail',
   'block-list',
   'block-detail',
 ]);
@@ -63,13 +54,11 @@ function closeWrappedPanel(host: OperateHost): void {
   if (wrappedEl) wrappedEl.innerHTML = '';
 }
 
-/** Show `next` in the right panel. Leaving a train lets App drop it as the
- *  selected train (and stop fetching its look-ahead); leaving one of today's
- *  panels stops its timers. */
+/** Show `next` in the right panel. Leaving one of today's panels stops its
+ *  timers. */
 export function setSelection(host: OperateHost, next: OperateSelection): void {
   const prev = selection.peek();
   if (prev?.kind === 'panel' && next?.kind !== 'panel') closeWrappedPanel(host);
-  if (prev?.kind === 'train' && next?.kind !== 'train') host.deselectTrain();
   selection.value = next;
 }
 
@@ -80,20 +69,9 @@ export function operatePanelHost(host: OperateHost): NextPanelHost {
   return {
     selectTile(tile) {
       if (!active()) return false;
-      const trains = trainsOnTile(tile.x, tile.y);
-      if (trains.length > 0) host.selectTrain(trains[0]);
-      else if (tile.switch_id) setSelection(host, { kind: 'switch', id: String(tile.switch_id) });
+      if (tile.switch_id) setSelection(host, { kind: 'switch', id: String(tile.switch_id) });
       else if (tile.block_section_id) setSelection(host, { kind: 'block', id: String(tile.block_section_id) });
       else setSelection(host, null);
-      return true;
-    },
-    showTrain(trainId) {
-      if (!active()) return false;
-      // An unidentified train offers no driving controls, only adoption
-      // (design_new.md "Unidentified trains"); today's panel for it is shown
-      // as it is, through showPanel.
-      if (stateManager.get('trains', trainId)?.is_unidentified) return false;
-      setSelection(host, { kind: 'train', id: String(trainId) });
       return true;
     },
     showPanel(title, content) {

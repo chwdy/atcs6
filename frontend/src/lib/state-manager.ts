@@ -16,7 +16,6 @@
 // intentionally permissive.
 type EntityData = any;
 type SubscriberCallback = (newData: EntityData, oldData: EntityData, entityId: string) => void;
-type ClockSubscriber = (simulationTime: number) => void;
 
 interface PendingNotification {
   type: string;
@@ -32,8 +31,6 @@ export class StateManager {
   version: number;
   _notificationsPaused: boolean;
   _pendingNotifications: PendingNotification[];
-  simulationTime: number;
-  _clockSubscribers: Set<ClockSubscriber>;
   /** The operating environment the last snapshot named, or null before one. */
   operationMode: string | null = null;
 
@@ -42,24 +39,12 @@ export class StateManager {
     // STATE STORAGE
     // ═══════════════════════════════════════════════════════════════
 
-    // Canonical cache - mirrors backend state
-    // Using Map for O(1) lookup and easy iteration
-    //
-    // Per design_new.md "Data Flow To UI" (~line 2065), train runtime
-    // state is split across three sibling maps owned by separate
-    // backend entities. Consumers subscribe to each type independently.
+    // Canonical cache - mirrors the snapshot (design_v2.md "Data flow to
+    // the page"). Using Map for O(1) lookup and easy iteration.
     this.state = {
-      trains: new Map(), // trainId → persistent train data
-      controllers: new Map(), // trainId → TrainController.to_dict()
-      dispatcherProgress: new Map(), // trainId → dispatcher progress dict | null
-      assignedRoutes: new Map(), // trainId → assigned route_id | null
-      routeRuns: new Map(), // trainId → {route_id, run_number, state, display_state, last_error} | null
-      operatorStatus: new Map(), // trainId → {ato_status, pending_actions, hold_reason}
-      runningTrains: new Map(), // trainId → v2 train entry (design_v2.md "Live fields")
+      runningTrains: new Map(), // trainId → train entry (design_v2.md "Live fields")
       blocks: new Map(), // blockId → block data object
-      signals: new Map(), // signalId → signal data object
       switches: new Map(), // switchId → switch data object
-      stations: new Map(), // stationId → station data object
       tracks: new Map(), // "x,y" string → track data object
     };
 
@@ -71,17 +56,9 @@ export class StateManager {
     // Structure: Map<entityId, Set<callback>>
     // Special key '*' means "all entities of this type"
     this.subscribers = {
-      trains: new Map(),
-      controllers: new Map(),
-      dispatcherProgress: new Map(),
-      assignedRoutes: new Map(),
-      routeRuns: new Map(),
-      operatorStatus: new Map(),
       runningTrains: new Map(),
       blocks: new Map(),
-      signals: new Map(),
       switches: new Map(),
-      stations: new Map(),
       tracks: new Map(),
     };
 
@@ -100,13 +77,6 @@ export class StateManager {
 
     // Pending notifications during pause
     this._pendingNotifications = [];
-
-    // Simulation clock (seconds since start) — refreshed from
-    // /api/network payload. Subscribers registered via subscribeSimClock()
-    // are called on every update so panels can track the clock even when
-    // no entity changes in that poll cycle.
-    this.simulationTime = 0.0;
-    this._clockSubscribers = new Set();
   }
 
   // ═══════════════════════════════════════════════════════════════════
@@ -114,23 +84,9 @@ export class StateManager {
   // ═══════════════════════════════════════════════════════════════════
 
   /**
-   * Subscribe to simulation clock updates.
-   * The callback receives the new simulationTime (seconds) on every poll
-   * cycle, even when no entity data has changed. This allows clock displays
-   * to stay live after the train reaches a stable resting state.
-   *
-   * @returns Unsubscribe function
-   */
-  subscribeSimClock(callback: ClockSubscriber): () => void {
-    this._clockSubscribers.add(callback);
-    return () => this._clockSubscribers.delete(callback);
-  }
-
-  /**
    * Subscribe to changes for a specific entity.
    *
-   * @param type - Entity type: 'trains', 'blocks', 'signals', 'switches',
-   *               'stations', 'tracks'
+   * @param type - Entity type: 'runningTrains', 'blocks', 'switches', 'tracks'
    * @param id - Entity ID, or '*' for all entities of this type
    * @param callback - Called with (newData, oldData, entityId); newData is
    *                   null if the entity was deleted
@@ -214,55 +170,6 @@ export class StateManager {
   }
 
   // ═══════════════════════════════════════════════════════════════════
-  // TRAIN SIBLING-PAYLOAD ACCESSORS
-  // ═══════════════════════════════════════════════════════════════════
-
-  /**
-   * Get the live TrainController snapshot for a train (or undefined).
-   * Source: `controllers_by_train_id` sibling map. Contains state,
-   * current_speed, power_on, span, ato_info, lookahead, etc.
-   */
-  getController(trainId: string): EntityData | undefined {
-    return this.state.controllers.get(trainId);
-  }
-
-  /**
-   * Get the dispatcher path-progress projection for a train (or null/undefined).
-   * Source: `dispatcher_progress_by_train_id`. Contains path_id, status,
-   * current_resource_index, authority_end_block_id, resource_sequence.
-   */
-  getDispatcherProgress(trainId: string): EntityData | undefined {
-    return this.state.dispatcherProgress.get(trainId);
-  }
-
-  /**
-   * Get the assigned route id for a train (or null/undefined).
-   * Source: `assigned_routes_by_train_id`. Owned by RouteExecutor.
-   */
-  getAssignedRouteId(trainId: string): EntityData | undefined {
-    return this.state.assignedRoutes.get(trainId);
-  }
-
-  /**
-   * Get the live route-run summary for a train (or null/undefined when it has
-   * no RUNNING run). Source: `route_runs_by_train_id`: `{route_id, run_number,
-   * state, display_state, last_error}`. Owned by RouteExecutor, so the
-   * controller payload never carries it (design_new.md "Data Flow To UI").
-   */
-  getRouteRun(trainId: string): EntityData | undefined {
-    return this.state.routeRuns.get(trainId);
-  }
-
-  /**
-   * Get the operator status read model for a train (or undefined).
-   * Source: `operator_status_by_train_id`: `{ato_status, pending_actions,
-   * hold_reason}` (design_new.md "Data Flow To UI").
-   */
-  getOperatorStatus(trainId: string): EntityData | undefined {
-    return this.state.operatorStatus.get(trainId);
-  }
-
-  // ═══════════════════════════════════════════════════════════════════
   // DATA UPDATE API
   // ═══════════════════════════════════════════════════════════════════
 
@@ -337,93 +244,7 @@ export class StateManager {
     this._notificationsPaused = true;
     this._pendingNotifications = [];
 
-    // Update simulation clock scalar before bulk entity refresh so any
-    // subscriber callback firing during the flush sees the new clock.
-    if (typeof network.simulation_time === 'number') {
-      this.simulationTime = network.simulation_time;
-      for (const cb of this._clockSubscribers) {
-        try {
-          cb(this.simulationTime);
-        } catch (e) {
-          console.error('[StateManager] Clock subscriber error:', e);
-        }
-      }
-    }
-
     try {
-      // ─────────────────────────────────────────────────────────
-      // UPDATE TRAINS (persistent only)
-      // ─────────────────────────────────────────────────────────
-      const currentTrainIds = new Set(this.state.trains.keys());
-      for (const train of network.trains || []) {
-        this.updateEntity('trains', train.id, train);
-        currentTrainIds.delete(train.id);
-      }
-      // Remove trains that no longer exist
-      for (const deletedId of currentTrainIds) {
-        this.removeEntity('trains', deletedId);
-      }
-
-      // ─────────────────────────────────────────────────────────
-      // UPDATE CONTROLLERS (live runtime per train)
-      // ─────────────────────────────────────────────────────────
-      const currentControllerIds = new Set(this.state.controllers.keys());
-      for (const [tid, controller] of Object.entries(network.controllers_by_train_id || {})) {
-        this.updateEntity('controllers', tid, controller);
-        currentControllerIds.delete(tid);
-      }
-      for (const deletedId of currentControllerIds) {
-        this.removeEntity('controllers', deletedId);
-      }
-
-      // ─────────────────────────────────────────────────────────
-      // UPDATE DISPATCHER PROGRESS (path projection per train)
-      // ─────────────────────────────────────────────────────────
-      const currentDispatcherIds = new Set(this.state.dispatcherProgress.keys());
-      for (const [tid, progress] of Object.entries(network.dispatcher_progress_by_train_id || {})) {
-        this.updateEntity('dispatcherProgress', tid, progress);
-        currentDispatcherIds.delete(tid);
-      }
-      for (const deletedId of currentDispatcherIds) {
-        this.removeEntity('dispatcherProgress', deletedId);
-      }
-
-      // ─────────────────────────────────────────────────────────
-      // UPDATE ASSIGNED ROUTES (RouteExecutor-derived per train)
-      // ─────────────────────────────────────────────────────────
-      const currentAssignedRouteIds = new Set(this.state.assignedRoutes.keys());
-      for (const [tid, routeId] of Object.entries(network.assigned_routes_by_train_id || {})) {
-        this.updateEntity('assignedRoutes', tid, routeId);
-        currentAssignedRouteIds.delete(tid);
-      }
-      for (const deletedId of currentAssignedRouteIds) {
-        this.removeEntity('assignedRoutes', deletedId);
-      }
-
-      // ─────────────────────────────────────────────────────────
-      // UPDATE ROUTE RUNS (RouteExecutor run summary per train)
-      // ─────────────────────────────────────────────────────────
-      const currentRouteRunIds = new Set(this.state.routeRuns.keys());
-      for (const [tid, run] of Object.entries(network.route_runs_by_train_id || {})) {
-        this.updateEntity('routeRuns', tid, run);
-        currentRouteRunIds.delete(tid);
-      }
-      for (const deletedId of currentRouteRunIds) {
-        this.removeEntity('routeRuns', deletedId);
-      }
-
-      // ─────────────────────────────────────────────────────────
-      // UPDATE OPERATOR STATUS (read model per train)
-      // ─────────────────────────────────────────────────────────
-      const currentOperatorStatusIds = new Set(this.state.operatorStatus.keys());
-      for (const [tid, status] of Object.entries(network.operator_status_by_train_id || {})) {
-        this.updateEntity('operatorStatus', tid, status);
-        currentOperatorStatusIds.delete(tid);
-      }
-      for (const deletedId of currentOperatorStatusIds) {
-        this.removeEntity('operatorStatus', deletedId);
-      }
-
       // ─────────────────────────────────────────────────────────
       // UPDATE RUNNING TRAINS (design_v2.md "Live fields", A train entry)
       // ─────────────────────────────────────────────────────────
@@ -452,18 +273,6 @@ export class StateManager {
       }
 
       // ─────────────────────────────────────────────────────────
-      // UPDATE SIGNALS
-      // ─────────────────────────────────────────────────────────
-      const currentSignalIds = new Set(this.state.signals.keys());
-      for (const [id, signal] of Object.entries(network.signals || {})) {
-        this.updateEntity('signals', id, signal);
-        currentSignalIds.delete(id);
-      }
-      for (const deletedId of currentSignalIds) {
-        this.removeEntity('signals', deletedId);
-      }
-
-      // ─────────────────────────────────────────────────────────
       // UPDATE SWITCHES
       // ─────────────────────────────────────────────────────────
       const currentSwitchIds = new Set(this.state.switches.keys());
@@ -473,18 +282,6 @@ export class StateManager {
       }
       for (const deletedId of currentSwitchIds) {
         this.removeEntity('switches', deletedId);
-      }
-
-      // ─────────────────────────────────────────────────────────
-      // UPDATE PLATFORMS (stored in stations map for compatibility)
-      // ─────────────────────────────────────────────────────────
-      const currentStationIds = new Set(this.state.stations.keys());
-      for (const platform of network.platforms || []) {
-        this.updateEntity('stations', platform.platform_id, platform);
-        currentStationIds.delete(platform.platform_id);
-      }
-      for (const deletedId of currentStationIds) {
-        this.removeEntity('stations', deletedId);
       }
 
       // ─────────────────────────────────────────────────────────
@@ -571,32 +368,8 @@ export class StateManager {
   debug(): Record<string, unknown> {
     return {
       version: this.version,
-      counts: {
-        trains: this.state.trains.size,
-        controllers: this.state.controllers.size,
-        dispatcherProgress: this.state.dispatcherProgress.size,
-        assignedRoutes: this.state.assignedRoutes.size,
-        routeRuns: this.state.routeRuns.size,
-        operatorStatus: this.state.operatorStatus.size,
-        blocks: this.state.blocks.size,
-        signals: this.state.signals.size,
-        switches: this.state.switches.size,
-        stations: this.state.stations.size,
-        tracks: this.state.tracks.size,
-      },
-      subscriberCounts: {
-        trains: this._countSubscribers('trains'),
-        controllers: this._countSubscribers('controllers'),
-        dispatcherProgress: this._countSubscribers('dispatcherProgress'),
-        assignedRoutes: this._countSubscribers('assignedRoutes'),
-        routeRuns: this._countSubscribers('routeRuns'),
-        operatorStatus: this._countSubscribers('operatorStatus'),
-        blocks: this._countSubscribers('blocks'),
-        signals: this._countSubscribers('signals'),
-        switches: this._countSubscribers('switches'),
-        stations: this._countSubscribers('stations'),
-        tracks: this._countSubscribers('tracks'),
-      },
+      counts: Object.fromEntries(Object.entries(this.state).map(([k, m]) => [k, m.size])),
+      subscriberCounts: Object.fromEntries(Object.keys(this.subscribers).map((k) => [k, this._countSubscribers(k)])),
     };
   }
 

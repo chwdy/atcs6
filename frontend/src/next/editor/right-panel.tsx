@@ -3,7 +3,7 @@
  * (docs/ui-layout-rewrite-plan.md §4).
  *
  * One docked panel. Its header holds the selection's title, a list button
- * (all switches, all stations, all blocks — they used to be tool-rail
+ * (all switches, all blocks — they used to be tool-rail
  * buttons), the pop-out button that moves the panel into a floating window
  * and back (§12 decision 2; the window chrome is lib/window-manager.ts), and
  * close. Its body hosts today's entity panels (legacy-panel.ts) while the
@@ -31,7 +31,6 @@ export interface PanelActions {
   /** Clear the selection (close today's panel). */
   close(): void;
   showSwitches(): void;
-  showStations(): void;
   showBlocks(): void;
   /** The open tile panel's "x,y", or null when another panel is open. */
   openTileKey(): string | null;
@@ -114,13 +113,12 @@ export function EditorPanel({
         {!open && <h3 class="ned-panel-title-empty">Selection</h3>}
         <MenuButton
           icon="ti ti-list"
-          title="Lists: switches, stations, blocks"
+          title="Lists: switches, blocks"
           align="right"
           sections={() => [
             {
               items: [
                 { label: 'Switches', icon: 'ti ti-arrows-split-2', onSelect: actions.showSwitches },
-                { label: 'Stations', icon: 'ti ti-home', onSelect: actions.showStations },
                 { label: 'Blocks', icon: 'ti ti-stack-2', onSelect: actions.showBlocks },
               ],
             },

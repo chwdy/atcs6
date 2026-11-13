@@ -204,32 +204,12 @@
 }
 
 /* Route Editor Layout Helpers */
-.route-header-row {
-    display: flex;
-    gap: 12px;
-    margin-bottom: 12px;
-}
-
-.route-header-col {
-    flex: 1;
-    min-width: 0;
-}
-
-.route-header-col.narrow {
-    flex: 0 0 140px;
-}
 
 /* Override default full width for specific inputs */
 .property-input.input-compact {
     padding: 6px 8px;
     font-size: 13px;
     height: var(--control-height-sm); /* Fixed height for alignment */
-}
-
-.property-input.route-input-compact {
-    padding: 6px 8px;
-    font-size: 13px;
-    height: var(--control-height-sm);
 }
 
 /* Action Buttons specific to route editor */
@@ -850,7 +830,6 @@
 .tc-state-badge,
 .tc-running-badge,
 .tc-eb-badge,
-.rr-section-title,
 .status-header-role,
 .status-sep,
 .chip-state,

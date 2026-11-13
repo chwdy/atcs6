@@ -289,7 +289,6 @@
     overflow-wrap: anywhere;
 }
 
-
 /* Power Districts panel — same .rr-card list shell as the stations/switches
    lists (DESIGN_LANGUAGE.md §11/§12). The only district-specific mark is the
    color swatch in each row's title, which matches that district's canvas
@@ -342,7 +341,6 @@
 .bg-row-meta {
     margin-top: 4px;
 }
-
 
 /* Trains Panel — fills the panel; the .secondary-sidebar-content wrapper owns
    the scroll, so the list itself is not a capped inner scrollbox. */
@@ -582,7 +580,6 @@
     text-decoration: underline;
 }
 
-
 .train-debug-path-current {
     background: var(--info-color);
     color: var(--bg-dark);
@@ -804,67 +801,7 @@
     letter-spacing: 0.5px;
 }
 
-.state-free {
-    background: var(--success-color);
-    color: #fff;
-}
-
-.state-occupied {
-    background: var(--danger-color);
-    color: #fff;
-}
-
-.state-reserved {
-    background: var(--accent-color);
-    color: #fff;
-}
-
-.state-caution {
-    background: var(--warning-color);
-    color: #000;
-}
-
 /* Signal List Styles */
-.signal-list {
-    max-height: 120px;
-    overflow-y: auto;
-    background: var(--bg-dark);
-    border: 1px solid var(--border-color);
-    border-radius: 4px;
-    padding: 8px;
-}
-
-.signal-list::-webkit-scrollbar {
-    width: 6px;
-}
-
-.signal-list::-webkit-scrollbar-track {
-    background: var(--bg-dark);
-}
-
-.signal-list::-webkit-scrollbar-thumb {
-    background: var(--border-color);
-    border-radius: 3px;
-}
-
-.signal-item {
-    padding: 6px 8px;
-    margin: 4px 0;
-    background: var(--bg-panel);
-    border-radius: 3px;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    font-size: 13px;
-}
-
-.signal-item:first-child {
-    margin-top: 0;
-}
-
-.signal-item:last-child {
-    margin-bottom: 0;
-}
 
 /* Toast Notification System */
 .toast-container {
@@ -965,44 +902,6 @@
 /* Floating resource picker — a small menu of labeled options shown at a screen
    position (see frontend/src/editor/resource-picker.ts). Shared by the route
    waypoint-add flow and the entity-select tool. Matches the panel language. */
-.resource-picker {
-    position: fixed;
-    z-index: 1000;
-    min-width: 160px;
-    padding: 4px;
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    background: var(--bg-panel);
-    border: 1px solid var(--border-color);
-    border-radius: var(--control-radius-sm);
-    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
-}
-
-.resource-option {
-    height: var(--control-height-xs);
-    padding: 0 10px;
-    text-align: left;
-    white-space: nowrap;
-    font-size: 12px;
-    color: var(--text-primary);
-    background: var(--bg-dark);
-    border: 1px solid var(--border-color);
-    border-radius: var(--control-radius-sm);
-    cursor: pointer;
-    transition: color 0.15s, border-color 0.15s;
-}
-
-.resource-option:hover {
-    border-color: var(--accent-color);
-    color: var(--accent-hover);
-}
 
 /* "Select all of them" row — set off from the individual entity rows above. */
-.resource-option-all {
-    margin-top: 4px;
-    font-weight: 600;
-    color: var(--accent-color);
-    border-style: dashed;
-}
 

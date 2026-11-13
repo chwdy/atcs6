@@ -1,8 +1,8 @@
 /**
  * Entry point of the page layout (docs/ui-layout-rewrite-plan.md): the top
- * bar and the five screens.
+ * bar and the four screens.
  *
- * It marks <html data-screen="editor|hardware|operate|locomotives|logs"> with the
+ * It marks <html data-screen="editor|hardware|operate|logs"> with the
  * picked screen, so each screen's stylesheet can show its own regions and
  * hide the others' while it is the one showing.
  */
@@ -16,13 +16,12 @@ import { mountEditorScreen } from './editor/screen';
 import { mountFirstRun, type FirstRunHost } from './first-run/mount';
 import { mountHardwareSetup } from './hardware/screen';
 import { showHardwareSetup } from './hardware/state';
-import { mountLocomotivesScreen, type LocomotivesHost } from './locomotives';
-import { mountLogsScreen } from './logs/logs-screen';
+import { mountLogsScreen, type LogsHost } from './logs/logs-screen';
 import { screen, type Screen } from './state';
 import { TopBar, type TopBarActions } from './top-bar';
 
 /** The App methods the layout calls: the session and layout actions. */
-export interface NextHost extends LocomotivesHost, FirstRunHost {
+export interface NextHost extends LogsHost, FirstRunHost {
   editor: Editor;
   newLayout(): Promise<void>;
   openLoadLayoutDialog(): Promise<void>;
@@ -37,8 +36,7 @@ export interface NextHost extends LocomotivesHost, FirstRunHost {
 /**
  * Pick a screen. Editor and Operate are today's two editor modes, each with
  * its own regions (./editor, ./operate). Hardware Setup is its own screen
- * (./hardware). Locomotives (./locomotives) and Logs (./logs) are their own
- * screens, in Operate mode.
+ * (./hardware). Logs (./logs) is its own screen, in Operate mode.
  */
 export function showScreen(host: NextHost, next: Screen): void {
   if (next === 'hardware') {
@@ -85,7 +83,6 @@ export function mountNextUI(host: NextHost): void {
     activate: () => host.activateEnvironment(),
     showScreen: (next) => showScreen(host, next),
   });
-  mountLocomotivesScreen(host, () => showScreen(host, 'locomotives'));
   mountLogsScreen(host);
   mountFirstRun(host, (next) => showScreen(host, next));
 }

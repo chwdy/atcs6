@@ -52,7 +52,7 @@ export function pickBarTool(tool: BarTool, current: BarTool | null, actions: Too
 function OptionsRow({ tool, actions }: { tool: BarTool; actions: ToolBarActions }) {
   const activeId = activeToolId.value;
   const variant = tool.variants.find((v) => v.toolId === activeId) ?? tool.variants[0];
-  // A tool with one fixed action (Switch, Signal, Tunnel) carries a hint
+  // A tool with one fixed action (Switch, Tunnel) carries a hint
   // instead of variant buttons.
   const showVariants = !tool.hint;
   return (

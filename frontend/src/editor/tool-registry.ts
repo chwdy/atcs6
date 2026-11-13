@@ -12,13 +12,13 @@ export type ToolMode = 'edit' | 'sim';
 
 export type ToolKind =
   // A stateful build/pick tool: clicking sets the active tool and the canvas
-  // handlers read `editor.selectedTool` (track, signal, block, platform, inspect…).
+  // handlers read `editor.selectedTool` (track, segment, block, inspect…).
   | { type: 'tool' }
   // A mode tool: clicking enters an editor mode built by `factory()`
   // (selection tools, path tools).
   | { type: 'mode'; factory: () => any }
   // A panel/dialog action: clicking runs `run()` and leaves the active tool
-  // unchanged (switches list, add-train dialog, route runs…).
+  // unchanged (switches list, blocks list…).
   | { type: 'action'; run: () => void };
 
 export interface ToolContribution {

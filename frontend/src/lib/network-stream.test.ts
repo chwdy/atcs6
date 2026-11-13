@@ -8,14 +8,10 @@ function fullReply(version: string, state = 'free') {
     layout_version: version,
     layout_unchanged: false,
     trains: [{ id: 'T1' }],
-    tracks: [{ x: 0, y: 0, is_switch: false, signal_ids: [] }],
+    tracks: [{ x: 0, y: 0, is_switch: false }],
     blocks: { B1: { block_id: 'B1', ordered_tiles: [[0, 0, 'E']], state, occupied_by: null } },
     switches: {},
-    platforms: [],
-    station_groups: [],
     tunnels: [],
-    speed_profiles: {},
-    train_roster: {},
   };
 }
 

@@ -621,7 +621,7 @@ export class RendererSegmentHandler {
     }
   }
 
-  // Segment/platform drag-build preview. Same track-aware overlay as the
+  // Segment drag-build preview. Same track-aware overlay as the
   // committed selection (drawBoxSelection) — dim tile, lit track stroke, capped
   // run ends — in purple so an in-progress drag reads as the editor accent, not
   // as a finished amber selection.

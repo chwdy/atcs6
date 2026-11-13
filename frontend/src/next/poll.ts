@@ -1,6 +1,6 @@
 /**
  * Polling for the panels that need data the network snapshot does
- * not carry (event log, diagnostics, benches, route runs).
+ * not carry (event log, benches).
  *
  * A panel starts polling when it appears and stops when it goes away, so a
  * panel nobody can see never asks the server for anything. This replaces the

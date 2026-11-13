@@ -3,7 +3,7 @@
 // Lifted out of the Editor god-class (behavior unchanged). Owns the
 // click-drag track-laying flow: following an existing drag path, recomputing
 // the live preview path/tracks, and committing the dragged span into real
-// track (with block/platform prompts). The mutable drag state
+// track (with segment prompts). The mutable drag state
 // (previewPath, previewTracks, dragStart, dragEnd, forced*Segment, etc.)
 // stays declared on the Editor; this handler reaches it via `this.editor`.
 //
@@ -13,7 +13,6 @@ import { showToast } from '../lib/toast';
 import { showConfirmModal } from '../lib/helpers';
 import {
   pathToTracks,
-  tileSkipsSegment,
   validateSegmentPath,
   traceNodeKey,
   type TraceNode,
@@ -32,7 +31,7 @@ export class DragBuildHandler {
     if (!this.editor.dragStart || !this.editor.dragEnd) return;
 
     const dragToolSet = [
-      'track', 'segment', 'extend-segment', 'platform', 'extend-platform', 'remove-platform-tile', 'remove-segment-tile',
+      'track', 'segment', 'extend-segment', 'remove-segment-tile',
     ];
     if (dragToolSet.includes(this.editor.selectedTool)) {
       const isTrackTool = this.editor.selectedTool === 'track';
@@ -64,34 +63,10 @@ export class DragBuildHandler {
             })
           : null;
         this.editor.previewInvalid = false;
-
-        // Platform/signal tiles keep their own rail, so pathToTracks lays nothing
-        // on them — a path passing through one would show a gap. The path now
-        // follows that rail (rail-follow rule in the pathfinder), so draw the
-        // tile's existing rail into the preview to bridge the gap. Display only:
-        // commitDragBuild re-runs pathToTracks, which still skips these tiles.
-        if (isTrackTool && this.editor.previewTracks && this.editor.cachedNetwork?.tracks) {
-          const shown = new Set(this.editor.previewTracks.map((t: any) => `${t.x},${t.y}`));
-          const skipTiles = new Map<string, any>();
-          for (const t of this.editor.cachedNetwork.tracks) {
-            if (tileSkipsSegment(t)) {
-              skipTiles.set(`${t.x},${t.y}`, t);
-            }
-          }
-          for (const p of this.editor.previewPath) {
-            const key = `${p.x},${p.y}`;
-            if (shown.has(key)) continue;
-            const ex = skipTiles.get(key);
-            if (ex && ex.track_bits) {
-              this.editor.previewTracks.push({ x: p.x, y: p.y, track_bits: ex.track_bits });
-              shown.add(key);
-            }
-          }
-        }
       } else {
         // Any drag tool with no legal route: show the red attempt-line (an
-        // off-track gap, a switch/crossing a block can't cross, a platform/signal
-        // in the way, or a forced segment that can't turn) and leave previewPath
+        // off-track gap, a switch/crossing a block can't cross, or a forced
+        // segment that can't turn) and leave previewPath
         // null so commitDragBuild lays nothing — never freeze on a stale shape.
         this.editor.previewPath = null;
         this.editor.previewTracks = null;
@@ -113,14 +88,14 @@ export class DragBuildHandler {
       } else if (this.editor.previewTracks && this.editor.previewTracks.length > 0) {
         this.editor.renderer.setBuildPreview({ kind: 'tracks', tracks: this.editor.previewTracks });
       } else if (
-        ['remove-platform-tile', 'remove-segment-tile'].includes(this.editor.selectedTool) &&
+        this.editor.selectedTool === 'remove-segment-tile' &&
         this.editor.previewPath
       ) {
         const tracks = this.editor.cachedNetwork?.tracks || [];
         const trackKeys = new Set(tracks.map((t: any) => `${t.x},${t.y}`));
         const filtered = this.editor.previewPath.filter((p: any) => trackKeys.has(`${p.x},${p.y}`));
         this.editor.renderer.setBuildPreview({ kind: 'eraser', path: filtered });
-      } else if (['segment', 'extend-segment', 'platform', 'extend-platform'].includes(this.editor.selectedTool) && this.editor.previewPath) {
+      } else if (['segment', 'extend-segment'].includes(this.editor.selectedTool) && this.editor.previewPath) {
         this.editor.renderer.setBuildPreview({ kind: 'segment', path: this.editor.previewPath });
       } else if (this.editor.previewPath) {
         this.editor.renderer.setBuildPreview({ kind: 'path', path: this.editor.previewPath });
@@ -132,17 +107,8 @@ export class DragBuildHandler {
   }
 
   async commitDragBuild(): Promise<void> {
-    // The platform tool also supports a plain click (no drag) to create a
-    // single-tile platform: a click never builds a previewPath, so seed it with
-    // the tile under the cursor. Other build tools require an actual drag and
-    // bail when there is no path.
-    if (!this.editor.previewPath || this.editor.previewPath.length === 0) {
-      if (this.editor.selectedTool === 'platform' && this.editor.dragStart) {
-        this.editor.previewPath = [this.editor.dragStart];
-      } else {
-        return;
-      }
-    }
+    // Build tools require an actual drag and bail when there is no path.
+    if (!this.editor.previewPath || this.editor.previewPath.length === 0) return;
 
     try {
       if (this.editor.selectedTool === 'track') {
@@ -219,20 +185,6 @@ export class DragBuildHandler {
           return;
         }
 
-        const hasSignals = validation.signalsInPath.length > 0;
-        if (hasSignals) {
-          const signalCount = validation.signalsInPath.length;
-          const proceed = await showConfirmModal({
-            title: 'Signals Will Be Invalidated',
-            message: `Path contains ${signalCount} signal(s).`,
-            detail:
-              'These signals will be invalidated and need reconfiguration.\n(They will show an orange warning triangle)\n\nProceed anyway?',
-            confirmText: 'Proceed',
-            confirmVariant: 'primary',
-          });
-          if (!proceed) return;
-        }
-
         const trackMap = new Map<string, any>();
         tracks.forEach((t: any) => trackMap.set(`${t.x},${t.y}`, t));
 
@@ -258,127 +210,13 @@ export class DragBuildHandler {
           const hasOtherSegments =
             validation.segmentsInPath.length > 1 ||
             (validation.segmentsInPath.length === 1 && validation.segmentsInPath[0] !== result.segmentId);
-          const apiResult = await this.editor.api.extendSegment(result.segmentId, positions, hasSignals, hasOtherSegments);
-
-          if (apiResult.invalidated_signals && apiResult.invalidated_signals.length > 0) {
-            const count = apiResult.invalidated_signals.length;
-            showToast(`Segment extended. ${count} signal(s) need reconfiguration.`, 'warning');
-          }
+          await this.editor.api.extendSegment(result.segmentId, positions, hasOtherSegments);
 
           await this.editor.refreshSegmentsList();
         } catch (err: any) {
           console.error('[Editor] Failed to extend segment:', err);
           showToast('Failed to extend segment: ' + err.message, 'error', 5000);
           return;
-        }
-      } else if (this.editor.selectedTool === 'platform') {
-        if (!this.editor.previewPath || this.editor.previewPath.length === 0) return;
-
-        const positions = this.editor.previewPath.map((p: any) => [p.x, p.y]);
-
-        const platformData = await this.editor.showPlatformModal({
-          mode: 'create',
-          anchorTiles: this.editor.previewPath.map((p: any) => ({ x: p.x, y: p.y })),
-        });
-        if (!platformData) return; // User cancelled
-
-        try {
-          await this.editor.api.createPlatform({
-            positions,
-            name: platformData.name,
-            length_cm: platformData.lengthCm,
-            platform_side: platformData.platformSide,
-            top_speed_kmh: platformData.topSpeedKmh,
-            platform_id: platformData.platformId,
-          });
-          showToast(`Platform created with ${positions.length} tile(s)`, 'success');
-        } catch (err: any) {
-          console.error('[Editor] Platform creation failed:', err);
-          showToast('Failed to create platform: ' + err.message, 'error', 5000);
-          return;
-        }
-      } else if (this.editor.selectedTool === 'extend-platform') {
-        if (!this.editor.previewPath || this.editor.previewPath.length === 0) return;
-
-        const tracks = this.editor.cachedNetwork?.tracks || [];
-        const platforms = this.editor.cachedNetwork?.platforms || [];
-        const platformsInPath = new Set<any>();
-
-        for (const pos of this.editor.previewPath) {
-          const track = tracks.find((t: any) => t.x === pos.x && t.y === pos.y);
-          if (track && track.station_id) {
-            platformsInPath.add(track.station_id);
-          }
-        }
-
-        if (platformsInPath.size === 0) {
-          showToast('No platform found in path. Start the drag on an existing platform.', 'error', 5000);
-          return;
-        }
-
-        let platformId;
-        if (platformsInPath.size === 1) {
-          platformId = Array.from(platformsInPath)[0];
-        } else {
-          const startTrack = tracks.find((t: any) => t.x === this.editor.dragStart.x && t.y === this.editor.dragStart.y);
-          if (startTrack && startTrack.station_id) {
-            platformId = startTrack.station_id;
-          } else {
-            platformId = Array.from(platformsInPath)[0];
-          }
-        }
-
-        try {
-          const platform = platforms.find((p: any) => p.platform_id === platformId);
-          const platformPositions = new Set(platform?.positions?.map((p: any) => `${p[0]},${p[1]}`) || []);
-
-          const newPositions = this.editor.previewPath
-            .filter((p: any) => !platformPositions.has(`${p.x},${p.y}`))
-            .map((p: any) => [p.x, p.y]);
-
-          if (newPositions.length === 0) {
-            showToast('All tiles are already part of the platform.', 'error', 5000);
-            return;
-          }
-
-          await this.editor.api.extendPlatform(platformId, newPositions);
-
-          showToast(`Platform extended with ${newPositions.length} tile(s)`, 'success');
-        } catch (err: any) {
-          console.error('[Editor] Failed to extend platform:', err);
-          showToast('Failed to extend platform: ' + err.message, 'error', 5000);
-          return;
-        }
-      } else if (this.editor.selectedTool === 'remove-platform-tile') {
-        if (!this.editor.previewPath || this.editor.previewPath.length === 0) return;
-
-        const tracks = this.editor.cachedNetwork?.tracks || [];
-        let successCount = 0;
-        let errorCount = 0;
-        const errors = [];
-
-        for (const pos of this.editor.previewPath) {
-          const track = tracks.find((t: any) => t.x === pos.x && t.y === pos.y);
-          if (!track || !track.station_id) {
-            errors.push(`No platform at (${pos.x}, ${pos.y})`);
-            errorCount++;
-            continue;
-          }
-
-          try {
-            await this.editor.api.removePlatformTile(track.station_id, pos.x, pos.y);
-            successCount++;
-          } catch (err: any) {
-            errors.push(`(${pos.x}, ${pos.y}): ${err.message}`);
-            errorCount++;
-          }
-        }
-
-        if (successCount > 0) {
-          showToast(`Removed ${successCount} platform tile(s)`, 'success');
-        }
-        if (errorCount > 0) {
-          showToast(`Failed to remove ${errorCount} tile(s):\n${errors.slice(0, 3).join('\n')}`, 'error', 5000);
         }
       } else if (this.editor.selectedTool === 'remove-segment-tile') {
         if (!this.editor.previewPath || this.editor.previewPath.length === 0) return;
@@ -430,7 +268,7 @@ export class DragBuildHandler {
     }
   }
 
-  // Path for a block/platform/eraser drag: these operate ON existing track, so
+  // Path for a segment/eraser drag: these operate ON existing track, so
   // they follow existing connectivity (never an empty tile) via graphSearch.
   // Blocks additionally cannot contain switches or crossings (see
   // validateSegmentTile), so the segment tools stop at them — a drag that can only

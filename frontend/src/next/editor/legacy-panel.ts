@@ -1,8 +1,8 @@
 /**
  * Hosting today's entity panels inside the Editor screen's right panel.
  *
- * Today's panels (segment, block, switch, signal, platform, station, tunnel,
- * the tile panel, the lists) write their HTML into
+ * Today's panels (segment, block, switch, tunnel, the tile panel, the lists)
+ * write their HTML into
  * `#secondary-sidebar-content` and then find their inputs by id. Rather than
  * copy that HTML, the right panel moves three of today's nodes into itself
  * while the Editor screen shows, and moves them back when it stops showing:

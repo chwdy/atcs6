@@ -27,7 +27,6 @@ import {
   detectOrientation,
   calculateNextTile,
   escapeAttr,
-  formatDuration,
   bindFieldAutoSave,
   parseText,
   parseRequiredMmToCm,
@@ -244,7 +243,6 @@ export class SegmentEditorHandler {
                      Click a tile row to flash it on the layout. -->
                 <div class="control-section mt-12">
                     ${renderTileList(sortedPositions, {
-                      entityType: 'segment',
                       extendStartBtnId: 'extend-segment-start-btn',
                       extendEndBtnId: 'extend-segment-end-btn',
                       removeBtnClass: 'delete-segment-tile-btn',
@@ -294,17 +292,6 @@ export class SegmentEditorHandler {
                       label: 'Allowed travel direction',
                       help: 'Forward and reverse follow the direction arrows shown on the layout. Automatic routing obeys this; an operator route with override (Quick Route) can ignore it.',
                     })}
-                </div>
-
-                <!-- Maintenance — read-only usage counter (design_new.md
-                     "Maintenance counters"); accrues while the simulation runs.
-                     Occupancy time is measured on the owning block. -->
-                <div class="control-section control-section-divider mt-12 pt-12">
-                    <h4 class="text-sm text-muted mb-8">Maintenance</h4>
-                    <div class="input-small-row">
-                        <span class="input-small-label input-small-label-inline">Usage time</span>
-                        <span class="font-mono" title="Total time a train has occupied this block">${formatDuration(block.occupied_seconds || 0)}</span>
-                    </div>
                 </div>
 
                 <!-- Deleting the whole segment is a segment-level action, not a
@@ -682,7 +669,6 @@ export class SegmentEditorHandler {
                                 <label for="segment-${segmentId}">
                                     <span class="segment-id">${segmentId}</span>
                                     ${segment?.name ? `<span class="segment-name">${segment.name}</span>` : ''}
-                                    ${segment?.station_names ? `<span class="segment-name segment-station-names">[${segment.station_names.join(', ')}]</span>` : ''}
                                     <span class="segment-track-count">${segment?.track_count || 0} tracks</span>
                                 </label>
                             </div>

@@ -1,25 +1,25 @@
 /**
- * The selected switch, in the Operate screen's right panel
- * (docs/ui-layout-rewrite-plan.md §5): its position, Throw, and its locks.
+ * The selected switch, in the Operate screen's right panel: its position,
+ * Throw, alternate arrivals, whether a train holds it, and its availability.
  *
- * Throw sends the operational switch command, the same as today's switch
- * panel and the map's right-click "Throw" in Operate (`setSwitchState`;
- * design_new.md "Canonical `Switch.position` mutation workflow").
- *
- * design_new.md has no operator command that locks a switch: a switch is
- * locked by the paths that reserve it (`Switch.locks`) and held by the train
- * on it (`train_protection_claims`). So the Lock section shows who holds it,
- * and the operator's own say over the switch is its availability flags
- * (Normal / Manual / Disabled), which `manual` makes automatic routing skip.
+ * Throw sends the operator's throw request (`PUT /api/switches/<id>/state`,
+ * design_v2.md "Running a train", Throw a switch). A held switch is not
+ * thrown (design_v2.md "Switches", A held switch is not thrown).
  */
 import { api } from '../../lib/api';
 import { availabilityStateToFlags, deriveAvailabilityState } from '../../lib/helpers';
 import { stateManager } from '../../lib/state-manager';
 import { showToast } from '../../lib/toast';
-import { AVAILABILITY_OPTIONS, Segment, sendChange } from './block-panel';
+import { Segment, sendChange } from './block-panel';
+import { CopyId } from './copy-id';
 import { liveVersion } from './live';
 import type { OperateHost } from './operate-state';
-import { CopyId } from './train-panel';
+
+const AVAILABILITY_OPTIONS = [
+  { value: 'available', label: 'Normal', title: 'Normal' },
+  { value: 'manual', label: 'Manual', title: 'Manual — alternate arrivals skip it and a plain throw is refused' },
+  { value: 'disabled', label: 'Disabled', title: 'Disabled — treated as missing track' },
+];
 
 /** `Switch.position`: 0 is the main route, 1 the diverging one. */
 export function positionName(position: unknown): string {
@@ -32,9 +32,8 @@ export function SwitchPanel({ host, switchId }: { host: OperateHost; switchId: s
   if (!sw) return <div class="empty-state empty-state-warn">Switch {switchId} is no longer on the layout.</div>;
 
   const position = sw.position === 1 ? 1 : 0;
-  const locks: any[] = Array.isArray(sw.locks) ? sw.locks : [];
-  const claims: any[] = Array.isArray(sw.train_protection_claims) ? sw.train_protection_claims : [];
-  const held = !!sw.held || locks.length > 0 || claims.length > 0;
+  const known = sw.position_known !== false;
+  const held = !!sw.held;
   const supportsAlternate = Object.prototype.hasOwnProperty.call(sw, 'alternate_next');
   const alternating = sw.alternate_next != null;
   const name = String(sw.name || '').trim();
@@ -49,12 +48,6 @@ export function SwitchPanel({ host, switchId }: { host: OperateHost; switchId: s
     }
     await host.refreshNetwork();
   };
-  const trainLink = (id: string) => (
-    <button type="button" class="rr-flat-btn font-mono" onClick={() => host.selectTrain(id)}>
-      {id}
-    </button>
-  );
-
   return (
     <div class="op-entity-panel">
       <div class="status-header">
@@ -81,12 +74,12 @@ export function SwitchPanel({ host, switchId }: { host: OperateHost; switchId: s
       <div class="control-section">
         <div class="control-section-header">Position</div>
         <div class="op-row">
-          <span class="op-switch-position">{positionName(position)}</span>
+          <span class="op-switch-position">{known ? positionName(position) : `${positionName(position)} (not known)`}</span>
           <button
             type="button"
             class="btn btn-sm"
             disabled={held || !!sw.motor_unavailable}
-            title={locks.length > 0 ? 'A path has locked this switch' : `Throw to ${positionName(1 - position).toLowerCase()}`}
+            title={held ? 'A train holds this switch' : `Throw to ${positionName(1 - position).toLowerCase()}`}
             onClick={() => void throwSwitch()}
           >
             <i class="ti ti-switch-horizontal" aria-hidden="true" /> Throw to {positionName(1 - position).toLowerCase()}
@@ -102,41 +95,9 @@ export function SwitchPanel({ host, switchId }: { host: OperateHost; switchId: s
           </div>
         )}
         <dl class="op-fields">
-          <dt>Occupied by</dt>
-          <dd>{sw.occupied_by ? trainLink(sw.occupied_by) : <span class="text-muted">No train</span>}</dd>
+          <dt>Held</dt>
+          <dd>{held ? 'Yes — a train may be on it or about to cross it' : <span class="text-muted">No</span>}</dd>
         </dl>
-      </div>
-
-      <div class="control-section">
-        <div class="control-section-header">Lock</div>
-        {!held && <div class="text-muted text-xs">Not locked — no path or train holds this switch.</div>}
-        {locks.map((lock, i) => (
-          <div class="protection-row" key={`l${i}`}>
-            <div class="protection-row-main">
-              {lock.train_id ? trainLink(lock.train_id) : <span>—</span>}
-              <span class="chip chip-state chip-accent">
-                {lock.claim_role === 'flank' ? 'Flank' : 'Path'} · {positionName(Number(lock.locked_state))}
-              </span>
-            </div>
-            {lock.path_id && (
-              <div class="protection-row-sub font-mono" title={lock.path_id}>
-                {lock.path_id}
-              </div>
-            )}
-          </div>
-        ))}
-        {/* Each claim is [train_id, source_switch_id, locked_state]. */}
-        {claims.map(([trainId, sourceId, lockedState], i) => (
-          <div class="protection-row" key={`c${i}`}>
-            <div class="protection-row-main">
-              {trainLink(String(trainId))}
-              <span class="chip chip-state chip-accent">Train · {positionName(Number(lockedState))}</span>
-            </div>
-            <div class="protection-row-sub">
-              <span class="text-muted">from</span> <span class="font-mono">{String(sourceId)}</span>
-            </div>
-          </div>
-        ))}
       </div>
 
       <div class="control-section">

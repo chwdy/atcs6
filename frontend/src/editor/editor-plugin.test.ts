@@ -1,49 +1,33 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { Editor } from './editor';
-import { SimEditorPlugin } from './sim-plugin';
 
-// The plugin hook is exercised on the prototype with a hand-built `this` — the
-// full Editor constructor needs a DOM, but registerPlugin itself is pure glue.
-// Likewise coreTools()/tools() only build descriptor objects (their factory/run
-// thunks close over `this`/`editor` but are not invoked here), so they are safe
+// Exercised on the prototype with a hand-built `this` — the full Editor
+// constructor needs a DOM. coreTools() only builds descriptor objects (their
+// factory/run thunks close over `this` but are not invoked here), so it is safe
 // to call against a bare object in the node test environment.
-describe('editor plugin hook', () => {
-  it('registerPlugin records the plugin, calls register(editor), refreshes the tools', () => {
-    const ed: any = { _plugins: [], refreshTools: vi.fn() };
-    const plugin = { register: vi.fn() };
+describe('editor tools', () => {
+  it('addTools records the tools and refreshes the tool lookup', () => {
+    const ed: any = { _extraTools: [], refreshTools: vi.fn() };
+    const tool = { id: 'switch-pick' };
 
-    Editor.prototype.registerPlugin.call(ed, plugin);
+    Editor.prototype.addTools.call(ed, [tool as any]);
 
-    expect(ed._plugins).toEqual([plugin]);
-    expect(plugin.register).toHaveBeenCalledTimes(1);
-    expect(plugin.register).toHaveBeenCalledWith(ed);
-    // A plugin may contribute tools, so the lookup is rebuilt after register.
+    expect(ed._extraTools).toEqual([tool]);
     expect(ed.refreshTools).toHaveBeenCalledTimes(1);
-  });
-
-  it('a layout-only editor (no plugin) has no sim handlers', () => {
-    // With no SimEditorPlugin registered, the sim handler fields are undefined —
-    // the editor is a layout-only editor.
-    const ed: any = { _plugins: [] };
-    expect(ed.trainHandler).toBeUndefined();
-    expect(ed.pathHandler).toBeUndefined();
-    expect(ed.routeHandler).toBeUndefined();
-    expect(ed.routeRunHandler).toBeUndefined();
-    expect(ed.speedProfileHandler).toBeUndefined();
   });
 });
 
 describe('tool registry', () => {
   const coreIds = (): string[] => Editor.prototype.coreTools.call({}).map((t: any) => t.id);
 
-  it('core tools are layout-only — no sim (path / train / route) tools', () => {
+  it('core tools are layout tools — no path / train / route tools', () => {
     const ids = coreIds();
     expect(ids).toContain('inspect');
     expect(ids).toContain('track');
     expect(ids).toContain('segment');
-    for (const simId of ['path', 'add-train', 'new-route', 'route-runs-panel', 'paths-panel']) {
-      expect(ids).not.toContain(simId);
+    for (const id of ['path', 'add-train', 'new-route', 'route-runs-panel', 'paths-panel']) {
+      expect(ids).not.toContain(id);
     }
   });
 
@@ -58,27 +42,12 @@ describe('tool registry', () => {
     expect(byId.get('switches-panel').availableIn).toContain('sim');
   });
 
-  it('the sim plugin contributes path / train / route tools, all available in sim', () => {
-    const simTools = new SimEditorPlugin().tools({} as any);
-    const ids = simTools.map((t) => t.id);
-    expect(ids).toEqual([
-      'path', 'extend-path', 'cancel-path', 'paths-panel',
-      'add-train', 'train-panel', 'speed-profiles-panel',
-      'new-route', 'routes-panel', 'route-runs-panel',
-    ]);
-    // Full dispatcher freedom: every sim tool is usable in operation mode.
-    for (const t of simTools) expect(t.availableIn).toContain('sim');
-  });
-
-  it('_collectToolContributions merges core tools with every plugin that has tools()', () => {
+  it('_collectToolContributions puts the added tools after the core tools', () => {
     const ctx: any = {
       coreTools: () => [{ id: 'inspect' }],
-      _plugins: [
-        { tools: () => [{ id: 'path' }] }, // a tool-contributing plugin
-        {}, // a behavior-only plugin (no tools()) must not break the merge
-      ],
+      _extraTools: [{ id: 'switch-pick' }],
     };
     const ids = Editor.prototype._collectToolContributions.call(ctx).map((t: any) => t.id);
-    expect(ids).toEqual(['inspect', 'path']);
+    expect(ids).toEqual(['inspect', 'switch-pick']);
   });
 });

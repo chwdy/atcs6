@@ -12,7 +12,6 @@ import type { SelectModesHost } from './types';
 import { showToast } from '../lib/toast';
 import { graphSearch } from '../lib/graph-search';
 import { traceNodeKey, type TraceNode } from '../lib/pathfinders';
-import { showResourcePicker, dismissResourcePicker } from './resource-picker';
 
 export class SelectModesHandler {
   editor: SelectModesHost;
@@ -110,12 +109,9 @@ export class SelectModesHandler {
     };
   }
 
-  // Entity select: click a tile, then choose which entity there — a block,
-  // platform, or station — to add ALL of that entity's tiles to the shared
-  // selection set. A tile with one entity selects it directly; a tile carrying
-  // several opens the resource picker (the same menu the route waypoint flow
-  // uses) with an extra "select all of them" row. Delete / Space / ESC act on
-  // the selection exactly as they do for box / lasso / brush / trace.
+  // Entity select: click a tile to add ALL of its block's tiles to the shared
+  // selection set. Delete / Space / ESC act on the selection exactly as they do
+  // for box / lasso / brush / trace.
   _buildEntitySelectMode(): any {
     const resetState = () => {
       this.editor.boxSelectState.selectedKeys = new Set();
@@ -125,71 +121,31 @@ export class SelectModesHandler {
       const status = this.editor.$id('status-state');
       if (status) status.textContent = text;
     };
-    // Union a set of tiles into the selection and repaint.
-    const addTiles = (tiles: Set<string>) => {
-      tiles.forEach((k) => this.editor.boxSelectState.selectedKeys.add(k));
-      this.editor._applyBoxSelection(this.editor.boxSelectState.selectedKeys);
-      this.editor.renderer.requestRedraw();
-    };
     return {
       name: 'Entity select',
       toolName: 'entity-select',
       cancelMessage: 'Entity select cancelled',
       onEnter: () => {
         resetState();
-        setStatus(
-          'Entity: click a tile, then pick a block / platform / station — or all. Space/right-click clears, Delete removes tracks'
-        );
+        setStatus('Entity: click a tile to select its whole block. Space/right-click clears, Delete removes tracks');
       },
-      onClick: ({ gridPos, screenX, screenY }: any) => {
+      onClick: ({ gridPos }: any) => {
         const track = this.editor.cachedNetwork?.tracks?.find(
           (t: any) => t.x === gridPos.x && t.y === gridPos.y
         );
-        // _resourceOptionsAtTile resolves the block/platform/station at a tile —
-        // a layout op that currently lives on the route handler. Without the sim
-        // plugin there are no resolvable options (helper relocation is a follow-up).
-        const options = this.editor.routeHandler?._resourceOptionsAtTile(gridPos, track) ?? [];
-        if (options.length === 0) {
-          setStatus('Entity: nothing here — click a track, platform, or station tile');
+        const blockId = track?.block_section_id;
+        if (!blockId) {
+          setStatus('Entity: nothing here — click a tile that belongs to a block');
           return true;
         }
-        const selectOne = (opt: any) => {
-          const tiles = this._entityTileSet(opt);
-          addTiles(tiles);
-          showToast(
-            `Selected ${opt.label} — ${tiles.size} tile${tiles.size === 1 ? '' : 's'}`,
-            'success',
-            1800
-          );
-        };
-        // One entity on the tile: take it directly. Several: open the picker
-        // with each entity plus a "select all of them" row.
-        if (options.length === 1) {
-          selectOne(options[0]);
-          return true;
-        }
-        const pickerOptions = [
-          ...options,
-          { type: '__all__', label: 'Select all of them', variant: 'all' },
-        ];
-        showResourcePicker(screenX, screenY, pickerOptions, (opt: any) => {
-          if (opt.type !== '__all__') {
-            selectOne(opt);
-            return;
-          }
-          const union = new Set<string>();
-          options.forEach((o: any) => this._entityTileSet(o).forEach((k) => union.add(k)));
-          addTiles(union);
-          showToast(
-            `Selected all here — ${union.size} tile${union.size === 1 ? '' : 's'}`,
-            'success',
-            1800
-          );
-        });
+        const tiles = this._blockTileSet(blockId);
+        tiles.forEach((k) => this.editor.boxSelectState.selectedKeys.add(k));
+        this.editor._applyBoxSelection(this.editor.boxSelectState.selectedKeys);
+        this.editor.renderer.requestRedraw();
+        showToast(`Selected block ${blockId} — ${tiles.size} tile${tiles.size === 1 ? '' : 's'}`, 'success', 1800);
         return true;
       },
       onExit: () => {
-        dismissResourcePicker();
         resetState();
         setStatus('Ready');
         this.editor.renderer.requestRedraw();
@@ -197,19 +153,13 @@ export class SelectModesHandler {
     };
   }
 
-  // All "x,y" tiles that belong to a {type,id} resource, for entity-select.
-  // Reuses the route handler's position-set helpers so there is one source of
-  // truth for what a block / platform / station covers.
-  _entityTileSet(opt: any): Set<string> {
-    const rh = this.editor.routeHandler;
-    if (!rh) return new Set();
-    if (opt.type === 'block') return rh.getBlockPositionSet(opt.id);
-    if (opt.type === 'platform') return rh.getPlatformPositionSet([opt.id]);
-    if (opt.type === 'station') {
-      const group = rh.getStationGroups().find((g: any) => g.station_id === opt.id);
-      return rh.getPlatformPositionSet(group?.platform_ids || []);
+  /** Every "x,y" tile of one block. */
+  _blockTileSet(blockId: string): Set<string> {
+    const positions = new Set<string>();
+    for (const t of this.editor.cachedNetwork?.tracks || []) {
+      if (t.block_section_id === blockId) positions.add(`${t.x},${t.y}`);
     }
-    return new Set();
+    return positions;
   }
 
   // Trace select: click a first track, then a second; selects every existing

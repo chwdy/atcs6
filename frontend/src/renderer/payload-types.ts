@@ -12,8 +12,6 @@
 import type { Track } from './renderer-tracks';
 import type { BlockInfo } from './renderer-blocks';
 import type { SegmentInfo } from './renderer-segments';
-import type { Platform } from './renderer-platforms';
-import type { Station } from './renderer-stations';
 
 /** A tunnel mouth pair as it appears in the network payload. */
 export interface TunnelPayloadEntry {
@@ -23,9 +21,6 @@ export interface TunnelPayloadEntry {
 
 /** A switch entry in the network payload (geometry config + optional sim state). */
 export interface SwitchPayloadEntry {
-  occupied_by?: unknown;
-  train_protection_claims?: unknown[];
-  locks?: unknown[];
   main_length_cm?: number;
   diverge_length_cm?: number;
 }
@@ -41,8 +36,6 @@ export interface SwitchPayloadEntry {
 export interface LayoutPayload {
   tracks?: Track[];
   blocks?: Record<string, BlockInfo>;
-  platforms?: Platform[];
-  stations?: Station[];
   switches?: Record<string, SwitchPayloadEntry | undefined>;
   tunnels?: TunnelPayloadEntry[];
 }

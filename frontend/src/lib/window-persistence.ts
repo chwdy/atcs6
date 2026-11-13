@@ -1,7 +1,6 @@
 // window-persistence.ts — where each floating window keeps its geometry and
 // settings in localStorage: one state blob per window, keyed by id. The two
-// right-panel pop-outs, the Train Monitor and the floating Virtual Bench use
-// it.
+// right-panel pop-outs and the floating Virtual Bench use it.
 //
 // Mirrors the ThemeEnv / GridEnv env-injection idiom (see lib/theme.ts,
 // lib/grid-preference.ts) so it unit-tests without a real browser. Does no

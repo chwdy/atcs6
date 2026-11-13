@@ -2,7 +2,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { graphSearch } from '../lib/graph-search';
 import { showToast } from '../lib/toast';
-import { showResourcePicker } from './resource-picker';
 import { SelectModesHandler } from './editor-select-modes';
 
 // Behavior-pinning ("characterization") specs for the selection-mode builders
@@ -15,10 +14,9 @@ import { SelectModesHandler } from './editor-select-modes';
 vi.mock('../lib/toast', () => ({ showToast: vi.fn() }));
 vi.mock('../lib/graph-search', () => ({ graphSearch: vi.fn(() => ({ path: null, visited: new Map() })) }));
 vi.mock('../lib/pathfinders', () => ({ traceNodeKey: (n: any) => `${n.x},${n.y},${n.entry}` }));
-vi.mock('./resource-picker', () => ({ showResourcePicker: vi.fn(), dismissResourcePicker: vi.fn() }));
 
 function makeSelectEditor(overrides: any = {}): any {
-  const { renderer: rendererOverrides, routeHandler: routeOverrides, ...rest } = overrides;
+  const { renderer: rendererOverrides, ...rest } = overrides;
   return {
     boxSelectState: { selectedKeys: new Set(), dragScreenStart: null, dragScreenEnd: null, isDragging: false, shiftRemoving: false },
     lassoSelectState: { screenPoints: [], isDrawing: false, shiftRemoving: false },
@@ -30,13 +28,6 @@ function makeSelectEditor(overrides: any = {}): any {
     _tracksByKey: vi.fn(() => new Map()),
     $id: vi.fn(() => ({ textContent: '' })),
     pathfinder: { followExistingNeighbors: vi.fn(() => () => []) },
-    routeHandler: {
-      _resourceOptionsAtTile: vi.fn(() => []),
-      getBlockPositionSet: vi.fn(() => new Set()),
-      getPlatformPositionSet: vi.fn(() => new Set()),
-      getStationGroups: vi.fn(() => []),
-      ...routeOverrides,
-    },
     renderer: {
       setBoxSelectRect: vi.fn(),
       setLassoPath: vi.fn(),
@@ -76,23 +67,24 @@ describe('selection-mode builders — ToolMode contract', () => {
 });
 
 describe('entity-select onClick', () => {
-  it('does nothing selectable when the tile carries no entity', () => {
-    const ed = makeSelectEditor({ routeHandler: { _resourceOptionsAtTile: vi.fn(() => []) } });
+  it('does nothing selectable when the tile belongs to no block', () => {
+    const ed = makeSelectEditor({ cachedNetwork: { tracks: [{ x: 1, y: 1 }] } });
     const mode = new SelectModesHandler(ed)._buildEntitySelectMode();
 
     const handled = mode.onClick({ gridPos: { x: 1, y: 1 }, screenX: 10, screenY: 20 });
 
     expect(handled).toBe(true);
     expect(ed._applyBoxSelection).not.toHaveBeenCalled();
-    expect(showResourcePicker).not.toHaveBeenCalled();
   });
 
-  it('a single entity is selected directly (all its tiles), no picker', () => {
+  it('selects every tile of the clicked tile\'s block', () => {
     const ed = makeSelectEditor({
-      cachedNetwork: { tracks: [{ x: 1, y: 1 }] },
-      routeHandler: {
-        _resourceOptionsAtTile: vi.fn(() => [{ type: 'block', id: 'B1', label: 'Block B1' }]),
-        getBlockPositionSet: vi.fn(() => new Set(['1,1', '1,2'])),
+      cachedNetwork: {
+        tracks: [
+          { x: 1, y: 1, block_section_id: 'B1' },
+          { x: 1, y: 2, block_section_id: 'B1' },
+          { x: 5, y: 5, block_section_id: 'B2' },
+        ],
       },
     });
     const mode = new SelectModesHandler(ed)._buildEntitySelectMode();
@@ -102,25 +94,6 @@ describe('entity-select onClick', () => {
     expect(handled).toBe(true);
     expect(ed._applyBoxSelection).toHaveBeenCalledWith(new Set(['1,1', '1,2']));
     expect(showToast).toHaveBeenCalled();
-    expect(showResourcePicker).not.toHaveBeenCalled();
-  });
-
-  it('several entities on one tile open the picker and select nothing yet', () => {
-    const ed = makeSelectEditor({
-      routeHandler: {
-        _resourceOptionsAtTile: vi.fn(() => [
-          { type: 'block', id: 'B1', label: 'Block B1' },
-          { type: 'platform', id: 'P1', label: 'Platform P1' },
-        ]),
-      },
-    });
-    const mode = new SelectModesHandler(ed)._buildEntitySelectMode();
-
-    const handled = mode.onClick({ gridPos: { x: 1, y: 1 }, screenX: 5, screenY: 6 });
-
-    expect(handled).toBe(true);
-    expect(showResourcePicker).toHaveBeenCalledTimes(1);
-    expect(ed._applyBoxSelection).not.toHaveBeenCalled();
   });
 });
 

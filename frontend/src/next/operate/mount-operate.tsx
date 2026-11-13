@@ -2,9 +2,6 @@
  * Mounts the Operate screen (docs/ui-layout-rewrite-plan.md §5):
  * the left list, the right panel for the selection, and the row of train
  * cards along the bottom. Each draws only while the Operate tab is picked.
- *
- * While it shows, static/css/next/operate.css keeps the Train Monitor window
- * hidden: the train panel's Look-ahead section shows its graph.
  */
 import { effect, signal } from '@preact/signals';
 import { RunningTrainOverlay } from '../../renderer/running-train-overlay';

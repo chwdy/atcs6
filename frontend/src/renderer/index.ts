@@ -4,25 +4,13 @@
 // The barrel re-exports the renderer-cluster classes so consumers (renderer.ts,
 // app.ts) import them as real ES symbols. main.ts also imports it so the whole
 // cluster is pulled into the bundle.
-import './render-snapshot';
 import './renderer-tunnels';
 import './renderer-debug';
-import './renderer-signals';
-import './renderer-stations';
-import './renderer-routes';
 import './renderer-blocks';
 import './renderer-segments';
-import './renderer-platforms';
 import './renderer-tracks';
-import './renderer-trains';
 import './renderer';
 
-export { buildRenderSnapshot } from './render-snapshot';
-export type {
-  RenderSnapshot,
-  RenderSnapshotTrain,
-  RenderSnapshotSpan,
-} from './render-snapshot';
 
 export { RendererTunnelHandler } from './renderer-tunnels';
 export type {
@@ -34,28 +22,13 @@ export type {
 export { RendererDebugHandler } from './renderer-debug';
 export type { DebugTrack, DebugHandlerRenderer } from './renderer-debug';
 
-export { RendererSignalHandler } from './renderer-signals';
-export type { Signal, SignalTrack, SignalHandlerRenderer } from './renderer-signals';
-
-export { RendererStationHandler } from './renderer-stations';
-export type { Station, StationHandlerRenderer } from './renderer-stations';
-
-export { RendererRouteHandler } from './renderer-routes';
-export type { Route, RouteHandlerRenderer } from './renderer-routes';
-
 export { RendererBlockHandler, UNGROUPED_BLOCK_COLOR } from './renderer-blocks';
 export type { BlockInfo, BlockTrack, BlockHandlerRenderer } from './renderer-blocks';
 
 export { RendererSegmentHandler } from './renderer-segments';
 export type { SegmentInfo, SegmentTrack, SegmentHandlerRenderer } from './renderer-segments';
 
-export { RendererPlatformHandler } from './renderer-platforms';
-export type { Platform, PlatformHandlerRenderer } from './renderer-platforms';
-
 export { RendererTrackHandler } from './renderer-tracks';
 export type { Track, TrackHandlerRenderer } from './renderer-tracks';
-
-export { RendererTrainHandler } from './renderer-trains';
-export type { Train, TrainSnap, TrainHandlerRenderer } from './renderer-trains';
 
 export { Renderer } from './renderer';

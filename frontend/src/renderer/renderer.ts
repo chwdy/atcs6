@@ -4,9 +4,9 @@
 // renderer-cluster file). As a module it imports the nine handler classes +
 // Camera directly, owns the two stacked canvases, the rAF-coalesced redraw
 // loop, the ResizeObserver, mouse tracking, and the shared label-placement
-// geometry. It draws only the layout; simulation state (trains, routes, the
-// train-placement ghost) is drawn by registered overlays (see renderer-overlay
-// + sim-overlay), so a renderer with no overlay is a pure layout viewer.
+// geometry. It draws only the layout; the trains are drawn by a registered
+// overlay (see renderer-overlay and running-train-overlay), so a renderer with
+// no overlay is a pure layout viewer.
 //
 // app.ts constructs it via `new Renderer('rail-canvas')` (imported directly).
 // Imports BIT_TO_EDGES from ../lib/constants.
@@ -14,15 +14,11 @@
 import { BIT_TO_EDGES, getActiveSegments, getOppositeEdge, TRACK_WIDTH } from '../lib/constants';
 import { Camera } from '../lib/camera';
 import { RendererTrackHandler, type Track } from './renderer-tracks';
-import { RendererSignalHandler } from './renderer-signals';
-import { RendererPlatformHandler, type Platform, type PlatformBound } from './renderer-platforms';
-import { RendererStationHandler, type Station } from './renderer-stations';
 import { RendererBlockHandler, type BlockInfo } from './renderer-blocks';
 import { RendererSegmentHandler, type SegmentInfo } from './renderer-segments';
-import { RendererRouteHandler } from './renderer-routes';
-import { RendererTrainHandler, type TrainSnap } from './renderer-trains';
 import { RendererTunnelHandler, type TunnelPair } from './renderer-tunnels';
 import { RendererDebugHandler } from './renderer-debug';
+import { RendererHighlightHandler } from './renderer-highlights';
 import { segmentsFromBlocks, type NetworkPayload } from './payload-types';
 import type { OverlayPhase, RendererOverlay } from './renderer-overlay';
 import { getCanvasPalette, withAlpha } from '../lib/canvas-palette';
@@ -184,33 +180,7 @@ type BuildPreview =
   | { kind: 'path'; path: Array<{ x: number; y: number }> }
   | { kind: 'invalid'; path: Array<{ x: number; y: number }> };
 
-/** The editor's signal/platform placement hover ghost. See BuildPreview. */
-interface HoverPreview {
-  gridPos: { x: number; y: number };
-  toolType: string;
-  isValid: boolean;
-  signalDirection: string | null;
-  trackBits: number | null;
-}
-
-/** The add-train placement ghost: the tiles the new train will occupy, its
- * head tile, the facing edge ('N'|'E'|'S'|'W'), and whether the configured
- * length fits along the track. Driven via setTrainGhostPreview and painted in
- * _drawLive (see BuildPreview). */
-interface TrainGhost {
-  tiles: Array<{ x: number; y: number }>;
-  headTile?: { x: number; y: number };
-  facing?: string;
-  fits?: boolean;
-  // Each way the front can point, numbered like its button in the panel: a
-  // marker on the edge the front would leave `x,y` by. `active` is the chosen
-  // (or hovered) one. Two ends of a bent block can share a compass edge, so the
-  // number, not the compass word, is what tells them apart.
-  ends?: Array<{ x: number; y: number; edge: string; n: number; active: boolean }>;
-}
-
-// One entity the committed selection touches (a block, platform, switch, or
-// signal), carrying only that entity's selected tiles plus how to stroke its
+// One entity the committed selection touches (a block or a switch), carrying only that entity's selected tiles plus how to stroke its
 // perimeter. The editor builds these from the network so the renderer can trace
 // one coloured outline per entity instead of a field of per-tile cells.
 interface SelectionOutlineGroup {
@@ -230,7 +200,6 @@ class Renderer {
   camera!: Camera;
   mouseX!: number;
   mouseY!: number;
-  platformBounds!: PlatformBound[];
   labelBounds!: LabelBound[];
   showSegmentColorsOnly!: boolean;
   // When set, the world layer tints each tile by its owning block (the grouping)
@@ -253,16 +222,10 @@ class Renderer {
   boxSelectRect!: { startX: number; startY: number; endX: number; endY: number } | null;
   lassoPath!: Array<{ x: number; y: number }> | null;
   buildPreview!: BuildPreview | null;
-  hoverPreview!: HoverPreview | null;
-  trainGhost!: TrainGhost | null;
   trackHandler!: RendererTrackHandler;
-  signalHandler!: RendererSignalHandler;
-  platformHandler!: RendererPlatformHandler;
-  stationHandler!: RendererStationHandler;
   blockHandler!: RendererBlockHandler;
   segmentHandler!: RendererSegmentHandler;
-  routeHandler!: RendererRouteHandler;
-  trainHandler!: RendererTrainHandler;
+  highlightHandler!: RendererHighlightHandler;
   tunnelHandler!: RendererTunnelHandler;
   debugHandler!: RendererDebugHandler;
   // Overlays drawn on top of the layout (e.g. the sim view). Empty = pure
@@ -271,12 +234,10 @@ class Renderer {
   _pendingResizeFrame!: number | null;
   _pendingFlush!: { world: boolean; live: boolean; reason: string } | null;
   _flushFrame!: number | null;
-  debugFlags!: { showBlocks: boolean; showSignals: boolean; showTunnelLinks: boolean; showSwitches?: boolean; showStuck?: boolean; showTileDirections?: boolean; showBlockDirections?: boolean; showOneWayDirections?: boolean; showBlockVoltage?: boolean; showBlockLength?: boolean; showBlockRadius?: boolean; showBlockSpeedLimit?: boolean };
+  debugFlags!: { showBlocks: boolean; showTunnelLinks: boolean; showSwitches?: boolean; showTileDirections?: boolean; showBlockDirections?: boolean; showOneWayDirections?: boolean; showBlockVoltage?: boolean; showBlockLength?: boolean; showBlockRadius?: boolean; showBlockSpeedLimit?: boolean };
   _resizeObserver?: ResizeObserver;
   // Derived per-network state, set by _updateNetworkState.
-  currentPlatforms!: Platform[];
   trackMap!: Record<string, Track>;
-  currentSnapshot?: { trains?: Record<string, TrainSnap> };
   _pendingTunnelEndpoint?: { x: number; y: number; edge: string } | null;
   // The tunnel pair selected with the Inspect tool, drawn highlighted (wider,
   // brighter stud) with its connecting line. Set via setSelectedTunnel().
@@ -314,10 +275,8 @@ class Renderer {
     // Mouse position for hover detection
     this.mouseX = -1;
     this.mouseY = -1;
-    this.platformBounds = []; // Array of {bounds, name, abbrev} for hover detection
     // Per-frame registry of label rects on the live canvas, used by the
-    // train label picker to avoid overlapping already-placed station /
-    // platform labels. See §16 "Overlap" in docs/DESIGN_LANGUAGE.md.
+    // train label picker to avoid overlapping labels already placed. See §16 "Overlap" in docs/DESIGN_LANGUAGE.md.
     // Items: { x, y, w, h, tier }. Reset at the top of _drawLive.
     this.labelBounds = [];
 
@@ -343,31 +302,22 @@ class Renderer {
 
     // Box-select overlay state (driven by the box-select editor tool)
     this.boxSelection = new Set();   // Set of "x,y" keys for highlighted tracks
-    // Per-entity outline groups for the committed selection (block / platform /
-    // switch / signal footprints), supplied by the editor alongside boxSelection.
+    // Per-entity outline groups for the committed selection (block / switch
+    // footprints), supplied by the editor alongside boxSelection.
     this.selectionGroups = [];
     this.inspectHighlightGroups = [];   // peek highlight from a panel cross-link
     this.boxSelectRect = null;       // {startX, startY, endX, endY} screen coords, or null
     // Lasso-select overlay state (driven by the lasso-select editor tool).
     // Array of {x, y} screen-space points being drawn, or null when idle.
     this.lassoPath = null;
-    // Editor drag-build preview ("potential tracks" ghost) and signal/platform
-    // hover ghost. Driven by the editor via setBuildPreview / setHoverPreview;
-    // null when no preview is active. Painted in _drawLive (see BuildPreview).
+    // Editor drag-build preview ("potential tracks" ghost). Driven by the
+    // editor via setBuildPreview; null when no preview is active. Painted in _drawLive (see BuildPreview).
     this.buildPreview = null;
-    this.hoverPreview = null;
-    // Add-train placement ghost (occupied tiles + facing arrow). Driven via
-    // setTrainGhostPreview; painted last in _drawLive so it sits on top.
-    this.trainGhost = null;
 
     this.trackHandler = new RendererTrackHandler(this);
-    this.signalHandler = new RendererSignalHandler(this);
-    this.platformHandler = new RendererPlatformHandler(this);
-    this.stationHandler = new RendererStationHandler(this);
     this.blockHandler = new RendererBlockHandler(this);
     this.segmentHandler = new RendererSegmentHandler(this);
-    this.routeHandler = new RendererRouteHandler(this);
-    this.trainHandler = new RendererTrainHandler(this);
+    this.highlightHandler = new RendererHighlightHandler(this);
     this.tunnelHandler = new RendererTunnelHandler(this);
     this.debugHandler = new RendererDebugHandler(this);
     this._overlays = [];
@@ -382,15 +332,13 @@ class Renderer {
       this.mouseY = e.clientY - rect.top;
 
       // Redraw if mouse moved and we have a network
-      // Need redraw for: block hover, platform name hover, train label dodge.
-      // debugFlags is refreshed every flush; reading here is safe even if
-      // it lags by at most one frame after a debug-checkbox toggle.
+      // Need redraw for block hover. debugFlags is refreshed every flush;
+      // reading here is safe even if it lags by at most one frame after a
+      // debug-checkbox toggle.
       const showBlocks = this.debugFlags?.showBlocks || false;
-      const hasPlatforms = this.currentPlatforms && this.currentPlatforms.length > 0;
-      const hasTrains = (this.currentNetwork?.trains?.length ?? 0) > 0;
 
       if (this.currentNetwork && (prevMouseX !== this.mouseX || prevMouseY !== this.mouseY)) {
-        if (showBlocks || this.showSegmentColorsOnly || hasPlatforms || hasTrains) {
+        if (showBlocks || this.showSegmentColorsOnly) {
           this.requestRedraw({ live: true, world: false, reason: 'hover' });
         }
       }
@@ -403,11 +351,9 @@ class Renderer {
 
       // Redraw when mouse leaves to clear hover state
       const showBlocks = this.debugFlags?.showBlocks || false;
-      const hasPlatforms = this.currentPlatforms && this.currentPlatforms.length > 0;
-      const hasTrains = (this.currentNetwork?.trains?.length ?? 0) > 0;
 
       if (this.currentNetwork && (prevMouseX !== -1 || prevMouseY !== -1)) {
-        if (showBlocks || this.showSegmentColorsOnly || hasPlatforms || hasTrains) {
+        if (showBlocks || this.showSegmentColorsOnly) {
           this.requestRedraw({ live: true, world: false, reason: 'mouseleave' });
         }
       }
@@ -423,7 +369,7 @@ class Renderer {
     this._flushFrame = null;
     // Refreshed once per flush from DOM debug checkboxes; hot paths
     // read this instead of querying the DOM per draw.
-    this.debugFlags = { showBlocks: false, showSignals: false, showTunnelLinks: false };
+    this.debugFlags = { showBlocks: false, showTunnelLinks: false };
     this.resize();
     window.addEventListener('resize', () => this._scheduleResize());
 
@@ -552,10 +498,8 @@ class Renderer {
     const on = (id: LayerId) => canvasLayers.isOn(id);
     this.debugFlags = {
       showBlocks: on('blocks'),
-      showSignals: on('signals'),
       showTunnelLinks: on('tunnel-links'),
       showSwitches: on('switches'),
-      showStuck: on('stuck'),
       showTileDirections: on('tile-directions'),
       showBlockDirections: on('block-dir'),
       showOneWayDirections: on('oneway-dir'),
@@ -567,7 +511,7 @@ class Renderer {
   }
 
   /**
-   * Set the derived per-network state (currentBlocks, currentPlatforms,
+   * Set the derived per-network state (currentBlocks, currentSegments,
    * trackMap) so handlers in both world and live passes see consistent
    * data. Called once per flush by _flushRedraw before either layer
    * paints, and by the public drawNetwork(network) entry point.
@@ -577,7 +521,6 @@ class Renderer {
       this.currentNetwork = null;
       this.currentBlocks = {};
       this.currentSegments = {};
-      this.currentPlatforms = [];
       this.trackMap = {};
       return false;
     }
@@ -586,7 +529,6 @@ class Renderer {
     // Segment geometry rides nested inside each block's members, so the
     // geometry index is derived here rather than carried as a sibling map.
     this.currentSegments = segmentsFromBlocks(network.blocks);
-    this.currentPlatforms = network.platforms || [];
     this.trackMap = {};
     network.tracks.forEach((t) => {
       this.trackMap[`${t.x},${t.y}`] = t;
@@ -757,11 +699,6 @@ class Renderer {
     this._drawLive(network);
   }
 
-  /**
-   * Paint the static world layer: background, grid, tracks, blocks,
-   * platforms, signals, station labels, debug overlays. Repainted only
-   * when the world flag is set (map shape / state changes / viewport).
-   */
   /** Register a draw layer painted on top of the layout (e.g. the sim view). */
   registerOverlay(overlay: RendererOverlay): void {
     this._overlays.push(overlay);
@@ -774,6 +711,11 @@ class Renderer {
     }
   }
 
+  /**
+   * Paint the static world layer: background, grid, tracks, blocks, debug
+   * overlays. Repainted only when the world flag is set (map shape / state
+   * changes / viewport).
+   */
   _drawWorld(network: NetworkPayload): void {
     this.ctx = this.worldCtx;
     this.clear();
@@ -795,7 +737,7 @@ class Renderer {
     // trapezoid bed then the block-status rectangle on top, both clipped to the
     // tile diamond (see trackHandler.drawTrack / drawTrackBed).
     tracks.forEach((track) => {
-      this.trackHandler.drawTrack(track, false);
+      this.trackHandler.drawTrack(track);
     });
 
     // Switch M/D indicators, gated behind the "Switch States" debug toggle
@@ -812,45 +754,8 @@ class Renderer {
       this.segmentHandler.drawSegmentBoundaryMarkers(tracks);
     }
 
-    // Note: platforms AND stations live on the LIVE layer, not world.
-    // Both handlers run an inline hover hit-test (`isHovered = mouseX in
-    // bounds`) inside their draw method, so the hover effect needs to
-    // refresh on every mousemove — which is a live-only redraw. Keeping
-    // them on world would freeze the hover state between world flushes
-    // (i.e., until the user drag-pans or the network refreshes).
-
-    // Signal-to-block connection lines (debug).
-    const showSignalDebug = this.debugFlags?.showSignals || false;
-    if (showSignalDebug) {
-      this.signalHandler.drawSignalBlockConnections(tracks);
-    }
-
-    // Signals on top of connection lines.
-    tracks.forEach((track) => {
-      if (track.signals && track.signals.length > 0) {
-        const cx = this.gridToScreenX(track.x, track.y);
-        const cy = this.gridToScreenY(track.x, track.y);
-        const cellSize = this.gridSize * this.scale;
-        const half = cellSize / 2;
-        this.ctx.save();
-        this.ctx.translate(cx, cy);
-        for (const signal of track.signals) {
-          this.signalHandler.drawSingleSignal(signal, track.track_bits, half);
-        }
-        this.ctx.restore();
-      }
-    });
-
-    // Switch lock/occupied dots: a solid circle at the branch root, always on
-    // (operational state, not a debug view). Drawn LAST of the world-layer
-    // marks — after the rails, block-boundary dots, and signals — so nothing on
-    // this layer paints over it.
-    tracks.forEach((track) => {
-      if (track.is_switch) this.trackHandler.drawSwitchLockAt(track);
-    });
-
     // Tunnel mouths are NOT drawn here — they live on the live layer (see
-    // _drawLive) so platforms and stations can't paint over them.
+    // _drawLive).
 
     // Other debug overlays.
     this.debugHandler.drawDebugOverlays(tracks);
@@ -874,8 +779,7 @@ class Renderer {
   }
 
   /**
-   * Paint the dynamic live layer: route overlays, trains, station hover
-   * highlight, box/lasso selection. Cleared with clearRect (transparent)
+   * Paint the dynamic live layer: tunnels, trains, box/lasso selection. Cleared with clearRect (transparent)
    * so the world canvas shows through. Repainted on every flush that has
    * the live flag set — i.e., hover, train movement, route changes.
    */
@@ -883,44 +787,27 @@ class Renderer {
     this.ctx = this.liveCtx;
     this._clearLiveCanvas();
 
-    // Rebuild the label-rect registry every live repaint. Platforms push
-    // first, then stations, then trains read the accumulated bounds and
-    // push their own — order matches the draw sequence below.
+    // Rebuild the label-rect registry every live repaint.
     this.labelBounds = [];
 
-    // Platforms first (bodies + labels). Inline hover hit-test inside
-    // drawPlatformLabel needs to re-evaluate on every mousemove, so
-    // this stays on live. Also populates this._platformBodySegments
-    // which the train handler reads.
-    this.platformHandler.drawPlatforms();
-
-    // Station base labels (identity tier). Runs hover hit-test, draws
-    // non-hovered labels. drawHoverOverlay then layers the hovered
-    // label + platform highlights on top.
-    this.stationHandler.drawStations();
-
     // Tunnel mouths (stud + label) and, for the selected pair, its connecting
-    // line. On the live layer above platforms/stations so they can't be covered;
-    // the debug toggle shows every pairing line, otherwise only the selected
+    // line. The debug toggle shows every pairing line, otherwise only the selected
     // one (clicking a mouth is what reveals where it goes).
     this.tunnelHandler.drawTunnels(network.tunnels, this._pendingTunnelEndpoint || null, {
       showLinks: !!this.debugFlags?.showTunnelLinks,
       selected: this.selectedTunnel || null,
     });
 
-    // Sim overlay: route overlays (reachable highlights, active routes, conflict
-    // flash). Drawn above stations, below the block-direction overlay and trains.
-    // No-op when no sim overlay is registered (pure layout viewer).
-    this._emitOverlay('afterStations', network);
+    // The Editor's reachable-tile fill and locate flash.
+    this.highlightHandler.draw();
 
     // Block direction arrows — only while the block editor is open. Drawn
-    // above the route wash but below trains: it's editor context, not a
-    // live entity, so a moving train paints over it (same liveness z-order
-    // as station identity labels).
+    // below trains: it's editor context, not a live entity, so a moving train
+    // paints over it.
     this.drawBlockDirectionOverlay();
 
-    // Sim overlay: trains (and the per-frame sim snapshot they read). Drawn above
-    // the block-direction overlay, below the inspection debug arrows.
+    // Train overlay. Drawn above the block-direction overlay, below the
+    // inspection debug arrows.
     this._emitOverlay('afterBlockDirection', network);
 
     // Per-tile absolute-direction debug arrows (operator-painted, inspection
@@ -932,9 +819,6 @@ class Renderer {
     // one direction. Same inspection z-order as the forward-dir arrows above.
     this.drawOneWayDirectionDebug();
 
-    // Hovered station overlay (full name + platform highlights).
-    this.stationHandler.drawHoverOverlay();
-
     // Box/lasso-select overlay (also paints the inspect "peek" highlight).
     this.drawBoxSelection();
     this.drawBoxSelectRect();
@@ -943,9 +827,8 @@ class Renderer {
     // Editor build/hover previews, painted last so the ghost sits on top of
     // the live layer (as it did when the editor drew it after a redraw).
     this._drawBuildPreview();
-    this._drawHoverPreview();
 
-    // Sim overlay: train-placement ghost, painted on top of the editor previews.
+    // Overlays that draw on top of everything.
     this._emitOverlay('top', network);
   }
 
@@ -976,14 +859,6 @@ class Renderer {
     this.buildPreview = preview;
   }
 
-  setHoverPreview(hover: HoverPreview | null): void {
-    this.hoverPreview = hover;
-  }
-
-  setTrainGhostPreview(ghost: TrainGhost | null): void {
-    this.trainGhost = ghost;
-  }
-
   _drawBuildPreview(): void {
     const p = this.buildPreview;
     if (!p) return;
@@ -1003,121 +878,6 @@ class Renderer {
       case 'invalid':
         this.trackHandler.drawInvalidPreviewPath(p.path);
         break;
-    }
-  }
-
-  _drawHoverPreview(): void {
-    const h = this.hoverPreview;
-    if (!h) return;
-    this.trackHandler.drawHoverPreview(h.gridPos, h.toolType, h.isValid, h.signalDirection, h.trackBits);
-  }
-
-  // Add-train placement ghost: a translucent filled band over the tiles the new
-  // train will occupy, plus a head arrow for the facing edge. Amber — the canvas
-  // selection / placement color, matching drawBoxSelection — while the length
-  // fits; danger red when the track is too short. NOT purple: a train-scale
-  // purple body is reserved for the EB-active state (DESIGN_LANGUAGE.md §17
-  // "Train mode"), so a placement aid must not paint one. Translucent so the
-  // track and block colors read through — it's a preview, not a committed entity.
-  _drawTrainGhost(): void {
-    const g = this.trainGhost;
-    if (!g) return;
-    if ((!g.tiles || g.tiles.length === 0) && !(g.ends && g.ends.length)) return;
-    const ctx = this.ctx;
-    const p = getCanvasPalette();
-    const s = this.scale;
-    const ghostColor = g.fits === false ? p.danger : p.caution;
-    // Tile-diamond corner vectors. The grid→screen map is affine, so the two
-    // step vectors — and thus the diamond corners — are constant across tiles.
-    // Filling each occupied tile's diamond tessellates into a clean band that
-    // follows the track exactly, with no center-to-center zigzag on the diagonal
-    // staircase runs that make up most of the network.
-    const ox = this.gridToScreenX(0, 0);
-    const oy = this.gridToScreenY(0, 0);
-    const ex = this.gridToScreenX(1, 0) - ox;
-    const ey = this.gridToScreenY(1, 0) - oy;
-    const nx = this.gridToScreenX(0, 1) - ox;
-    const ny = this.gridToScreenY(0, 1) - oy;
-    const v1x = (ex + nx) / 2;
-    const v1y = (ey + ny) / 2;
-    const v2x = (ex - nx) / 2;
-    const v2y = (ey - ny) / 2;
-    ctx.save();
-    ctx.fillStyle = withAlpha(ghostColor, 0.32);
-    for (const t of g.tiles || []) {
-      const cx = this.gridToScreenX(t.x, t.y);
-      const cy = this.gridToScreenY(t.x, t.y);
-      ctx.beginPath();
-      ctx.moveTo(cx + v1x, cy + v1y);
-      ctx.lineTo(cx + v2x, cy + v2y);
-      ctx.lineTo(cx - v1x, cy - v1y);
-      ctx.lineTo(cx - v2x, cy - v2y);
-      ctx.closePath();
-      ctx.fill();
-    }
-    this._drawFrontEndMarkers(g.ends || [], ghostColor);
-    if (!g.headTile || !g.facing || !g.tiles || g.tiles.length === 0) {
-      ctx.restore();
-      return;
-    }
-    // Head arrow pointing along the facing edge (head is tiles[0]).
-    const hx = this.gridToScreenX(g.headTile.x, g.headTile.y);
-    const hy = this.gridToScreenY(g.headTile.x, g.headTile.y);
-    const off: Record<string, [number, number]> = { N: [0, 1], E: [1, 0], S: [0, -1], W: [-1, 0] };
-    const d = off[g.facing] || [1, 0];
-    let vx = this.gridToScreenX(g.headTile.x + d[0], g.headTile.y + d[1]) - hx;
-    let vy = this.gridToScreenY(g.headTile.x + d[0], g.headTile.y + d[1]) - hy;
-    const mag = Math.hypot(vx, vy) || 1;
-    vx /= mag;
-    vy /= mag;
-    const al = Math.min(Math.max(10, s * 5), 22);
-    const aw = al * 0.55;
-    const tipX = hx + vx * al;
-    const tipY = hy + vy * al;
-    const px = -vy;
-    const py = vx;
-    ctx.beginPath();
-    ctx.moveTo(tipX, tipY);
-    ctx.lineTo(hx + px * aw, hy + py * aw);
-    ctx.lineTo(hx - px * aw, hy - py * aw);
-    ctx.closePath();
-    ctx.fillStyle = withAlpha(ghostColor, 0.9);
-    ctx.fill();
-    ctx.restore();
-  }
-
-  /** Numbered markers for the ways a train's front can point, each sitting on
-   *  the tile edge the front would leave by. The chosen one is filled; the
-   *  others are outlined, so the operator can match the panel's buttons to the
-   *  places on the track. */
-  _drawFrontEndMarkers(ends: NonNullable<TrainGhost['ends']>, color: string): void {
-    if (!ends.length) return;
-    const ctx = this.ctx;
-    const p = getCanvasPalette();
-    const off: Record<string, [number, number]> = { N: [0, 1], E: [1, 0], S: [0, -1], W: [-1, 0] };
-    const r = Math.min(Math.max(7, this.scale * 3.2), 13);
-    for (const e of ends) {
-      const d = off[e.edge] || [1, 0];
-      // The edge midpoint is halfway to the neighbouring tile's centre; the
-      // marker sits just past it so it does not cover the rail join.
-      const cx = this.gridToScreenX(e.x, e.y);
-      const cy = this.gridToScreenY(e.x, e.y);
-      const nx = this.gridToScreenX(e.x + d[0], e.y + d[1]);
-      const ny = this.gridToScreenY(e.x + d[0], e.y + d[1]);
-      const mx = cx + (nx - cx) * 0.62;
-      const my = cy + (ny - cy) * 0.62;
-      ctx.beginPath();
-      ctx.arc(mx, my, r, 0, Math.PI * 2);
-      ctx.fillStyle = e.active ? withAlpha(color, 0.95) : withAlpha(p.bg, 0.85);
-      ctx.fill();
-      ctx.lineWidth = 2;
-      ctx.strokeStyle = withAlpha(color, 0.95);
-      ctx.stroke();
-      ctx.fillStyle = e.active ? p.bg : color;
-      ctx.font = `600 ${Math.round(r * 1.15)}px ui-sans-serif, system-ui, sans-serif`;
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(String(e.n), mx, my + 0.5);
     }
   }
 
@@ -1158,14 +918,14 @@ class Renderer {
   }
 
   // Per-entity rail tint for the committed selection, painted over the amber
-  // track overlay above. Each block / platform / switch / signal the selection
+  // track overlay above. Each block / switch the selection
   // touches re-strokes its own tiles' rail in its panel-chip hue + dash, so
   // membership reads as a colored line of track rather than a tile perimeter.
   // The amber rail underneath still says "selected" and its end-caps still mark
   // where each run stops. Group color / width / dash / order come straight from
   // _buildSelectionOutlineGroups: later groups paint on top (the block is drawn
   // last as a thin, light line so it stays a delicate marker over the wider
-  // dashed platform / switch / signal beneath it).
+  // dashed switch beneath it).
   drawSelectionEntityOutlines(groups: SelectionOutlineGroup[] = this.selectionGroups): void {
     if (!groups || groups.length === 0) return;
     const half = (this.gridSize * this.scale) / 2;
@@ -1269,15 +1029,7 @@ class Renderer {
   }
 
   setReachableHighlights(positionsSet: Set<string> | null | undefined): void {
-    this.routeHandler.setReachableHighlights(positionsSet);
-  }
-
-  clearRoutePreview(): void {
-    this.routeHandler.clearRoutePreview();
-  }
-
-  flashConflictTiles(tiles: Array<[number, number]> | null | undefined, durationMs = 2000): void {
-    this.routeHandler.flashConflictTiles(tiles, durationMs);
+    this.highlightHandler.setReachableHighlights(positionsSet);
   }
 
   flashTiles(
@@ -1288,17 +1040,10 @@ class Renderer {
       durationMs?: number;
       blink?: boolean;
       mark?: 'x' | 'none';
+      highlightTrack?: boolean;
     } = {}
   ): void {
-    this.routeHandler.flashTiles(tiles, opts);
-  }
-
-  highlightPath(path: { route_id?: string } | null | undefined): void {
-    this.routeHandler.highlightRoute(path);
-  }
-
-  clearPathHighlight(): void {
-    this.routeHandler.clearRouteHighlight();
+    this.highlightHandler.flashTiles(tiles, opts);
   }
 
   /**
@@ -1575,76 +1320,6 @@ class Renderer {
       this.ctx.fillText(opts.letter, lx, ly);
     }
     this.ctx.restore();
-  }
-
-  // ========================================================================
-  // Label placement helpers (shared by train + platform labels)
-  // ========================================================================
-
-  getNearbyTrackSegments(cx: number, cy: number, radius: number): Array<{ x1: number; y1: number; x2: number; y2: number }> {
-    const tracks = this.currentNetwork?.tracks;
-    if (!tracks || !tracks.length) return [];
-    const half = this.gridSize * this.scale / 2;
-    const edges: Record<string, { x: number; y: number }> = {
-      N: { x: half / 2, y: -half / 2 },
-      E: { x: half / 2, y: half / 2 },
-      S: { x: -half / 2, y: half / 2 },
-      W: { x: -half / 2, y: -half / 2 },
-    };
-    const cutoff = (radius + half) * (radius + half);
-    const segments: Array<{ x1: number; y1: number; x2: number; y2: number }> = [];
-    for (const tr of tracks) {
-      const tx = this.gridToScreenX(tr.x, tr.y);
-      const ty = this.gridToScreenY(tr.x, tr.y);
-      const dx = tx - cx, dy = ty - cy;
-      if (dx * dx + dy * dy > cutoff) continue;
-      const bits = tr.track_bits || 0;
-      for (let bit = 0; bit < 6; bit++) {
-        if (!(bits & (1 << bit))) continue;
-        const [e1, e2] = BIT_TO_EDGES[bit];
-        segments.push({
-          x1: tx + edges[e1].x, y1: ty + edges[e1].y,
-          x2: tx + edges[e2].x, y2: ty + edges[e2].y,
-        });
-      }
-    }
-    return segments;
-  }
-
-  distPointToSegment(px: number, py: number, x1: number, y1: number, x2: number, y2: number): number {
-    const dx = x2 - x1, dy = y2 - y1;
-    const lenSq = dx * dx + dy * dy;
-    if (lenSq < 1e-6) return Math.hypot(px - x1, py - y1);
-    let t = ((px - x1) * dx + (py - y1) * dy) / lenSq;
-    t = Math.max(0, Math.min(1, t));
-    return Math.hypot(px - (x1 + t * dx), py - (y1 + t * dy));
-  }
-
-  distRectToSegments(bx: number, by: number, w: number, h: number, segments: unknown[]): number {
-    if (!segments || !segments.length) return Infinity;
-    const cx = bx + w / 2, cy = by + h / 2;
-    const samples = [
-      [cx, cy],
-      [bx, by], [bx + w, by], [bx, by + h], [bx + w, by + h],
-      [cx, by], [cx, by + h], [bx, cy], [bx + w, cy],
-    ];
-    let minDist = Infinity;
-    for (const seg of segments as Array<{ x1: number; y1: number; x2: number; y2: number }>) {
-      for (const [px, py] of samples) {
-        const d = this.distPointToSegment(px, py, seg.x1, seg.y1, seg.x2, seg.y2);
-        if (d < minDist) minDist = d;
-      }
-    }
-    return minDist;
-  }
-
-  // Axis-aligned bounding-box intersection area in pixels^2. Used by the
-  // train label picker to penalise candidates that overlap previously
-  // placed labels (see renderer-trains.ts _pickLabelPosition).
-  aabbOverlapArea(ax: number, ay: number, aw: number, ah: number, bx: number, by: number, bw: number, bh: number): number {
-    const xo = Math.max(0, Math.min(ax + aw, bx + bw) - Math.max(ax, bx));
-    const yo = Math.max(0, Math.min(ay + ah, by + bh) - Math.max(ay, by));
-    return xo * yo;
   }
 }
 

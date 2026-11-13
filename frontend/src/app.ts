@@ -12,10 +12,7 @@
 // call app methods.
 
 import { Renderer } from './renderer';
-import { SimRendererOverlay } from './renderer/sim-overlay';
 import { Editor } from './editor/editor';
-import { SimEditorPlugin } from './editor/sim-plugin';
-import { TrainMonitor } from './panels/train-monitor';
 import { updateFatalBanner } from './panels/fatal-banner';
 import { startRestartReconnectFlow } from './ui/restart-flow';
 import {
@@ -25,10 +22,8 @@ import {
 } from './ui/connection-monitor';
 import { setupSettingsPanel } from './ui/settings-panel';
 import { activationBlockMessage, refreshHardwarePanel } from './ui/hardware-panel';
-import { updateTrainDebugPanel as renderTrainDebugPanel, hideTrainDebugPanel as renderHideTrainDebugPanel } from './panels/train-debug-panel';
 import { updateTileDetails } from './panels/tile-debug-inspector';
-import { showConfirmModal, showFormModal } from './lib/helpers';
-import { setLabelSpacing } from './lib/constants';
+import { showConfirmModal } from './lib/helpers';
 import { api } from './lib/api';
 import { canvasLayers, layerDef } from './lib/canvas-layers';
 import { NetworkPoller, type NetworkPollResult } from './lib/network-poll';
@@ -42,7 +37,6 @@ import { followEditorMode, updateFromNetwork } from './next/state';
 class App {
   renderer: any;
   editor: any;
-  trainMonitor: any;
 
   /** The server's network stream, which polls only while it is down. */
   networkStream: NetworkStream | null = null;
@@ -57,48 +51,25 @@ class App {
   // controls only in some states (design_new.md "Session state").
   sessionState: { value: string; halt_reason: string | null } | null = null;
   editorMode: 'edit' | 'sim' = 'edit';
-  selectedTrainId: string | null;
-  lastLookaheadFetch: number;
-  lookaheadThrottleMs: number;
-  lastLookaheadData: any;
-  lastLookaheadPayload: any;
-  trainMonitorUnsub: (() => void) | null;
-  followTrainEnabled: boolean;
   /** Polls the network, getting the layout only when it changed. */
   networkPoller = new NetworkPoller((layoutVersion) => api.getNetwork(layoutVersion));
-  /** Station groups for the renderer's labels. They are layout, so they are
-   *  fetched again only when the layout changed (or the last fetch failed). */
 
   constructor() {
+    // The renderer draws only the layout; the Operate screen registers the
+    // train overlay (next/operate/mount-operate.tsx).
     this.renderer = new Renderer('rail-canvas');
-    // The renderer draws only the layout; register the sim overlay so this app
-    // draws trains, routes, and the train-placement ghost on top.
-    this.renderer.registerOverlay(new SimRendererOverlay(stateManager));
     this.editor = new Editor(this.renderer, api);
-    // The core editor is layout-only; register the sim plugin so this app also
-    // edits trains, paths, routes, route-runs, and speed profiles.
-    this.editor.registerPlugin(new SimEditorPlugin());
     // Inject this App as the editor's host + the sim state store, so the editor
     // core calls back through injected refs instead of the window.app/stateManager
     // globals. (window.app is still set below for legacy inline handlers.)
     this.editor.host = this;
     this.editor.stateManager = stateManager;
-    this.trainMonitor = new TrainMonitor();
 
     this.currentNetwork = null;
     this.hasInitiallyCentered = false;
     this.hasInitiallySelected = false;
     this.isSimulationRunning = false;
     this.editorMode = 'edit';
-    this.selectedTrainId = null;
-    this.lastLookaheadFetch = 0;
-    this.lookaheadThrottleMs = 100;
-    this.lastLookaheadData = null;  // Store last lookahead for panel rebuilds
-    this.lastLookaheadPayload = null;
-    this.trainMonitorUnsub = null;
-    // Viewport follow toggle. Off by default — clicking a train no longer
-    // pans the canvas. Users opt in via the Follow Train checkbox.
-    this.followTrainEnabled = false;
 
     this.setupControls();
     // The top bar and the five screens
@@ -571,8 +542,7 @@ class App {
 
       // A new blank layout is a hard reset. Drop any in-progress tool, build /
       // hover preview, and block-color overlay first: otherwise, if a tool with
-      // a live hover preview is active (signal/platform) or a build drag is in
-      // flight, refreshNetwork()'s fast path updates the caches but skips the
+      // a build drag is in flight, refreshNetwork()'s fast path updates the caches but skips the
       // world redraw, so the renderer keeps painting the stale tracks / blocks /
       // switches over the now-empty layout.
       await this.editor.resetForBlankLayout();
@@ -610,11 +580,9 @@ class App {
   /** Show the network: `pushed`, a message from the network stream, or
    *  else one read of `GET /api/network`. */
   async refreshNetwork(pushed?: NetworkPollResult): Promise<void> {
-    // Skip refresh if editor is actively using a tool that needs hover preview
-    // This prevents flickering when moving the mouse with signal/station tools
+    // While an editor tool is active, update the caches but leave the redraw to
+    // the tool, so its preview does not flicker.
     if (this.editor && this.editor.isToolActive()) {
-      // Still update the cache and trains panel, but don't redraw directly
-      // The setCachedNetwork call will trigger re-validation of hover state
       try {
         const { network } = pushed ?? (await this.networkPoller.poll());
         this.currentNetwork = network;
@@ -625,8 +593,6 @@ class App {
         this.editor.setCachedNetwork(network);
         // Validate that the current editor still exists (close if deleted)
         this.editor.validateCurrentEditor();
-        // Don't call drawWithHoverPreview here - setCachedNetwork triggers updateHoverPreview
-        // which will call drawWithHoverPreview after re-validating the signal state
         noteRequestSuccess();
       } catch (e: any) {
         console.error('[App] Failed to refresh network:', e);
@@ -645,14 +611,12 @@ class App {
 
       this.editor.setCachedNetwork(network);
       if (!this.hasInitiallyCentered && network.tracks && network.tracks.length > 0) {
-        this.renderer.fitToContent(network.tracks, undefined, this._canvasChromeInsets());
+        this.renderer.fitToContent(network.tracks);
         this.hasInitiallyCentered = true;
       }
       // Fresh network arrived: hand it to the renderer and let the
-      // rAF coalescer flush the paint. _maybeFollowSelectedTrain (if
-      // enabled) also calls requestRedraw — both collapse to one paint.
+      // rAF coalescer flush the paint.
       this.renderer.requestRedraw({ network, reason: 'network-refresh' });
-      this._maybeFollowSelectedTrain();
       // Validate that the current editor still exists (close if deleted)
       this.editor.validateCurrentEditor();
 
@@ -680,83 +644,6 @@ class App {
       // the server answered, so it is alive.
       noteRequestFailure(e);
     }
-  }
-
-  /** Make `trainId` the selected train: its controls open in the inspector and
-   *  the live subscription follows it.
-   *
-   *  The Train Monitor (the lookahead chart) is deliberately NOT part of that.
-   *  It is a large panel that covers the canvas, so it stays opt-in: it opens
-   *  only when asked for by name — `showMonitor`, which the control panel's
-   *  "Monitor →" button passes — and otherwise merely retargets if it is
-   *  already on screen. */
-  selectTrain(trainId: string, options: { showMonitor?: boolean } = {}): void {
-    if (!this.currentNetwork || !this.currentNetwork.trains) {
-      return;
-    }
-
-    const train = this.currentNetwork.trains.find((t: any) => t.id === trainId);
-    if (train) {
-      this.selectedTrainId = trainId;
-      this.lastLookaheadData = null;
-      this.lastLookaheadPayload = null;
-      // No auto-pan on selection. The Follow Train toggle opts in to
-      // centring on the selected train at each refresh tick via
-      // _maybeFollowSelectedTrain.
-      if (this.followTrainEnabled) {
-        this._maybeFollowSelectedTrain();
-      }
-      this.editor.showTrainControlPanel(trainId);
-      if (options.showMonitor || this.trainMonitor.isVisible()) {
-        this.trainMonitor.show(trainId, train.name || trainId);
-      }
-      this._subscribeTrainMonitor(trainId);
-      this.fetchTrainLookahead(trainId, train);
-      this.updateTrainDebugPanel(train);
-    }
-  }
-
-  _maybeFollowSelectedTrain(): void {
-    if (!this.followTrainEnabled) return;
-    if (!this.selectedTrainId) return;
-    const controller = stateManager?.getController(this.selectedTrainId);
-    const span = controller?.span;
-    if (!span?.end_a || !span?.end_b) return;
-    const headEnd = span.leading_end === 'a' ? span.end_a : span.end_b;
-    if (!headEnd?.tile) return;
-    const [gx, gy] = headEnd.tile;
-    // Camera.panToWorld handles the isometric math. The previous in-line
-    // formula (panX = -gx * tileSize) was flat-cartesian and landed the
-    // train off-center.
-    this.renderer.camera.panToWorld(gx, gy);
-    this.renderer.requestRedraw({ reason: 'follow-train' });
-  }
-
-  /**
-   * Pixels of each canvas edge currently hidden behind floating chrome, for
-   * fitToContent to frame the layout into the visible region instead of behind
-   * it. The canvas backing store is sized in CSS pixels (Renderer.resize uses
-   * parent.clientWidth), so getBoundingClientRect values are already in the
-   * same units fitToContent works in.
-   */
-  _canvasChromeInsets(): { left: number; bottom: number } {
-    const canvas = this.renderer.canvas;
-    if (!canvas) return { left: 0, bottom: 0 };
-    const canvasRect = canvas.getBoundingClientRect();
-    const GAP = 12; // breathing room between the chrome and the framed layout
-
-    // The Train Monitor window hovers over the bottom of the canvas when it is
-    // open, so Fit View insets past it or it frames the layout under it.
-    let bottom = 0;
-    const monitor = document.getElementById('train-monitor-bar');
-    if (monitor && !monitor.classList.contains('hidden')) {
-      const monitorRect = monitor.getBoundingClientRect();
-      if (monitorRect.height > 0) {
-        bottom = Math.max(0, canvasRect.bottom - monitorRect.top + GAP);
-      }
-    }
-
-    return { left: 0, bottom };
   }
 
   setupViewControls(): void {
@@ -796,182 +683,11 @@ class App {
     if (fitBtn) {
       fitBtn.addEventListener('click', () => {
         if (!this.currentNetwork?.tracks?.length) return;
-        this.renderer.fitToContent(this.currentNetwork.tracks, undefined, this._canvasChromeInsets());
+        this.renderer.fitToContent(this.currentNetwork.tracks);
         this.renderer.requestRedraw({ reason: 'fit-view' });
       });
     }
 
-    const followToggle = document.getElementById('toggle-follow-train') as HTMLInputElement | null;
-    if (followToggle) {
-      followToggle.checked = this.followTrainEnabled;
-      followToggle.addEventListener('change', (e) => {
-        this.followTrainEnabled = !!(e.target as HTMLInputElement).checked;
-        if (this.followTrainEnabled) {
-          this._maybeFollowSelectedTrain();
-        }
-      });
-    }
-  }
-
-  deselectTrain(): void {
-    this.selectedTrainId = null;
-    this.lastLookaheadData = null;  // Clear stored lookahead
-    this.lastLookaheadPayload = null;
-    if (this.trainMonitorUnsub) {
-      this.trainMonitorUnsub();
-      this.trainMonitorUnsub = null;
-    }
-    this.trainMonitor.hide();
-    this.hideTrainDebugPanel();
-  }
-
-  _subscribeTrainMonitor(trainId: string): void {
-    if (!stateManager) return;
-    if (this.trainMonitorUnsub) {
-      this.trainMonitorUnsub();
-      this.trainMonitorUnsub = null;
-    }
-
-    this.trainMonitorUnsub = stateManager.subscribe(
-      'trains',
-      trainId,
-      (newTrain: any) => {
-        if (!newTrain) {
-          this.deselectTrain();
-          return;
-        }
-        // Only fetch fresh lookahead data -- do NOT render with
-        // stale lastLookaheadPayload here.  The async fetch will
-        // call updateFromController with the fresh payload once it
-        // arrives, preventing the flicker caused by rendering
-        // stale-then-fresh on every poll cycle.
-        this.fetchTrainLookahead(trainId, newTrain);
-      },
-      { immediate: true }
-    );
-  }
-
-  updateTrainDebugPanel(train: any): void {
-    renderTrainDebugPanel(train);
-  }
-
-  hideTrainDebugPanel(): void {
-    renderHideTrainDebugPanel();
-  }
-
-  async fetchTrainLookahead(trainId: string, train: any): Promise<void> {
-    if (!trainId) {
-      return;
-    }
-    // Nothing shows the look-ahead unless the position details or the monitor are.
-    const monitorVisible = this.trainMonitor.isVisible();
-    if (!canvasLayers.isOn('train-position') && !monitorVisible) {
-      return;
-    }
-
-    const now = Date.now();
-    if (now - this.lastLookaheadFetch < this.lookaheadThrottleMs) {
-      return;
-    }
-    this.lastLookaheadFetch = now;
-
-    try {
-      if (this.selectedTrainId === trainId) {
-        const trainSnapshot = train || this.currentNetwork?.trains?.find((t: any) => t.id === trainId);
-        if (!trainSnapshot) {
-          return;
-        }
-        const lookaheadPayload = await api.getTrainLookahead(trainId);
-        this.lastLookaheadPayload = lookaheadPayload;
-        if (this.trainMonitor.isVisible()) {
-          this.trainMonitor.updateFromController(trainSnapshot, lookaheadPayload);
-        }
-        // Lookahead detail lives in the Train Monitor (bottom panel),
-        // not in this debug strip. Cache the data only — the monitor
-        // is the canonical surface for it.
-        const lookaheadData = this.trainMonitor.lookaheadData;
-        if (lookaheadData) {
-          this.lastLookaheadData = lookaheadData;
-          lookaheadData.speed_limit_kmh = trainSnapshot.max_speed || 0;
-        }
-      }
-    } catch (e: any) {
-      console.error('[App] fetchTrainLookahead failed:', e);
-    }
-  }
-
-  async showAddTrainDialog(): Promise<void> {
-    const defaultTrainId = `TRN_${Date.now().toString().slice(-6)}`;
-    const values = await showFormModal({
-      title: 'Add Train',
-      message: 'Enter train placement and startup settings.',
-      fields: [
-        {
-          name: 'trainId',
-          label: 'Train ID',
-          type: 'text',
-          defaultValue: defaultTrainId,
-          required: true,
-          validate: (value: any) => String(value || '').trim() ? '' : 'Train ID is required.'
-        },
-        {
-          name: 'posX',
-          label: 'X Position',
-          type: 'number',
-          defaultValue: 0,
-          step: 1,
-          validate: (value: any) => Number.isFinite(value) ? '' : 'X position must be a number.'
-        },
-        {
-          name: 'posY',
-          label: 'Y Position',
-          type: 'number',
-          defaultValue: 0,
-          step: 1,
-          validate: (value: any) => Number.isFinite(value) ? '' : 'Y position must be a number.'
-        },
-        {
-          name: 'direction',
-          label: 'Direction',
-          type: 'select',
-          defaultValue: 'EAST',
-          options: [
-            { value: 'NORTH', label: 'North' },
-            { value: 'EAST', label: 'East' },
-            { value: 'SOUTH', label: 'South' },
-            { value: 'WEST', label: 'West' }
-          ]
-        },
-        {
-          name: 'maxSpeed',
-          label: 'Max Speed (km/h)',
-          type: 'number',
-          defaultValue: 100,
-          min: 1,
-          step: 1,
-          validate: (value: any) => Number.isFinite(value) && value > 0 ? '' : 'Max speed must be greater than 0.'
-        }
-      ],
-      confirmText: 'Create Train',
-      confirmVariant: 'primary'
-    });
-
-    if (!values) {
-      return;
-    }
-
-    try {
-      await api.createTrain({
-        id: String(values.trainId || '').trim(),
-        position: { x: Number(values.posX), y: Number(values.posY) },
-        direction: values.direction || 'EAST',
-        max_speed: Number(values.maxSpeed)
-      });
-      await this.refreshNetwork();
-    } catch (err: any) {
-      console.error('Failed to create train:', err);
-      showToast('Failed to create train: ' + err.message, 'error', 4000);
-    }
   }
 
   setupDebugPanel(): void {
@@ -993,28 +709,11 @@ class App {
 
     // A canvas layer turned on or off in the View menu repaints the canvas
     // pass it draws on (lib/canvas-layers.ts). A world-only repaint would leave
-    // a live-pass layer (direction arrows, stuck trains) stale while paused.
-    canvasLayers.subscribe((id, on) => {
+    // a live-pass layer (direction arrows) stale while paused.
+    canvasLayers.subscribe((id) => {
       const { redraw } = layerDef(id);
-      if (redraw !== 'none') {
-        this.renderer.requestRedraw({ world: redraw !== 'live', live: redraw !== 'world', reason: 'layer-toggle' });
-      }
-      if (id === 'train-position') this.showTrainPositionDetails(on);
+      this.renderer.requestRedraw({ world: redraw !== 'live', live: redraw !== 'world', reason: 'layer-toggle' });
     });
-  }
-
-  /** Show or hide the selected train's position details after the View menu
-   *  turned them on or off, fetching its look-ahead when they come on. */
-  showTrainPositionDetails(on: boolean): void {
-    const train = this.selectedTrainId
-      ? this.currentNetwork?.trains?.find((t: any) => t.id === this.selectedTrainId)
-      : null;
-    if (!train) {
-      this.hideTrainDebugPanel();
-      return;
-    }
-    this.updateTrainDebugPanel(train);
-    if (on) this.fetchTrainLookahead(this.selectedTrainId!, train);
   }
 
   /**
@@ -1028,34 +727,12 @@ class App {
       poller: this.networkPoller,
       onMessage: async (result) => {
         await this.refreshNetwork(result);
-        this.refreshSelectedTrain();
       },
       pollOnce: async () => {
         await this.refreshNetwork();
-        this.refreshSelectedTrain();
       },
     });
     this.networkStream.start();
-  }
-
-  /** After each network update: the selected train's debug panel and its
-   *  lookahead. */
-  refreshSelectedTrain(): void {
-    if (!this.selectedTrainId) return;
-    const train = stateManager.get('trains', this.selectedTrainId);
-    if (!train) return;
-    // Train Control Panel updates via subscription
-    // Only update debug panel here
-    this.updateTrainDebugPanel(train);
-
-    // Always refresh the lookahead for the selected train.
-    // The StateManager subscription only fires on train-data
-    // changes, so a parked train (e.g. EB latched, speed=0,
-    // position frozen) would leave the monitor stale even
-    // though signals, switches, and clearance ahead can still
-    // be evolving on the server. The throttle inside
-    // fetchTrainLookahead caps the actual fetch rate.
-    this.fetchTrainLookahead(this.selectedTrainId, train);
   }
 
   /**

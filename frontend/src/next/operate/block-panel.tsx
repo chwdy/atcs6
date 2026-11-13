@@ -1,40 +1,16 @@
 /**
- * The selected block, in the Operate screen's right panel
- * (docs/ui-layout-rewrite-plan.md §5): what a click on track opens here.
- *
- * It shows who occupies the block, its voltage and its speed limit, and the
- * two controls an operator changes while running: availability (Normal /
- * Manual / Disabled, the `disabled` and `manual` flags) and the allowed
- * travel direction. Both are config writes the server accepts while the
- * session runs (design_new.md "Direct-commit exceptions"); they are the same
- * requests the segment panel sends today. The block's F / R direction arrows
- * show on the map while it is open, as they do in the segment panel.
+ * The selected block, in the Operate screen's right panel: whether it reads
+ * occupied, the train whose block it is, the train that claims it, and the
+ * voltage on it (design_v2.md "Live fields", A block's live fields). The
+ * block's F / R direction arrows show on the map while it is open.
  */
 import { useEffect } from 'preact/hooks';
 
-import { api } from '../../lib/api';
-import {
-  availabilityStateToFlags,
-  deriveAvailabilityState,
-  deriveDirectionState,
-  directionStateToPayload,
-  formatDuration,
-} from '../../lib/helpers';
 import { stateManager } from '../../lib/state-manager';
 import { showToast } from '../../lib/toast';
+import { CopyId } from './copy-id';
 import { liveVersion } from './live';
 import type { OperateHost } from './operate-state';
-import { CopyId } from './train-panel';
-
-/** The block states (design_new.md "Block") and their status-chip colours. */
-const STATE_CHIP: Record<string, string> = {
-  free: 'chip-info',
-  reserved: 'chip-success',
-  occupied: 'chip-danger',
-  caution: 'chip-warn',
-  disabled: 'chip-muted',
-  manual: 'chip-warn',
-};
 
 /** A segmented control of one value: the design-language `switch-group`. */
 export function Segment({
@@ -70,22 +46,6 @@ export function Segment({
   );
 }
 
-export const AVAILABILITY_OPTIONS = [
-  { value: 'available', label: 'Normal', title: 'Normal — works under automatic routing and ATO' },
-  {
-    value: 'manual',
-    label: 'Manual',
-    title: 'Manual — automatic routing skips it; an operator route with override can still use it',
-  },
-  { value: 'disabled', label: 'Disabled', title: 'Disabled — off-limits to all trains; treated as missing track' },
-];
-
-const DIRECTION_OPTIONS = [
-  { value: 'both', label: 'Both', title: 'Trains may travel either way through this block' },
-  { value: 'forward', label: 'Forward', title: 'Only in the direction of the F arrows on the map' },
-  { value: 'reverse', label: 'Reverse', title: 'Only in the direction of the R arrows on the map' },
-];
-
 /** Send a block or switch change and report a refusal the way today's
  *  panels do: the server's reason in a toast, the panel back to its value. */
 export async function sendChange(what: string, send: () => Promise<any>, host: OperateHost): Promise<void> {
@@ -109,17 +69,13 @@ export function BlockPanel({ host, blockId }: { host: OperateHost; blockId: stri
 
   if (!block) return <div class="empty-state empty-state-warn">Block {blockId} is no longer on the layout.</div>;
 
-  const state = String(block.state || 'free');
-  const occupant = block.occupied_by as string | null;
-  const reservedFor = block.reserved_for_train as string | null;
-  const voltage = Number(block.current_voltage || 0);
-  const limit = block.speed_limit_kmh;
+  const readsOccupied = !!block.reads_occupied;
+  const trainId = (block.train_id as string | null) ?? null;
+  const claimedBy = (block.claimed_by_train_id as string | null) ?? null;
+  const voltage = Number(block.voltage ?? block.current_voltage ?? 0);
   const name = String(block.name || '').trim();
-  const trainLink = (id: string) => (
-    <button type="button" class="rr-flat-btn font-mono" onClick={() => host.selectTrain(id)}>
-      {id}
-    </button>
-  );
+  const chip = readsOccupied ? ['OCCUPIED', 'chip-danger'] : claimedBy ? ['CLAIMED', 'chip-success'] : ['EMPTY', 'chip-info'];
+  const train = (id: string | null) => (id ? <span class="font-mono">{id}</span> : <span class="text-muted">No train</span>);
   return (
     <div class="op-entity-panel">
       <div class="status-header">
@@ -130,7 +86,7 @@ export function BlockPanel({ host, blockId }: { host: OperateHost; blockId: stri
             </div>
             <CopyId id={blockId} label="Block ID" />
           </div>
-          <span class={`chip chip-state ${STATE_CHIP[state] ?? 'chip-muted'}`}>{state.toUpperCase()}</span>
+          <span class={`chip chip-state ${chip[1]}`}>{chip[0]}</span>
         </div>
         <div class="status-header-ident">
           <span class="status-header-role">Block</span>
@@ -142,46 +98,15 @@ export function BlockPanel({ host, blockId }: { host: OperateHost; blockId: stri
       <div class="control-section">
         <div class="control-section-header">Occupancy</div>
         <dl class="op-fields">
-          <dt>Occupied by</dt>
-          <dd>{occupant ? trainLink(occupant) : <span class="text-muted">No train</span>}</dd>
-          <dt>Reserved for</dt>
-          <dd>{reservedFor ? trainLink(reservedFor) : <span class="text-muted">No train</span>}</dd>
+          <dt>Reads</dt>
+          <dd>{readsOccupied ? 'Occupied' : 'Empty'}</dd>
+          <dt>Train</dt>
+          <dd>{train(trainId)}</dd>
+          <dt>Claimed by</dt>
+          <dd>{train(claimedBy)}</dd>
           <dt>Voltage</dt>
           <dd class="font-mono">{voltage.toFixed(1)} V</dd>
-          <dt>Speed limit</dt>
-          <dd class="font-mono">{limit != null ? `${limit} km/h` : 'No limit'}</dd>
-          {block.is_holding_point && (
-            <>
-              <dt>Holding point</dt>
-              <dd>Yes</dd>
-            </>
-          )}
-          <dt>Usage time</dt>
-          <dd class="font-mono">{formatDuration(block.occupied_seconds || 0)}</dd>
         </dl>
-      </div>
-
-      <div class="control-section">
-        <div class="control-section-header">Operation</div>
-        <Segment
-          label="Availability"
-          options={AVAILABILITY_OPTIONS}
-          value={deriveAvailabilityState(block)}
-          onPick={(v) =>
-            void sendChange('availability', () => api.updateBlock(blockId, availabilityStateToFlags(v)), host)
-          }
-        />
-        <Segment
-          label="Allowed travel direction"
-          options={DIRECTION_OPTIONS}
-          value={deriveDirectionState(block)}
-          onPick={(v) =>
-            void sendChange('travel direction', () => api.updateBlock(blockId, directionStateToPayload(v)), host)
-          }
-        />
-        <div class="text-xxs text-muted">
-          Automatic routing obeys both; an operator route with override (Quick Route) can ignore them.
-        </div>
       </div>
     </div>
   );

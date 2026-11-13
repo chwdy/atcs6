@@ -38,8 +38,6 @@ interface TrackData {
   y: number;
   track_bits?: number;
   type?: string;
-  station_id?: string;
-  signal_state?: unknown;
   // A tile carries both axes: `segment_id` is its geometry membership,
   // `block_section_id` is the block that owns that segment.
   segment_id?: string;
@@ -137,7 +135,6 @@ interface PlacementContext {
   boundMinY: number;
   boundMaxY: number;
   forcedStartSegment: string | null;
-  tileSkipsSegment: (t: TrackData | undefined) => boolean;
 }
 
 export class ConstructionPathfinder {
@@ -320,14 +317,14 @@ export class ConstructionPathfinder {
   }
 
   // Neighbor plug for graphSearch over EXISTING track only (trace, reachable
-  // preview, and — with the stop knobs — block/platform selection). It never
+  // preview, and — with the stop knobs — segment selection). It never
   // steps onto an empty tile: from a seed (entry '') every exposed edge is a
   // valid first exit; afterwards the entry edge constrains exits to the
   // segment(s) that bind it (getExitsForEntry), so a path cannot cheat across
   // the disconnected segments of a switch. A neighbour must carry track on the
   // facing edge to count as connected. Cost is 1 per hop (shortest = fewest
   // tiles). With stopAtSwitches / stopAtCrossings the walk refuses to enter (or
-  // leave) switch / crossing tiles — used by block/platform, which cannot
+  // leave) switch / crossing tiles — used by the segment tools, which cannot
   // contain them (see validateSegmentTile).
   followExistingNeighbors(
     trackByKey: Map<string, TrackData>,
@@ -413,38 +410,8 @@ export class ConstructionPathfinder {
           continue;
         }
 
-        if (existingTrack && (existingTrack.type === 'signal' || existingTrack.signal_state)) {
-          const signalPorts = this.getExistingTrackDirections(existingTrack.track_bits || 0);
-          if (!signalPorts.includes(entryDir)) continue;
-        }
-
-        if (existingTrack && (existingTrack.type === 'station' || existingTrack.station_id)) {
-          const stationPorts = this.getExistingTrackDirections(existingTrack.track_bits || 0);
-          if (!stationPorts.includes(entryDir)) continue;
-        }
-
-        // A platform/signal keeps its own rail, so the new track must join that
-        // rail rather than an edge it doesn't serve. Passing THROUGH one (we have
-        // an entry), the exit must be the paired edge of the segment we entered
-        // on — follow the rail straight through, no turning inside. Starting ON
-        // one (no entry yet), the first move must leave via one of its rail
-        // ports, so the new track connects to the rail instead of dangling.
-        const curSkip = ctx.trackMap.get(posKey);
-        if (curSkip && ctx.tileSkipsSegment(curSkip)) {
-          if (current.fromDir !== null) {
-            const entryEdgeHere = this.getOppositeDir(current.fromDir);
-            const railExits = this.getExitsForEntry(curSkip.track_bits || 0, entryEdgeHere);
-            if (!railExits.includes(neighbor.dir)) continue;
-          } else {
-            const startPorts = this.getExistingTrackDirections(curSkip.track_bits || 0);
-            if (!startPorts.includes(neighbor.dir)) continue;
-          }
-        }
-
         if (current.parent && current.fromDir !== null) {
-          // No-90° check. With the rail-follow rule above, a skip tile's in/out
-          // moves trace its own rail, so tileScreenAngle yields that rail's angle
-          // here — platforms no longer need exempting from the corner check.
+          // No-90° check.
           const currentAngle = this.tileScreenAngle(current.fromDir, neighbor.dir);
           const parentAngle =
             current.parent.fromDir === null
@@ -564,23 +531,6 @@ export class ConstructionPathfinder {
       existingTracks.forEach((t) => trackMap.set(`${t.x},${t.y}`, t));
     }
 
-    const endTrack = trackMap.get(`${endX},${endY}`);
-    if (endTrack) {
-      if (endTrack.type === 'station' || endTrack.station_id) {
-        const stationId = endTrack.station_id;
-        if (stationId && existingTracks) {
-          const stationTiles = existingTracks.filter((t) => t.station_id === stationId);
-          if (stationTiles.length > 1) {
-            const isEndpoint =
-              stationTiles.length <= 2 || this.isStationEndpoint(endX, endY, stationTiles);
-            if (!isEndpoint) {
-              return null;
-            }
-          }
-        }
-      }
-    }
-
     const startTrack = trackMap.get(`${startX},${startY}`);
     const preferredDirs = startTrack
       ? this.getExistingTrackDirections(startTrack.track_bits || 0)
@@ -594,17 +544,9 @@ export class ConstructionPathfinder {
     const validEndArrival = (node: PlacementNode): boolean => {
       if (!endEdges && node.parent && node.fromDir !== null) {
         const endTile = trackMap.get(`${end.x},${end.y}`);
-        // Cap angle to check against the penultimate tile: a platform end uses
-        // its own rail (the segment the path joins — the one holding the entry
-        // edge), so a path can't meet a platform at a 90° corner; any other end
-        // uses its computed cap. A penultimate platform already traces its rail
-        // (rail-follow rule), so the penAngle below is correct too.
+        // Cap angle to check against the penultimate tile.
         let endAngle: number | null;
-        if (tileSkipsSegment(endTile)) {
-          const entryEdge = this.getOppositeDir(node.fromDir);
-          const railExits = this.getExitsForEntry(endTile?.track_bits || 0, entryEdge);
-          endAngle = railExits.length ? this.segScreenAngle(entryEdge, railExits[0]) : null;
-        } else if (options.avoidConnect && endTile && endTile.track_bits) {
+        if (options.avoidConnect && endTile && endTile.track_bits) {
           // Avoid-connect mode lays a non-conflicting segment over existing end
           // track (a crossover/parallel) rather than the default cap — mirror
           // pathToTracks' avoid-connect end branch (computeNonConflictingExit) so
@@ -649,7 +591,6 @@ export class ConstructionPathfinder {
         boundMinY,
         boundMaxY,
         forcedStartSegment: options.forcedStartSegment ?? null,
-        tileSkipsSegment,
       }),
       goal: (n) => n.pos.x === end.x && n.pos.y === end.y && validEndArrival(n),
     });
@@ -665,15 +606,7 @@ export class ConstructionPathfinder {
     // A* exhausted without an eased route. The diagonalLine fallback ignores
     // existing track, so reject it if it would lay a 90° corner.
     const fallback = this.diagonalLine(start, end);
-    // The straight-line fallback can't follow a platform's rail, so reject it if
-    // it would thread through a platform/signal interior — there is no clean
-    // build, and the caller shows the drag as invalid instead.
-    const threadsSkipTile = fallback.some((p, i) => {
-      if (i === 0 || i === fallback.length - 1) return false;
-      return tileSkipsSegment(trackMap.get(`${p.x},${p.y}`));
-    });
     if (
-      threadsSkipTile ||
       this.pathHasSquareCorner(
         fallback,
         trackMap,
@@ -724,23 +657,6 @@ export class ConstructionPathfinder {
       WEST: 'EAST',
     };
     return opposites[dir];
-  }
-
-  isStationEndpoint(x: number, y: number, stationTiles: TrackData[]): boolean {
-    let adjacentStationCount = 0;
-    const deltas = [
-      { dx: 0, dy: 1 },
-      { dx: 0, dy: -1 },
-      { dx: 1, dy: 0 },
-      { dx: -1, dy: 0 },
-    ];
-
-    for (const d of deltas) {
-      const hasAdjacentStation = stationTiles.some((t) => t.x === x + d.dx && t.y === y + d.dy);
-      if (hasAdjacentStation) adjacentStationCount++;
-    }
-
-    return adjacentStationCount <= 1;
   }
 
   // --- 90°-corner avoidance (octilinear easing) -----------------------------
@@ -829,8 +745,7 @@ export class ConstructionPathfinder {
   // Does a finished path lay any two adjacent tiles at a 90° screen corner?
   // Uses each tile's path-local segment (in/out moves, or the junction segment
   // at the ends), so it is the ground-truth gate for fallbacks that the
-  // constrained search does not produce (e.g. diagonalLine). Tiles that lay no
-  // segment (signals/stations) break the run, matching pathToTracks.
+  // constrained search does not produce (e.g. diagonalLine).
   pathHasSquareCorner(
     path: Point[],
     trackMap: Map<string, TrackData>,
@@ -840,11 +755,6 @@ export class ConstructionPathfinder {
     let prevAngle: number | null = null;
     for (let i = 0; i < path.length; i++) {
       const p = path[i];
-      const tile = trackMap.get(`${p.x},${p.y}`);
-      if (tile && (tile.type === 'signal' || tile.signal_state || tile.type === 'station' || tile.station_id)) {
-        prevAngle = null;
-        continue;
-      }
       const prev = i > 0 ? path[i - 1] : null;
       const next = i < path.length - 1 ? path[i + 1] : null;
       let angle: number;
@@ -1042,14 +952,6 @@ export const FORCED_SEGMENT_PORTS: Record<string, [string, string]> = {
   SW: ['SOUTH', 'WEST'],
 };
 
-// A tile that carries its own rail — a station/platform tile or a signal. The
-// track tool lays nothing on such a tile and the placement search treats it as
-// a skip. Single source for "does this tile already own its rail", used by
-// findPath and the editor's drag-preview rail bridge.
-export function tileSkipsSegment(t: TrackData | undefined): boolean {
-  return !!(t && (t.type === 'signal' || t.signal_state || t.type === 'station' || t.station_id));
-}
-
 // Screen angle of the piece that joins two tile edges. The single source of the
 // edge→angle mapping (the class method ConstructionPathfinder.segScreenAngle
 // delegates here); kept module-level so the standalone pathToTracks below can
@@ -1156,20 +1058,6 @@ export function pathToTracks(
 
   for (let i = 0; i < path.length; i++) {
     const current = path[i];
-
-    const existingForProtection = existingTracks.get(`${current.x},${current.y}`);
-    if (
-      existingForProtection &&
-      (existingForProtection.type === 'station' || existingForProtection.station_id)
-    ) {
-      continue;
-    }
-    if (
-      existingForProtection &&
-      (existingForProtection.type === 'signal' || existingForProtection.signal_state)
-    ) {
-      continue;
-    }
 
     const prev = i > 0 ? path[i - 1] : null;
     const next = i < path.length - 1 ? path[i + 1] : null;
@@ -1389,31 +1277,6 @@ export function getOpposite(dir: string | null): string | null {
 }
 
 // ============================================================================
-// Signal Placement Validation
-// ============================================================================
-
-export const VALID_DETECTION_DIRECTIONS: Record<number, string[]> = {
-  1: ['NORTH', 'SOUTH'],
-  2: ['EAST', 'WEST'],
-  4: ['NORTH', 'EAST'],
-  8: ['NORTH', 'WEST'],
-  16: ['SOUTH', 'EAST'],
-  32: ['SOUTH', 'WEST'],
-};
-
-export const SWITCH_TRACK_BITS = new Set<number>([
-  3, 24, 36, 5, 9, 17, 33, 6, 10, 18, 34, 12, 20, 40, 48, 7, 11, 19, 35, 14, 38, 26, 50, 21, 37,
-  25, 41,
-]);
-
-export function getValidSignalDirections(trackBits: number): string[] {
-  if (SWITCH_TRACK_BITS.has(trackBits)) {
-    return [];
-  }
-  return VALID_DETECTION_DIRECTIONS[trackBits] || [];
-}
-
-// ============================================================================
 // Block Assignment Validation
 // ============================================================================
 
@@ -1452,19 +1315,16 @@ export function validateSegmentPath(
   warnings: string[];
   errors: string[];
   segmentsInPath: string[];
-  signalsInPath: Array<{ x: number; y: number; track: TrackData }>;
 } {
   const warnings: string[] = [];
   const errors: string[] = [];
   const segmentsInPath = new Set<string>();
-  const signalsInPath: Array<{ x: number; y: number; track: TrackData }> = [];
   const trackMap = new Map<string, TrackData>();
 
   if (tracks) {
     tracks.forEach((t) => trackMap.set(`${t.x},${t.y}`, t));
   }
 
-  let hasSignal = false;
   for (const pos of path) {
     const track = trackMap.get(`${pos.x},${pos.y}`);
     const validation = validateSegmentTile(track);
@@ -1480,11 +1340,6 @@ export function validateSegmentPath(
     if (track && track.segment_id) {
       segmentsInPath.add(track.segment_id);
     }
-
-    if (track && (track.signal_state || track.type === 'signal')) {
-      hasSignal = true;
-      signalsInPath.push({ x: pos.x, y: pos.y, track });
-    }
   }
 
   if (mode === 'create') {
@@ -1498,19 +1353,10 @@ export function validateSegmentPath(
     }
   }
 
-  if (hasSignal && errors.length === 0) {
-    if (mode === 'extend') {
-      warnings.push('Path contains signal(s) - they will need reconfiguration after extending');
-    } else {
-      warnings.push('Path contains signal(s) - signals create block boundaries');
-    }
-  }
-
   return {
     valid: errors.length === 0,
     warnings,
     errors,
     segmentsInPath: [...segmentsInPath],
-    signalsInPath,
   };
 }

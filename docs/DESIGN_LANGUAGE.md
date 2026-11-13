@@ -539,7 +539,7 @@ header has **no border** of its own.
 - Header and footer use `flex-shrink: 0` so they stay pinned.
 - Footer banners collapse to 0px when their content is hidden — no padding overhead when there's nothing to show.
 
-Reference: [`.tm-panel`](../static/css/features/train-monitor.css) is the
+Reference: `.tm-panel` (deleted with the v1 train monitor) is the
 canonical example.
 
 ---
@@ -705,7 +705,7 @@ bigger: 52px tall, 15px weight-700 uppercase text, 8px radius, generous
 gap between leading glyph and label. Colors come from `--success-color`
 (Go) or `--danger-color` (Stop) used as text + border + 10% bg tint on
 hover. Reference: `.tc-btn-hero` in
-[features/train-control.css](../static/css/features/train-control.css).
+[features/controls.css](../static/css/features/controls.css).
 
 ### Emergency button
 
@@ -745,7 +745,7 @@ color: var(--bg-dark);
   passed, not being invited to move.
 
 Reference: `.tc-eb-btn`, `.tc-eb-reset-btn`, `.tc-eb-badge` in
-[features/train-control.css](../static/css/features/train-control.css).
+[features/controls.css](../static/css/features/controls.css).
 
 ### Segmented control
 
@@ -937,7 +937,7 @@ put the user there.
   facing before commit.
 
 Reference: `showAddTrainDialog` and the `place-train` mode in
-[editor-trains.ts](../frontend/src/editor/editor-trains.ts).
+`editor-trains.ts`.
 
 ### Control row layout
 
@@ -953,7 +953,7 @@ width, so the longest label can't clip at any size. **Same-category
 controls share one layout:** if Power and Mode stack, Cab stacks too — a
 lone control laid out unlike its siblings reads as a mistake even when
 each is fine on its own. Reference: `.tc-controls-pair` in
-[features/train-control.css](../static/css/features/train-control.css) —
+[features/controls.css](../static/css/features/controls.css) —
 label-above cells that flow and wrap, with the wider 3-cell Cab taking
 its own full line.
 
@@ -994,14 +994,14 @@ panel that reaches for it falls back to the browser's default oversized
 inputs instead of the 28px control language.
 
 Reference: `.diagnostics-panel-field select` in
-[features/diagnostics.css](../static/css/features/diagnostics.css).
+`features/diagnostics.css`.
 
 **On a wide column, the field follows its label.** `.input-small-row`
 spreads its children to both edges. That is right in a 280px sidebar, but
 on a 700px column it pins a short field hundreds of pixels from its label
 (Proximity). There, give the label a fixed width and let the field and its
 unit follow it. Reference: `.sp-scalar-row` in
-[features/speed-profiles.css](../static/css/features/speed-profiles.css).
+`features/speed-profiles.css`.
 
 **A value that can never be changed on this panel is plain text, not a
 disabled input.** A disabled input still looks like a field, and a row of
@@ -1012,7 +1012,7 @@ note at the top of the panel names the model profile where they are edited.
 A control that is frozen only for now stays a dimmed input, because it can
 be changed in another mode (Read-only in Operate mode, below). Reference:
 `_scalarRowHtml` in
-[editor-speed-profiles.ts](../frontend/src/editor/editor-speed-profiles.ts).
+`editor-speed-profiles.ts`.
 
 ### Seamless inline edit
 
@@ -1147,9 +1147,9 @@ shifts as a save settles — and the list and the plot stay in sync because they
 are two views of the one points array. Render the plot at device resolution, as
 the bit editor's canvas does (the "in-panel editor canvas" rule above).
 Reference: the curve editor (`handleDown` / `handleMove` / `handleContext`) in
-[editor-speed-profiles.ts](../frontend/src/editor/editor-speed-profiles.ts);
+`editor-speed-profiles.ts`;
 `.sp-plot-block`, `.sp-canvas`, `.sp-point-*`, `.sp-converter*` in
-[features/speed-profiles.css](../static/css/features/speed-profiles.css).
+`features/speed-profiles.css`.
 
 ### Slider / handle
 
@@ -1161,7 +1161,7 @@ For continuous (power %) or notched (master controller) inputs. Native
 
 Disabled state across both: the shared rule (Disabled controls, below).
 Reference: `.tc-power-slider`, `.tc-handle-slider` in
-[features/train-control.css](../static/css/features/train-control.css).
+[features/controls.css](../static/css/features/controls.css).
 
 ### Disabled controls
 
@@ -1260,7 +1260,7 @@ way the id clamps and the name wraps (Overflow, below).
 
 Used for tabular data where each row has a categorical badge. Color-code
 the badge background using the accent palette. Reference:
-[`.diagnostics-row`](../static/css/features/diagnostics.css).
+`.diagnostics-row`.
 
 ### C. Multi-column form section
 
@@ -1346,7 +1346,7 @@ and flashes danger without a round-trip; only an unexpected server error
 earns a toast.
 
 References: `.route-header-row.run-overrides-grid` in
-[features/routes-paths.css](../static/css/features/routes-paths.css)
+`features/routes-paths.css`
 (3-row inner sequence — label / control / reset), consumed by the
 Per-run overrides section in `editor-route-runs.ts`; and
 `.route-header-row.route-policy-grid` in the same file (4-row inner
@@ -1410,7 +1410,7 @@ card's hold line had it, but the card, itself a flex item in the cards
 row, did not, so a long hold reason widened the whole card to the length
 of the sentence.
 Reference: `.rr-card-route` (clamp, opaque id) in
-[features/routes-paths.css](../static/css/features/routes-paths.css), and
+`features/routes-paths.css`, and
 `.status-header-name` (wrap, display name) in
 [components/status-blocks.css](../static/css/components/status-blocks.css).
 
@@ -1564,7 +1564,7 @@ sizes across a single row.
 - **Loading**: same shape, replace italic with subdued spinner glyph if needed.
 - **Status-colored empty**: `.empty-state-warn` / `.empty-state-error` keep the shape but recolor the text to `--warning-color` / `--danger-color` and drop the italic (the color carries the meaning) — e.g. "Train no longer exists", "Error: …".
 - **Error in a row**: on a card or card-shaped row, `border-left: 3px solid var(--danger-color)` + `background-color: rgba(var(--danger-rgb), 0.08)` + value text in `var(--danger-color)`; in a §12 row, the red status dot with its `✕` glyph.
-- **A failed read is never an empty list.** A list the panel reads from the server shows "Loading…" until the first answer, and the empty line only after a read that worked. When no read has worked yet, it says so with `.empty-state-error` ("Could not read the routes: … Trying again."). When a later read fails, it keeps the last list and puts a §6 `.banner-warn` over it saying the list may be out of date. A picker fed by a read follows the same rule in its first option ("Reading the routes…", "Could not read the routes"). Reference: `PolledBody` in [next/operate/left-list.tsx](../frontend/src/next/operate/left-list.tsx); `routePickerPrompt` in [next/operate/train-panel.tsx](../frontend/src/next/operate/train-panel.tsx).
+- **A failed read is never an empty list.** A list the panel reads from the server shows "Loading…" until the first answer, and the empty line only after a read that worked. When no read has worked yet, it says so with `.empty-state-error` ("Could not read the routes: … Trying again."). When a later read fails, it keeps the last list and puts a §6 `.banner-warn` over it saying the list may be out of date. A picker fed by a read follows the same rule in its first option ("Reading the routes…", "Could not read the routes"). Reference: `PolledBody` in [next/operate/left-list.tsx](../frontend/src/next/operate/left-list.tsx); `routePickerPrompt` in `next/operate/train-panel.tsx`.
 
 ---
 
@@ -1719,7 +1719,7 @@ summary is a structural toggle that controls section visibility, not a
 field descriptor, so it sits one brightness tier higher.)
 
 Reference: `.tc-disclosure` in
-[features/train-control.css](../static/css/features/train-control.css).
+[features/controls.css](../static/css/features/controls.css).
 
 ### Composing a dense row
 
@@ -1743,7 +1743,7 @@ composition is different enough to deserve its own subsection — see
 "Composing a detail page top" below.
 
 Reference: `.rr-card` in
-[features/routes-paths.css](../static/css/features/routes-paths.css).
+`features/routes-paths.css`.
 
 ### Composing a detail page top
 
@@ -1791,7 +1791,7 @@ the stylesheet: `.status-header` sets its border color through the
 `border-left` shorthand, so a same-specificity `.accent-*` override only
 wins when it comes later in source order. The stats block (route-runs
 specific) is `.rr-summary` in
-[features/routes-paths.css](../static/css/features/routes-paths.css).
+`features/routes-paths.css`.
 
 ### Composing a multi-select / batch-action panel
 
@@ -1905,11 +1905,11 @@ column would squeeze both. The marks follow the rules above.
   Control row layout).
 
 Reference: `CalibrationSteps` / `stepRows` in
-[next/locomotives/calibration-steps.tsx](../frontend/src/next/locomotives/calibration-steps.tsx),
+`next/locomotives/calibration-steps.tsx`,
 which moves the Speed Profile panel's rows into their steps after each draw;
 `calibrationSteps` in
-[next/locomotives/model.ts](../frontend/src/next/locomotives/model.ts);
-`.nloco-step*` in [next/locomotives.css](../static/css/next/locomotives.css).
+`next/locomotives/model.ts`;
+`.nloco-step*` in `next/locomotives.css`.
 
 ### One button for a run of checks
 
@@ -2003,7 +2003,7 @@ matches data):
 Reference: `RunningTrainsRow` in
 [next/operate/running-trains.tsx](../frontend/src/next/operate/running-trains.tsx);
 `cardControl`, `cardHoldLine` and `trainCardTone` in
-[next/operate/train-display.ts](../frontend/src/next/operate/train-display.ts);
+`next/operate/train-display.ts`;
 `cardsFolded` in
 [next/operate/operate-state.ts](../frontend/src/next/operate/operate-state.ts);
 `.op-card*` in [next/operate.css](../static/css/next/operate.css).
@@ -2398,12 +2398,12 @@ Reference: `MenuButton` in [next/menu.tsx](../frontend/src/next/menu.tsx);
 When in doubt, copy the structure of one of these:
 
 - **Shared compositional primitives** → [components/status-blocks.css](../static/css/components/status-blocks.css) — the §6 banner, §7 chip, §11 status header, and §6 accent helpers. Editor panels consume these classes directly (`.status-header`, `.chip`, `.banner`, `.accent-*`) instead of redefining the shapes per feature.
-- **Detail-page editor** → [editor-route-runs.ts](../frontend/src/editor/editor-route-runs.ts) + [features/routes-paths.css](../static/css/features/routes-paths.css) — the worked reference for composing a `status-header` + stats block + list of rows inside an editor sidebar. Route-run-specific bits (`.rr-card`, `.rr-summary`, `.rr-task-*`) layer on top of the shared primitives.
-- **Long edit-and-act panel** → [editor-routes.ts](../frontend/src/editor/editor-routes.ts) + the `.re-toolbar` / `.atr-*` rules in `features/routes-paths.css` — the worked reference for a panel that mixes editing (tasks, mode, policy) with live monitoring (assigned trains, history). Demonstrates: sticky top toolbar with Save + dirty indicator + Refresh; assigned-trains list as a row-shaped second consumer of the `.rr-task-*` skeleton; history default-visible with per-entity cap; Force checkbox adjacent to the Assign button it modifies.
+- **Detail-page editor** → `editor-route-runs.ts` + `features/routes-paths.css` — the worked reference for composing a `status-header` + stats block + list of rows inside an editor sidebar. Route-run-specific bits (`.rr-card`, `.rr-summary`, `.rr-task-*`) layer on top of the shared primitives.
+- **Long edit-and-act panel** → `editor-routes.ts` + the `.re-toolbar` / `.atr-*` rules in `features/routes-paths.css` — the worked reference for a panel that mixes editing (tasks, mode, policy) with live monitoring (assigned trains, history). Demonstrates: sticky top toolbar with Save + dirty indicator + Refresh; assigned-trains list as a row-shaped second consumer of the `.rr-task-*` skeleton; history default-visible with per-entity cap; Force checkbox adjacent to the Assign button it modifies.
 - **Floating window chrome** → [layout/floating-window.css](../static/css/layout/floating-window.css) + [window-manager.ts](../frontend/src/lib/window-manager.ts) — the shared header (title + close, or an adopted header with its own buttons) + content area + 8-direction resize handles, draggable, resizable, double-click-to-fit. Header has no border; relies on `--bg-hover` against `--bg-panel`. The right panels' pop-out composes this instead of redefining it.
-- **Logs screen tab content** → [diagnostics.css](../static/css/features/diagnostics.css) — toolbar + scrolling body, shown in the Logs screen's Diagnostics tab. Toolbar keeps `border-bottom` because it shares `--bg-panel` with the body (per the §2 toolbar rule: same surface → hairline separator needed).
-- **Look-ahead graph** → [train-monitor.css](../static/css/features/train-monitor.css) — the graph, view-distance control and Upcoming list the Operate train panel's Look-ahead section shows. The segmented view-distance control is a bordered container of flat ghosts (no internal dividers).
-- **Right panel form** → [train-control.css](../static/css/features/train-control.css) — sectioned vertical stack inside a right panel. Status rows use the 3px left-border accent only, no surrounding 1px box.
+- **Logs screen tab content** → `diagnostics.css` — toolbar + scrolling body, shown in the Logs screen's Diagnostics tab. Toolbar keeps `border-bottom` because it shares `--bg-panel` with the body (per the §2 toolbar rule: same surface → hairline separator needed).
+- **Look-ahead graph** → `train-monitor.css` (deleted) — the graph, view-distance control and Upcoming list the Operate train panel's Look-ahead section shows. The segmented view-distance control is a bordered container of flat ghosts (no internal dividers).
+- **Right panel form** → [controls.css](../static/css/features/controls.css) — sectioned vertical stack inside a right panel. Status rows use the 3px left-border accent only, no surrounding 1px box.
 
 **Not a reference — outside this doc.** The standalone debug page
 ([static/debug.html](../static/debug.html), styled by
@@ -2480,10 +2480,10 @@ Concrete fills currently in use:
 | Train             | `rgba(32, 26, 50, 0.92)`      |
 
 References: `_drawLabel` and `_placeLabel` in
-[renderer-stations.ts](../frontend/src/renderer/renderer-stations.ts); `drawTrainLabel`
-in [renderer-trains.ts](../frontend/src/renderer/renderer-trains.ts);
+`renderer-stations.ts`; `drawTrainLabel`
+in `renderer-trains.ts`;
 `drawPlatformNameOnBody` in
-[renderer-platforms.ts](../frontend/src/renderer/renderer-platforms.ts).
+`renderer-platforms.ts`.
 
 ### Borders are screen-pixel-capped
 
@@ -2561,7 +2561,7 @@ bodies), the members get a "highlight stroke" outlining their shape. Rules:
   color — the §12 hue-fights-hue problem.
 
 Reference: `_drawPlatformHighlights` in
-[renderer-stations.ts](../frontend/src/renderer/renderer-stations.ts).
+`renderer-stations.ts`.
 
 ### Overlap and collision avoidance
 
@@ -2625,9 +2625,9 @@ across frames.
 
 References: `_drawLive` reset in [renderer.ts](../frontend/src/renderer/renderer.ts);
 `aabbOverlapArea` utility in the same file;
-`_pickLabelPosition` in [renderer-trains.ts](../frontend/src/renderer/renderer-trains.ts);
-the push calls in [renderer-platforms.ts](../frontend/src/renderer/renderer-platforms.ts)
-and [renderer-stations.ts](../frontend/src/renderer/renderer-stations.ts).
+`_pickLabelPosition` in `renderer-trains.ts`;
+the push calls in `renderer-platforms.ts`
+and `renderer-stations.ts`.
 
 ### Don'ts
 
@@ -2671,7 +2671,7 @@ guessing one.
 ### Signal aspects
 
 A signal is a grey stick perpendicular to its track with a lamp at the
-end ([renderer-signals.ts](../frontend/src/renderer/renderer-signals.ts)):
+end (`renderer-signals.ts`):
 an inner circle (3·scale) filled with the aspect color inside a
 4·scale grey ring. Aspects: green `--canvas-success`, yellow
 `--canvas-caution`, red `--canvas-danger` — and red is also the fall-through for any state value the
@@ -2684,7 +2684,7 @@ treatment — two stacked yellow lamps — not a recolor.
 ### Route / path overlays
 
 A route's tiles fill with a diamond per tile, colored by run status
-([renderer-routes.ts](../frontend/src/renderer/renderer-routes.ts)):
+(`renderer-routes.ts`):
 pending grey, setting yellow, set green, active bright green, clearing
 orange, completed dim grey, cancelled red — fills at ~0.2–0.4 alpha
 with a matching border, plus per-tile direction arrows in the same
@@ -2750,7 +2750,7 @@ block-state or train-state colors.
 The train body is a white polyline with a dark outline; the head is a
 white triangle pointing in the direction of travel, the tail a white
 square carrying the car count
-([renderer-trains.ts](../frontend/src/renderer/renderer-trains.ts)).
+(`renderer-trains.ts`).
 The body tints by state, highest priority first: **saturated purple =
 emergency brake active**, pale lavender = route teardown pending,
 light yellow = manual driving, white = ATO. EB wins over every other
@@ -2772,9 +2772,9 @@ unknown. In panels the same rule holds: the trains-list card and the
 train panel show an `UNIDENTIFIED` state chip on the muted accent and
 render none of the operator controls, since the API refuses every one of
 them for it. Reference: `trainBodyFill` in
-[renderer-trains.ts](../frontend/src/renderer/renderer-trains.ts),
+`renderer-trains.ts`,
 `renderUnidentifiedTrainListItem` / `renderUnidentifiedTrainPanel` in
-[editor-trains.ts](../frontend/src/editor/editor-trains.ts).
+`editor-trains.ts`.
 
 Do not confuse this with a **ghosted** train, which is the opposite case
 — a train the operator placed whose detected blocks all read clear, so
@@ -2809,7 +2809,7 @@ clears when the panel closes or the placement commits. Reference:
 `_drawTrainGhost` / `setTrainGhostPreview` in
 [renderer.ts](../frontend/src/renderer/renderer.ts), fed by
 `_computeGhostTiles` in
-[editor-trains.ts](../frontend/src/editor/editor-trains.ts).
+`editor-trains.ts`.
 
 ### Debug overlays
 
@@ -3004,10 +3004,10 @@ same change.
 
 | What | Where | Target | Trigger |
 |------|-------|--------|---------|
-| Private copies of the segmented control | `.tc-seg-btn` in [train-control.css](../static/css/features/train-control.css) (also used by Operate's train panel, [next/operate/train-panel.tsx](../frontend/src/next/operate/train-panel.tsx)), `.tm-seg-btn` in [train-monitor.css](../static/css/features/train-monitor.css) | Fold onto `.switch-btn` (§3) | Next touch of either panel |
+| Private copies of the segmented control | `.tc-seg-btn` in [controls.css](../static/css/features/controls.css) (also used by Operate's train panel, `next/operate/train-panel.tsx`), `.tm-seg-btn` in `train-monitor.css` (deleted) | Fold onto `.switch-btn` (§3) | Next touch of either panel |
 | Pre-token literals — spacing, type sizes, radii, z-index written as raw values | all of `static/css` | Compose from the §1 scale tokens (`--space-*`, `--font-size-*`, `--radius-*`, `--z-*`); consolidate off-ramp values (13px type, 5/7/9px gaps, 3px small radii) to the nearest step | When touching the declaration |
 | The route conflict flash hard-codes its colour (`232, 63, 91`) | `renderer-routes.ts` | Read `--canvas-danger` from the canvas palette (§17 Rules) | Next touch of renderer-routes.ts |
-| Shapes with two consumers not yet promoted — the `.rr-task-*` / `.atr-*` rows (with their `.rr-task-verb-*` chips) and the two §5C field clusters | [routes-paths.css](../static/css/features/routes-paths.css) | A shared `.list-row*` and `.field-cluster*` family in status-blocks.css; verbs as `.chip-state` (§7, §12) | Next touch of either consumer |
-| Dense-row status dots carry hue only | `.rr-task-status` / `.atr-*` in [routes-paths.css](../static/css/features/routes-paths.css) | Pair each dot with its glyph (§12) | With the `.list-row*` promotion |
+| Shapes with two consumers not yet promoted — the `.rr-task-*` / `.atr-*` rows (with their `.rr-task-verb-*` chips) and the two §5C field clusters | `routes-paths.css` | A shared `.list-row*` and `.field-cluster*` family in status-blocks.css; verbs as `.chip-state` (§7, §12) | Next touch of either consumer |
+| Dense-row status dots carry hue only | `.rr-task-status` / `.atr-*` in `routes-paths.css` | Pair each dot with its glyph (§12) | With the `.list-row*` promotion |
 | The top bar's Reset is the accent CTA | [next/top-bar.tsx](../frontend/src/next/top-bar.tsx) | The warning button (Composing the top bar) | Next top-bar touch |
-| Fixed-dark code surface in a panel — JSON viewer well + neon-green text | `.json-viewer-content` / `.json-content-view` (`#0d1020` / `#00ff88`) in [routes-paths.css](../static/css/features/routes-paths.css) | Either tokenize to surface tokens, or formally bless as a constant "code block" surface like the canvas (§1 Themes) | Next View-Full-JSON / routes-paths touch |
+| Fixed-dark code surface in a panel — JSON viewer well + neon-green text | `.json-viewer-content` / `.json-content-view` (`#0d1020` / `#00ff88`) in `routes-paths.css` | Either tokenize to surface tokens, or formally bless as a constant "code block" surface like the canvas (§1 Themes) | Next View-Full-JSON / routes-paths touch |

@@ -95,18 +95,7 @@ export class EditorUIHandler {
   /** Stop the timers and subscriptions of whatever panel is showing. */
   cleanupPanelSubscriptions(): void {
     const editor = this.editor;
-    for (const handler of [
-      editor.trainHandler,
-      editor.signalHandler,
-      editor.switchHandler,
-      editor.blockHandler,
-      editor.platformHandler,
-      editor.stationGroupHandler,
-      editor.routeRunHandler,
-      editor.routeHandler,
-      editor.pathHandler,
-      editor.speedProfileHandler,
-    ]) {
+    for (const handler of [editor.switchHandler, editor.blockGroupingHandler] as any[]) {
       handler?._cleanup?.();
     }
   }
@@ -225,39 +214,12 @@ export class EditorUIHandler {
       );
   }
 
-  /** Keep the secondary inspector in step with the newly selected tile. A
-   *  signal / platform / station editor that is already open follows the tile
-   *  (or steps aside to the Tile Editor when the tile no longer carries that
-   *  entity). When nothing more specific is open — or the Tile Editor itself is
-   *  showing — the tile's own bits show in the Tile Editor. Any other entity
-   *  editor (block, switch, train, path, …) is left in place; those are reached
-   *  through their own Edit affordances. */
+  /** Keep the secondary inspector in step with the newly selected tile. When
+   *  nothing is open — or the Tile Editor itself is showing — the tile's own
+   *  bits show in the Tile Editor. Any other entity editor (block, switch, …)
+   *  is left in place; those are reached through their own Edit affordances. */
   updateSecondaryEditorForTile(track: any): void {
     const type = this.editor._currentEditorType;
-
-    switch (type) {
-      case 'signal':
-        if (track.signals && track.signals.length > 0) {
-          this.editor.showSignalsEditorForTile(track);
-        } else {
-          this.editor.showTileEditor(track);
-        }
-        return;
-
-      case 'platform':
-        if (track.station_id) {
-          this.editor.showPlatformEditor(track.station_id);
-        } else {
-          this.editor.showTileEditor(track);
-        }
-        return;
-
-      case 'station-group':
-      case 'station-group-list':
-        this.editor.showStationsPanel();
-        return;
-    }
-
     if (!type || type === 'tile') {
       this.editor.showTileEditor(track);
     }
@@ -270,18 +232,6 @@ export class EditorUIHandler {
         this.showFullJSONViewer(track, `JSON: (${track.x}, ${track.y})`);
       };
     }
-  }
-
-  initPlatformButtonHandlers(): void {
-    const editPlatformBtns = document.querySelectorAll<HTMLElement>('.edit-platform-btn');
-    editPlatformBtns.forEach((btn) => {
-      btn.onclick = () => {
-        const platformId = btn.dataset.platformId;
-        if (platformId) {
-          this.editor.showPlatformEditor(platformId);
-        }
-      };
-    });
   }
 
   initBitEditor(track: any): void {
@@ -329,7 +279,7 @@ export class EditorUIHandler {
 
   // The single validated path that writes track_bits to the server. Both the
   // checkbox grid and the visual compass route through here so the forbidden /
-  // square-corner guards and the "this removes a switch/signal/platform"
+  // square-corner guards and the "this removes a switch"
   // confirmation modal apply identically to both. On any rejection or failure
   // the panel is re-rendered from server state, which reverts the optimistic UI.
   async _commitTrackBits(track: any, newBits: number): Promise<void> {
@@ -421,12 +371,6 @@ export class EditorUIHandler {
     const lines = [];
     if (impact.removes_switch) {
       lines.push(`• Switch ${impact.removes_switch} (this tile is no longer a switch)`);
-    }
-    for (const sid of impact.removes_signals || []) {
-      lines.push(`• Signal ${sid} (its detection direction loses its segment)`);
-    }
-    if (impact.removes_platform) {
-      lines.push(`• Platform ${impact.removes_platform} (tile would be removed)`);
     }
     const message = impact.tile_will_be_removed
       ? 'This change removes all segments and will delete the tile. The entities below will also be removed:'
@@ -583,7 +527,7 @@ export class EditorUIHandler {
     // validated commit path with the checkbox grid (_commitTrackBits): the
     // optimistic redraw is instant, then the commit re-renders both views from
     // server state — which also pops the confirmation modal when the change
-    // would remove a switch / signal / platform.
+    // would remove a switch.
     canvas.addEventListener('click', async (e) => {
       const rect = canvas.getBoundingClientRect();
       // Map the click into logical 0..200 space (independent of dpr / display size).

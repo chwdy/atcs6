@@ -487,8 +487,8 @@ function EnterSetup(props: StepProps) {
           {refusal && <span class="nhs-reason">{refusal}</span>}
           {!refusal && live && (
             <span class="nhs-reason">
-              From {sessionLabel(sf.facts.session)}, this runs Emergency stop first: every train
-              stops and gives up its reservation.
+              From {sessionLabel(sf.facts.session)}, this turns every block to 0 V and every point
+              motor off first, so every train stops.
             </span>
           )}
         </div>
@@ -937,11 +937,13 @@ function Activate(props: StepProps) {
         <>
           <p>
             Activate builds the interfaces, checks the environment, and starts the railway over: it
-            cancels every live path, ends every running route run, and powers every train off. It
-            keeps the layout, the setup, every train where it stands, and every route with its
-            trains. Activate is the only way out of Setup.
+            removes every train and throws every switch to the position the layout shows. It keeps
+            the layout and the setup. Activate is the only way out of Setup.
           </p>
-          <p>Every train is off afterwards, so nothing moves until you start a route.</p>
+          <p>
+            The trains are found again from the detectors, each with its knob at 0 V, so nothing
+            moves until you turn a knob.
+          </p>
         </>
       }
     >

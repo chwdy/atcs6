@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { diagnosticsTrainId, logsTab, pickedBlockId, readPrefs, showBlockInLogs, showTrainInLogs, writePrefs } from './state';
+import { logsTab, pickedBlockId, readPrefs, showBlockInLogs, writePrefs } from './state';
 
 function memoryStorage() {
   const items = new Map<string, string>();
@@ -47,12 +47,6 @@ describe('Logs screen prefs', () => {
 });
 
 describe('picking from the canvas', () => {
-  it('a train opens Diagnostics on it', () => {
-    showTrainInLogs('T7');
-    expect(logsTab.value).toBe('diagnostics');
-    expect(diagnosticsTrainId.value).toBe('T7');
-  });
-
   it('a block opens Detectors on it', () => {
     showBlockInLogs('BLK_C');
     expect(logsTab.value).toBe('detectors');

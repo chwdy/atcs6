@@ -1,6 +1,6 @@
 /**
- * The Operate screen's right panel: it shows the selection (a train, a
- * block, a switch, or one of today's panels shown as it is) and hides while
+ * The Operate screen's right panel: it shows the selection (a block, a
+ * switch, or one of today's panels shown as it is) and hides while
  * nothing is selected, giving the map room.
  *
  * Its pop-out button moves it into a floating window and back. That is the
@@ -19,14 +19,12 @@ import { BlockPanel } from './block-panel';
 import { selection, type OperateHost, type OperateSelection } from './operate-state';
 import { setSelection, wrappedPanelElement } from './panel-host';
 import { SwitchPanel } from './switch-panel';
-import { TrainPanel } from './train-panel';
 
 const WINDOW_ID = 'operate-panel';
 
 function panelTitle(sel: OperateSelection): string {
   if (!sel) return '';
   if (sel.kind === 'panel') return sel.title;
-  if (sel.kind === 'train') return sel.id;
   const kind = sel.kind === 'block' ? 'blocks' : 'switches';
   const name = String((stateManager.get(kind, sel.id) as any)?.name || '').trim();
   return `${sel.kind === 'block' ? 'Block' : 'Switch'} ${name || sel.id}`;
@@ -103,7 +101,6 @@ export function RightPanel({ host }: { host: OperateHost }) {
       <div class="op-panel-body">
         {sel && sel.kind !== 'panel' && (
           <div class="secondary-sidebar-content op-native-panel">
-            {sel.kind === 'train' && <TrainPanel host={host} trainId={sel.id} />}
             {sel.kind === 'block' && <BlockPanel host={host} blockId={sel.id} />}
             {sel.kind === 'switch' && <SwitchPanel host={host} switchId={sel.id} />}
           </div>

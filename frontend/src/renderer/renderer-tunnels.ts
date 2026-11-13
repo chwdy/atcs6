@@ -70,8 +70,7 @@ const TUNNEL_OUTWARD: Record<string, { x: number; y: number }> = {
 export class RendererTunnelHandler {
   renderer: TunnelHandlerRenderer;
   // Click targets for tunnel mouths, rebuilt every drawTunnels() so a
-  // hit-test runs against what is actually on screen. Mirrors the
-  // `_placements` cache the station label handler keeps for stationAt().
+  // hit-test runs against what is actually on screen.
   _placements: TunnelPlacement[] = [];
 
   constructor(renderer: TunnelHandlerRenderer) {

@@ -1,0 +1,42 @@
+/* The tile debug readout (panels/tile-debug-inspector.ts) and the monospace
+   text utility. */
+
+.font-mono {
+    font-family: var(--font-mono);
+}
+
+.debug-tile-header {
+    margin: 0 0 8px 0;
+    color: #00ff88;
+}
+
+.debug-label {
+    color: var(--accent-color);
+    font-weight: bold;
+    padding-right: 8px;
+}
+
+.debug-value {
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+}
+
+.debug-value-valid {
+    color: var(--success-color);
+    font-weight: bold;
+}
+
+.debug-value-invalid {
+    color: var(--danger-color);
+    font-weight: bold;
+}
+
+.debug-value-deadend {
+    color: #ff9900;
+    font-family: var(--font-mono);
+}
+
+.debug-value-switches {
+    color: var(--warning-color);
+    font-family: var(--font-mono);
+}

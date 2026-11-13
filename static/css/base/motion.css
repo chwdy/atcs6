@@ -5,7 +5,7 @@
    static high-contrast end state and feedback transitions resolve instantly:
    the EB badge holds solid danger, toasts and modals appear without travel.
    This is the global home for the §18 reduced-motion rule; per-surface motion
-   (hover/active transitions, the tc-pulse-danger keyframe) lives in the
+   (hover/active transitions) lives in the
    feature files and is neutralised here only when the user asks for it.
    ============================================================================ */
 

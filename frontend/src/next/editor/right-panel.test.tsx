@@ -30,7 +30,6 @@ describe('Editor right panel', () => {
     actions = {
       close: vi.fn(),
       showSwitches: vi.fn(),
-      showStations: vi.fn(),
       showBlocks: vi.fn(),
       openTileKey: () => null,
     };
@@ -79,9 +78,9 @@ describe('Editor right panel', () => {
       root.querySelector<HTMLButtonElement>('button[aria-label^="Lists"]')!.click();
     });
     const items = [...root.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')];
-    expect(items.map((b) => b.textContent?.trim())).toEqual(['Switches', 'Stations', 'Blocks']);
+    expect(items.map((b) => b.textContent?.trim())).toEqual(['Switches', 'Blocks']);
     items[1].click();
-    expect(actions.showStations).toHaveBeenCalled();
+    expect(actions.showBlocks).toHaveBeenCalled();
   });
 
   it('pops out into a floating window and docks back, saving where it was', async () => {

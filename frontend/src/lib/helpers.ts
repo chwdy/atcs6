@@ -2,7 +2,7 @@
 //
 // Migrated from static/js/helpers.js (longterm_todo.md item #7, Wave 1 —
 // foundation cluster). Standalone helpers for generating consistent HTML across
-// the editor panels (Station, Block, Signal, Train editors) plus a few small
+// the editor panels (Segment, Block, Switch editors) plus a few small
 // geometry/utility functions. Behavior is unchanged from the classic file.
 //
 // All functions follow the project's CSS utility class system (see
@@ -17,7 +17,6 @@ import {
   TRACK_SE,
   TRACK_SW,
 } from './constants';
-import { anchorToTiles } from './popover-anchor';
 import { showToast } from './toast';
 import { getCanvasPalette, withAlpha } from './canvas-palette';
 
@@ -29,11 +28,6 @@ interface TrackLike {
   track_bits: number;
 }
 
-interface BlockLike {
-  block_id: string;
-  state?: string;
-}
-
 interface AvailabilityEntity {
   disabled?: boolean;
   manual?: boolean;
@@ -43,62 +37,11 @@ interface DirectionEntity {
   allowed_travel_directions?: string[];
 }
 
-interface FormFieldDef {
-  name: string;
-  label?: string;
-  type?: string;
-  options?: Array<{ value: string; label: string }>;
-  rows?: number;
-  placeholder?: string;
-  required?: boolean;
-  min?: number | string;
-  max?: number | string;
-  step?: number | string;
-  defaultValue?: unknown;
-  hint?: string;
-  validate?: (value: unknown, values: Record<string, unknown>) => string | void;
-}
-
 type Coord = [number, number];
 
 // ============================================================================
 // BLOCK-RELATIVE DIRECTION FORMATTING
 // ============================================================================
-
-/**
- * Format a block-relative direction ("forward" / "reverse" / "either") as a
- * decorated label that also surfaces the concrete map heading. See the original
- * static/js/helpers.js for the full contract; behavior is unchanged.
- */
-export function formatBlockDirection(
-  direction: string | null | undefined,
-  terminalTile?: Coord | null,
-  terminalHeading?: string | null,
-  opts?: { form?: string; emDash?: string }
-): string {
-  const form = (opts && opts.form) || 'compact';
-  const emDash = (opts && opts.emDash) || '—';
-
-  if (!direction) return emDash;
-  const lower = String(direction).toLowerCase();
-
-  if (lower === 'either') return '↔';
-
-  const prefix = lower === 'forward' ? 'F' : lower === 'reverse' ? 'R' : null;
-  if (prefix === null) return String(direction);
-
-  const hasGeom =
-    Array.isArray(terminalTile) && terminalTile.length === 2 && terminalHeading;
-  if (!hasGeom) return prefix;
-
-  const [tx, ty] = terminalTile as Coord;
-  const heading = String(terminalHeading).toUpperCase();
-
-  if (form === 'full') {
-    return `${prefix}-(${tx},${ty})-${heading}`;
-  }
-  return `${prefix}·${heading}`;
-}
 
 // ============================================================================
 // TRACK & ORIENTATION LOGIC
@@ -224,7 +167,7 @@ export function calculateNextTile(
   const availableNeighbors = neighbors.filter(([nx, ny]) => !positionSet.has(`${nx},${ny}`));
 
   if (availableNeighbors.length === 0)
-    throw new Error('Both neighbors are already in the platform - cannot extend');
+    throw new Error('Both neighbors are already in the segment - cannot extend');
 
   let nextX!: number;
   let nextY!: number;
@@ -262,7 +205,7 @@ export function calculateNextTile(
             ? [n1x, n1y]
             : [n2x, n2y];
     }
-    console.debug('[Editor] Single-tile station, chose direction:', direction, 'position:', { x: nextX, y: nextY });
+    console.debug('[Editor] Single-tile segment, chose direction:', direction, 'position:', { x: nextX, y: nextY });
   } else {
     [nextX, nextY] = availableNeighbors[0];
   }
@@ -276,43 +219,6 @@ export function calculateNextTile(
 // ============================================================================
 // PROPERTY RENDERING FUNCTIONS
 // ============================================================================
-
-/** Render colored ID header box. */
-export function renderHeaderId(id: string, borderColor: string): string {
-  return `
-        <div class="property-item">
-            <div class="value-display value-display-mono font-bold text-white" style="border-color: ${borderColor};">${id}</div>
-        </div>
-    `;
-}
-
-/** Render property item wrapper (label + content). */
-export function renderPropertyItem(label: string, content: string): string {
-  return `
-        <div class="property-item">
-            <label class="property-label">${label}</label>
-            ${content}
-        </div>
-    `;
-}
-
-/** Render read-only value display. */
-export function renderReadOnlyValue(
-  label: string,
-  value: string,
-  cssClass = '',
-  mono = false
-): string {
-  const monoClass = mono ? 'value-display-mono' : '';
-  return renderPropertyItem(
-    label,
-    `
-        <div class="value-display ${monoClass} ${cssClass}">
-            ${value}
-        </div>
-    `
-  );
-}
 
 interface ConfirmModalOptions {
   title?: string;
@@ -437,323 +343,6 @@ export function showConfirmModal(options: ConfirmModalOptions = {}): Promise<boo
   });
 }
 
-interface FormModalOptions {
-  title?: string;
-  message?: string;
-  detail?: string;
-  fields?: FormFieldDef[];
-  confirmText?: string;
-  cancelText?: string;
-  confirmVariant?: string;
-  // When given, the modal anchors over these grid tiles and follows pan/zoom
-  // instead of rendering as a full-screen centered modal.
-  anchorTiles?: Array<{ x: number; y: number }>;
-}
-
-/**
- * Reusable form modal for collecting one or more input values.
- * Returns an object of field values, or null when cancelled.
- */
-export function showFormModal(
-  options: FormModalOptions = {}
-): Promise<Record<string, unknown> | null> {
-  const {
-    title = 'Input Required',
-    message = '',
-    detail = '',
-    fields = [],
-    confirmText = 'Save',
-    cancelText = 'Cancel',
-    confirmVariant = 'primary',
-    anchorTiles,
-  } = options;
-
-  const variantClassMap: Record<string, string> = {
-    danger: 'btn-danger',
-    success: 'btn-success',
-    primary: 'btn-primary',
-    secondary: 'btn-secondary',
-  };
-  const confirmClass = variantClassMap[confirmVariant] || 'btn-primary';
-
-  return new Promise((resolve) => {
-    const existing = document.querySelector('.app-modal-overlay');
-    if (existing) {
-      existing.remove();
-    }
-
-    const overlay = document.createElement('div');
-    overlay.className = 'app-modal-overlay';
-
-    const modal = document.createElement('div');
-    modal.className = 'app-modal';
-
-    const header = document.createElement('div');
-    header.className = 'app-modal-header';
-    header.textContent = title;
-
-    const body = document.createElement('div');
-    body.className = 'app-modal-body';
-
-    if (message) {
-      const messageEl = document.createElement('div');
-      messageEl.className = 'app-modal-message';
-      messageEl.textContent = message;
-      body.appendChild(messageEl);
-    }
-
-    if (detail) {
-      const detailEl = document.createElement('div');
-      detailEl.className = 'app-modal-detail';
-      detailEl.textContent = detail;
-      body.appendChild(detailEl);
-    }
-
-    const form = document.createElement('form');
-    form.className = 'app-modal-form';
-    form.noValidate = true;
-
-    fields.forEach((field) => {
-      const wrapper = document.createElement('div');
-      wrapper.className = 'app-modal-field';
-
-      const label = document.createElement('label');
-      label.textContent = field.label || field.name;
-      label.htmlFor = `app-modal-${field.name}`;
-      wrapper.appendChild(label);
-
-      let inputEl: HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement;
-      if (field.type === 'select') {
-        const selectEl = document.createElement('select');
-        const optionsList = Array.isArray(field.options) ? field.options : [];
-        optionsList.forEach((opt) => {
-          const optionEl = document.createElement('option');
-          optionEl.value = opt.value;
-          optionEl.textContent = opt.label;
-          selectEl.appendChild(optionEl);
-        });
-        inputEl = selectEl;
-      } else if (field.type === 'textarea') {
-        const textareaEl = document.createElement('textarea');
-        textareaEl.rows = field.rows || 3;
-        inputEl = textareaEl;
-      } else {
-        const realInput = document.createElement('input');
-        realInput.type = field.type || 'text';
-        inputEl = realInput;
-      }
-
-      inputEl.id = `app-modal-${field.name}`;
-      inputEl.name = field.name;
-      inputEl.className = 'property-input';
-      if (field.placeholder) (inputEl as HTMLInputElement).placeholder = field.placeholder;
-      if (field.required) inputEl.required = true;
-      if (typeof field.min !== 'undefined') (inputEl as HTMLInputElement).min = String(field.min);
-      if (typeof field.max !== 'undefined') (inputEl as HTMLInputElement).max = String(field.max);
-      if (typeof field.step !== 'undefined') (inputEl as HTMLInputElement).step = String(field.step);
-      if (field.defaultValue !== undefined && field.defaultValue !== null) {
-        inputEl.value = String(field.defaultValue);
-      }
-      wrapper.appendChild(inputEl);
-
-      if (field.hint) {
-        const hint = document.createElement('div');
-        hint.className = 'app-modal-hint';
-        hint.textContent = field.hint;
-        wrapper.appendChild(hint);
-      }
-
-      form.appendChild(wrapper);
-    });
-
-    const errorEl = document.createElement('div');
-    errorEl.className = 'app-modal-error hidden';
-    form.appendChild(errorEl);
-
-    const footer = document.createElement('div');
-    footer.className = 'app-modal-footer';
-
-    const cancelBtn = document.createElement('button');
-    cancelBtn.type = 'button';
-    cancelBtn.className = 'btn btn-secondary btn-sm';
-    cancelBtn.textContent = cancelText;
-
-    const confirmBtn = document.createElement('button');
-    confirmBtn.type = 'submit';
-    confirmBtn.className = `btn ${confirmClass} btn-sm`;
-    confirmBtn.textContent = confirmText;
-
-    footer.appendChild(cancelBtn);
-    footer.appendChild(confirmBtn);
-
-    // Move footer inside form so submit button works
-    form.appendChild(footer);
-
-    body.appendChild(form);
-
-    modal.appendChild(header);
-    modal.appendChild(body);
-    overlay.appendChild(modal);
-
-    const showError = (messageText: string) => {
-      errorEl.textContent = messageText;
-      errorEl.classList.remove('hidden');
-    };
-
-    const clearError = () => {
-      errorEl.textContent = '';
-      errorEl.classList.add('hidden');
-    };
-
-    const collectValues = ():
-      | { ok: true; values: Record<string, unknown> }
-      | { ok: false; error: string } => {
-      const values: Record<string, unknown> = {};
-      for (const field of fields) {
-        const el = form.elements.namedItem(field.name) as HTMLInputElement | null;
-        if (!el) continue;
-
-        let value: unknown = el.value;
-        if (field.type === 'number') {
-          if (value === '') {
-            value = '';
-          } else {
-            const parsed = Number(value);
-            if (!Number.isFinite(parsed)) {
-              return { ok: false, error: `${field.label || field.name} must be a valid number.` };
-            }
-            value = parsed;
-          }
-        }
-
-        if (field.required && (value === '' || value === null || value === undefined)) {
-          return { ok: false, error: `${field.label || field.name} is required.` };
-        }
-
-        if (typeof field.validate === 'function') {
-          const validationResult = field.validate(value, values);
-          if (typeof validationResult === 'string' && validationResult) {
-            return { ok: false, error: validationResult };
-          }
-        }
-
-        values[field.name] = value;
-      }
-      return { ok: true, values };
-    };
-
-    let anchorCleanup = (): void => {};
-    const cleanup = () => {
-      document.removeEventListener('keydown', onKeyDown);
-      anchorCleanup();
-      overlay.remove();
-    };
-
-    const handleCancel = () => {
-      cleanup();
-      resolve(null);
-    };
-
-    const handleSubmit = (event: Event) => {
-      event.preventDefault();
-      clearError();
-      const collected = collectValues();
-      if (!collected.ok) {
-        showError(collected.error || 'Please correct the highlighted fields.');
-        return;
-      }
-      cleanup();
-      resolve(collected.values);
-    };
-
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        handleCancel();
-      }
-    };
-
-    form.addEventListener('submit', handleSubmit);
-    cancelBtn.addEventListener('click', handleCancel);
-    overlay.addEventListener('click', (event) => {
-      if (event.target === overlay) {
-        handleCancel();
-      }
-    });
-    document.addEventListener('keydown', onKeyDown);
-
-    document.body.appendChild(overlay);
-    if (anchorTiles && anchorTiles.length > 0) {
-      overlay.classList.add('anchored');
-      modal.classList.add('anchored');
-      anchorCleanup = anchorToTiles(modal, anchorTiles);
-    }
-    const firstInput = form.querySelector('input, select, textarea') as HTMLInputElement | null;
-    if (firstInput) {
-      firstInput.focus();
-      if (firstInput.select) firstInput.select();
-    }
-  });
-}
-
-interface PromptModalOptions {
-  title?: string;
-  label?: string;
-  placeholder?: string;
-  defaultValue?: unknown;
-  required?: boolean;
-  type?: string;
-  confirmText?: string;
-  cancelText?: string;
-  confirmVariant?: string;
-  hint?: string;
-  validate?: ((value: unknown, values: Record<string, unknown>) => string | void) | null;
-}
-
-/**
- * Reusable single-input prompt modal.
- * Returns the entered value, or null if cancelled.
- */
-export async function showPromptModal(options: PromptModalOptions = {}): Promise<unknown> {
-  const {
-    title = 'Input Required',
-    label = 'Value',
-    placeholder = '',
-    defaultValue = '',
-    required = false,
-    type = 'text',
-    confirmText = 'OK',
-    cancelText = 'Cancel',
-    confirmVariant = 'primary',
-    hint = '',
-    validate = null,
-  } = options;
-
-  const values = await showFormModal({
-    title,
-    fields: [
-      {
-        name: 'value',
-        label,
-        placeholder,
-        defaultValue,
-        required,
-        type,
-        hint,
-        validate: validate || undefined,
-      },
-    ],
-    confirmText,
-    cancelText,
-    confirmVariant,
-  });
-
-  if (!values) {
-    return null;
-  }
-  return values.value;
-}
-
 // ============================================================================
 // BIT TOGGLE COMPONENT
 // ============================================================================
@@ -773,7 +362,7 @@ export function renderBitToggle(bit: number, name: string, trackBits: number): s
 }
 
 // ============================================================================
-// AVAILABILITY SEGMENT (Block / Switch / Platform / Station)
+// AVAILABILITY SEGMENT (Block / Switch)
 // ----------------------------------------------------------------------------
 // Three-state segmented control per docs/DESIGN_LANGUAGE.md §3:
 //   Available  — disabled=false, manual=false  (default)
@@ -860,40 +449,6 @@ export function renderAvailabilitySegment(
     `;
 }
 
-// Wire the three buttons of a `renderAvailabilitySegment` block. `onChange`
-// ============================================================================
-// PRIORITY INPUT VALIDATION
-// ============================================================================
-//
-// Per design_new.md "RouteRun overrides" — priority is an integer in 0..9.
-// The route editor and the per-RouteRun override editor both surface a free-
-// text priority input; both call this helper so a single rule decides what
-// "empty / valid / invalid" means and the user always sees a toast on invalid.
-//
-// Returns one of three shapes:
-//   { kind: 'empty' }                 — input was blank or missing; caller skips the field.
-//   { kind: 'ok', value: <int> }      — valid integer in 0..9.
-//   { kind: 'error', message: <str> } — invalid; caller shows the message via showToast('error').
-export function validatePriorityInput(
-  rawValue: unknown
-): { kind: 'empty' } | { kind: 'ok'; value: number } | { kind: 'error'; message: string } {
-  if (rawValue === undefined || rawValue === null) {
-    return { kind: 'empty' };
-  }
-  const trimmed = String(rawValue).trim();
-  if (trimmed === '') {
-    return { kind: 'empty' };
-  }
-  const n = Number(trimmed);
-  if (!Number.isInteger(n)) {
-    return { kind: 'error', message: 'Priority must be a whole number between 0 and 9' };
-  }
-  if (n < 0 || n > 9) {
-    return { kind: 'error', message: 'Priority must be between 0 and 9' };
-  }
-  return { kind: 'ok', value: n };
-}
-
 // Generic whole-number validator for editor number fields (lengths, radii,
 // speeds typed as integers). Mirrors validatePriorityInput's three-shape
 // return so callers share one "empty / ok / error" decision:
@@ -921,22 +476,6 @@ export function validateIntegerInput(
   return { kind: 'ok', value: n };
 }
 
-/** Format a duration in seconds as a compact human string: "2h 5m", "5m 12s", or "12s". */
-export function formatDuration(seconds: number): string {
-  const total = Math.max(0, Math.floor(seconds || 0));
-  if (total < 60) return `${total}s`;
-  const m = Math.floor(total / 60);
-  if (m < 60) return `${m}m ${total % 60}s`;
-  const h = Math.floor(m / 60);
-  return `${h}h ${m % 60}m`;
-}
-
-/** Format a distance in centimetres as metres ("12.3 m") or kilometres ("1.42 km"). */
-export function formatDistanceCm(cm: number): string {
-  const m = (cm || 0) / 100;
-  return m < 1000 ? `${m.toFixed(1)} m` : `${(m / 1000).toFixed(2)} km`;
-}
-
 // ============================================================================
 // SIMULATION STRUCTURAL LOCK
 // ============================================================================
@@ -947,8 +486,7 @@ export function formatDistanceCm(cm: number): string {
 // delete buttons) must be read-only. The dispatch controls stay live: the
 // availability and direction segments, the switch Toggle State, and navigation
 // buttons are marked `data-sim-keep` (on the control or an ancestor) and are
-// never frozen. Path / route / train panels are operational and simply never
-// call this, per the "full dispatcher freedom" rule.
+// never frozen.
 
 /** True when the app is in Operate mode (the operation session mode). */
 export function isSimMode(): boolean {
@@ -1000,7 +538,7 @@ export function applyStructuralLock(root: HTMLElement | null): void {
 }
 
 // Escape a string for safe interpolation into an HTML attribute value
-// (double-quoted). Used where user-entered text — a block/station display
+// (double-quoted). Used where user-entered text — a block display
 // name — is rendered back into a `value="…"` / `title="…"` attribute.
 export function escapeAttr(value: string): string {
   return String(value)
@@ -1014,7 +552,7 @@ export function escapeAttr(value: string): string {
 // PER-FIELD AUTO-SAVE (§5C / §19)
 // ----------------------------------------------------------------------------
 // The shared wiring behind the no-Save-button editing contract. Every entity
-// editor (block / switch / platform / station) commits each field on blur (or
+// editor (block / switch / segment) commits each field on blur (or
 // `change` for a select), with a one-shot field-flash as the only success
 // acknowledgement and a revert + danger-flash on a rejected value. There is no
 // success toast — six fields each saving themselves would spam; only an
@@ -1343,63 +881,15 @@ export function bindPolaritySegment(
 // TILE LIST RENDERING
 // ============================================================================
 
-export function renderTileItem(
-  x: number,
-  y: number,
-  index: number,
-  total: number,
-  assignedBlock: string | null,
-  blocks: BlockLike[] | null,
-  removeBtnClass: string,
-  assignBtnClass: string | null = null
-): string {
+function renderTileItem(x: number, y: number, index: number, total: number, removeBtnClass: string): string {
   const isEdge = index === 0 || index === total - 1;
-  let content = '';
-
-  if (assignBtnClass) {
-    // Render for multi-block station (with block assignment)
-    let blockBadge = '';
-    if (assignedBlock) {
-      const block = blocks?.find((b) => b.block_id === assignedBlock);
-      const blockColor = getBlockStateColor(block?.state);
-      blockBadge = `<span class="tile-list-badge" style="background: ${blockColor}20; color: ${blockColor};">${assignedBlock}</span>`;
-    }
-
-    const assignButton = `
-            <button class="${assignBtnClass} btn btn-xs btn-info" data-x="${x}" data-y="${y}" data-index="${index}" title="Assign a block section to this platform tile">
-                ${assignedBlock ? 'Change' : 'Assign'}
-            </button>
-        `;
-
-    const removeButton = isEdge
-      ? `<button class="${removeBtnClass} btn btn-xs btn-danger" data-x="${x}" data-y="${y}">Remove</button>`
-      : `<span class="tile-list-middle-label" title="Interior tiles can't be removed — only the first and last tile.">middle</span>`;
-
-    content = `
-            <div class="flex items-center gap-8">
-                <span class="tile-list-coords">(${x}, ${y})</span>
-                ${blockBadge}
-            </div>
-            <div class="flex items-center gap-8">
-                ${assignButton}
-                ${removeButton}
-            </div>
-        `;
-  } else {
-    // Simple tile item
-    const removeButton = isEdge
-      ? `<button class="${removeBtnClass} btn btn-xs btn-danger" data-x="${x}" data-y="${y}">Remove</button>`
-      : `<span class="tile-list-middle-label" title="Interior tiles can't be removed — only the first and last tile.">middle</span>`;
-
-    content = `
-            <span class="tile-list-coords">(${x}, ${y})</span>
-            ${removeButton}
-        `;
-  }
-
+  const removeButton = isEdge
+    ? `<button class="${removeBtnClass} btn btn-xs btn-danger" data-x="${x}" data-y="${y}">Remove</button>`
+    : `<span class="tile-list-middle-label" title="Interior tiles can't be removed — only the first and last tile.">middle</span>`;
   return `
         <div class="tile-list-item" data-x="${x}" data-y="${y}">
-            ${content}
+            <span class="tile-list-coords">(${x}, ${y})</span>
+            ${removeButton}
         </div>
     `;
 }
@@ -1415,15 +905,11 @@ interface ExtendBtnOpts {
 }
 
 interface TileListOptions {
-  entityType: string;
   extendStartBtnId: string;
   extendEndBtnId: string;
   removeBtnClass: string;
-  blockAssignments?: Array<string | null> | null;
-  blocks?: BlockLike[] | null;
-  assignBtnClass?: string | null;
-  // Override the list heading text (block editor uses "Tiles"; stations keep
-  // the "<Block|Platform> Tiles" default). The "(N)" count is always appended.
+  // Override the list heading text (the default is "Block Tiles"). The "(N)"
+  // count is always appended.
   headerLabel?: string | null;
   // Per-end extend-button overrides — used by the block editor to show the
   // predicted next-tile coordinate (and disable when extension is impossible).
@@ -1433,14 +919,9 @@ interface TileListOptions {
 
 export function renderTileList(sortedPositions: Coord[], options: TileListOptions): string {
   const {
-    entityType,
     extendStartBtnId,
     extendEndBtnId,
     removeBtnClass,
-    // Optional extras for block assignment (stations)
-    blockAssignments = null,
-    blocks = null,
-    assignBtnClass = null,
     headerLabel = null,
     extendStart = null,
     extendEnd = null,
@@ -1449,22 +930,10 @@ export function renderTileList(sortedPositions: Coord[], options: TileListOption
   if (!sortedPositions?.length) return '';
 
   const tileItems = sortedPositions
-    .map(([x, y], index) => {
-      const assignedBlock = blockAssignments?.[index] || null;
-      return renderTileItem(
-        x,
-        y,
-        index,
-        sortedPositions.length,
-        assignedBlock,
-        blocks,
-        removeBtnClass,
-        assignBtnClass
-      );
-    })
+    .map(([x, y], index) => renderTileItem(x, y, index, sortedPositions.length, removeBtnClass))
     .join('');
 
-  const heading = headerLabel || `${entityType === 'platform' ? 'Platform' : 'Block'} Tiles`;
+  const heading = headerLabel || 'Block Tiles';
   const extendBtn = (id: string, fallback: string, o: ExtendBtnOpts | null): string => {
     const text = o?.label || fallback;
     const disabled = o?.disabled ? ' disabled' : '';

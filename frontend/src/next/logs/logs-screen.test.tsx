@@ -8,8 +8,6 @@ const api = vi.hoisted(() => {
     getEventLog: vi.fn(async (_query?: string): Promise<any> => ({ events: [] })),
     getRawOccupancy: vi.fn(async (): Promise<any> => ({ blocks: {} })),
     getBlockVoltage: vi.fn(async (_id?: string): Promise<any> => ({ voltage: null })),
-    getInspectorEntityTrain: vi.fn(async (_id?: string): Promise<any> => null),
-    getTrainLookahead: vi.fn(async (_id?: string): Promise<any> => null),
     getScale: vi.fn(async (): Promise<any> => ({ scale: 160 })),
   };
 });
@@ -18,7 +16,7 @@ vi.mock('../../lib/api', () => ({ api }));
 import { stateManager } from '../../lib/state-manager';
 import { screen } from '../state';
 import { LogsScreen, logsPanelHost } from './logs-screen';
-import { diagnosticsTrainId, logsTab, pickedBlockId } from './state';
+import { logsTab, pickedBlockId } from './state';
 
 const event = (id: number, kind = 'info', extra: Record<string, unknown> = {}) => ({
   notification_id: id,
@@ -129,26 +127,14 @@ describe('A click on the canvas', () => {
     localStorage.clear();
     screen.value = 'logs';
     logsTab.value = 'events';
-    diagnosticsTrainId.value = null;
     pickedBlockId.value = null;
-    stateManager.updateFromNetwork({
-      trains: [{ id: 'T1' }],
-      controllers_by_train_id: { T1: { span: { occupied_tiles: [[3, 4]] } } },
-    });
   });
 
   afterEach(() => {
     screen.value = 'editor';
-    stateManager.updateFromNetwork({ trains: [] });
   });
 
-  it('on a train opens the Diagnostics tab on that train', () => {
-    expect(host.selectTile({ x: 3, y: 4, block_section_id: 'BLK_A' })).toBe(true);
-    expect(logsTab.value).toBe('diagnostics');
-    expect(diagnosticsTrainId.value).toBe('T1');
-  });
-
-  it('on a block with no train opens the Detectors tab on that block', () => {
+  it('on a block opens the Detectors tab on that block', () => {
     expect(host.selectTile({ x: 9, y: 9, block_section_id: 'BLK_B' })).toBe(true);
     expect(logsTab.value).toBe('detectors');
     expect(pickedBlockId.value).toBe('BLK_B');
@@ -157,7 +143,6 @@ describe('A click on the canvas', () => {
   it('is left to the other screens while Logs is not showing', () => {
     screen.value = 'operate';
     expect(host.selectTile({ x: 3, y: 4, block_section_id: 'BLK_A' })).toBe(false);
-    expect(host.showTrain('T1')).toBe(false);
     expect(logsTab.value).toBe('events');
   });
 });
@@ -299,87 +284,5 @@ describe('Detectors tab', () => {
     expect(root.querySelector('.occ-row.row-selected')).toBeNull();
     expect(root.querySelector('.occ-picked-note')!.textContent).toBe('BLK_Z has no detector.');
     pickedBlockId.value = null;
-  });
-});
-
-describe('Diagnostics tab', () => {
-  let root: HTMLElement;
-
-  beforeEach(() => {
-    vi.useFakeTimers();
-    localStorage.clear();
-    Object.values(api).forEach((fn) => fn.mockClear());
-    stateManager.updateFromNetwork({ trains: [{ id: 'T1' }, { id: 'T2' }] });
-    screen.value = 'logs';
-    logsTab.value = 'diagnostics';
-    diagnosticsTrainId.value = null;
-    root = document.createElement('div');
-    document.body.appendChild(root);
-  });
-
-  afterEach(() => {
-    act(() => render(null, root));
-    root.remove();
-    screen.value = 'editor';
-    stateManager.updateFromNetwork({ trains: [] });
-    vi.useRealTimers();
-  });
-
-  it('lists the trains, asks nothing until one is picked, then shows its groups', async () => {
-    api.getInspectorEntityTrain.mockResolvedValue({
-      id: 'T1',
-      label: 'T1',
-      fetched_at: 1_700_000_000,
-      groups: [{ name: 'live', items: [{ name: 'speed', value: 12, source: 'property' }] }],
-    });
-    act(() => render(<LogsScreen />, root));
-    await settle();
-    const select = root.querySelector<HTMLSelectElement>('.diagnostics-panel-train-select')!;
-    expect([...select.options].map((o) => o.textContent)).toEqual(['(select a train)', 'T1', 'T2']);
-    expect(api.getInspectorEntityTrain).not.toHaveBeenCalled();
-
-    act(() => {
-      select.value = 'T1';
-      select.dispatchEvent(new Event('change', { bubbles: true }));
-    });
-    await settle();
-    expect(api.getInspectorEntityTrain).toHaveBeenCalledWith('T1');
-    expect(root.querySelector('.diagnostics-group-name')!.textContent).toBe('live');
-    expect(root.querySelector('.diagnostics-row-name')!.textContent).toBe('speed');
-  });
-
-  it('follows a train picked on the canvas, with its Train Monitor readings above the groups', async () => {
-    stateManager.updateFromNetwork({
-      trains: [{ id: 'T1' }, { id: 'T2' }],
-      controllers_by_train_id: { T2: { current_speed: 36, speed_limit_reason: 'route_end' } },
-    });
-    api.getInspectorEntityTrain.mockResolvedValue({ id: 'T2', groups: [] });
-    api.getTrainLookahead.mockResolvedValue({
-      lookahead: { target_stop_cm: 250, clearance_cm: 275 },
-      current_block_speed_limit: 40,
-    });
-    act(() => render(<LogsScreen />, root));
-    await settle();
-    expect(root.querySelector('.nlp-readout')).toBeNull();
-
-    act(() => {
-      diagnosticsTrainId.value = 'T2';
-    });
-    await settle();
-    expect(api.getInspectorEntityTrain).toHaveBeenCalledWith('T2');
-    expect(api.getTrainLookahead).toHaveBeenCalledWith('T2');
-    const readings = [...root.querySelectorAll('.nlp-readout-value')].map((el) => el.textContent);
-    expect(readings).toEqual(['36 km/h · 6.3 cm/s', '2.50 m', '40 km/h', 'route_end']);
-  });
-
-  it('stops asking about a train the server says no longer exists', async () => {
-    diagnosticsTrainId.value = 'T9';
-    api.getInspectorEntityTrain.mockResolvedValue(null);
-    act(() => render(<LogsScreen />, root));
-    await settle();
-    expect(root.querySelector('.diagnostics-panel-body')!.textContent).toContain('Train no longer exists.');
-    const reads = api.getInspectorEntityTrain.mock.calls.length;
-    await advance(5000);
-    expect(api.getInspectorEntityTrain.mock.calls.length).toBeLessThanOrEqual(reads + 1);
   });
 });

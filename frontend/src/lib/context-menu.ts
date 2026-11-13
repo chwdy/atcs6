@@ -3,7 +3,7 @@
  *
  * Generic on purpose: callers pass sections of items, each with a label, icon,
  * and an onSelect callback. The editor uses it for the per-tile entity menu
- * (every train / switch / block / signal / platform on a tile, plus inline
+ * (every switch / block / segment on a tile, plus inline
  * actions like throwing a switch), but nothing here knows about tiles.
  *
  * One menu exists at a time; opening a new one closes the previous. It closes

@@ -89,14 +89,6 @@ class TestAppSmoke:
         content = css_file.read_text()
         assert len(content) > 0, "style.css is empty"
 
-    def test_emergency_reset_button_exists(self):
-        """Ensure emergency reset button markup is present."""
-        editor_trains = PROJECT_ROOT / "frontend" / "src" / "editor" / "editor-trains.ts"
-        content = editor_trains.read_text()
-
-        assert "train-emergency-reset-btn" in content, (
-            "Emergency reset button markup is missing in editor-trains.ts"
-        )
 
     def test_index_html_includes_all_scripts(self):
         """index.html loads the whole app through the single Vite bundle.
@@ -182,69 +174,3 @@ class TestAppSmoke:
         for filename in required_files:
             file_path = PROJECT_ROOT / filename
             assert file_path.exists(), f"Required backend file {filename} is missing"
-
-    def test_train_monitor_upcoming_has_no_fixed_limit(self):
-        """Train monitor upcoming list should not be hard-limited."""
-        # train-monitor.js migrated to frontend/src/panels/train-monitor.ts
-        # (longterm_todo.md item #7); the source assertion follows it there.
-        monitor_file = PROJECT_ROOT / "frontend" / "src" / "panels" / "train-monitor.ts"
-        content = monitor_file.read_text()
-
-        assert "elements.slice(0, 3)" not in content, (
-            "Train monitor upcoming list is still limited to 3 items"
-        )
-
-    def test_train_monitor_block_labels_use_dynamic_fit(self):
-        """Train monitor block labels should use dynamic text fitting."""
-        monitor_file = PROJECT_ROOT / "frontend" / "src" / "panels" / "train-monitor.ts"
-        content = monitor_file.read_text()
-
-        assert "fitTextToWidth" in content, (
-            "Train monitor block label fitting helper is missing"
-        )
-
-    def test_train_monitor_upcoming_default_width(self):
-        """Train monitor upcoming column default width should be widened."""
-        css_file = PROJECT_ROOT / "static" / "css" / "features" / "train-monitor.css"
-        content = css_file.read_text()
-
-        assert ".tm-upcoming" in content, (
-            "Train monitor upcoming styles missing"
-        )
-        assert "width: 280px" in content, (
-            "Train monitor upcoming default width should be 280px"
-        )
-        assert "min-width: 220px" in content, (
-            "Train monitor upcoming min width should be 220px"
-        )
-        assert "max-width: 420px" in content, (
-            "Train monitor upcoming max width should be 420px"
-        )
-
-    def test_train_monitor_json_button_order(self):
-        """JSON button should be after All in view controls."""
-        index_file = PROJECT_ROOT / "static" / "index.html"
-        content = index_file.read_text()
-
-        all_pos = content.find('data-distance="0">All</button>')
-        json_pos = content.find('id="view-lookahead-btn"')
-
-        assert all_pos != -1, "All distance button missing"
-        assert json_pos != -1, "JSON view button missing"
-        assert all_pos < json_pos, "JSON button should appear after the All button"
-
-    def test_train_monitor_json_button_label_and_color(self):
-        """JSON button should use the monochrome `{ }` glyph and the icon-button class."""
-        index_file = PROJECT_ROOT / "static" / "index.html"
-        content = index_file.read_text()
-
-        assert 'id="view-lookahead-btn"' in content, "JSON view button missing"
-        # Per docs/DESIGN_LANGUAGE.md §"No color emoji anywhere in the UI",
-        # the clipboard emoji was replaced with a monochrome curly-brace glyph.
-        assert "{ }" in content, "JSON button glyph `{ }` missing"
-        assert "View raw lookahead JSON" in content, "JSON button tooltip missing"
-        # tm-icon-btn supplies `color: var(--text-primary)` for icon buttons in
-        # the train-monitor header (static/css/features/train-monitor.css).
-        assert "tm-icon-btn view-lookahead-btn" in content, (
-            "JSON button should carry the tm-icon-btn class for primary text color"
-        )

@@ -6,7 +6,6 @@ import { combinePanelHosts } from './panel-hosts';
 function fakeHost(takes: boolean): NextPanelHost {
   return {
     selectTile: vi.fn(() => takes),
-    showTrain: vi.fn(() => takes),
     showPanel: vi.fn(() => takes),
     hidePanel: vi.fn(() => takes),
     closePanel: vi.fn(),
@@ -24,18 +23,18 @@ describe('combinePanelHosts', () => {
 
     const first = fakeHost(true);
     const second = fakeHost(true);
-    combinePanelHosts(first, second).showTrain('T1');
-    expect(second.showTrain).not.toHaveBeenCalled();
+    combinePanelHosts(first, second).selectTile({ x: 0, y: 0 });
+    expect(second.selectTile).not.toHaveBeenCalled();
   });
 
   it('leaves a request no screen takes to the panel host, and tells every screen to close', () => {
     const a = fakeHost(false);
     const b = fakeHost(false);
     const both = combinePanelHosts(a, b);
-    expect(both.showPanel('Route', '<div></div>')).toBe(false);
+    expect(both.showPanel('Blocks', '<div></div>')).toBe(false);
     expect(both.hidePanel()).toBe(false);
-    both.closePanel('route', 'R1');
-    expect(a.closePanel).toHaveBeenCalledWith('route', 'R1');
-    expect(b.closePanel).toHaveBeenCalledWith('route', 'R1');
+    both.closePanel('switch', 'SW1');
+    expect(a.closePanel).toHaveBeenCalledWith('switch', 'SW1');
+    expect(b.closePanel).toHaveBeenCalledWith('switch', 'SW1');
   });
 });

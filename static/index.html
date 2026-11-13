@@ -59,7 +59,7 @@
                     <div class="canvas-container">
                         <!--
                           Phase 5: world canvas (static / map-shape layer) sits
-                          below; live canvas (trains, route overlays, hover,
+                          below; live canvas (trains, hover,
                           selection) sits on top. The live canvas keeps the
                           legacy #rail-canvas id so existing JS that reads
                           mouse events / bounding rect off that element still
@@ -74,10 +74,6 @@
                                 <button type="button" class="canvas-view-btn" id="btn-zoom-in" title="Zoom in">+</button>
                                 <span class="canvas-view-sep" aria-hidden="true"></span>
                                 <button type="button" class="canvas-view-btn" id="btn-fit-view" title="Fit all tracks in view">Fit</button>
-                                <label class="canvas-view-toggle" title="Keep the selected train centred as it moves">
-                                    <input type="checkbox" id="toggle-follow-train">
-                                    <span>Follow train</span>
-                                </label>
                             </div>
                             <div class="status-bar">
                                 <span id="status-coords">0, 0</span>
@@ -85,105 +81,6 @@
                                 <span id="status-state">Ready</span>
                             </div>
                         </div>
-                    </div>
-                </div>
-
-                <!-- Train Monitor — the lookahead panel. Adopted into a managed
-                     FloatingWindow by panels/train-monitor.ts, so it is
-                     position: fixed and out of the flow: the canvas keeps the
-                     full height behind it and the monitor hovers over the
-                     bottom of the layout, spanning from the tool rail's right
-                     edge to the viewport edge and sitting above the canvas view
-                     controls. It stays here in the DOM rather than moving to
-                     <body> because a fixed element is positioned against the
-                     viewport regardless of where it sits — the same reason the
-                     secondary sidebar floats correctly from inside .workspace. -->
-                <div id="train-monitor-bar" class="tm-panel hidden">
-                    <div class="tm-header">
-                        <span class="tm-title" id="train-monitor-title">Train Monitor</span>
-                        <div class="tm-header-tools">
-                            <div class="tm-segment view-distance-controls" role="group" aria-label="View distance">
-                                <button type="button" class="tm-seg-btn view-dist-btn" data-distance="100">1m</button>
-                                <button type="button" class="tm-seg-btn view-dist-btn active" data-distance="500">5m</button>
-                                <button type="button" class="tm-seg-btn view-dist-btn" data-distance="1000">10m</button>
-                                <button type="button" class="tm-seg-btn view-dist-btn" data-distance="0">All</button>
-                            </div>
-                            <button type="button" class="tm-icon-btn view-lookahead-btn" id="view-lookahead-btn" title="View raw lookahead JSON">{ }</button>
-                            <button type="button" class="tm-close" id="train-monitor-close" title="Close">×</button>
-                        </div>
-                    </div>
-                    <div class="tm-content">
-                        <aside class="tm-info" id="train-monitor-info">
-                            <div class="tm-speed-block">
-                                <div class="tm-field-label">Current Speed</div>
-                                <div class="tm-speed-row">
-                                    <span class="tm-speed-value" id="monitor-current-speed">0</span>
-                                    <span class="tm-speed-unit">km/h</span>
-                                </div>
-                            </div>
-                            <dl class="tm-fields">
-                                <div class="tm-field">
-                                    <dt class="tm-field-label">ATC Limit</dt>
-                                    <dd class="tm-field-value">
-                                        <span class="tm-val tm-val-danger" id="monitor-atc-speed">—</span>
-                                        <span class="tm-val-unit">km/h</span>
-                                    </dd>
-                                </div>
-                                <div class="tm-field">
-                                    <dt class="tm-field-label">ATO Target</dt>
-                                    <dd class="tm-field-value">
-                                        <span class="tm-val tm-val-success" id="monitor-ato-speed">—</span>
-                                        <span class="tm-val-unit">km/h</span>
-                                    </dd>
-                                </div>
-                                <div class="tm-field">
-                                    <dt class="tm-field-label">Speed (raw)</dt>
-                                    <dd class="tm-field-value">
-                                        <span class="tm-val" id="monitor-speed-cms">0</span>
-                                        <span class="tm-val-unit">cm/s</span>
-                                    </dd>
-                                </div>
-                                <div class="tm-field">
-                                    <dt class="tm-field-label">Clearance</dt>
-                                    <dd class="tm-field-value">
-                                        <span class="tm-val" id="monitor-clearance">0</span>
-                                        <span class="tm-val-unit">m</span>
-                                    </dd>
-                                </div>
-                                <div class="tm-field hidden" id="monitor-next-dest-container">
-                                    <dt class="tm-field-label">Next Stop</dt>
-                                    <dd class="tm-field-value">
-                                        <span class="tm-val tm-val-warn" id="monitor-next-dest-dist">0</span>
-                                        <span class="tm-val-unit">m</span>
-                                    </dd>
-                                </div>
-                                <div class="tm-field hidden" id="monitor-dwell-remaining-container">
-                                    <dt class="tm-field-label">Dwell Remaining</dt>
-                                    <dd class="tm-field-value">
-                                        <span class="tm-val" id="monitor-dwell-remaining">0</span>
-                                        <span class="tm-val-unit">s</span>
-                                    </dd>
-                                </div>
-                                <div class="tm-field hidden" id="monitor-dwell-finish-container">
-                                    <dt class="tm-field-label">Dwell Until</dt>
-                                    <dd class="tm-field-value">
-                                        <span class="tm-val" id="monitor-dwell-finish">—</span>
-                                    </dd>
-                                </div>
-                            </dl>
-                            <div class="banner banner-warn tm-banner hidden" id="monitor-speed-limit-reason"></div>
-                        </aside>
-                        <div class="tm-canvas-wrap" id="train-monitor-canvas-wrap">
-                            <canvas id="train-monitor-canvas" class="tm-canvas"></canvas>
-                        </div>
-                        <div class="tm-resizer" id="train-monitor-resizer" aria-hidden="true"></div>
-                        <aside class="tm-upcoming" id="monitor-upcoming-container">
-                            <div class="tm-upcoming-header">
-                                <span class="tm-upcoming-title">Upcoming</span>
-                                <span class="chip" id="monitor-upcoming-count">0</span>
-                            </div>
-                            <div class="tm-upcoming-list" id="monitor-upcoming"></div>
-                        </aside>
                     </div>
                 </div>
             </div>

@@ -92,7 +92,7 @@ export interface FloatingWindowOptions {
   dockable?: boolean;
   /** Adopt existing DOM instead of creating fresh markup — used by windows
    *  whose header already has its own buttons wired by its owner (the right
-   *  panels, the Train Monitor), not by FloatingWindow. When provided, FloatingWindow creates no title or close
+   *  panels), not by FloatingWindow. When provided, FloatingWindow creates no title or close
    *  button of its own — it only wires drag/resize/fit/DPR-reclamp onto the
    *  supplied elements and appends its 8 resize handles into `root`. */
   adopt?: { root: HTMLElement; header: HTMLElement };
@@ -117,7 +117,7 @@ export interface FloatingWindowOptions {
   /** The header's close (×) button was clicked. Only fires for a
    *  FloatingWindow-created header (not adopt mode, whose owner wires its own
    *  close button). FloatingWindow does not decide what "close" means —
-   *  diagnostics hides itself (it's a permanent singleton toggled elsewhere);
+   *  a singleton such as the Virtual Bench hides itself;
    *  a spawned split-off window (Phase 5) will destroy itself. */
   onCloseRequested?: () => void;
   /** Fires after a drag ends, a resize ends, a fit, or a dock/float toggle —
@@ -543,8 +543,7 @@ export class FloatingWindow {
     this.rootEl.style.zIndex = String(z);
   }
 
-  /** Current z-index, e.g. for a content-owned element (diagnostics' name
-   *  tooltip) that must always render just above this window regardless of
+  /** Current z-index, e.g. for a content-owned element (a tooltip) that must always render just above this window regardless of
    *  where WindowManager currently ranks it in the stack. */
   getZIndex(): number {
     return parseInt(this.rootEl.style.zIndex || '0', 10);

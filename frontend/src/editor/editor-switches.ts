@@ -13,7 +13,6 @@ import {
   bindAvailabilitySegment,
   showConfirmModal,
   escapeAttr,
-  formatDuration,
   bindFieldAutoSave,
   parseText,
   parseRequiredMmToCm,
@@ -90,142 +89,11 @@ export class SwitchEditorHandler {
     const stateText = currentState === 0 ? 'MAIN' : 'DIVERGE';
     const accentClass = currentState === 0 ? 'accent-success' : 'accent-warn';
     const chipClass = currentState === 0 ? 'chip-success' : 'chip-warn';
-    // Switch lock ownership lives on the Switch entity's `locks` array
-    // (design_new.md:651). `isLocked` gates the Toggle control below; the
-    // individual lock entries render as rows in the Train Protection section
-    // (a route lock is the pre-occupancy half of holding the switch).
-    const lockEntries = Array.isArray(switchData.locks) ? switchData.locks : [];
-    const isLocked = lockEntries.length > 0;
+    // A held switch is not thrown (design_v2.md "Switches", A held switch is
+    // not thrown); `held` gates the Toggle control below. It is a live field
+    // of the snapshot, not of the switch record this panel fetched.
+    const isLocked = !!this.editor.cachedNetwork?.switches?.[switchData.switch_id]?.held;
     const switchType = switchData.switch_type || 'standard';
-
-    // Flank protection — read-only, topology-derived (design_new.md:686). Each
-    // entry is [neighbour_switch_id, blocking_state]; the neighbour is held at
-    // its SAFE state (= 1 - blocking_state) while this switch's route is locked.
-    // Mirrors the `lockEntries` guard above; the field is always present in the
-    // live `to_dict` payload (switch.py:665).
-    const flankEntries: Array<[string, number]> = Array.isArray(switchData.flank_protection)
-      ? switchData.flank_protection
-      : [];
-    // One row shape shared by Occupancy, Flank Protection and Train Protection
-    // so the read-only relationship lists read alike (docs/DESIGN_LANGUAGE.md
-    // §7 + §5): a mono identity on the left, a state chip pinned to the right
-    // edge (so the state scans down a column), and an optional muted sub-line
-    // for the supporting detail (the source switch, or the path id holding the
-    // switch). The sub-line clips to one line — opaque ids never wrap (§5).
-    const protectionRow = (
-      identityHtml: string,
-      chipHtml: string,
-      rowTitle: string,
-      subHtml = '',
-      subTitle = '',
-    ): string => `
-                    <div class="protection-row" title="${escapeAttr(rowTitle)}">
-                        <div class="protection-row-main">
-                            ${identityHtml}
-                            ${chipHtml}
-                        </div>
-                        ${
-                          subHtml
-                            ? `<div class="protection-row-sub"${subTitle ? ` title="${escapeAttr(subTitle)}"` : ''}>${subHtml}</div>`
-                            : ''
-                        }
-                    </div>`;
-
-    // A clickable switch reference. Clicking outlines the switch on the canvas
-    // (a "show me where this is" peek) without navigating away — see the
-    // `.switch-peek-link` handler in bindEventHandlers. data-sim-keep keeps it
-    // live in Simulation mode (applyStructuralLock).
-    const peekLink = (switchId: string): string =>
-      `<button class="switch-peek-link font-mono" data-sim-keep data-switch-id="${escapeAttr(switchId)}" title="Show ${escapeAttr(switchId)} on the layout">${this._esc(switchId)}</button>`;
-
-    // MAIN/DIVERGE state badge (§7 chip-state). 0 = MAIN (success), 1 = DIVERGE
-    // (warn) — the one mapping used by every protection list and the header.
-    const stateChipHtml = (state: number): string =>
-      state === 0
-        ? '<span class="chip chip-state chip-success">MAIN</span>'
-        : '<span class="chip chip-state chip-warn">DIVERGE</span>';
-
-    // A section header whose explanatory line is tucked behind a small info
-    // glyph instead of taking a permanent row: hovering the title shows the
-    // help as an anchored popover (no layout shift), and clicking the title
-    // pins it open (the `.help-open` toggle is wired in bindEventHandlers). The
-    // help text carries the populated-state description or the empty-state note.
-    const sectionHeaderWithHelp = (title: string, helpText: string): string => `
-                <div class="control-section-header section-help-host">
-                    <span class="section-help-toggle" role="button" tabindex="0" aria-label="${escapeAttr(title)} — show description">
-                        ${title}<i class="ti ti-info-circle section-help-icon"></i>
-                    </span>
-                    <div class="section-help">${helpText}</div>
-                </div>`;
-
-    const flankRows = flankEntries
-      .map(([neighbourId, blockingState]) => {
-        const safeState = 1 - Number(blockingState);
-        const safeLabel = safeState === 0 ? 'MAIN' : 'DIVERGE';
-        const blockLabel = Number(blockingState) === 0 ? 'MAIN' : 'DIVERGE';
-        return protectionRow(
-          peekLink(neighbourId),
-          stateChipHtml(safeState),
-          `Conflict if neighbour set to ${blockLabel} · held safe at ${safeLabel}`,
-        );
-      })
-      .join('');
-
-    // Train protection — read-only, runtime. Train-owned physical protection
-    // held on this switch after a train head entered a source switch and its
-    // flank lock was converted (design_new.md:665). Each entry is
-    // [train_id, source_switch_id, locked_state]; empty unless a sim is running.
-    const protectionClaims: Array<[string, string, number]> = Array.isArray(
-      switchData.train_protection_claims,
-    )
-      ? switchData.train_protection_claims
-      : [];
-
-    // Physical occupancy — the train whose wheels are on this switch right now
-    // (Switch.occupied_by, derived from route_owners; switch.py:259). This is a
-    // different concept from the locking shown in Train Protection: occupancy is
-    // physical presence, protection is reservation/locking. Always present in the
-    // live to_dict payload (switch.py:628); '' or null when unoccupied. Maps to
-    // the occupancy badge drawn on the switch tile in the canvas.
-    const occupiedBy =
-      switchData.occupied_by != null && switchData.occupied_by !== ''
-        ? String(switchData.occupied_by)
-        : '';
-
-    const protectionRows = protectionClaims
-      .map(([trainId, sourceId, lockedState]) => {
-        const stateLabel = Number(lockedState) === 0 ? 'MAIN' : 'DIVERGE';
-        return protectionRow(
-          `<span class="font-mono text-sm">${this._esc(trainId)}</span>`,
-          stateChipHtml(Number(lockedState)),
-          `Train ${trainId} holds this switch at ${stateLabel}, sourced from ${sourceId}`,
-          `<span class="text-muted">from</span> ${peekLink(sourceId)}`,
-        );
-      })
-      .join('');
-
-    // Route locks — a path holds this switch at `locked_state` for `train_id`
-    // before the train arrives. This is the pre-occupancy half of the same
-    // "what is holding this switch" story as train_protection_claims, so the two
-    // render together in the Train Protection section rather than as a separate
-    // top-of-panel banner. Each entry:
-    // { path_id, source_switch_id, train_id, locked_state, claim_role }.
-    const lockRows = lockEntries
-      .map((lock: any) => {
-        const lockedState = Number(lock.locked_state);
-        const stateLabel = lockedState === 0 ? 'MAIN' : 'DIVERGE';
-        const trainId = lock.train_id || '—';
-        const pathId = lock.path_id || '';
-        const roleNote = lock.claim_role === 'flank' ? ' as flank protection' : '';
-        return protectionRow(
-          `<span class="font-mono text-sm">${this._esc(trainId)}</span>`,
-          stateChipHtml(lockedState),
-          `Route ${pathId} holds this switch at ${stateLabel} for train ${trainId}${roleNote}`,
-          pathId ? `<span class="font-mono">${this._esc(pathId)}</span>` : '',
-          pathId,
-        );
-      })
-      .join('');
 
     const content = `
             <!-- §11 Status header — identity + state pill, dynamic accent. -->
@@ -246,54 +114,13 @@ export class SwitchEditorHandler {
                 </div>
             </div>
 
-            <!-- Occupancy — read-only, runtime: the train physically on this
-                 switch right now (Switch.occupied_by). Distinct from the locking
-                 story in Train Protection below — occupancy is wheels-on-switch,
-                 protection is who has reserved/locked it. The occupancy badge on
-                 the canvas tile maps to this section. -->
             <div class="control-section">
-                <div class="control-section-header">Occupancy</div>
+                <div class="control-section-header">Held</div>
                 ${
-                  occupiedBy
-                    ? protectionRow(
-                        `<span class="font-mono text-sm">${this._esc(occupiedBy)}</span>`,
-                        '<span class="chip chip-warn">Occupied</span>',
-                        `Train ${occupiedBy} is physically on this switch`,
-                      )
-                    : `<div class="text-muted text-xs">None — no train is on this switch.</div>`
+                  isLocked
+                    ? '<div class="text-xs">Yes — a train may be on it or about to cross it.</div>'
+                    : '<div class="text-muted text-xs">No</div>'
                 }
-            </div>
-
-            <!-- Flank Protection — read-only: neighbouring switches this one
-                 mutually flank-protects. The explanatory line is hover/click
-                 help on the title (section-help), not a permanent row. -->
-            <div class="control-section">
-                ${sectionHeaderWithHelp(
-                  `Flank Protection${flankEntries.length ? ` (${flankEntries.length})` : ''}`,
-                  flankEntries.length
-                    ? "Neighbours held at their safe state while this switch's route is locked."
-                    : 'None — no nearby switches require mutual locking.',
-                )}
-                ${flankRows}
-            </div>
-
-            <!-- Train Protection — read-only: everything currently holding this
-                 switch for a train. A route lock (a path holding the switch ahead
-                 of its train) and train-owned protection (held once the train
-                 occupies the source switch) are two phases of the same hold, so
-                 they share this section rather than a separate lock banner. -->
-            <div class="control-section">
-                ${sectionHeaderWithHelp(
-                  `Train Protection${
-                    lockEntries.length + protectionClaims.length
-                      ? ` (${lockEntries.length + protectionClaims.length})`
-                      : ''
-                  }`,
-                  lockEntries.length || protectionClaims.length
-                    ? 'Routes and trains currently holding this switch.'
-                    : 'None — no train is currently holding this switch.',
-                )}
-                ${lockRows}${protectionRows}
             </div>
 
             <!-- Controls -->
@@ -304,7 +131,7 @@ export class SwitchEditorHandler {
                         Toggle State
                     </button>
                 </div>
-                ${isLocked ? '<div class="text-warning text-xs mt-8">Switch is locked and cannot be toggled.</div>' : ''}
+                ${isLocked ? '<div class="text-warning text-xs mt-8">Switch is held and cannot be toggled.</div>' : ''}
             </div>
 
             <!-- LENGTH PROPERTIES SECTION — whole millimetres; every field
@@ -505,44 +332,6 @@ export class SwitchEditorHandler {
       };
     }
 
-    // Flank / train-protection switch links: clicking outlines that switch on
-    // the canvas (a "show me where this is" peek) without navigating away — the
-    // user stays on the current switch's editor. The cross-link payload carries
-    // only the id, so we fetch the target's tile on click and hand it to the
-    // editor's inspect-highlight channel; that channel clears itself on any
-    // panel swap or tool change.
-    const sidebar: HTMLElement | null = this.editor.$id('secondary-sidebar-content');
-    sidebar?.querySelectorAll<HTMLButtonElement>('.switch-peek-link').forEach((btn) => {
-      btn.onclick = async () => {
-        const targetId = btn.dataset.switchId;
-        if (!targetId) return;
-        try {
-          const sw = await this.api.getSwitch(targetId);
-          if (sw && !sw.error && sw.x != null && sw.y != null) {
-            this.editor.highlightInspectTiles(new Set([`${sw.x},${sw.y}`]));
-          }
-        } catch (err) {
-          console.debug('[SwitchEditorHandler] peek-highlight failed:', err);
-        }
-      };
-    });
-
-    // Section help (Flank / Train Protection): the title reveals its
-    // explanatory line on hover (CSS) and pins it open on click / Enter / Space
-    // by toggling `.help-open` on the header host.
-    sidebar?.querySelectorAll<HTMLElement>('.section-help-toggle').forEach((toggle) => {
-      const host = toggle.closest<HTMLElement>('.section-help-host');
-      if (!host) return;
-      const toggleOpen = () => host.classList.toggle('help-open');
-      toggle.onclick = toggleOpen;
-      toggle.onkeydown = (e: KeyboardEvent) => {
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault();
-          toggleOpen();
-        }
-      };
-    });
-
     // ═══════════════════════════════════════════════════════════════
     // SUBSCRIPTION SETUP (Phase 4)
     // ═══════════════════════════════════════════════════════════════
@@ -558,8 +347,8 @@ export class SwitchEditorHandler {
         { immediate: false }
       ) ?? null;
 
-    // Freeze structural fields in Simulation mode; Toggle State, availability,
-    // and the flank-navigation links stay live (see applyStructuralLock).
+    // Freeze structural fields in Operate mode; Toggle State and availability
+    // stay live (see applyStructuralLock).
     applyStructuralLock(this.editor.$id('secondary-sidebar-content'));
   }
 
@@ -584,9 +373,9 @@ export class SwitchEditorHandler {
   }
 
   async _updateSwitchDisplay(switchData: any): Promise<void> {
-    // The status header chrome + lock banner are structural (the banner
-    // appears/disappears based on lock state, and the state pill's text
-    // and accent class both change with switch state). Re-render via
+    // The status header chrome + held note are structural (the note
+    // appears/disappears with `held`, and the state pill's text and accent
+    // class both change with switch state). Re-render via
     // showEditor so every part stays in sync; _onSwitchUpdate already
     // skips this path while the user is editing form fields.
     await this.showEditor(switchData.switch_id);
@@ -618,7 +407,7 @@ export class SwitchEditorHandler {
 
   /** Re-render the switches list from `this.switches` without re-fetching.
    *  Shared by showSwitchesPanel and the background list poller so the list
-   *  stays live (position, lock, occupancy) without a manual refresh. */
+   *  stays live (position, held) without a manual refresh. */
   _renderSwitchesListSidebar(): void {
     const switches = [...this.switches].sort((a, b) =>
       String(a.switch_id).localeCompare(String(b.switch_id), undefined, { numeric: true }),
@@ -653,8 +442,7 @@ export class SwitchEditorHandler {
     const stateText = position === 0 ? 'MAIN' : 'DIVERGE';
     const stateChip = position === 0 ? 'chip-success' : 'chip-warn';
 
-    const isLocked = Array.isArray(sw.locks) && sw.locks.length > 0;
-    const isOccupied = sw.occupied_by != null && sw.occupied_by !== '';
+    const isHeld = !!this.editor.cachedNetwork?.switches?.[sw.switch_id]?.held;
     const isDisabled = !!sw.disabled;
     const isManual = !!sw.manual;
 
@@ -669,9 +457,7 @@ export class SwitchEditorHandler {
     const caption = name ? `${sw.switch_id} · (${sw.x}, ${sw.y})` : `(${sw.x}, ${sw.y})`;
 
     const chips = [`<span class="chip chip-state ${stateChip}">${stateText}</span>`];
-    if (isLocked) chips.push('<span class="chip chip-danger">Locked</span>');
-    if (isOccupied)
-      chips.push(`<span class="chip chip-warn">Occupied · ${this._esc(sw.occupied_by)}</span>`);
+    if (isHeld) chips.push('<span class="chip chip-warn">Held</span>');
     if (isDisabled) chips.push('<span class="chip chip-muted">Disabled</span>');
     if (isManual) chips.push('<span class="chip chip-muted">Manual</span>');
 
@@ -704,7 +490,7 @@ export class SwitchEditorHandler {
   }
 
   /** Start the switches-list background poller. Keeps the list live (position,
-   *  lock, occupancy) without a manual refresh. */
+   *  held) without a manual refresh. */
   _startSwitchesListPoller(): void {
     this._stopSwitchesListPoller();
     this._switchesListInterval = setInterval(
@@ -752,8 +538,7 @@ export class SwitchEditorHandler {
         s.switch_id,
         s.name,
         s.position,
-        Array.isArray(s.locks) ? s.locks.length : 0,
-        s.occupied_by ?? null,
+        !!this.editor.cachedNetwork?.switches?.[s.switch_id]?.held,
         !!s.disabled,
         !!s.manual,
       ]),

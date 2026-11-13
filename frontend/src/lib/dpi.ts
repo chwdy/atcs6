@@ -1,8 +1,7 @@
 // DPI awareness for window chrome — a small, narrowly-scoped utility.
 //
 // Canvas rendering already scales its backing store by devicePixelRatio in a
-// few places (the tile editor's track-bits compass, train-monitor, the
-// speed-profile curve) for crisp drawing. Nothing does the equivalent for
+// few places (the tile editor's track-bits compass) for crisp drawing. Nothing does the equivalent for
 // floating-window chrome: resize-handle hit areas, drag handles, and window
 // geometry stay in plain CSS px today, and nothing re-checks them if the
 // browser moves to a different-density monitor. This module answers exactly

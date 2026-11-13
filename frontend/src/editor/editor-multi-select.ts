@@ -24,9 +24,7 @@ interface SelectionSummary {
   tiles: any[];
   segmentIds: Set<string>;
   blockIds: Set<string>;
-  platformIds: Set<string>;
   switchIds: Set<string>;
-  signalIds: Set<string>;
 }
 
 export class MultiSelectActionsHandler {
@@ -70,9 +68,7 @@ export class MultiSelectActionsHandler {
       summary.tiles.length,
       [...summary.segmentIds].sort().join(','),
       [...summary.blockIds].sort().join(','),
-      [...summary.platformIds].sort().join(','),
       [...summary.switchIds].sort().join(','),
-      [...summary.signalIds].sort().join(','),
     ].join('|');
 
     // Already open: swap the body only, leaving the sidebar chrome alone.
@@ -103,9 +99,7 @@ export class MultiSelectActionsHandler {
     const tiles: any[] = [];
     const segmentIds = new Set<string>();
     const blockIds = new Set<string>();
-    const platformIds = new Set<string>();
     const switchIds = new Set<string>();
-    const signalIds = new Set<string>();
     for (const key of selectedKeys) {
       const t = byKey.get(key);
       if (!t) continue;
@@ -114,13 +108,9 @@ export class MultiSelectActionsHandler {
       // `block_section_id` is the block that owns that segment.
       if (t.segment_id) segmentIds.add(t.segment_id);
       if (t.block_section_id) blockIds.add(t.block_section_id);
-      // A tile's `station_id` holds the platform it belongs to (the field is
-      // historically named; see editor.ts removePlatformTile(track.station_id)).
-      if (t.station_id) platformIds.add(t.station_id);
       if (t.switch_id) switchIds.add(t.switch_id);
-      for (const sid of t.signal_ids || []) signalIds.add(sid);
     }
-    return { tiles, segmentIds, blockIds, platformIds, switchIds, signalIds };
+    return { tiles, segmentIds, blockIds, switchIds };
   }
 
   /** The segment payloads (geometry) the selection touches. */
@@ -161,7 +151,6 @@ export class MultiSelectActionsHandler {
   _buildHtml(summary: SelectionSummary): string {
     const tileCount = summary.tiles.length;
     const segmentCount = summary.segmentIds.size;
-    const blockCount = summary.blockIds.size;
     const tileWord = tileCount === 1 ? 'tile' : 'tiles';
     const segmentWord = segmentCount === 1 ? 'segment' : 'segments';
 
@@ -285,9 +274,7 @@ export class MultiSelectActionsHandler {
     add(summary.tiles.length, 'tile', 'tiles', 'ms-count-tile');
     add(summary.segmentIds.size, 'segment', 'segments', 'ms-count-segment');
     add(summary.blockIds.size, 'block', 'blocks', 'ms-count-block');
-    add(summary.platformIds.size, 'platform', 'platforms', 'ms-count-platform');
     add(summary.switchIds.size, 'switch', 'switches', 'ms-count-switch');
-    add(summary.signalIds.size, 'signal', 'signals', 'ms-count-signal');
     // Each segment keeps its number + word together (nowrap) and carries its
     // own trailing separator. Segments are joined by a real space — the only
     // break opportunity — so a long line wraps between segments with the · at
@@ -302,7 +289,7 @@ export class MultiSelectActionsHandler {
   }
 
   // Color-coded chips for every entity the selection touches. Structural
-  // entities (block / platform / switch / signal) come first so their hues are
+  // entities (segment / block / switch) come first so their hues are
   // visible without scrolling; the raw track tiles follow, capped so a large
   // box-select can't render thousands of chips.
   _chipsHtml(summary: SelectionSummary): string {
@@ -315,15 +302,9 @@ export class MultiSelectActionsHandler {
       .sort()
       .forEach((id) => parts.push(chip(id, 'chip-accent', `Segment ${id}`)));
     [...summary.blockIds].sort().forEach((id) => parts.push(chip(id, 'chip-accent', `Block ${id}`)));
-    [...summary.platformIds]
-      .sort()
-      .forEach((id) => parts.push(chip(id, 'chip-info', `Platform ${id}`)));
     [...summary.switchIds]
       .sort()
       .forEach((id) => parts.push(chip(id, 'chip-warn', `Switch ${id}`)));
-    [...summary.signalIds]
-      .sort()
-      .forEach((id) => parts.push(chip(id, 'chip-success', `Signal ${id}`)));
 
     summary.tiles
       .slice(0, TILE_CAP)
@@ -651,8 +632,7 @@ export class MultiSelectActionsHandler {
     if (positions.length === 0) return;
 
     // Reuse the editor's existing bulk-delete helper: it handles the
-    // server's 409 impact pre-check (orphan signals / platforms /
-    // switches) and prompts the user with a force-confirm if needed.
+    // server's 409 impact pre-check (orphan switches) and prompts the user with a force-confirm if needed.
     const result = await this.editor._bulkDeleteWithConfirm(positions);
     if (!result) return; // user cancelled, or no-op
 

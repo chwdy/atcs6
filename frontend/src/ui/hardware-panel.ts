@@ -1429,14 +1429,14 @@ export function activationBlockMessage(err: any): string | null {
   }).join('; ');
 }
 
-/** Enter Setup for the selected hardware environment. From Live this runs
- *  Emergency stop first, so it asks before stopping a running railway. */
+/** Enter Setup for the selected hardware environment. From Live this drives
+ *  the safe state first, so it asks before stopping a running railway. */
 async function enterSetup(): Promise<void> {
   if (environmentInfo.session_state?.value === 'live') {
     const confirmed = await showConfirmModal({
       title: 'Enter Setup?',
-      message: 'Entering Setup runs Emergency stop first: every train stops and gives up its reservation.',
-      detail: 'Activate takes you back to Live, with every train powered off.',
+      message: 'Entering Setup turns every block to 0 V and every point motor off first, so every train stops.',
+      detail: 'Activate takes you back to Live. It starts the railway over: the trains are found again from the detectors, each with its knob at 0 V.',
       confirmText: 'Enter Setup',
       cancelText: 'Cancel',
       confirmVariant: 'danger',

@@ -24,19 +24,15 @@ export type LayerId =
   | 'block-radius'
   | 'block-speed-limit'
   | 'switches'
-  | 'signals'
-  | 'tunnel-links'
-  | 'stuck'
-  | 'train-position';
+  | 'tunnel-links';
 
 export interface LayerDef {
   id: LayerId;
   label: string;
-  group: 'Track' | 'Blocks' | 'Infrastructure' | 'Trains';
+  group: 'Track' | 'Blocks' | 'Infrastructure';
   /** Which canvas pass draws it, so a toggle repaints that pass: the world
-   *  pass (layout), the live pass (trains, arrows), both, or neither (a layer
-   *  shown in a panel rather than on the map). */
-  redraw: 'world' | 'live' | 'both' | 'none';
+   *  pass (layout), the live pass (arrows), or both. */
+  redraw: 'world' | 'live' | 'both';
   /** On for a viewer who has never changed it. */
   defaultOn: boolean;
 }
@@ -58,14 +54,7 @@ export const LAYERS: readonly LayerDef[] = [
   { id: 'block-radius', label: 'Block radius', group: 'Blocks', redraw: 'world', defaultOn: false },
   { id: 'block-speed-limit', label: 'Block speed limit', group: 'Blocks', redraw: 'world', defaultOn: false },
   { id: 'switches', label: 'Switch states', group: 'Infrastructure', redraw: 'world', defaultOn: false },
-  // Signal names, and a line from each signal to the blocks it protects.
-  { id: 'signals', label: 'Signal details', group: 'Infrastructure', redraw: 'world', defaultOn: false },
   { id: 'tunnel-links', label: 'Tunnel links', group: 'Infrastructure', redraw: 'world', defaultOn: false },
-  // An arrow from a train waiting for a block to that block. It draws on the
-  // live pass, which a world-only repaint would leave stale while paused.
-  { id: 'stuck', label: 'Stuck trains', group: 'Trains', redraw: 'both', defaultOn: false },
-  // The geometry and properties section of a train's panel; nothing on the map.
-  { id: 'train-position', label: 'Train position details', group: 'Trains', redraw: 'none', defaultOn: true },
 ];
 
 const LAYER_IDS = new Set<string>(LAYERS.map((l) => l.id));

@@ -1,6 +1,6 @@
 // copy-id.ts — the "copy this identifier" affordance.
 //
-// Entity ids (block, segment, train, switch, signal, platform, station) are
+// Entity ids (block, segment, train, switch, tunnel) are
 // opaque strings the operator does not read so much as *carry*: into a filter
 // box, a bug report, an API call, a test fixture. Every identity display clamps
 // them to one line with an ellipsis (DESIGN_LANGUAGE.md §5 "Overflow:

@@ -422,7 +422,7 @@ class VirtualBench {
             initialHidden: !this._visible,
             content: { mount: (el) => this._buildContentDom(el) },
             // A singleton toggled from the toolbar, so its × hides rather than
-            // destroys — the same contract as diagnostics and the occupancy monitor.
+            // destroys — the same contract as the occupancy monitor.
             onCloseRequested: () => this.hide(),
             onGeometryChange: () => this._persist(),
         });

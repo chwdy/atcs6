@@ -1,6 +1,6 @@
 // renderer-blocks.ts — the BLOCK (grouping) overlay.
 //
-// A `Block` is the power + occupancy + reservation unit: it groups one or more
+// A `Block` is the power + occupancy unit: it groups one or more
 // `Segment`s (the geometry) onto one shared feed. This overlay tints each tile
 // by the block that owns it, so the operator can see the grouping at a glance.
 // The geometry overlays (per-segment colors, boundary markers, detail labels,

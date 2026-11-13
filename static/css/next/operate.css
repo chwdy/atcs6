@@ -143,9 +143,6 @@ html[data-screen="operate"] #train-monitor-bar {
 }
 
 /* A failed read over the last list read (left-list.tsx PolledBody). */
-.op-list-stale {
-    margin: var(--space-4) 0;
-}
 
 /* ---- Right panel ---- */
 
@@ -239,16 +236,6 @@ html[data-screen="operate"] #train-monitor-bar {
     background-color: var(--bg-panel);
 }
 
-.op-cards-buttons {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-6);
-}
-
-.op-cards.is-folded .op-cards-buttons {
-    flex-direction: row;
-}
-
 /* min-width: 0 holds the card at its width. Without it a flex item is at
    least as wide as its longest line, so a long hold reason widened the card
    instead of ending in an ellipsis. */
@@ -302,45 +289,7 @@ html[data-screen="operate"] #train-monitor-bar {
     font-weight: 600;
 }
 
-.op-card-speed {
-    display: flex;
-    align-items: baseline;
-    gap: var(--space-4);
-}
-
-.op-card-speed-value {
-    font-family: var(--font-mono);
-    font-size: 20px;
-    font-weight: 700;
-    color: var(--text-primary);
-}
-
-.op-card-speed-unit {
-    font-size: var(--font-size-label);
-    color: var(--text-tertiary);
-}
-
 /* The ATC limit reads in the cab display's colour (.tc-hmi-atc). */
-.op-card-speed-limit {
-    margin-left: auto;
-    font-family: var(--font-mono);
-    font-size: var(--font-size-body);
-    font-weight: 700;
-    color: var(--danger-color);
-}
-
-.op-card-hold {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    font-size: var(--font-size-label);
-    color: var(--warning-color);
-}
-
-.op-card-control {
-    display: flex;
-    margin-top: auto;
-}
 
 .op-card-btn {
     flex: 1;
@@ -360,21 +309,11 @@ html[data-screen="operate"] #train-monitor-bar {
     min-width: 0;
 }
 
-.op-card-handle-power {
-    font-size: var(--font-size-micro);
-    color: var(--text-tertiary);
-}
-
 .op-card-handle-pos {
     min-width: 32px;
     text-align: right;
     font-family: var(--font-mono);
     font-size: var(--font-size-value);
-}
-
-.op-card-control-note {
-    font-size: var(--font-size-label);
-    color: var(--text-tertiary);
 }
 
 /* A folded card is one line: name and chips, speed and ATC limit, then the
@@ -394,20 +333,7 @@ html[data-screen="operate"] #train-monitor-bar {
     max-width: 180px;
 }
 
-.op-cards.is-folded .op-card-speed {
-    flex-shrink: 0;
-}
-
-.op-cards.is-folded .op-card-speed-value {
-    font-size: var(--font-size-value);
-}
-
 /* The button is as wide as its label; the handle keeps a usable width. */
-.op-cards.is-folded .op-card-control {
-    flex: none;
-    min-width: 72px;
-    margin-top: 0;
-}
 
 .op-cards.is-folded .op-card-handle {
     width: 128px;
@@ -423,32 +349,8 @@ html[data-screen="operate"] #train-monitor-bar {
     padding: 0 12px;
 }
 
-.op-train-folds {
-    gap: var(--space-4);
-}
-
-.op-fold > summary {
-    display: flex;
-    align-items: center;
-    gap: var(--space-6);
-}
-
-.op-fold-summary {
-    margin-left: auto;
-    font-family: var(--font-mono);
-    font-weight: 400;
-    text-transform: none;
-    color: var(--text-tertiary);
-}
-
 /* .tc-btn grows with flex: 1, which in this column section starts the
    button at 0 height and drops it to its text height. Keep the 28px. */
-.op-calibrate-btn,
-.op-delete-train-btn {
-    flex: none;
-    width: 100%;
-    margin-top: var(--space-8);
-}
 
 .op-row {
     display: flex;
@@ -467,12 +369,6 @@ html[data-screen="operate"] #train-monitor-bar {
     margin-top: var(--space-4);
     font-size: var(--font-size-body);
     color: var(--text-secondary);
-}
-
-.op-edit-props {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-6);
 }
 
 .op-fields {
@@ -504,37 +400,6 @@ html[data-screen="operate"] #train-monitor-bar {
 
 /* ---- Look-ahead: today's Train Monitor graph and Upcoming list, stacked
    to fit the panel's width instead of side by side. ---- */
-
-.op-look-ahead-parts {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-8);
-}
-
-.op-look-ahead .view-distance-controls {
-    align-self: flex-start;
-}
-
-.op-look-ahead .tm-canvas-wrap {
-    flex: none;
-    width: 100%;
-    border-radius: var(--control-radius-sm);
-}
-
-.op-look-ahead .tm-canvas {
-    height: 200px;
-}
-
-.op-look-ahead .tm-upcoming {
-    width: auto !important;
-    min-width: 0;
-    max-width: none;
-    max-height: 240px;
-    flex: none !important;
-    border-left: none;
-    border-top: 1px solid var(--border-color);
-    resize: none;
-}
 
 /* ── v2 train cards (frontend/src/next/operate/running-trains.tsx) ── */
 

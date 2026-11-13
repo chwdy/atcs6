@@ -11,11 +11,11 @@
  *
  * Each is an editor mode (the object Editor.enterMode takes): the canvas
  * click handler hands every click to the active mode first. They reach the
- * editor as an EditorPlugin's tools, so ToolbarHandler.selectTool picks them
- * like any other tool.
+ * editor through Editor.addTools, so ToolbarHandler.selectTool picks them like
+ * any other tool.
  */
 import { showToast } from '../../lib/toast';
-import type { Editor, EditorPlugin } from '../../editor/editor';
+import type { Editor } from '../../editor/editor';
 import type { ToolContribution } from '../../editor/tool-registry';
 
 interface ModeClick {
@@ -88,8 +88,3 @@ export function editorScreenTools(editor: Editor): ToolContribution[] {
     },
   ];
 }
-
-export const editorScreenPlugin: EditorPlugin = {
-  register() {},
-  tools: (editor) => editorScreenTools(editor),
-};
