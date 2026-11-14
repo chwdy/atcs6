@@ -200,6 +200,7 @@ def request_position_change(
         runtime = _runtime(state)
         if runtime is not None:
             runtime.disable_alternation(switch_id)
+            runtime.end_assigned_legs_at(switch_id)
     _emit_command_result(state, switch_id, resolved_command_id, success, message)
 
     return resolved_command_id

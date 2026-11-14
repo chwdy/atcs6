@@ -43,6 +43,9 @@ export interface RunningTrain {
   direction: 'forward' | 'reverse';
   knob_volts: number;
   lost: boolean;
+  /** For each switch where the train has an assigned leg, 0 (main) or 1
+   *  (diverge) (design_v2.md "Switches", Assigned leg). */
+  assigned_legs?: Record<string, number>;
   blocks: { block_id: string; reads_occupied: boolean; direction?: 'forward' | 'reverse' }[];
   state: 'stopped' | 'moving' | 'waiting' | 'lost';
   waiting_reason: string | null;

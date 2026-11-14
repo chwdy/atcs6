@@ -1,6 +1,7 @@
 /**
  * The selected switch, in the Operate screen's right panel: its position,
- * Throw, alternate arrivals, whether a train holds it, and its availability.
+ * Throw, alternate arrivals, each train's assigned leg, whether a train holds
+ * it, and its availability.
  *
  * Throw sends the operator's throw request (`PUT /api/switches/<id>/state`,
  * design_v2.md "Running a train", Throw a switch). A held switch is not
@@ -12,7 +13,7 @@ import { stateManager } from '../../lib/state-manager';
 import { showToast } from '../../lib/toast';
 import { Segment, sendChange } from './block-panel';
 import { CopyId } from './copy-id';
-import { liveVersion } from './live';
+import { liveVersion, runningTrains } from './live';
 import type { OperateHost } from './operate-state';
 
 // `Switch.manual` (design_v2.md "Switches", A switch marked manual).
@@ -20,6 +21,27 @@ const AVAILABILITY_OPTIONS = [
   { value: 'available', label: 'Normal', title: 'Normal — trains throw this switch when they need it' },
   { value: 'manual', label: 'Manual', title: MANUAL_SWITCH_HELP },
 ];
+
+// A train's assigned leg at this switch (design_v2.md "Switches", Assigned
+// leg).
+const LEG_OPTIONS = [
+  { value: 'none', label: 'As set', title: 'This train follows the switch as it is set' },
+  { value: 'main', label: 'Main', title: 'Send this train out of the main leg every time it comes to this switch' },
+  { value: 'diverge', label: 'Diverge', title: 'Send this train out of the diverge leg every time it comes to this switch' },
+];
+
+const LEG_REFUSALS: Record<string, string> = {
+  not_live: 'the session is not Live',
+  train_lost: 'this train is lost',
+  unknown_train: 'this train is no longer on the track',
+  unknown_switch: 'this switch is no longer on the layout',
+  motor_unavailable: 'this switch has no working motor',
+  switch_manual: 'this switch is marked manual',
+};
+
+export function legValue(leg: number | undefined): string {
+  return leg === 0 ? 'main' : leg === 1 ? 'diverge' : 'none';
+}
 
 /** `Switch.position`: 0 is the main route, 1 the diverging one. */
 export function positionName(position: unknown): string {
@@ -37,6 +59,18 @@ export function SwitchPanel({ host, switchId }: { host: OperateHost; switchId: s
   const supportsAlternate = Object.prototype.hasOwnProperty.call(sw, 'alternate_next');
   const alternating = sw.alternate_next != null;
   const name = String(sw.name || '').trim();
+  const trains = runningTrains().filter((train) => !train.lost);
+
+  const assignLeg = (trainId: string, value: string) =>
+    sendChange(
+      'assigned leg',
+      async () => {
+        const leg = value === 'main' ? 0 : value === 'diverge' ? 1 : null;
+        const reply = await api.setTrainAssignedLeg(trainId, switchId, leg);
+        return reply.success ? null : { error: LEG_REFUSALS[reply.reason ?? ''] ?? reply.reason ?? 'refused' };
+      },
+      host,
+    );
 
   const throwSwitch = async () => {
     const next = position === 0 ? 1 : 0;
@@ -99,6 +133,25 @@ export function SwitchPanel({ host, switchId }: { host: OperateHost; switchId: s
           <dd>{held ? 'Yes — a train may be on it or about to cross it' : <span class="text-muted">No</span>}</dd>
         </dl>
       </div>
+
+      {!sw.motor_unavailable && !sw.manual && trains.length > 0 && (
+        <div class="control-section">
+          <div class="control-section-header">Assigned leg</div>
+          {trains.map((train) => (
+            <Segment
+              key={train.train_id}
+              label={train.name}
+              options={LEG_OPTIONS}
+              value={legValue(train.assigned_legs?.[switchId])}
+              onPick={(v) => void assignLeg(train.train_id, v)}
+            />
+          ))}
+          <div class="text-xxs text-muted">
+            A train with an assigned leg is sent out of that leg every time it comes to this switch. Throwing the
+            switch by hand ends them.
+          </div>
+        </div>
+      )}
 
       <div class="control-section">
         <div class="control-section-header">Operation</div>

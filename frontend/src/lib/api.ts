@@ -190,6 +190,15 @@ export class API implements LayoutDataClient, SimClient {
     return this._trainRequest(`/trains/${encodeURIComponent(trainId)}/reverse`, 'POST');
   }
 
+  /** Give a train an assigned leg at a switch (0 main, 1 diverge), or end it
+   *  with null (design_v2.md "Running a train", Assign a leg). */
+  setTrainAssignedLeg(trainId: string, switchId: string, leg: 0 | 1 | null) {
+    return this._trainRequest(`/trains/${encodeURIComponent(trainId)}/assigned-leg`, 'PUT', {
+      switch_id: switchId,
+      leg,
+    });
+  }
+
   removeRunningTrain(trainId: string) {
     return this._trainRequest(`/trains/${encodeURIComponent(trainId)}`, 'DELETE');
   }

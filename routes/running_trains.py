@@ -53,6 +53,20 @@ def register(app, state: AppState) -> None:
             live = state.session_state().is_live
             return _answer(runtime.reverse(train_id, live))
 
+    @app.route("/api/trains/<train_id>/assigned-leg", methods=["PUT"])
+    def set_train_assigned_leg(train_id):
+        """Give the train an assigned leg at a switch, or end it (design_v2.md
+        "Running a train", Assign a leg)."""
+        runtime = _runtime(state)
+        if runtime is None:
+            return _refuse_without_runtime()
+        data = request.get_json(silent=True) or {}
+        with state.simulation_lock:
+            live = state.session_state().is_live
+            return _answer(
+                runtime.set_assigned_leg(train_id, data.get("switch_id"), data.get("leg"), live)
+            )
+
     @app.route("/api/trains/<train_id>/stop", methods=["POST"])
     def stop_train(train_id):
         """Set the knob to 0 V; always accepted for a train the runtime holds

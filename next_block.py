@@ -48,12 +48,14 @@ class WalkResult:
       `"switch_against"`. None when there is one.
     - `switch_ids`: every switch the walk met, in order, including a switch
       that is set against the walk.
+    - `toe_switch_ids`: those of `switch_ids` the walk met at the toe.
     """
 
     block_id: Optional[str]
     direction: Optional[str]
     reason: Optional[str]
     switch_ids: Tuple[str, ...]
+    toe_switch_ids: Tuple[str, ...] = ()
 
 
 def _block_end(network: "RailwayNetwork", block_id: str, direction: str):
@@ -118,29 +120,35 @@ def next_block_ahead(
     block_id: str,
     direction: str,
     switch_positions: Optional[Dict[str, int]] = None,
+    toe_positions: Optional[Dict[str, int]] = None,
 ) -> WalkResult:
     """Walk from the far end of `block_id` in `direction` to the next block.
 
     `switch_positions` maps a switch id to a position to use in place of that
     switch's current one, for asking "where would this lead if that switch
     were thrown". A switch it does not name is read as currently set.
+
+    `toe_positions` does the same for a switch the walk meets at its toe, and
+    is not used where the walk meets that switch from a leg. It carries a
+    train's assigned legs (design_v2.md "Switches", Assigned leg).
     """
     start = _block_end(network, block_id, direction)
     if start is None:
         return WalkResult(None, None, TRACK_ENDS, ())
     tile, exit_edge = start
     met: list = []
+    met_at_toe: list = []
     visited: Set[Tuple[int, int, str]] = set()
     while True:
         key = (tile.x, tile.y, exit_edge)
         if key in visited:
             # Rails that loop round without ever reaching a block.
-            return WalkResult(None, None, TRACK_ENDS, tuple(met))
+            return WalkResult(None, None, TRACK_ENDS, tuple(met), tuple(met_at_toe))
         visited.add(key)
 
         step = _step(network, tile, exit_edge)
         if step is None:
-            return WalkResult(None, None, TRACK_ENDS, tuple(met))
+            return WalkResult(None, None, TRACK_ENDS, tuple(met), tuple(met_at_toe))
         neighbour, entry_edge = step
 
         reached = getattr(neighbour, "block_id", None)
@@ -150,13 +158,19 @@ def next_block_ahead(
                 _entry_direction(network, reached, neighbour, entry_edge),
                 None,
                 tuple(met),
+                tuple(met_at_toe),
             )
 
         switch_id = getattr(neighbour, "switch_id", None)
         if switch_id and neighbour.is_switch:
             if switch_id not in met:
                 met.append(switch_id)
+            at_toe = entry_edge in neighbour.switch_points
+            if at_toe and switch_id not in met_at_toe:
+                met_at_toe.append(switch_id)
             override = (switch_positions or {}).get(switch_id)
+            if override is None and at_toe:
+                override = (toe_positions or {}).get(switch_id)
             exits = list(
                 neighbour.get_exits(
                     entry_edge, use_switch_state=True, switch_state_override=override
@@ -165,7 +179,7 @@ def next_block_ahead(
             )
             switch = network.switches.get(switch_id)
             if switch is not None:
-                if entry_edge in neighbour.switch_points:
+                if at_toe:
                     if switch.motor_unavailable:
                         exits = []
                 elif switch.allow_exit_from_either_leg:
@@ -176,11 +190,11 @@ def next_block_ahead(
                 elif switch.motor_unavailable:
                     exits = []
             if not exits:
-                return WalkResult(None, None, SWITCH_AGAINST, tuple(met))
+                return WalkResult(None, None, SWITCH_AGAINST, tuple(met), tuple(met_at_toe))
         else:
             exits = list(neighbour.get_exits(entry_edge, use_switch_state=False) or ())
             if not exits:
-                return WalkResult(None, None, TRACK_ENDS, tuple(met))
+                return WalkResult(None, None, TRACK_ENDS, tuple(met), tuple(met_at_toe))
         tile, exit_edge = neighbour, exits[0]
 
 

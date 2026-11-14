@@ -79,6 +79,9 @@ class RunningTrain:
     `forward` or `reverse` along that block's tile order."""
     knob_volts: float = 0.0
     destination_block_id: Optional[str] = None
+    assigned_legs: Dict[str, int] = field(default_factory=dict)
+    """The train's assigned legs: for each switch that has one, `0` (main)
+    or `1` (diverge) (design_v2.md "Switches", Assigned leg)."""
     length_cm: Optional[float] = None
     lost: bool = False
     stopped_at: Optional[float] = 0.0
@@ -204,8 +207,13 @@ class TrainRuntime:
         return reading == [train.front_block]
 
     def walk_ahead(self, train: RunningTrain) -> WalkResult:
-        """The walk from the train's front block in its direction."""
-        return next_block_ahead(self._network, train.front_block, train.direction)
+        """The walk from the train's front block in its direction. A switch
+        met at its toe where the train has an assigned leg leads out of that
+        leg."""
+        return next_block_ahead(
+            self._network, train.front_block, train.direction,
+            toe_positions=train.assigned_legs,
+        )
 
     def state_of(self, train: RunningTrain) -> str:
         """`"lost"`, `"stopped"`, `"waiting"` or `"moving"`."""
@@ -249,6 +257,7 @@ class TrainRuntime:
             "direction": train.direction,
             "knob_volts": train.knob_volts,
             "destination_block_id": train.destination_block_id,
+            "assigned_legs": dict(train.assigned_legs),
             "lost": train.lost,
             "stopped_at": train.stopped_at,
             "waiting_since": train.waiting_since,
@@ -660,26 +669,39 @@ class TrainRuntime:
                     return {walk.block_id: walk.direction or FORWARD for walk in legs}
         return None
 
-    def _claim_walk(self, train: RunningTrain) -> Tuple[WalkResult, Optional[Tuple[str, int]]]:
-        """The walk the train claims by, and the alternate-arrivals switch and
-        leg it crosses, if any (design_v2.md "Switches", Which passing block a
-        train gets)."""
+    def _claim_walk(
+        self, train: RunningTrain
+    ) -> Tuple[WalkResult, Dict[str, int], Optional[Tuple[str, int]]]:
+        """The walk the train claims by, the position each switch on it has
+        to be in for the train's assigned legs, and the alternate-arrivals
+        switch and leg it crosses, if any (design_v2.md "Switches", Assigned
+        leg and Which passing block a train gets)."""
         walk = self.walk_ahead(train)
+        assigned = {
+            switch_id: train.assigned_legs[switch_id]
+            for switch_id in walk.toe_switch_ids
+            if switch_id in train.assigned_legs
+        }
         if len(walk.switch_ids) != 1:
-            return walk, None
+            return walk, assigned, None
         switch_id = walk.switch_ids[0]
-        preferred = self.alternate_next.get(switch_id)
+        # An assigned leg comes before alternate arrivals.
+        preferred = None if switch_id in assigned else self.alternate_next.get(switch_id)
         switch = self._network.switches.get(switch_id)
         if preferred is None or switch is None or switch.manual or switch.motor_unavailable:
-            return walk, None
+            return walk, assigned, None
         legs = self._legs_from(train.front_block, train.direction, switch_id)
         if legs is None:
-            return walk, None
+            return walk, assigned, None
         other = 1 - preferred
         position = preferred
         if self.block_is_taken(legs[preferred].block_id) and not self.block_is_taken(legs[other].block_id):
             position = other
-        return legs[position], (switch_id, position)
+        return legs[position], assigned, (switch_id, position)
+
+    def _needs_throw(self, switch_id: str, position: int) -> bool:
+        switch = self._network.switches[switch_id]
+        return int(switch.position) != position or not switch.position_known
 
     def _give_claims(self, now: float) -> None:
         """Serve the running trains in first-come order (design_v2.md
@@ -688,7 +710,7 @@ class TrainRuntime:
         for train in self.trains.values():
             if not train.running or train.claim_block_id is not None:
                 continue
-            walk, _ = self._claim_walk(train)
+            walk, _, _ = self._claim_walk(train)
             wanted = walk.block_id or walk.reason or ""
             if train.asked_for != wanted or train.asked_step is None:
                 train.asked_for = wanted
@@ -698,12 +720,11 @@ class TrainRuntime:
         asking.sort(key=lambda train: (train.asked_step, train.seq))
         for train in asking:
             # Earlier trains on this step may have thrown or claimed a switch.
-            walk, passage = self._claim_walk(train)
+            walk, assigned, passage = self._claim_walk(train)
             reason = self._why_no_claim(train, walk)
             if reason is None and passage is not None:
                 switch_id, position = passage
-                switch = self._network.switches[switch_id]
-                needs_throw = int(switch.position) != position or not switch.position_known
+                needs_throw = self._needs_throw(switch_id, position)
                 if switch_id in self.held_switch_ids() or (
                     needs_throw and switch_id in self.switches_just_left()
                 ):
@@ -714,6 +735,23 @@ class TrainRuntime:
                     if not self._outputs_active():
                         return
                     reason = SWITCH_HELD
+            if reason is None and assigned:
+                # Throw each switch the train's assigned legs need thrown,
+                # and only once every one of them may be thrown.
+                to_throw = [
+                    (switch_id, position)
+                    for switch_id, position in assigned.items()
+                    if self._needs_throw(switch_id, position)
+                ]
+                blocked = self.held_switch_ids() | self.switches_just_left()
+                if any(switch_id in blocked for switch_id, _ in to_throw):
+                    reason = SWITCH_HELD
+                for switch_id, position in to_throw if reason is None else ():
+                    if self._throw_switch is None or not self._throw_switch(switch_id, position):
+                        if not self._outputs_active():
+                            return
+                        reason = SWITCH_HELD
+                        break
             if reason is None:
                 train.alternating_switch = passage
                 train.claim_block_id = walk.block_id
@@ -847,6 +885,39 @@ class TrainRuntime:
         self._clear_asking(train)
         return True, None
 
+    def set_assigned_leg(self, train_id: str, switch_id: Any, leg: Any, live: bool) -> Result:
+        """Give the train an assigned leg at a switch (`leg` 0 or 1), or end
+        it (`leg` None) (design_v2.md "Running a train", Assign a leg).
+        Nothing is thrown here: the switch is thrown as part of claiming."""
+        train = self.trains.get(train_id)
+        if train is None:
+            return False, "unknown_train"
+        if leg is None:
+            if isinstance(switch_id, str):
+                train.assigned_legs.pop(switch_id, None)
+            return True, None
+        if not live:
+            return False, "not_live"
+        if train.lost:
+            return False, "train_lost"
+        switch = self._network.switches.get(switch_id) if isinstance(switch_id, str) else None
+        if switch is None:
+            return False, "unknown_switch"
+        if switch.motor_unavailable:
+            return False, "motor_unavailable"
+        if switch.manual:
+            return False, "switch_manual"
+        if type(leg) is not int or leg not in (0, 1):
+            return False, "out_of_range"
+        train.assigned_legs[switch_id] = leg
+        return True, None
+
+    def end_assigned_legs_at(self, switch_id: str) -> None:
+        """End every train's assigned leg at a switch, as a successful throw
+        of it by the operator does."""
+        for train in self.trains.values():
+            train.assigned_legs.pop(switch_id, None)
+
     def stop_all(self, now: float, live: bool) -> Result:
         """Stop every train at once. While Live, every block is commanded to
         0 V in the same request."""
@@ -867,13 +938,14 @@ class TrainRuntime:
         return True, None
 
     def leave_live(self, now: float) -> None:
-        """Leaving Live stops every train and ends every claim. The trains
-        themselves stay."""
+        """Leaving Live stops every train, and ends every claim and every
+        assigned leg. The trains themselves stay."""
         self.alternate_next.clear()
         self.passing_blocks.clear()
         for train in self.trains.values():
             self._stop(train, now)
             self._end_claim(train)
+            train.assigned_legs.clear()
 
     def clear(self) -> None:
         """Start with no trains, as an activation does."""

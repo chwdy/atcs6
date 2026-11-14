@@ -335,3 +335,32 @@ def test_two_trains_lap_the_rig_without_sharing_a_block(session, monkeypatch):
             assert not train.lost
 
     assert all(model.front > 1.8 + 4 * 5 for model in models), [m.front for m in models]
+
+
+def test_assigned_leg_request_snapshot_and_operator_throw(session):
+    switch_id = "SW_11_9"
+    put = session.client.put
+    session.passes("Right")
+
+    reply = put("/api/trains/T1/assigned-leg", json={"switch_id": switch_id, "leg": 1})
+    assert reply.get_json() == {"success": True, "reason": None}
+    assert session.snapshot()["trains"]["T1"]["assigned_legs"] == {switch_id: 1}
+
+    refused = put("/api/trains/T1/assigned-leg", json={"switch_id": "SW_NONE", "leg": 1})
+    assert refused.status_code == 400
+    assert refused.get_json() == {"success": False, "reason": "unknown_switch"}
+
+    # The runtime throws the switch for the train as part of claiming.
+    put("/api/trains/T1/knob", json={"volts": 6})
+    session.passes("Right")
+    runtime = session.sim.train_runtime
+    assert runtime.trains["T1"].claim_block_id == session.ids["Sideline"]
+    assert int(session.network.switches[switch_id].position) == 1
+
+    # A successful throw by the operator ends every assigned leg there.
+    runtime.clear()
+    session.passes("Right")
+    train_id = next(iter(runtime.trains))
+    put(f"/api/trains/{train_id}/assigned-leg", json={"switch_id": switch_id, "leg": 1})
+    assert put(f"/api/switches/{switch_id}/state", json={"state": 0}).status_code == 202
+    assert runtime.trains[train_id].assigned_legs == {}

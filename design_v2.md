@@ -60,6 +60,7 @@ These are the terms this document uses for v2's own ideas. Names of code (classe
 - **The way**: the blocks and switches a train with a destination will pass to reach it. See **Switches**, The way to a destination.
 - **Held switch**: a switch a train may be on or about to cross, which is therefore not thrown. See **Switches**.
 - **Passing block**: one of the two blocks the legs of a switch with alternate arrivals on lead to. See **Switches**, Alternate arrivals.
+- **Assigned leg**: the leg of a switch the operator has picked for one train. Each time that train comes to the switch's toe, the runtime sends it out of that leg. See **Switches**, Assigned leg.
 - **Destination**: a block the operator picks for a train to run to and stop in. Optional.
 - **Hold time**: 5 seconds (the runtime setting `hold_time_s`). A block that reads empty while no block further forward in its train reads occupied stays the train's block for this long. See **Trains**.
 - **Pass**: one turn of the runtime loop that reads the detectors. While the session is Live a pass is a whole runtime step; in Setup it is the stopped pass; in Halted the loop makes no pass. See **Runtime loop**.
@@ -189,6 +190,13 @@ These are all the things the operator can do to trains and switches from the Ope
   - the switch's motor is marked unavailable;
   - the switch is marked manual;
   - the switch's two legs do not each lead to a block of its own, with no other switch between.
+- **Assign a leg.** `PUT /api/trains/<train_id>/assigned-leg` with `{ "switch_id": id, "leg": 0 }` gives the train the main leg of that switch as its assigned leg, `"leg": 1` gives it the diverge leg, and `"leg": null` ends it (see **Switches**, Assigned leg). No form of the request throws the switch. Ending an assigned leg is accepted in every session state. Giving one is refused when **any of these holds**:
+  - the session state is not Live (`not_live`);
+  - the train is lost (`train_lost`);
+  - the layout has no such switch (`unknown_switch`);
+  - the switch's motor is marked unavailable (`motor_unavailable`);
+  - the switch is marked manual (`switch_manual`);
+  - `leg` is not `0`, `1` or `null` (`out_of_range`).
 - **Throw a switch.** `PUT /api/switches/<switch_id>/state` throws a switch (see **Switch**, Canonical `Switch.position` mutation workflow). It is refused while the session is not Live (`not_live`), and while the switch is held (`switch_held`, see **Switches**, A held switch is not thrown).
 - **Edit the layout.** The layout is drawn and edited on the Editor screen. Loading a layout, clearing it, and every edit to tiles, segments, blocks, switches and tunnels are refused while the session is Live (`live`), because the rig is wired to the layout it was activated with. Saving a layout is accepted in every session state. Loading or clearing a layout, and any edit that adds, deletes or regroups a block, removes every train; the detectors then find them again.
 - **Save the Hardware Setup.** `PUT /api/hardware/config` is accepted in every session state, so a wiring fix can be saved while trains run (see **A binding is read per write**). The setup is the operator's to get right: a save that takes away a binding the running session needs makes the next write to it fail, and that is a hardware failure like any other.
@@ -245,6 +253,7 @@ A train is a label the runtime puts on blocks that read occupied. It is not a mo
   - `direction`: which way the train faces in its front block, `forward` or `reverse` along that block's tile order (see **Block**). The front block is the last entry of `blocks`.
   - `knob_volts`: the speed knob, from `0` to `MAX_TRACK_VOLTAGE` (12 V).
   - `destination_block_id`: the destination, or none.
+  - `assigned_legs`: the train's assigned legs, a map from `switch_id` to `0` (main) or `1` (diverge). A new train has none. See **Switches**, Assigned leg.
   - `length_cm`: a length the operator may note. Nothing in v2 reads it.
   - `lost`: whether it is a lost train.
   - `stopped_at` and `waiting_since`: the pass `wall_time` at which the train last became stopped, and at which it began to wait, or none. The rules that say "less than the hold time ago" read these (see **Clocks**, The hold time is measured on pass wall time).
@@ -295,14 +304,15 @@ Two trains are never let into the same block. To make sure, a train claims a blo
   - Otherwise, a switch met from a leg leads on out of its toe when it is set to that leg. When it is set to the other leg, the walk ends and there is no next block ahead.
   - When the track ends before another block, there is no next block ahead.
   - For a train with a destination, the walk follows **The way to a destination** in place of the switches' current settings.
-  - For a train coming to the toe of a switch with alternate arrivals on, the walk leads out of the leg of the passing block chosen under **Switches**, Alternate arrivals.
+  - For a train with an assigned leg at a switch it meets at its toe, the walk leads out of that leg (see **Switches**, Assigned leg).
+  - For a train with no assigned leg there, coming to the toe of a switch with alternate arrivals on, the walk leads out of the leg of the passing block chosen under **Switches**, Alternate arrivals.
 - **Who claims.** On each runtime step, every train that is running, is not lost, and holds no claim asks for its next block ahead.
 - **When a claim is given.** The train gets the claim when **all six hold**:
   - there is a next block ahead;
   - that block reads empty;
   - that block is not one of any train's blocks, a lost train's included;
   - no other train has claimed it;
-  - for a train with a destination, no switch on the way to that block that needs throwing is held (see **Switches**, A held switch is not thrown);
+  - no switch on the way to that block that the train's destination or an assigned leg needs thrown is held (see **Switches**, A held switch is not thrown);
   - for a train coming to the toe of a switch with alternate arrivals on, the conditions under **Switches**, Alternate arrivals.
 - **A taken block.** A block is taken when it reads occupied, is one of a train's blocks, or is claimed. A train is never given a claim on a taken block.
 - **One block ahead.** A train holds at most one claim, and nothing is claimed all the way to a destination.
@@ -322,7 +332,7 @@ A claim is one block deep on purpose. It is how "trains don't hit each other" wo
 
 **A switch with an unavailable motor.** The layout saves whether a switch motor is available (`Switch.motor_unavailable`) and whether trains can leave either leg without a throw (`Switch.allow_exit_from_either_leg`). Both settings are edited outside Live. A motor marked unavailable needs no motor binding and is skipped by activation and switch throw tests. The switch still needs its track feed. The runtime refuses to lead a train into the single end of this switch because it does not know where the points lie.
 
-**A switch marked manual.** The layout saves whether a switch is marked manual (`Switch.manual`). The runtime never throws a manual switch for a train. The operator throws it from the page, and the activation throw throws it like any other switch. When a train's way to its destination needs a manual switch thrown, the train waits with `switch_held`. Turning alternate arrivals on for a manual switch is refused (see **Running a train**, Alternate arrivals). The reason: a switch the operator sets by hand stays where the operator left it while trains run.
+**A switch marked manual.** The layout saves whether a switch is marked manual (`Switch.manual`). The runtime never throws a manual switch for a train. The operator throws it from the page, and the activation throw throws it like any other switch. When a train's way to its destination needs a manual switch thrown, the train waits with `switch_held`. Turning alternate arrivals on for a manual switch is refused (see **Running a train**, Alternate arrivals), and so is giving a train an assigned leg at one (see **Running a train**, Assign a leg). The reason: a switch the operator sets by hand stays where the operator left it while trains run.
 
 How a switch is thrown, and what a throw does on the rig, is under **Switch**. This section says when the runtime throws one and when a throw is refused.
 
@@ -335,7 +345,17 @@ How a switch is thrown, and what a throw does on the rig, is under **Switch**. T
   - **An arrival is an entry.** A train has arrived when the passing block it claimed reads occupied. A stopped train that never enters its claimed block is not an arrival.
   - **A train leaves a passing block when its next block ahead is free.** A train whose front block is a passing block is given the claim on its next block ahead under the same conditions as every other train (see **Claiming the next block**, When a claim is given). The block after the next block ahead plays no part. The reason: on a short loop, a train that waited for more room would stand still while the track in front of it is free, and the evening is for watching trains go round.
   - **Turning alternate arrivals off.** The operator's request, a successful throw of the switch by the operator, and leaving Live each turn them off. Claims already given stay.
-- **Without a destination or a switch with alternate arrivals on ahead, the runtime never throws a switch for a train.** The train follows the switches as they are set, and the operator throws them from the page.
+- **Assigned leg.** While a train has an assigned leg at a switch, the runtime sends that train out of that leg each time it comes to the switch's toe, and throws the switch for it.
+  - **The switch is thrown as part of claiming.** When every condition for the claim on the block the assigned leg leads to holds (see **Claiming the next block**, When a claim is given) and the switch is not set to the assigned leg, the runtime throws the switch and then gives the claim. When the switch is held, or the runtime may not throw it yet (see The runtime does not throw a switch a train has just left), or the throw fails, the train waits with `switch_held` and nothing is thrown.
+  - **A train waits for its assigned leg.** When the block the assigned leg leads to is taken, the train waits with `block_taken`. The runtime does not send it down the other leg. The reason: the operator asked for this train on this track, and a train that turns up on the other one is the layout not doing what was asked.
+  - **A destination comes first.** While the train has a destination, the walk follows **The way to a destination**, and the assigned leg plays no part until the destination is cleared.
+  - **An assigned leg comes before alternate arrivals.** A train with an assigned leg at a switch with alternate arrivals on gets its assigned leg. Its entry is not an arrival: it does not change which passing block the next arrival gets.
+  - **An assigned leg applies at the toe only.** A train that meets the switch from a leg crosses it as any train does (see **Claiming the next block**, The next block ahead).
+  - **A train may have an assigned leg at several switches.** Each one is given and ended on its own.
+  - **When an assigned leg ends.** The operator's request ends it. A successful throw of the switch by the operator ends every train's assigned leg at that switch. Leaving Live ends every assigned leg. A removed train's assigned legs go with it; when two trains are marked as one, the surviving train keeps its own, and when a train is split, the train that keeps the `train_id` keeps them. Claims already given stay.
+
+  The reason: on a layout with a main line and a siding, the operator wants one train to keep to the main line and another to use the siding on every lap, without throwing the switch by hand each time.
+- **Without a destination, an assigned leg, or a switch with alternate arrivals on ahead, the runtime never throws a switch for a train.** The train follows the switches as they are set, and the operator throws them from the page.
 - **With a destination, the runtime throws the switches on the way.** Once every condition for the claim holds (see **Claiming the next block**, When a claim is given), and only then, the runtime throws each switch between the train's front block and the block being claimed that is not already set for the way, and gives the claim. A switch that is already set for the way is not thrown. A switch is thrown as part of claiming, not earlier, so a train that is waiting throws nothing.
 - **The way to a destination.** The runtime looks for it forward from the train's front block, in the train's direction.
   - At a switch met at its toe, the way may take either leg. At a switch met from a leg, the way leads on out of the toe.
@@ -350,7 +370,7 @@ How a switch is thrown, and what a throw does on the rig, is under **Switch**. T
   - it can be reached from one of a train's blocks that reads empty, across switches with no other block between. This covers a train that is on the switch and reads on no block, and a lost train.
 
   The reason: a switch has no detector, so these are the only signs that a train may be on it. The activation throw and a Setup switch throw test are not bound by this rule (see **Switch**, Two throws do not check for a train).
-- **The runtime does not throw a switch a train has just left.** When a train's rear block is taken off at once (see **Trains**, A block that reads empty is taken off at once or after the hold time), the train's last car may still be on a switch next to that block. For the hold time after that pass, the runtime does not throw any switch that can be reached from that block across switches with no other block between; a train with a destination that needs it thrown waits with `switch_held`. The operator may throw it during that time: it is not a held switch, and its `held` field stays `false`.
+- **The runtime does not throw a switch a train has just left.** When a train's rear block is taken off at once (see **Trains**, A block that reads empty is taken off at once or after the hold time), the train's last car may still be on a switch next to that block. For the hold time after that pass, the runtime does not throw any switch that can be reached from that block across switches with no other block between; a train whose destination or assigned leg needs it thrown waits with `switch_held`. The operator may throw it during that time: it is not a held switch, and its `held` field stays `false`.
 
 ## When a train waits
 
@@ -363,7 +383,7 @@ A train that cannot be given a claim and is not yet wholly in its front block ke
 
 - `block_taken`: the next block ahead is taken by another train (see **Claiming the next block**, A taken block);
 - `switch_against`: a switch met from a leg is set to the other leg, and the train has no destination;
-- `switch_held`: a switch that has to be thrown for the train's destination or for alternate arrivals is held, is marked manual, or the runtime may not throw it yet;
+- `switch_held`: a switch that has to be thrown for the train's destination, for its assigned leg or for alternate arrivals is held, is marked manual, or the runtime may not throw it yet;
 - `own_block`: the next block ahead is one of the train's own blocks.
 
 - **A waiting train stays waiting until it is given the claim.** Once a train waits, its blocks stay at 0 V until it is given the claim or it is stopped, whatever its front block reads in between. A train at 0 V does not move, so a front block that reads empty for a moment is a detector flicker, and putting voltage back on the train would drive it toward the train ahead.
@@ -416,7 +436,7 @@ While the session state is Live, the runtime loop runs one runtime step ten time
    3. make each train whose blocks have all read empty for the hold time a lost train, or remove it.
 3. **Stop trains.** Apply **When the runtime stops a train** to every running train.
 4. **End claims.** End every claim that **Claiming the next block** says is over.
-5. **Give claims.** Serve the running trains in first-come order. For each, in this order: find the next block ahead; check the conditions under **Claiming the next block**, When a claim is given; when they all hold, throw any switch the destination or alternate arrivals need thrown, then give the claim; otherwise throw nothing and record that the train is waiting, and why.
+5. **Give claims.** Serve the running trains in first-come order. For each, in this order: find the next block ahead; check the conditions under **Claiming the next block**, When a claim is given; when they all hold, throw any switch the destination, an assigned leg or alternate arrivals need thrown, then give the claim; otherwise throw nothing and record that the train is waiting, and why.
 6. **Set every block's voltage** (see **Track power**).
 7. **Publish.** Emit this step's events (see **Event log**, Train events). The page reads the result through the snapshot (see **Data flow to the page**).
 
@@ -1391,7 +1411,7 @@ The live part of the snapshot is these fields and no others.
   - `held` — `bool`, whether the switch is held (see **Switches**, A held switch is not thrown).
 - **A tile's live fields.** A tile that holds a switch carries `switch_state`, that switch's `position`, read from the switch when the snapshot is built. No other tile has a live field.
 - **A train entry.** `trains` is a map from `train_id` to an entry with exactly these fields:
-  - `train_id`, `name`, `length_cm`, `direction`, `knob_volts`, `destination_block_id`, `lost`, `stopped_at`, `waiting_since` — as **Trains**, What a train holds, defines them;
+  - `train_id`, `name`, `length_cm`, `direction`, `knob_volts`, `destination_block_id`, `assigned_legs`, `lost`, `stopped_at`, `waiting_since` — as **Trains**, What a train holds, defines them;
   - `blocks` — the train's blocks from rear to front, each as `{ "block_id": str, "reads_occupied": bool, "direction": "forward" | "reverse" }`. `direction` is the way the train's line of travel runs through that block (see **Direction**, A train's line of travel);
   - `state` — one of `"stopped"`, `"moving"`, `"waiting"`, `"lost"` (see **Trains**, Running, stopped, waiting);
   - `waiting_reason` — while `state` is `"waiting"`, one of the reasons under **When a train waits**; otherwise `null`;
@@ -1774,7 +1794,7 @@ A reviewer checks each of these against the code:
 - Does a claim end only in the ways listed under **Claiming the next block**, A claim ends in one of these ways?
 - Is a train's rear block taken off at once when it reads empty and a block further forward reads occupied, and does any other block that reads empty stay for the hold time and no longer, a lost train's block apart, keeping its voltage for that time while the train is moving?
 - Is a train that rolls into an empty block that belongs to no train given that block with a warning, and able to run again as soon as its knob is turned up?
-- While the session is Live, does the runtime throw a switch only for a train with a destination, only once every condition for the claim holds, only when the switch is not already set for the way, and never while the switch is held?
+- While the session is Live, does the runtime throw a switch only for a train with a destination, a train with an assigned leg, or a train coming to the toe of a switch with alternate arrivals on, only once every condition for the claim holds, only when the switch is not already set for that train, and never while the switch is held?
 - Is a held switch refused to the operator too, with `switch_held`?
 - Does the runtime set a train's knob to 0 V only in the cases listed under **When the runtime stops a train**?
 - Can a train run with no speed calibration, no speed curve and no destination, and without being created by hand?

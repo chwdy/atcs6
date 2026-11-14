@@ -560,7 +560,7 @@ def test_a_train_entry_has_exactly_the_documented_fields(rig):
     entry = rig.runtime.trains_payload()["T1"]
     assert set(entry) == {
         "train_id", "name", "length_cm", "direction", "knob_volts",
-        "destination_block_id", "lost", "stopped_at", "waiting_since",
+        "destination_block_id", "assigned_legs", "lost", "stopped_at", "waiting_since",
         "blocks", "state", "waiting_reason", "next_block_id", "claimed_block_id",
     }
     assert entry["state"] == "moving"
@@ -617,3 +617,114 @@ def test_without_alternate_arrivals_a_train_leaves_on_one_free_block(rig):
     _run_into_main(rig)
     assert rig.claim("T1") == "Left"
 
+
+
+# --- assigned leg -----------------------------------------------------------
+
+
+def _assign(rig, train_id, leg, switch_id=RIGHT_SWITCH, live=True):
+    return rig.runtime.set_assigned_leg(train_id, switch_id, leg, live)
+
+
+def test_a_train_with_an_assigned_leg_is_sent_out_of_that_leg(rig):
+    _throwing(rig)
+    rig.step("Right")
+    assert _assign(rig, "T1", 1) == (True, None)
+    # Assigning throws nothing: the switch is thrown as part of claiming.
+    assert int(rig.network.switches[RIGHT_SWITCH].position) == 0
+    assert rig.runtime.trains_payload()["T1"]["assigned_legs"] == {RIGHT_SWITCH: 1}
+
+    rig.knob("T1", 6.0)
+    rig.step("Right")
+    assert rig.claim("T1") == "Sideline"
+    assert int(rig.network.switches[RIGHT_SWITCH].position) == 1
+
+    # The same train gets the same leg on its next lap, whatever the switch
+    # was left at.
+    rig.step("Right", "Sideline")
+    rig.step("Sideline")
+    assert rig.train("T1").assigned_legs == {RIGHT_SWITCH: 1}
+
+
+def test_a_train_waits_for_its_assigned_leg(rig):
+    _throwing(rig)
+    rig.step("Right", "Sideline")
+    train_id = rig.runtime.train_of_block(rig.ids["Right"]).train_id
+    assert _assign(rig, train_id, 1) == (True, None)
+    rig.knob(train_id, 6.0)
+    rig.step("Right", "Sideline")
+
+    # Main is free, and the train is not sent there.
+    assert rig.state(train_id) == "waiting"
+    assert rig.train(train_id).waiting_reason == "block_taken"
+    assert rig.claim(train_id) is None
+    assert int(rig.network.switches[RIGHT_SWITCH].position) == 0
+
+
+def test_a_train_waits_while_the_switch_its_assigned_leg_needs_is_not_thrown(rig):
+    rig.runtime._throw_switch = lambda switch_id, position: False
+    rig.step("Right")
+    _assign(rig, "T1", 1)
+    rig.knob("T1", 6.0)
+    rig.step("Right")
+    assert rig.state("T1") == "waiting"
+    assert rig.train("T1").waiting_reason == "switch_held"
+    assert rig.claim("T1") is None
+
+
+def test_an_assigned_leg_comes_before_alternate_arrivals(rig):
+    _throwing(rig)
+    rig.runtime.enable_alternation(RIGHT_SWITCH)
+    rig.step("Right")
+    _assign(rig, "T1", 1)
+    rig.knob("T1", 6.0)
+    rig.step("Right")
+    assert rig.claim("T1") == "Sideline"
+
+    # Its entry is not an arrival: the next arrival still gets the main leg.
+    rig.step("Right", "Sideline")
+    assert rig.blocks("T1") == ["Right", "Sideline"]
+    assert rig.runtime.alternate_next[RIGHT_SWITCH] == 0
+
+
+def test_an_assigned_leg_applies_at_the_toe_only(rig):
+    rig.step("Main")
+    assert rig.names[rig.runtime.walk_ahead(rig.train("T1")).block_id] == "Right"
+    _assign(rig, "T1", 1)
+    # Main meets the right switch from its main leg and crosses it as set.
+    assert rig.names[rig.runtime.walk_ahead(rig.train("T1")).block_id] == "Right"
+    rig.knob("T1", 6.0)
+    rig.step("Main")
+    assert rig.claim("T1") == "Right"
+    assert int(rig.network.switches[RIGHT_SWITCH].position) == 0
+
+
+def test_giving_an_assigned_leg_is_refused(rig):
+    rig.step("Right")
+    switch = rig.network.switches[RIGHT_SWITCH]
+    assert _assign(rig, "T9", 1) == (False, "unknown_train")
+    assert _assign(rig, "T1", 1, live=False) == (False, "not_live")
+    assert _assign(rig, "T1", 1, switch_id="SW_NONE") == (False, "unknown_switch")
+    assert _assign(rig, "T1", 2) == (False, "out_of_range")
+    assert _assign(rig, "T1", True) == (False, "out_of_range")
+    switch.manual = True
+    assert _assign(rig, "T1", 1) == (False, "switch_manual")
+    switch.manual = False
+    switch.motor_unavailable = True
+    assert _assign(rig, "T1", 1) == (False, "motor_unavailable")
+    switch.motor_unavailable = False
+    rig.train("T1").lost = True
+    assert _assign(rig, "T1", 1) == (False, "train_lost")
+    assert rig.train("T1").assigned_legs == {}
+
+
+def test_an_assigned_leg_ends_on_request_and_on_leaving_live(rig):
+    rig.step("Right")
+    _assign(rig, "T1", 1)
+    # Ending one is accepted in every session state.
+    assert _assign(rig, "T1", None, live=False) == (True, None)
+    assert rig.train("T1").assigned_legs == {}
+
+    _assign(rig, "T1", 0)
+    rig.runtime.leave_live(rig.now)
+    assert rig.train("T1").assigned_legs == {}
