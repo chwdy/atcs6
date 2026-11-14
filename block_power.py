@@ -19,6 +19,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Optional, Set, TYPE_CHECKING
 
+from hardware.device_handle import OutputNotOwned
+
 logger = logging.getLogger(__name__)
 
 MAX_TRACK_VOLTAGE = 12.0
@@ -280,6 +282,13 @@ class BlockPowerController:
             landed = self.output_interface.set_voltage(block_id, clamped)
             if not landed:
                 failure_message = "output driver refused the write"
+        except OutputNotOwned:
+            # The session's device handle refused the write because the runtime
+            # does not own the outputs. It reached no chip and has already
+            # emitted its `output_not_owned` warning; it records no voltage and
+            # is not a hardware I/O failure (design_v2.md "Hardware interface",
+            # A refused write changes nothing).
+            return False
         except Exception as exc:  # noqa: BLE001 - device errors enter one fatal path
             landed = False
             failure_message = f"output write raised {type(exc).__name__}: {exc}"

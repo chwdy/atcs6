@@ -887,6 +887,48 @@ These are described in design_v2.md **Hardware REST API**. Routes in
   `PUT /api/virtual-hardware/input/occupancy` and
   `PUT /api/virtual-hardware/input/current`.
 
+### The session's device handle and who owns the outputs
+
+design_v2.md **Hardware interface**, Who may write the outputs, and **Setup
+tools**, Sharing the device. Every Hardware Setup tool reaches the rig through
+the session's one device handle; none opens a device of its own.
+
+- **Two refusal reasons.** A Setup tool refused because of the device handle
+  answers `409` with
+  `{"ok": false, "status": "error", "reason": "<reason>", "error": "<text>"}`:
+  - `outputs_owned` — another owner holds the outputs. Opening the
+    commissioning session or the occupancy bench, a port-test `pulse_output`,
+    a track direction sweep, and a switch throw test that would open a
+    commissioning session are refused while another tool holds them. The
+    `error` text names the tool that holds them.
+  - `no_device` — the device handle is not open, or its controller was lost.
+    Each such request first tries to open the handle again. It applies in
+    Setup to `scan`, `port-test` (both actions), `occupancy-test`,
+    `track-test`, `switch-test`, `commission/open`, `bench/open`, and the
+    commissioning session's `output`, `pulse`, `inputs` and `currents` and the
+    bench's `drive` and `check-block`.
+- **Outside Setup.** `scan`, a port-test `read_input` and `occupancy-test` use
+  the session's handle when there is one, and otherwise open a transient
+  device for the environment the payload names.
+- **`POST /api/hardware/switch-test`.** When the runtime does not own the
+  outputs, the test is accepted only in Setup (`409` otherwise). It pulses
+  through the commissioning session: an open one is used, and otherwise one is
+  opened, which stays open until it is closed or its idle timeout passes.
+- **`POST /api/operation/setup`.** It opens the device handle for the selected
+  environment when none is open. The reply carries `"device_open": bool`;
+  Setup is entered either way.
+- **`PUT /api/operation/environment`.** Selecting another environment while in
+  Setup closes any open Setup tool, closes the handle, and opens one for the
+  new environment. The reply carries `"device_open": bool`, true when a handle
+  is open for the selected environment.
+- **`POST /api/operation/activate`.** It builds its interfaces on the Setup
+  handle when that was opened for the selected environment, and otherwise
+  closes it and opens one.
+- **A refused write.** A write that reaches the device handle from anyone but
+  the owner reaches no chip, records nothing, and is not a hardware failure. It
+  emits one `kind = "warning"` event whose `error.origin` is
+  `"output_not_owned"`, with `payload` `{writer, output, owner}`.
+
 ---
 
 ## Error responses
@@ -903,7 +945,7 @@ Errors return JSON with an `error` field:
 |-------------|---------|
 | 400 | Bad request (malformed body, a value that is not allowed, an edit the layout rules refuse) |
 | 404 | The tile, segment, block, switch, tunnel or layout named does not exist |
-| 409 | The request needs confirming (`requires_confirmation`), or is refused in the current session state |
+| 409 | The request needs confirming (`requires_confirmation`), or is refused in the current session state, or a Setup tool is refused with `reason` `outputs_owned` or `no_device` (see **Hardware requests**) |
 | 410 | The block is gone |
 | 500 | Server error |
 | 503 | A part of the runtime the request needs is not available |

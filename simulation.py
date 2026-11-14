@@ -335,6 +335,7 @@ class SimulationController(SwitchOutputOwner):
         finally:
             self.hardware_failure = True
             self.environment_active = False
+            self._give_up_outputs()
 
         entity = _hardware_entity_ref(payload)
         self.notification_center.emit(
@@ -415,7 +416,47 @@ class SimulationController(SwitchOutputOwner):
         device out of the next safe state. Does no I/O of its own.
         """
         self.environment_active = False
+        self._give_up_outputs()
         self._bind_interfaces(None, None, None)
+
+    def _give_up_outputs(self) -> None:
+        """Take the outputs from the runtime, once the environment is
+        deactivated after the safe state (design_v2.md "Hardware interface",
+        When the owner changes: leaving Live, and an activation that fails at
+        step 4 or later). Changes nothing while a Setup tool or nobody owns
+        them."""
+        import hardware_config
+        from hardware.device_handle import RUNTIME
+
+        handle = hardware_config.get_device_handle()
+        if handle is not None:
+            handle.give_back(RUNTIME)
+
+    def report_output_not_owned(
+        self, writer: str, output: str, owner: Optional[str]
+    ) -> None:
+        """Emit the one warning for a write the session's device handle
+        refused (design_v2.md "Hardware interface", A refused write changes
+        nothing). The warning means a request reached the device handle
+        without its own entry-point check."""
+        from hardware.device_handle import writer_label
+
+        self.notification_center.emit(
+            source="SessionDeviceHandle",
+            operation="output_write",
+            kind=Kind.WARNING,
+            message=(
+                f"{writer_label(writer)} tried to write {output} while "
+                f"{writer_label(owner)} owns the outputs; the write was refused "
+                "and reached no chip"
+            ),
+            entities=[],
+            error=ErrorRecord(
+                f"{writer_label(writer)} does not own the outputs", "output_not_owned"
+            ),
+            event_time=time.time(),
+            payload={"writer": writer, "output": output, "owner": owner},
+        )
 
     def _wire_power_controllers(self) -> None:
         """Hand the block and switch power controllers their dependencies: the
@@ -498,6 +539,7 @@ class SimulationController(SwitchOutputOwner):
         if environment is not None:
             self.operation_mode = operation_environment.parse(environment)
         self.environment_active = False
+        self._give_up_outputs()
         self.activation_issues = list(issues)
         return failures
 

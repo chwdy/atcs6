@@ -28,6 +28,8 @@ The module includes:
 from abc import ABC, abstractmethod
 from typing import Any, Callable, Dict, Optional, TYPE_CHECKING
 
+from hardware.device_handle import OutputNotOwned
+
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from network import RailwayNetwork
 
@@ -178,6 +180,13 @@ class SwitchPowerController:
             issued = bool(self.output_interface.set_throw(switch_id, int(target_state)))
             if not issued:
                 failure = "output driver refused the throw"
+        except OutputNotOwned:
+            # Refused by the session's device handle: the runtime does not own
+            # the outputs. Nothing reached a coil, the handle has emitted its
+            # `output_not_owned` warning, and it is not a hardware I/O failure
+            # (design_v2.md "Hardware interface", A refused write changes
+            # nothing). `SwitchManager` sees False and records no position.
+            return False
         except Exception as exc:  # noqa: BLE001 - device errors enter one fatal path
             issued = False
             failure = f"output throw raised {type(exc).__name__}: {exc}"

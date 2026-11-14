@@ -1,17 +1,16 @@
-"""Commissioning session — a controller device held open across requests so the
-Hardware Setup UI can watch inputs live and run an output marquee.
+"""Commissioning session — the raw-port Setup tool, held open across requests
+so the Hardware Setup UI can watch inputs live and run an output marquee.
 
-The one-shot bus scan / port-test open a transient device per call. The live
-input view and the output sweep instead need the device held between requests:
-the client opens a session, then drives many fast ops (set one output, read all
+The client opens a session, then drives many fast ops (set one output, read all
 inputs) on a JS timer, and closes it. This module holds one such session behind
-a lock, with an idle timeout so an abandoned session is reclaimed by the next
-open, and an atexit close so shutdown always de-energizes.
+a lock, with an idle timeout so an abandoned session is reclaimed, and an
+atexit close so shutdown always de-energizes.
 
-Only one session at a time. While it holds the controller, the transient
-scan/port-test report the device busy — commissioning is one activity at a
-time. A real operation session (which holds its own device) likewise blocks a
-commissioning open; going live needs a restart, which frees this handle anyway.
+It is an open and close tool (design_v2.md "Hardware interface", Two kinds of
+Setup tool take the outputs): it owns the outputs from its open until its close
+completes, and it reaches the rig only through the session's device handle,
+under its own writer name. It opens no device of its own (design_v2.md "Setup
+tools", Setup always has one device handle).
 """
 
 import atexit
@@ -22,6 +21,7 @@ from typing import Any, Callable, Dict, List, Optional
 from constants import COMMISSION_MAX_SESSION_SECONDS
 from hardware.catalog import MAX_COIL_PULSE_S, SWITCH_THROW_PULSE_S
 from hardware.chips.hc595 import sleep_holding
+from hardware.device_handle import COMMISSIONING_SESSION
 from hardware.interfaces import build_chip
 
 # Reclaim a session left open by an abandoned client after this long idle. This
@@ -33,6 +33,9 @@ IDLE_TIMEOUT_S = 30.0
 class CommissionSession:
     def __init__(self) -> None:
         self._lock = threading.RLock()
+        # The session's device handle while this session holds the outputs,
+        # and the `DeviceWriter` this session's chips are built on.
+        self._handle: Optional[Any] = None
         self._device: Optional[Any] = None
         self._chips: Dict[str, Any] = {}
         self._kinds: Dict[str, str] = {}
@@ -44,9 +47,6 @@ class CommissionSession:
         # a `switch_output` binding names, from the posted config and the saved
         # one (design_v2.md "Setup tools", Switch bits).
         self._switch_ports: set = set()
-        # True when `_device` belongs to a running operation session rather than
-        # to this one: it is neither cleared on open nor closed on close.
-        self._borrowed = False
         self._last = 0.0
         # Idle window for this session; `open` resets it from its `timeout_seconds`
         # argument, or to IDLE_TIMEOUT_S when the caller names none.
@@ -58,24 +58,21 @@ class CommissionSession:
     def open(
         self,
         cfg: Any,
-        open_device: Optional[Callable[[], Any]] = None,
-        device: Optional[Any] = None,
+        handle: Any,
         timeout_seconds: Optional[float] = None,
         saved_switch_output: Optional[Dict[str, Any]] = None,
     ) -> None:
-        """Open (or reclaim) the session for `cfg` and build its chip drivers.
+        """Open (or reopen) the session for `cfg` on the session's device
+        handle and build its chip drivers.
 
-        Clears every shift-out chain on the way in, the same as a real session
-        build: a reclaimed session inherits whatever bits the abandoned client
-        left latched, and this screen exists to be poked at with coils wired up.
+        Opening takes the outputs (design_v2.md "Hardware interface", When the
+        owner changes): `handle.take(...)` raises `OutputsOwned` while another
+        owner holds them, and nothing else happens then. Opening again while
+        this session is open rebuilds its chips from `cfg`.
 
-        `device` borrows an already-open device — the running operation
-        session's — instead of opening one, because the controller is a single
-        USB endpoint and a second open is refused. A borrowed device is NOT
-        cleared on the way in and NOT closed on the way out: those chains are
-        driving a live layout, so dropping every bit would zero the track and
-        release the PCA output-enable hold mid-session. The caller is
-        responsible for serializing use against the tick.
+        Clears every output of the chips it builds on the way in: a reclaimed
+        session inherits whatever bits the abandoned client left latched, and
+        this screen exists to be poked at with coils wired up.
 
         `timeout_seconds` is the commissioning `open` body's idle window
         (design_v2.md "Hardware REST API", Commissioning-session bodies
@@ -97,33 +94,63 @@ class CommissionSession:
             # the new window for this session onward.
             new_timeout = self._validate_timeout(timeout_seconds)
             self._expire_locked()
+            handle.take(COMMISSIONING_SESSION)
             self._timeout_s = new_timeout
-            if device is not None:
-                self._device = device
-                self._borrowed = True
-            elif self._device is None:
-                opener = open_device or (lambda: self._open_real(cfg))
-                self._device = opener()
-                self._borrowed = False
-            self._chips = {c.chip_id: build_chip(self._device, c) for c in cfg.chips}
-            self._kinds = {c.chip_id: c.kind for c in cfg.chips}
+            self._handle = handle
+            self._device = handle.writer(COMMISSIONING_SESSION)
+            self._chips = {}
+            self._kinds = {}
+            self._switch_ports = set()
             self._configured = set()
             self._driven = {}
-            # Which (chip_id, port) pairs a switch coil or its driver standby
-            # sits on. `set_output` refuses to hold these — see there.
-            bindings = list(getattr(cfg, "switch_output", {}).values())
-            bindings += list((saved_switch_output or {}).values())
-            self._switch_ports = {
-                (b.chip_id, port)
-                for b in bindings
-                if b.chip_id in self._chips
-                for port in b.ports
-            }
-            if not self._borrowed:
+            try:
+                self._add_chips_locked(cfg, saved_switch_output)
                 for chip in self._chips.values():
                     if hasattr(chip, "all_off"):
                         chip.all_off()
+            except Exception:
+                # A failed open still completes the safe-state sequence and
+                # gives the outputs back; a failed zeroing there is kept for
+                # the next caller that can report it.
+                self._unreported_close_failures.extend(self._close_locked())
+                raise
             self._touch()
+
+    def add_chips(
+        self, cfg: Any, saved_switch_output: Optional[Dict[str, Any]] = None
+    ) -> None:
+        """Build the chips of `cfg` this open session does not have yet, and
+        learn their switch bits. A chip already built keeps its driver and its
+        state. The switch throw test uses it to pulse through a session the
+        operator already opened (design_v2.md "Setup tools", The switch throw
+        test pulses through the commissioning session)."""
+        with self._lock:
+            self._require_open()
+            self._add_chips_locked(cfg, saved_switch_output)
+            self._touch()
+
+    def _add_chips_locked(
+        self, cfg: Any, saved_switch_output: Optional[Dict[str, Any]]
+    ) -> None:
+        for spec in cfg.chips:
+            if spec.chip_id not in self._chips:
+                self._chips[spec.chip_id] = build_chip(self._device, spec)
+                self._kinds[spec.chip_id] = spec.kind
+        # Which (chip_id, port) pairs a switch coil or its driver standby
+        # sits on. `set_output` refuses to hold these — see there.
+        bindings = list(getattr(cfg, "switch_output", {}).values())
+        bindings += list((saved_switch_output or {}).values())
+        self._switch_ports |= {
+            (b.chip_id, port)
+            for b in bindings
+            if b.chip_id in self._chips
+            for port in b.ports
+        }
+
+    def is_open(self) -> bool:
+        with self._lock:
+            self._expire_locked()
+            return self._device is not None
 
     def switch_ports_by_chip(self) -> Dict[str, List[int]]:
         """The switch bits per chip — what `open` reports as `switch_ports`, so
@@ -310,12 +337,6 @@ class CommissionSession:
             return self._take_close_failures_locked()
 
     # -- internals -------------------------------------------------------
-    @staticmethod
-    def _open_real(cfg: Any) -> Any:
-        from hardware.ch347_device import open_ch347_device
-
-        return open_ch347_device(getattr(cfg.controller, "device_port", None))
-
     def _require_open(self) -> None:
         if self._device is None:
             raise RuntimeError("commission session is not open")
@@ -367,14 +388,13 @@ class CommissionSession:
         if self._device is None:
             return []
         # Closing a Setup tool restores the safe state (design_v2.md "Setup
-        # tools", The tool performs its safe-state sequence itself): the session runs only in Setup, where no environment
-        # drives the outputs, so it zeroes every output of every chip it built
-        # itself — not through `OutputSafety`, and without advancing
-        # `safe_state_generation` — whether or not the device is borrowed. Every
-        # chip is attempted even when one fails; the failures go back to the
-        # caller, which reports them as a hardware I/O failure. A borrowed
-        # device is the session's handle, kept open for the next tool and for
-        # activation, so only an owned one is closed.
+        # tools", The tool performs its safe-state sequence itself): the
+        # session zeroes every output of every chip it built itself, through
+        # the session's device handle — not through `OutputSafety`, and without
+        # advancing `safe_state_generation` — then gives the outputs back.
+        # Every chip is attempted even when one fails; the failures go back to
+        # the caller, which reports them as a hardware I/O failure. The handle
+        # stays open for the next tool and for activation.
         errors: List[str] = []
         for chip_id, chip in self._chips.items():
             if not hasattr(chip, "all_off"):
@@ -383,17 +403,17 @@ class CommissionSession:
                 chip.all_off()
             except Exception as exc:  # noqa: BLE001 - zero the remaining chips
                 errors.append(f"{chip_id}: {exc}")
-        if not self._borrowed:
-            try:
-                self._device.close()
-            except Exception:
-                pass
+        # The close is complete: the outputs go back to nobody (design_v2.md
+        # "Hardware interface", When the owner changes).
+        if self._handle is not None:
+            self._handle.give_back(COMMISSIONING_SESSION)
+        self._handle = None
         self._device = None
-        self._borrowed = False
         self._chips = {}
         self._kinds = {}
         self._configured = set()
         self._driven = {}
+        self._switch_ports = set()
         return errors
 
 

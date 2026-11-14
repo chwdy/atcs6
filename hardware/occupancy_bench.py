@@ -14,11 +14,15 @@ a train and sets every block's voltage from track power (design_v2.md "Runtime
 step"). A bench voltage set from a request would be gone before the next step,
 and every detector that fired would make a train.
 
-So the bench takes the controller instead of sharing it, exactly as commissioning
-does: the caller deactivates the environment and hands over the device, and from
-then on the only things touching the rig are this module's two operations —
-*hold every bound block at one voltage* and *read both detectors*. No debounce,
-no attribution, no de-energize sweep, no span. What the panel shows is the rig.
+So the bench runs only in Setup, where no environment is active, and it takes
+the outputs, as the commissioning session does: it is an open and close tool
+(design_v2.md "Hardware interface", Two kinds of Setup tool take the outputs),
+owning them from its open until its close completes. It reaches the rig through
+the session's device handle under its own writer name and opens no device of
+its own. While it holds the outputs the only things writing to the rig are this
+module's two operations — *hold every bound block at one voltage* and *read
+both detectors*. No debounce, no attribution, no de-energize sweep, no span.
+What the panel shows is the rig.
 
 The two operations:
 
@@ -168,13 +172,14 @@ def summarize_block_check(
 
 
 class OccupancyBenchSession:
-    """One bench at a time, holding a controller open across requests."""
+    """One bench at a time, holding the outputs across requests."""
 
     def __init__(self) -> None:
         self._lock = threading.RLock()
+        # The session's device handle while the bench holds the outputs, and
+        # the `DeviceWriter` its interfaces are built on.
+        self._handle: Optional[Any] = None
         self._device: Optional[Any] = None
-        # True when `_device` is the session's handle, borrowed in Setup.
-        self._borrowed = False
         self._track: Optional[Any] = None
         self._occupancy: Optional[Any] = None
         self._block_ids: List[str] = []
@@ -213,18 +218,16 @@ class OccupancyBenchSession:
     def open(
         self,
         cfg: Any,
-        open_device: Optional[Callable[[], Any]] = None,
+        handle: Any,
         track_polarity_of: Optional[Callable[[str], bool]] = None,
-        device: Optional[Any] = None,
     ) -> Dict[str, Any]:
-        """Open the controller for `cfg` and build the real track + occupancy
-        interfaces on it.
+        """Open the bench on the session's device handle for `cfg` and build
+        the real track + occupancy interfaces on it.
 
-        `device` borrows the session's already-open device: in Setup every tool
-        reaches the rig through that one handle (design_v2.md "Setup tools",
-        Setup tools own the writes; the detectors stay shared). A
-        borrowed device is not closed when the bench closes; the safe state is
-        still applied.
+        Opening takes the outputs (design_v2.md "Hardware interface", When the
+        owner changes): `handle.take(...)` raises `OutputsOwned` while another
+        owner holds them, and nothing else happens then. The handle stays open
+        when the bench closes; the safe state is still applied.
 
         Reopening an already-open bench is a no-op on the device but re-reads the
         configuration, so an operator who rebinds a channel in Hardware Setup and
@@ -239,16 +242,14 @@ class OccupancyBenchSession:
         import hardware_config
         from hardware.interfaces import build_real_interfaces
 
+        from hardware.device_handle import OCCUPANCY_BENCH
+
         with self._lock:
             self._expire_locked()
+            handle.take(OCCUPANCY_BENCH)
             if self._device is None:
-                if device is not None:
-                    self._device = device
-                    self._borrowed = True
-                else:
-                    opener = open_device or (lambda: self._open_real(cfg))
-                    self._device = opener()
-                    self._borrowed = False
+                self._handle = handle
+                self._device = handle.writer(OCCUPANCY_BENCH)
             # Resolved through hardware_config's own binding helpers, not
             # hand-rolled here: they are what a real session is built from, and
             # the current-sense one carries the per-channel default fill and the
@@ -603,12 +604,6 @@ class OccupancyBenchSession:
             "samples": sum(p["samples"] for p in self._peaks.values()),
         }
 
-    @staticmethod
-    def _open_real(cfg: Any) -> Any:
-        from hardware.ch347_device import open_ch347_device
-
-        return open_ch347_device(getattr(cfg.controller, "device_port", None))
-
     def _require_open(self) -> None:
         self._expire_locked()
         if self._device is None:
@@ -636,7 +631,7 @@ class OccupancyBenchSession:
             return []
         # Closing a Setup tool restores the safe state (design_v2.md "Setup
         # tools", The tool performs its safe-state sequence itself): the bench zeroes every channel of the chips it drives
-        # itself, before letting go of the handle — not through `OutputSafety`,
+        # itself, before giving the outputs back — not through `OutputSafety`,
         # and without advancing `safe_state_generation`, because the runtime's
         # power controllers do not own the outputs while the bench holds them.
         # Every chip is attempted; the failures go back to the caller.
@@ -644,15 +639,17 @@ class OccupancyBenchSession:
         try:
             if self._track is not None:
                 errors = self._track.zero_every_channel()
-        except Exception as exc:  # noqa: BLE001 - still let go of the handle
+        except Exception as exc:  # noqa: BLE001 - still give the outputs back
             errors = [str(exc)]
-        if not self._borrowed:
-            try:
-                self._device.close()
-            except Exception:  # noqa: BLE001 - same
-                pass
+        # The close is complete: the outputs go back to nobody (design_v2.md
+        # "Hardware interface", When the owner changes). The session's handle
+        # stays open for the next tool and for activation.
+        if self._handle is not None:
+            from hardware.device_handle import OCCUPANCY_BENCH
+
+            self._handle.give_back(OCCUPANCY_BENCH)
+        self._handle = None
         self._device = None
-        self._borrowed = False
         self._track = None
         self._occupancy = None
         self._block_ids = []

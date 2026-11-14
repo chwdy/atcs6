@@ -35,24 +35,19 @@
   the request widens it with `pulse_s`, to measure rather than watch.
 - `POST /api/hardware/bench/{open,close,drive,threshold}` + `GET /api/hardware/bench/state`
   run the occupancy bench: hold every block at one voltage and read BOTH
-  detectors, with the runtime's occupancy loop out of the way entirely. Unlike
-  the tools above it does not borrow the session's device — it takes it, the same
-  handover commissioning does, because the thing being diagnosed is the loop the
-  runtime would otherwise be closing twenty times a second on top of it. It is
-  also the one handover that undoes itself: `close` reactivates the environment
-  `open` deactivated, because a diagnostic window is something an operator looks
-  through, not a mode they switch into. See hardware/occupancy_bench.py.
+  detectors. See hardware/occupancy_bench.py.
 
-Every one of these tools needs the controller, and the controller is a single
-USB endpoint. With no session holding it they open a transient device of their
-own. With one — a real rig, or the develop-mode fake — they BORROW the session's
-device and run under `simulation_lock`, so the test serializes with the tick
-instead of losing a race to open a second handle. That fight used to be reported
-as "the controller is unreachable", on a bridge that was plugged in and working.
+Every tool here reaches the rig through the session's one device handle
+(design_v2.md "Setup tools", Setup always has one device handle), and runs under
+`simulation_lock`, so it serializes with the runtime loop. In Setup a tool that
+needs the device first tries to open the handle again and is refused with `409`
+and the reason `no_device` when it still cannot (A device that does not open).
+A tool that takes the outputs is refused with `409` and the reason
+`outputs_owned` while another owner holds them (design_v2.md "Hardware
+interface", A tool that would take owned outputs is refused).
 """
 
 import time
-from contextlib import contextmanager
 
 from flask import jsonify, request
 
@@ -60,28 +55,24 @@ from app_state import AppState
 import hardware_config
 import operation_environment
 from enums import OperationMode
+from hardware import device_handle as owners
 from runtime_payloads import HardwareFailure
 
+# The plain words the page shows for the two refusals the device handle adds
+# (design_v2.md "Hardware interface", A tool that would take owned outputs is
+# refused; "Setup tools", A device that does not open).
+NO_DEVICE_MESSAGE = "No controller connected"
 
-def _develop_opener(cfg):
-    """When `cfg` has the develop flag set, an `open_device` callable that
-    creates a transient seeded `FakeCh347Device`; None means "open the real
-    CH347".
 
-    Gated on the flag of the config UNDER TEST — the same object the fake is
-    seeded from — never on the persisted one. Commissioning (Detect, port test,
-    track / occupancy test) always tests the edit in progress, so the toggle
-    decides which device answers the moment it is flipped, with no Save and no
-    restart. Reading the persisted flag here instead was a real bug: with
-    `develop` saved as true, a scan carrying `develop: false` still opened the
-    fake, and its addresses came back as a genuine "Connected". Every caller
-    supplies the flag — the setup panel puts it on each payload, and `as_dict`
-    carries it for the per-entity block / switch editors.
+def _transient_opener(cfg):
+    """How a read outside Setup opens a transient device when the session has
+    no device handle: an `open_device` callable that creates a fake device for
+    a payload that names Virtual Hardware, or None for "open the real CH347".
 
-    Reads the requested environment directly (not a gate that also demands
-    `enabled`), because commissioning runs on the fake BEFORE the user can
-    enable hardware (enabling requires every chip proven), so it must not also
-    require `enabled`."""
+    Only a read that runs outside Setup uses it (design_v2.md "Hardware REST
+    API", the scan row: otherwise it opens a transient device of its own). It
+    gates on the environment the payload under test names, so a payload for
+    Virtual Hardware is never sent looking for a USB bridge."""
     requested = getattr(cfg, "_requested_environment", None)
     if requested is not OperationMode.VIRTUAL_HARDWARE:
         return None
@@ -116,16 +107,83 @@ def register(app, state: AppState) -> None:
     virtual_rig = VirtualRig()
     virtual_rig_device = {"value": None}
 
-    @contextmanager
-    def _bus_guard():
-        """Serialize against the tick while a commissioning tool is using the
-        running session's controller. A no-op when it opened its own device —
-        there is then no tick sharing that bus to collide with."""
-        if hardware_config.get_live_device() is None:
-            yield
-        else:
-            with state.simulation_lock:
-                yield
+    def _refusal(reason, error):
+        return jsonify({
+            "ok": False, "status": "error", "reason": reason, "error": error,
+        }), 409
+
+    def _owned_refusal(exc):
+        """`409 outputs_owned` (design_v2.md "Hardware interface", A tool that
+        would take owned outputs is refused)."""
+        return _refusal(
+            "outputs_owned",
+            f"Another tool is using the outputs ({owners.writer_label(exc.owner)}) "
+            "— close it first",
+        )
+
+    def _report_refused_write(writer, output, owner):
+        state.sim_controller.report_output_not_owned(writer, output, owner)
+
+    def _setup_handle(cfg=None):
+        """The session's device handle for a Setup tool that needs the device,
+        as `(handle, None)`, or `(None, 409 no_device)` when it still cannot be
+        opened. Each such request first tries to open the handle again
+        (design_v2.md "Setup tools", A device that does not open). Caller
+        holds `simulation_lock`."""
+        handle = hardware_config.ensure_device_handle(
+            operation_environment.get_selected(), cfg, on_refused=_report_refused_write
+        )
+        if handle is None:
+            return None, _refusal("no_device", NO_DEVICE_MESSAGE)
+        return handle, None
+
+    def _open_tool_device():
+        """For an action of an open and close tool that is already open: None
+        when its device is usable, after trying to open it again, or the
+        `409 no_device` reply (design_v2.md "Setup tools", A device that does
+        not open). Caller holds `simulation_lock`."""
+        handle = hardware_config.get_device_handle()
+        if handle is None or not handle.reopen():
+            return _refusal("no_device", NO_DEVICE_MESSAGE)
+        return None
+
+    def _read_device(cfg, writer):
+        """The device a read-only tool uses, as `(device, None)` or
+        `(None, refusal)`. In Setup it is the session's handle, and a missing
+        one is `409 no_device`. Outside Setup it is the session's handle when
+        there is one, and `(None, None)` otherwise: the caller opens a
+        transient device (design_v2.md "Hardware REST API", the scan row).
+        Caller holds `simulation_lock`."""
+        if state.setup_active:
+            handle, refused = _setup_handle(cfg)
+            if refused is not None:
+                return None, refused
+            return handle.writer(writer), None
+        handle = hardware_config.get_device_handle()
+        if handle is None:
+            return None, None
+        return handle.writer(writer), None
+
+    def _run_one_request_tool(writer, cfg, run):
+        """Run a one-request tool: it takes the outputs when its request starts
+        and gives them back when the request ends, with its outputs at the safe
+        state (design_v2.md "Hardware interface", When the owner changes).
+        `run(device)` runs the test and zeroes the chip it drove. Refused with
+        `409 outputs_owned` while another owner holds the outputs, and
+        `409 no_device` when the device cannot be opened. Caller holds
+        `simulation_lock`."""
+        handle, refused = _setup_handle(cfg)
+        if refused is not None:
+            return refused
+        try:
+            handle.take(writer)
+        except owners.OutputsOwned as exc:
+            return _owned_refusal(exc)
+        try:
+            result = run(handle.writer(writer))
+        finally:
+            handle.give_back(writer)
+        return _self_test_reply(result, locked=True)
 
     def _report_zeroing_failures(failures, *, locked):
         """Report a Setup tool's failed closing zeroing as a hardware I/O
@@ -254,8 +312,11 @@ def register(app, state: AppState) -> None:
 
     @app.route("/api/hardware/scan", methods=["POST"])
     def hardware_scan():
-        """Open the controller and report the I2C addresses answering right now
-        (the Hardware Setup Detect / Rescan button)."""
+        """Report the I2C addresses answering right now (the Hardware Setup
+        Detect / Rescan button). In Setup it uses the session's device handle,
+        and is refused with `409 no_device` when that cannot be opened. Outside
+        Setup it uses the handle when there is one, and otherwise opens a
+        transient device (design_v2.md "Hardware REST API", the scan row)."""
         data = request.get_json(silent=True) or {}
         payload = data.get("config", data) if isinstance(data, dict) else {}
         try:
@@ -264,11 +325,13 @@ def register(app, state: AppState) -> None:
             return jsonify({"status": "error", "error": str(exc)}), 400
         from hardware import self_test
 
-        device = hardware_config.get_live_device()
-        if device is not None:
-            with state.simulation_lock:
+        with state.simulation_lock:
+            device, refused = _read_device(cfg, owners.SELF_TEST)
+            if refused is not None:
+                return refused
+            if device is not None:
                 return jsonify(self_test.run_bus_scan(cfg, device=device))
-        return jsonify(self_test.run_bus_scan(cfg, open_device=_develop_opener(cfg)))
+        return jsonify(self_test.run_bus_scan(cfg, open_device=_transient_opener(cfg)))
 
     @app.route("/api/hardware/port-test", methods=["POST"])
     def hardware_port_test():
@@ -298,9 +361,23 @@ def register(app, state: AppState) -> None:
         from hardware import self_test
 
         # `pulse_s` is optional: absent means the default measurable width.
-        device = hardware_config.get_live_device()
-        if device is not None:
+        if action == "pulse_output":
+            # A one-request tool: it holds the outputs for this request only.
             with state.simulation_lock:
+                return _run_one_request_tool(
+                    owners.PORT_TEST_PULSE,
+                    cfg,
+                    lambda device: self_test.run_port_test(
+                        cfg, chip_id, int(port), action,
+                        device=device, pulse_s=data.get("pulse_s"),
+                    ),
+                )
+        # An input read drives nothing and is accepted in any state.
+        with state.simulation_lock:
+            device, refused = _read_device(cfg, owners.PORT_TEST_READ)
+            if refused is not None:
+                return refused
+            if device is not None:
                 return _self_test_reply(
                     self_test.run_port_test(
                         cfg, chip_id, int(port), action,
@@ -314,7 +391,7 @@ def register(app, state: AppState) -> None:
                 chip_id,
                 int(port),
                 action,
-                open_device=_develop_opener(cfg),
+                open_device=_transient_opener(cfg),
                 pulse_s=data.get("pulse_s"),
             ),
             locked=False,
@@ -338,22 +415,22 @@ def register(app, state: AppState) -> None:
             return jsonify({"status": "error", "error": "block_id is required"}), 400
         from hardware import self_test
 
-        # Borrow the running session's device when there is one — the physical
-        # CH347 as readily as the develop-mode fake. A second open would be
-        # refused by the driver, which is what used to make this test unusable
-        # on exactly the rig it exists to check. Reads only, never drives, and a
-        # passed-in device is never closed by run_occupancy_test.
-        device = hardware_config.get_live_device()
-        if device is not None:
-            # Serialize against the tick: same bus, and the detector read must
-            # not interleave with one.
-            with state.simulation_lock:
+        # The session's device handle when there is one — the physical CH347
+        # as readily as the virtual rig. Reads only, never drives, and a
+        # passed-in device is never closed by run_occupancy_test. Serialized
+        # against the runtime loop: same bus, and the detector read must not
+        # interleave with one.
+        with state.simulation_lock:
+            device, refused = _read_device(cfg, owners.BLOCK_OCCUPANCY_TEST)
+            if refused is not None:
+                return refused
+            if device is not None:
                 return jsonify(
                     self_test.run_occupancy_test(cfg, str(block_id), device=device)
                 )
         return jsonify(
             self_test.run_occupancy_test(
-                cfg, str(block_id), open_device=_develop_opener(cfg)
+                cfg, str(block_id), open_device=_transient_opener(cfg)
             )
         )
 
@@ -364,12 +441,11 @@ def register(app, state: AppState) -> None:
         bound PWM channels forward / off / reverse so a loco runs, stops, and
         reverses, then leaves the track de-energized.
 
-        Borrows the running session's device when there is one, rather than
-        opening a second handle the driver would refuse. That sweep drives real
-        track, so it holds `simulation_lock` for its ~3 seconds: the runtime
-        must not be writing block voltages into the middle of it, and it must
-        not be writing over the runtime's. A stalled tick for the length of a
-        test the operator deliberately started is the cheaper side of that.
+        A one-request tool (design_v2.md "Hardware interface", Two kinds of
+        Setup tool take the outputs): it takes the outputs for its request,
+        through the session's device handle, and gives them back once the chip
+        is zeroed. It holds `simulation_lock` for its ~3 seconds, so the
+        runtime loop waits rather than interleaving with it.
 
         The sweep is mirrored onto the applied-output store (`BlockPowerController`)
         leg by leg, for the
@@ -419,19 +495,14 @@ def register(app, state: AppState) -> None:
             ),
         }
 
-        device = hardware_config.get_live_device()
-        if device is not None:
-            with state.simulation_lock:
-                return _self_test_reply(
-                    self_test.run_track_test(cfg, str(block_id), device=device, **mirror),
-                    locked=True,
-                )
-        return _self_test_reply(
-            self_test.run_track_test(
-                cfg, str(block_id), open_device=_develop_opener(cfg), **mirror
-            ),
-            locked=False,
-        )
+        with state.simulation_lock:
+            return _run_one_request_tool(
+                owners.TRACK_DIRECTION_SWEEP,
+                cfg,
+                lambda device: self_test.run_track_test(
+                    cfg, str(block_id), device=device, **mirror
+                ),
+            )
 
     @app.route("/api/hardware/switch-test", methods=["POST"])
     def hardware_switch_test():
@@ -447,16 +518,18 @@ def register(app, state: AppState) -> None:
 
         Which mechanism drives the coil depends on what is wired:
 
-        - A session with a real switch output owns those coils. The command goes
-          through `SwitchManager` and the driver pulses them, so the test is
-          exactly an operating throw — and no second handle on the controller is
-          needed.
-        - With no such output (commissioning: hardware configured but not yet
-          enabled, or being wired up in sim mode) the coils are pulsed through
-          the commissioning session, using this switch's configured binding, and
-          the model position is written after the pulse lands. That order
-          matters: a pulse that never reached a coil must not leave the model
-          claiming an alignment nothing moved to.
+        - When the runtime owns the outputs, the command goes through
+          `SwitchManager` and the driver pulses the coil, so the test is exactly
+          an operating throw.
+        - Otherwise the test runs only in Setup, and pulses the coil through the
+          commissioning session, using this switch's configured binding: an open
+          session is used, and when none is open the test opens one, which
+          stays open until the operator closes it or its idle timeout passes
+          (design_v2.md "Setup tools", The switch throw test pulses through the
+          commissioning session). It is refused with `409 outputs_owned` while
+          the occupancy bench is open. The model position is written after the
+          pulse lands: a pulse that never reached a coil must not leave the
+          model claiming an alignment nothing moved to.
 
         The two halves write the model through different `SwitchManager` entry
         points, because the second one runs while no operating environment is
@@ -488,25 +561,25 @@ def register(app, state: AppState) -> None:
         if switch_manager is None:
             return jsonify({"ok": False, "error": "runtime not initialised"}), 503
 
-        # The session owns the coils when it opened a controller AND wired a
-        # switch output onto it. Both halves matter: a real session with no
-        # switch chip configured still falls back to the simulated driver, which
-        # drives nothing, so the bench pulse is what the operator needs there.
+        # The runtime owns the coils when it owns the outputs AND wired a
+        # switch output onto them. Both halves matter: a session with no switch
+        # chip configured still falls back to the simulated driver, which
+        # drives nothing, so the commissioning pulse is what the operator needs
+        # there.
         from switch_power import SimulatedSwitchDriver
 
-        # In Setup the interfaces may stay bound, but no environment is
-        # active, so the coils belong to the Setup tools and the pulse goes
-        # through the commissioning session.
+        handle = hardware_config.get_device_handle()
         iface = getattr(state.sim_controller, "switch_output_interface", None)
         drives_coils = (
             state.sim_controller.environment_active
-            and hardware_config.get_live_device() is not None
+            and handle is not None
+            and handle.owner == owners.RUNTIME
             and iface is not None
             and not isinstance(iface, SimulatedSwitchDriver)
         )
 
         if drives_coils:
-            # The session's own switch output owns these coils, so the ordinary
+            # The runtime's own switch output owns these coils, so the ordinary
             # operating throw IS the test. The operator explicitly asked for
             # this alignment, so a switch marked manual is thrown too, as any
             # operator throw does (design_v2.md "Switches", A switch marked
@@ -516,8 +589,9 @@ def register(app, state: AppState) -> None:
                     switch_id, position, manual_override=True
                 )
         else:
-            # Commissioning: pulse the coils ourselves so there is something to
-            # watch, then record that alignment on the model.
+            refused = _refuse_outside_setup("The switch throw test")
+            if refused is not None:
+                return refused
             binding = cfg.switch_output.get(switch_id)
             if binding is None:
                 return jsonify({
@@ -530,14 +604,24 @@ def register(app, state: AppState) -> None:
 
             coil = binding.port_main if position == 0 else binding.port_diverge
             other = binding.port_diverge if position == 0 else binding.port_main
-            try:
+            saved_switch_output = hardware_config.get_hardware_config().switch_output
+            with state.simulation_lock:
+                handle, refused = _setup_handle(cfg)
+                if refused is not None:
+                    return refused
                 session = commission.get_session()
-                session.open(
-                    cfg,
-                    open_device=_develop_opener(cfg),
-                    device=hardware_config.get_live_device(),
-                )
-                with _bus_guard():
+                try:
+                    if session.is_open():
+                        session.add_chips(cfg, saved_switch_output)
+                    else:
+                        session.open(
+                            cfg, handle, saved_switch_output=saved_switch_output
+                        )
+                except owners.OutputsOwned as exc:
+                    return _owned_refusal(exc)
+                except Exception as exc:
+                    return jsonify({"ok": False, "error": str(exc)})
+                try:
                     session.pulse_output(
                         binding.chip_id,
                         coil,
@@ -547,16 +631,14 @@ def register(app, state: AppState) -> None:
                             data.get("pulse_s"), default=SWITCH_THROW_PULSE_S
                         ),
                     )
-            except Exception as exc:
-                return jsonify({"ok": False, "error": str(exc)})
+                except Exception as exc:
+                    return jsonify({"ok": False, "error": str(exc)})
 
-            # The coil is already pulsed, on chips commissioning has taken, so
-            # this only records where the points now are. The operating throw
-            # cannot do it: it would drive the coil again, and it refuses while
-            # no environment is active — which is the state a bench throw runs
-            # in, so routing this through it made every test fail on the throw
-            # the operator had just watched land.
-            with state.simulation_lock:
+                # The coil is already pulsed, through the commissioning
+                # session, so this only records where the points now are. The
+                # operating throw cannot do it: it would drive the coil again,
+                # and it refuses while no environment is active — which is the
+                # state a bench throw runs in.
                 ok, message = switch_manager.record_bench_alignment(
                     switch_id, position
                 )
@@ -634,48 +716,13 @@ def register(app, state: AppState) -> None:
         return jsonify({"status": "success", "config": hardware_config.as_dict()})
 
     # -- Occupancy bench ---------------------------------------------------
-    # A device-owning diagnostic session: hold every block at one voltage and
-    # read both detectors, with the runtime out of the loop entirely. See
-    # hardware/occupancy_bench.py for why it takes the controller rather than
-    # sharing the running session's.
+    # An open and close tool: it holds every block at one voltage and reads
+    # both detectors. See hardware/occupancy_bench.py.
 
     def _bench_session():
         from hardware import occupancy_bench
 
         return occupancy_bench.get_session()
-
-    def _bench_opener(cfg, environment):
-        """How the bench opens its controller, or None for "open the real CH347".
-
-        Deliberately not `_develop_opener`: that one gates on the environment
-        *requested by the payload under test*, because commissioning always tests
-        the edit in progress. The bench has no edit in progress — it operates the
-        persisted configuration under the environment that was selected — so it
-        gates on the selection, the same input `build_session_interfaces` uses to
-        choose between the fake device and the physical bridge. Gating it the
-        commissioning way sent Virtual Hardware looking for a USB bridge.
-        """
-        if environment is not OperationMode.VIRTUAL_HARDWARE:
-            return None
-        from hardware import virtual_rig
-        from hardware.fake import FakeCh347Device
-
-        def _open():
-            device = FakeCh347Device(
-                present_addresses={
-                    c.i2c_address for c in cfg.chips if c.i2c_address is not None
-                }
-            )
-            device.open()
-            # An untouched fake reads every '165 bit as zero, which an
-            # active-low chain reports as a train on every block. The session
-            # writes its fresh device clear at start; this one starts clear too.
-            for block_id in virtual_rig.bound_block_ids(cfg):
-                virtual_rig.set_block_presence(cfg, device, block_id, False)
-            virtual_rig.install_drive_swamp(cfg, device)
-            return device
-
-        return _open
 
     @app.route("/api/hardware/bench/open", methods=["POST"])
     def hardware_bench_open():
@@ -683,26 +730,30 @@ def register(app, state: AppState) -> None:
         Occupancy bench).
 
         Accepted only in Setup. It reaches the rig through the session's
-        device when one is open and opens its own otherwise, and it never
-        changes the session state: no environment is active in Setup, so there
-        is nothing to hand over or give back.
+        device handle, and it never changes the session state: no environment
+        is active in Setup. Refused with `409 no_device` when the handle cannot
+        be opened, and with `409 outputs_owned` while another tool holds the
+        outputs.
         """
         refused = _refuse_outside_setup("The occupancy bench")
         if refused is not None:
             return refused
-        selected = operation_environment.get_selected()
         try:
             cfg = hardware_config.get_hardware_config()
         except hardware_config.HardwareConfigError as exc:
             return jsonify({"status": "error", "error": str(exc)}), 400
         with state.simulation_lock:
+            handle, refused = _setup_handle(cfg)
+            if refused is not None:
+                return refused
             try:
                 status = _bench_session().open(
                     cfg,
-                    open_device=_bench_opener(cfg, selected),
+                    handle,
                     track_polarity_of=hardware_config.track_polarity_reversed,
-                    device=hardware_config.get_live_device(),
                 )
+            except owners.OutputsOwned as exc:
+                return _owned_refusal(exc)
             except Exception as exc:  # noqa: BLE001 - reported to the panel
                 # A failed open still completes the safe-state sequence, and a
                 # failed zeroing there is a hardware I/O failure.
@@ -753,6 +804,9 @@ def register(app, state: AppState) -> None:
         if not session.is_open():
             return jsonify({"ok": False, "error": "the occupancy bench is not open"}), 409
         with state.simulation_lock:
+            refused = _open_tool_device()
+            if refused is not None:
+                return refused
             try:
                 status = session.drive(
                     bool(data.get("running")),
@@ -783,6 +837,9 @@ def register(app, state: AppState) -> None:
         if not session.is_open():
             return jsonify({"ok": False, "error": "the occupancy bench is not open"}), 409
         with state.simulation_lock:
+            refused = _open_tool_device()
+            if refused is not None:
+                return refused
             try:
                 result = session.check_block(block_id)
             except BlockCheckRefused as exc:
@@ -851,21 +908,25 @@ def register(app, state: AppState) -> None:
             return jsonify({"status": "error", "error": str(exc)}), 400
         from hardware import commission
 
-        try:
-            # Borrow the running session's controller when there is one; a
-            # second open of the same USB endpoint is refused by the driver.
-            # `timeout_seconds` is the commissioning `enter` body's idle window,
-            # bounded by COMMISSION_MAX_SESSION_SECONDS; an out-of-bound request
-            # raises and is reported below rather than opening the session.
-            commission.get_session().open(
-                cfg,
-                open_device=_develop_opener(cfg),
-                device=hardware_config.get_live_device(),
-                timeout_seconds=data.get("timeout_seconds"),
-                saved_switch_output=hardware_config.get_hardware_config().switch_output,
-            )
-        except Exception as exc:
-            return jsonify({"ok": False, "error": str(exc)})
+        with state.simulation_lock:
+            handle, refused = _setup_handle(cfg)
+            if refused is not None:
+                return refused
+            try:
+                # On the session's device handle. `timeout_seconds` is the
+                # `open` body's idle window, bounded by
+                # COMMISSION_MAX_SESSION_SECONDS; an out-of-bound request raises
+                # and is reported below rather than opening the session.
+                commission.get_session().open(
+                    cfg,
+                    handle,
+                    timeout_seconds=data.get("timeout_seconds"),
+                    saved_switch_output=hardware_config.get_hardware_config().switch_output,
+                )
+            except owners.OutputsOwned as exc:
+                return _owned_refusal(exc)
+            except Exception as exc:
+                return jsonify({"ok": False, "error": str(exc)})
         # The switch bits a caller walking the bits must pulse only for the
         # switch-coil width (design_v2.md "Setup tools", `open` lists the
         # switch bits).
@@ -883,7 +944,10 @@ def register(app, state: AppState) -> None:
         from hardware import commission
 
         try:
-            with _bus_guard():
+            with state.simulation_lock:
+                refused = _open_tool_device()
+                if refused is not None:
+                    return refused
                 commission.get_session().set_output(
                     data.get("chip_id"), int(data.get("port")), float(data.get("duty", 1.0))
                 )
@@ -912,7 +976,10 @@ def register(app, state: AppState) -> None:
         standby = data.get("standby_port")
         off_port = data.get("off_port")
         try:
-            with _bus_guard():
+            with state.simulation_lock:
+                refused = _open_tool_device()
+                if refused is not None:
+                    return refused
                 commission.get_session().pulse_output(
                     data.get("chip_id"),
                     int(data.get("port")),
@@ -935,7 +1002,10 @@ def register(app, state: AppState) -> None:
         from hardware import commission
 
         try:
-            with _bus_guard():
+            with state.simulation_lock:
+                refused = _open_tool_device()
+                if refused is not None:
+                    return refused
                 bits = commission.get_session().read_inputs(data.get("chip_id"))
         except Exception as exc:
             return jsonify({"ok": False, "error": str(exc)})
@@ -950,7 +1020,10 @@ def register(app, state: AppState) -> None:
         from hardware import commission
 
         try:
-            with _bus_guard():
+            with state.simulation_lock:
+                refused = _open_tool_device()
+                if refused is not None:
+                    return refused
                 currents = commission.get_session().read_currents(data.get("chip_id"))
         except Exception as exc:
             return jsonify({"ok": False, "error": str(exc)})
@@ -1352,17 +1425,36 @@ def register(app, state: AppState) -> None:
 
     @app.route("/api/operation/environment", methods=["PUT"])
     def update_operation_environment():
+        """Select the environment. It changes no session flag.
+
+        When the operator selects another environment while in Setup, the
+        session closes any open Setup tool, closes the device handle, and opens
+        one for the newly selected environment (design_v2.md "Setup tools",
+        Selecting another environment in Setup). The session's interfaces were
+        built on the closed handle, so they are released with it.
+        """
         data = request.get_json(silent=True) or {}
-        try:
-            selected = operation_environment.select(data.get("selected"))
-        except ValueError as exc:
-            return jsonify({"status": "error", "error": str(exc)}), 400
-        return jsonify({
-            "status": "success",
-            "selected": selected.value,
-            "active": state.sim_controller.operation_mode.value,
-            "is_active": bool(state.sim_controller.environment_active),
-        })
+        with state.simulation_lock:
+            previous = operation_environment.get_selected()
+            try:
+                selected = operation_environment.select(data.get("selected"))
+            except ValueError as exc:
+                return jsonify({"status": "error", "error": str(exc)}), 400
+            if state.setup_active and selected is not previous:
+                _close_setup_tools_locked()
+                hardware_config.close_device_handle()
+                state.sim_controller.release_interfaces()
+                hardware_config.ensure_device_handle(
+                    selected, on_refused=_report_refused_write
+                )
+            handle = hardware_config.get_device_handle()
+            return jsonify({
+                "status": "success",
+                "selected": selected.value,
+                "active": state.sim_controller.operation_mode.value,
+                "is_active": bool(state.sim_controller.environment_active),
+                "device_open": handle is not None and handle.environment is selected,
+            })
 
     @app.route("/api/operation/setup", methods=["POST"])
     def enter_setup():
@@ -1375,12 +1467,18 @@ def register(app, state: AppState) -> None:
              "Trains", Leaving Live stops every train);
           2. drives the outputs to their safe state through
              `SimulationController.enter_output_safe_state()`;
-          3. deactivates the environment and makes the selected environment the
-             active one. When the session's interfaces were built for that same
-             environment its device and `OccupancyInput` stay open, so the
-             detectors keep being read and every Setup tool reaches the rig
-             through that one handle; otherwise the interfaces are released;
-          4. sets `AppState.setup_active`.
+          3. deactivates the environment, so the runtime gives up the outputs,
+             and makes the selected environment the active one. When the
+             session's device handle was opened for that same environment it
+             and the `OccupancyInput` stay open, so the detectors keep being
+             read; otherwise the handle is closed and the interfaces are
+             released;
+          4. opens the session's device handle for the selected environment
+             when none is open. When it cannot be opened, Setup is still
+             entered, and the tools that need the device are refused with
+             `no_device` until it opens (design_v2.md "Setup tools", A device
+             that does not open);
+          5. sets `AppState.setup_active`.
 
         A rig whose safe state fails is still handed to Setup, because Setup's
         tools are how the operator reaches it; the failure is latched as a
@@ -1407,17 +1505,19 @@ def register(app, state: AppState) -> None:
                 safe_state_failures = list(exc.failures)
             except Exception as exc:  # noqa: BLE001 - reported and latched below
                 safe_state_failures = [str(exc)]
-            same_environment = (
-                sim.operation_mode is selected
-                and hardware_config.get_live_device() is not None
-            )
+            handle = hardware_config.get_device_handle()
+            same_environment = handle is not None and handle.environment is selected
             sim.deactivate_environment(
-                [{"code": "setup", "message": "Setup owns the outputs"}],
+                [{"code": "setup", "message": "In Setup the runtime does not own the outputs"}],
                 environment=selected,
             )
             if not same_environment:
-                hardware_config.close_live_device()
+                hardware_config.close_device_handle()
                 sim.release_interfaces()
+            if hardware_config.get_device_handle() is None:
+                hardware_config.ensure_device_handle(
+                    selected, on_refused=_report_refused_write
+                )
             if safe_state_failures:
                 sim.enter_hardware_failure(
                     HardwareFailure(
@@ -1434,6 +1534,7 @@ def register(app, state: AppState) -> None:
                     "ok": not safe_state_failures,
                     "failures": safe_state_failures,
                 },
+                "device_open": hardware_config.get_device_handle() is not None,
             }
         return jsonify(body)
 
@@ -1485,15 +1586,18 @@ def register(app, state: AppState) -> None:
         # blocked report for the case where no new session arrives.
         safe_state_failures = state.sim_controller.try_enter_safe_state()
         try:
-            hardware_config.close_live_device()
             # Unbind the previous session's chips before building the next
-            # ones: they hold the handle just closed, and both the failure
-            # path below and `activate_interfaces` safe the outputs again.
+            # ones, so neither the failure path below nor `activate_interfaces`
+            # drives them again. The build uses the session's device handle
+            # when it was opened for `selected`, and otherwise closes it and
+            # opens one (design_v2.md "Setup tools", Activation uses the Setup
+            # handle).
             state.sim_controller.release_interfaces()
             interfaces = hardware_config.build_session_interfaces(
                 hardware_config.get_hardware_config(),
                 environment=selected,
                 track_polarity_of=hardware_config.track_polarity_reversed,
+                on_refused=_report_refused_write,
             )
             state.sim_controller.activate_interfaces(selected, *interfaces)
         except hardware_config.HardwareBackendUnavailable as exc:

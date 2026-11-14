@@ -44,7 +44,6 @@ def test_commission_close_tries_every_chip_and_returns_failures():
     bad, good = _Chip(fails=True), _Chip()
     session = CommissionSession()
     session._device = object()
-    session._borrowed = True
     session._chips = {"bad": bad, "good": good}
 
     errors = session.close()
@@ -58,7 +57,6 @@ def test_bench_close_zeroes_its_track_chips_without_output_safety():
     good = _Chip()
     session = OccupancyBenchSession()
     session._device = object()
-    session._borrowed = True
     session._track = TrackDriver({"good": good}, {}, safety=_NoSafety())
 
     assert session.close() == []
@@ -96,7 +94,6 @@ def test_a_timed_out_commission_close_keeps_its_failures_for_reporting():
     zeroing waits for `take_close_failures()` instead of only being logged."""
     session = CommissionSession()
     session._device = object()
-    session._borrowed = True
     session._chips = {"bad": _Chip(fails=True)}
     session._last = 0.0
     session._timeout_s = 0.0
@@ -110,7 +107,6 @@ def test_a_timed_out_commission_close_keeps_its_failures_for_reporting():
 def test_a_timed_out_bench_close_hands_its_failures_to_the_next_close():
     session = OccupancyBenchSession()
     session._device = object()
-    session._borrowed = True
     session._track = TrackDriver({"bad": _Chip(fails=True)}, {}, safety=_NoSafety())
     session._last = -1e9
 
@@ -195,7 +191,6 @@ from hardware import setup_tools
 def _open_commission(chip, *, idle_for):
     session = CommissionSession()
     session._device = object()
-    session._borrowed = True
     session._chips = {"pwm1": chip}
     session._timeout_s = 30.0
     session._last = time.monotonic() - idle_for

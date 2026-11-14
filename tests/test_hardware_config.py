@@ -677,7 +677,7 @@ def test_releasing_the_device_clears_what_was_captured(monkeypatch):
     hardware_config.apply_updates(_real_payload(chips=[]), persist=False)
     assert hardware_config.setup_awaits_activation() is True
 
-    hardware_config.close_live_device()
+    hardware_config.close_device_handle()
 
     assert hardware_config.setup_awaits_activation() is False
 
@@ -966,6 +966,7 @@ def test_commission_endpoints_with_fake(client, monkeypatch):
     monkeypatch.setattr(chdev, "open_ch347_device", lambda port=None: fake)
 
     client.put("/api/hardware/config", json=_real_payload())
+    operation_environment.select(OperationMode.REAL_HARDWARE, persist=False)
     assert client.post("/api/operation/setup").status_code == 200
     assert client.post("/api/hardware/commission/open",
                        json={"config": _real_payload()}).get_json()["ok"] is True
@@ -985,7 +986,9 @@ def test_commission_endpoints_with_fake(client, monkeypatch):
                        json={"chip_id": "in1"}).get_json()["ports"]
     assert bits[2]["value"] is True
     assert client.post("/api/hardware/commission/close", json={}).get_json()["ok"] is True
-    assert fake.closed is True
+    # The session's device handle stays open in Setup for the next tool
+    # (design_v2.md "Setup tools", Setup always has one device handle).
+    assert fake.closed is False
 
 
 def test_commission_open_clears_the_shift_out_chain(client, monkeypatch):

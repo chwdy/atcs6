@@ -203,7 +203,9 @@ def test_finalize_closes_the_device_after_the_safe_state_not_before(
 
     device = FakeCh347Device()
     device.open()
-    monkeypatch.setattr(isolated_hardware, "_live_device", device)
+    from hardware.device_handle import SessionDeviceHandle
+
+    monkeypatch.setattr(isolated_hardware, "_handle", SessionDeviceHandle(device, None))
     open_during_safe_state = []
 
     class Sim:

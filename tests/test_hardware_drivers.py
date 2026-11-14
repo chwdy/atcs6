@@ -22,6 +22,7 @@ from hardware_config import (
     PortBinding,
     TrackBinding,
 )
+from hardware.device_handle import SessionDeviceHandle
 from hardware import interfaces as hw_interfaces
 from hardware import self_test
 from hardware.catalog import (
@@ -1294,7 +1295,9 @@ def test_commission_session_drives_and_reads():
         ChipConfig("in1", "hc165", spi_select="cs1"),
     )
     sess = CommissionSession()
-    sess.open(cfg, open_device=lambda: fake)
+    handle = SessionDeviceHandle(fake, None)
+    sess.open(cfg, handle)
+    assert handle.owner == "commissioning_session"
     # switch bit
     sess.set_output("sw1", 5, 1.0)
     assert fake.latched_bit("cs0", 5) is True
@@ -1308,7 +1311,10 @@ def test_commission_session_drives_and_reads():
     assert bits[3] is True and bits[0] is False
     assert sess.status()["open"] is True
     sess.close()
-    assert fake.closed is True
+    # The session's handle stays open for the next tool, and the close gives
+    # the outputs back to nobody.
+    assert fake.closed is False
+    assert handle.owner is None
     assert sess.status()["open"] is False
 
 
@@ -1320,7 +1326,7 @@ def test_commission_reads_currents():
     fake.set_ina3221_current(0x41, 3, 0.030)
     cfg = _cfg(ChipConfig("cur1", "ina3221", i2c_address=0x41))
     sess = CommissionSession()
-    sess.open(cfg, open_device=lambda: fake)
+    sess.open(cfg, SessionDeviceHandle(fake, None))
     currents = sess.read_currents("cur1")
     assert len(currents) == 3
     assert abs(currents[0] - 10.0) <= 0.5     # CH1
@@ -1348,7 +1354,7 @@ def test_commission_learns_switch_bits_from_the_saved_setup():
         "SW_B": SwitchBinding("other", port_main=4, port_diverge=5),
     }
     sess = CommissionSession()
-    sess.open(cfg, open_device=lambda: fake, saved_switch_output=saved)
+    sess.open(cfg, SessionDeviceHandle(fake, None), saved_switch_output=saved)
     assert sess.switch_ports_by_chip() == {"sw1": [0, 1, 2]}
     with pytest.raises(ValueError):
         sess.set_output("sw1", 1, 1.0)
@@ -1367,7 +1373,7 @@ def test_commission_current_read_failure_is_an_error_not_zero():
     fake = FakeCh347Device(present_addresses={0x41})
     cfg = _cfg(ChipConfig("cur1", "ina3221", i2c_address=0x41))
     sess = CommissionSession()
-    sess.open(cfg, open_device=lambda: fake)
+    sess.open(cfg, SessionDeviceHandle(fake, None))
     sess.read_currents("cur1")             # configures the chip
     fake.set_fault("i2c_read_error")
     with pytest.raises(Exception):
@@ -1391,7 +1397,7 @@ def test_commission_open_bounds_the_session_timeout():
     ok = CommissionSession()
     ok.open(
         cfg,
-        open_device=lambda: FakeCh347Device(),
+        SessionDeviceHandle(FakeCh347Device(), None),
         timeout_seconds=COMMISSION_MAX_SESSION_SECONDS - 1.0,
     )
     assert ok.status()["open"] is True
@@ -1402,7 +1408,7 @@ def test_commission_open_bounds_the_session_timeout():
     with pytest.raises(ValueError):
         over.open(
             cfg,
-            open_device=lambda: FakeCh347Device(),
+            SessionDeviceHandle(FakeCh347Device(), None),
             timeout_seconds=COMMISSION_MAX_SESSION_SECONDS + 1.0,
         )
     assert over.status()["open"] is False
@@ -1422,7 +1428,7 @@ def test_commission_pulse_bounds_the_pulse_width(monkeypatch):
 
     cfg = _cfg(ChipConfig("sw1", "hc595", spi_select="cs0", chain_length=3))
     sess = CommissionSession()
-    sess.open(cfg, open_device=lambda: FakeCh347Device())
+    sess.open(cfg, SessionDeviceHandle(FakeCh347Device(), None))
 
     ceiling_s = MAX_COIL_PULSE_S
     # Just under the ceiling: accepted (no raise).

@@ -1,20 +1,19 @@
 """Bus scan + interactive port-test for the Hardware Setup screen.
 
-`run_bus_scan` opens a transient device and reports every I2C address that
-answers right now. That scan is the whole of the automatic proof: an I2C chip is
-present when its address is on the bus, and a shift register (SPI / GPIO) cannot
-be detected at all — it has no acknowledgement and no ID register, so a '595 or
-'165 reads exactly the same unplugged as wired. Those are proven by hand
-instead: `run_port_test` pulses one output line or reads one input line so the
-user can watch a wire respond.
+`run_bus_scan` reports every I2C address that answers right now. That scan is
+the whole of the automatic proof: an I2C chip is present when its address is on
+the bus, and a shift register (SPI / GPIO) cannot be detected at all — it has no
+acknowledgement and no ID register, so a '595 or '165 reads exactly the same
+unplugged as wired. Those are proven by hand instead: `run_port_test` pulses one
+output line or reads one input line so the user can watch a wire respond.
 
-Every entry point accepts an already-open `device` — the fake in tests, and the
-running session's controller when there is one — or falls back to opening a real
-`Ch347Device` of its own. The caller decides which: the routes hand over the live
-session's device (under `simulation_lock`) rather than letting a second open be
-refused, since the controller is a single USB endpoint and the tools are most
-useful on exactly the rig a session is holding. A passed-in device is used and
-left open; only a device opened here is closed here.
+Every entry point takes the device to use. The routes pass a `DeviceWriter`
+from the session's device handle under the tool's own writer name, so every
+output write the test makes is checked against the owner of the outputs
+(design_v2.md "Hardware interface", Who may write the outputs). Only outside
+Setup, with no handle open, does a read open a transient device through
+`open_device`; a passed-in device is used and left open, and only a device
+opened here is closed here.
 """
 
 import time

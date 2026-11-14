@@ -12,6 +12,7 @@
 // before the request reaches fetch().
 import type { LayoutDataClient, SimClient } from './layout-data-client';
 import type { VirtualFaultRequest } from './virtual-hardware-faults';
+import { setupToolRefusalMessage } from './setup-tool-refusals';
 
 interface RequestOptions {
   method?: string;
@@ -77,6 +78,8 @@ export class API implements LayoutDataClient, SimClient {
         try {
           errorData = await response.json();
           if (errorData.error) errorMessage = errorData.error;
+          // A Setup tool refused because of the device handle says so plainly.
+          errorMessage = setupToolRefusalMessage(errorData) ?? errorMessage;
         } catch (e) {
           try {
             const text = await response.text();

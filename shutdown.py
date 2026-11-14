@@ -465,7 +465,7 @@ def _close_hardware_device() -> None:
     try:
         import hardware_config
 
-        hardware_config.close_live_device()
+        hardware_config.close_device_handle()
     except Exception as exc:  # the record below must still be written
         print(f"[Shutdown] Could not close the hardware device: {exc}", flush=True)
 

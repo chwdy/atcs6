@@ -135,6 +135,9 @@ def test_virtual_session_starts_with_exactly_one_block_occupied():
     occupied, a state no real rig can be in.
     """
     for active_low in (False, True):
+        # A fresh virtual rig each time: the in-memory device is set up when
+        # the session's handle opens.
+        hardware_config.close_device_handle()
         chips = [
             dict(c, active_low=active_low) if c["chip_id"] == "in1" else c
             for c in _develop_payload()["chips"]
@@ -727,7 +730,7 @@ def _ready_virtual_layout(state):
     hardware_config.apply_updates(_develop_payload(switch_output={}), persist=False)
 
 
-def test_the_bench_borrows_the_setup_device_and_closing_it_never_activates(client):
+def test_the_bench_uses_the_setup_device_and_closing_it_never_activates(client):
     """The bench reaches the rig through the session's device in Setup, and
     closing it completes the safe state and leaves the session in Setup
     (design_v2.md "Setup tools", Occupancy bench)."""
@@ -775,13 +778,12 @@ def test_the_block_check_runs_on_the_virtual_rig_and_needs_an_open_bench(client)
         test_client.post("/api/hardware/bench/close")
 
 
-def test_a_bench_on_its_own_fake_device_starts_with_every_block_clear(client):
-    """Setup entered without ever activating Virtual Hardware: no session holds
-    a fake device, so the bench opens its own. An untouched fake reads every
-    '165 bit as zero, which an active-low chain reports as a train on every
-    block, so the bench writes every block clear first and an empty block's bit
-    follows the drive (design_v2.md "Setup tools", A bench that opens its own
-    fake device)."""
+def test_entering_setup_from_halted_opens_the_device_handle_for_the_bench(client):
+    """Setup entered without ever activating Virtual Hardware opens the
+    session's device handle on the in-memory fake (design_v2.md "Setup tools",
+    What entering Setup does, step 4), and the bench uses that handle, opening
+    no device of its own (Setup always has one device handle). With the
+    startup train lifted off, an empty block's bit follows the drive."""
     from block import Block
 
     test_client, state = client
@@ -789,16 +791,130 @@ def test_a_bench_on_its_own_fake_device_starts_with_every_block_clear(client):
     payload = _develop_payload(switch_output={})
     payload["chips"][2]["active_low"] = True        # in1, the hc165
     hardware_config.apply_updates(payload, persist=False)
-    assert test_client.post("/api/operation/setup").status_code == 200
-    assert hardware_config.get_live_device() is None
+    assert hardware_config.get_device_handle() is None
+
+    response = test_client.post("/api/operation/setup")
+
+    assert response.status_code == 200
+    assert response.get_json()["device_open"] is True
+    handle = hardware_config.get_device_handle()
+    assert handle is not None and handle.owner is None
+    device = hardware_config.get_live_device()
+    assert isinstance(device, FakeCh347Device)
+    # Opening the handle builds no interfaces and starts no detector read.
+    assert state.sim_controller.occupancy_is_real is False
+    _empty_the_virtual_layout(device)
 
     assert test_client.post("/api/hardware/bench/open").get_json()["ok"] is True
     try:
+        assert hardware_config.get_live_device() is device
+        assert handle.owner == "occupancy_bench"
         data = test_client.post("/api/hardware/bench/check-block", json={"block_id": "B1"}).get_json()
         assert data["digital"] == "followed_drive"
         assert data["verdict"] == "wired"
     finally:
         test_client.post("/api/hardware/bench/close")
+    assert handle.owner is None
+    assert device.closed is False
+
+
+def test_selecting_another_environment_in_setup_reopens_the_handle(client, monkeypatch):
+    """design_v2.md "Setup tools", Selecting another environment in Setup: the
+    session closes any open tool, closes the device handle, and opens one for
+    the newly selected environment."""
+    import hardware.ch347_device as chdev
+    from hardware import commission
+
+    test_client, state = client
+    payload = _develop_payload()
+    hardware_config.apply_updates(payload, persist=False)
+    assert test_client.post("/api/operation/setup").status_code == 200
+    virtual = hardware_config.get_live_device()
+    assert test_client.post(
+        "/api/hardware/commission/open", json={"config": payload}
+    ).get_json()["ok"] is True
+
+    real = FakeCh347Device(present_addresses={0x40, 0x41})
+    monkeypatch.setattr(chdev, "open_ch347_device", lambda port=None: real)
+    response = test_client.put(
+        "/api/operation/environment", json={"selected": "real_hardware"}
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["device_open"] is True
+    assert commission.get_session().is_open() is False
+    assert virtual.closed is True
+    handle = hardware_config.get_device_handle()
+    assert handle.environment is OperationMode.REAL_HARDWARE
+    assert handle.device is real and handle.owner is None
+    assert state.setup_active is True
+    assert state.sim_controller.environment_active is False
+
+
+def test_a_setup_tool_is_refused_with_no_device_until_the_controller_opens(
+    client, monkeypatch
+):
+    """design_v2.md "Setup tools", A device that does not open: Setup is still
+    entered, every tool that needs the device is refused with `409 no_device`,
+    and each such request first tries to open the handle again."""
+    import hardware.ch347_device as chdev
+
+    test_client, state = client
+    payload = _develop_payload()
+    hardware_config.apply_updates(payload, persist=False)
+    operation_environment.select(OperationMode.REAL_HARDWARE, persist=False)
+    plugged = {"device": None}
+
+    def _open(port=None):
+        if plugged["device"] is None:
+            raise RuntimeError("no CH347 found on USB")
+        return plugged["device"]
+
+    monkeypatch.setattr(chdev, "open_ch347_device", _open)
+
+    response = test_client.post("/api/operation/setup")
+    assert response.status_code == 200
+    assert response.get_json()["device_open"] is False
+    assert state.setup_active is True
+
+    for path, body in (
+        ("/api/hardware/commission/open", {"config": payload}),
+        ("/api/hardware/bench/open", None),
+        ("/api/hardware/scan", {"config": payload}),
+        ("/api/hardware/port-test",
+         {"config": payload, "chip_id": "sw1", "port": 0, "action": "pulse_output"}),
+        ("/api/hardware/track-test", {"config": payload, "block_id": "B1"}),
+    ):
+        refused = test_client.post(path, json=body)
+        assert refused.status_code == 409, path
+        assert refused.get_json()["reason"] == "no_device", path
+
+    # The controller is plugged in: the next request opens the handle itself.
+    plugged["device"] = FakeCh347Device(present_addresses={0x40, 0x41})
+    opened = test_client.post("/api/hardware/scan", json={"config": payload})
+    assert opened.status_code == 200
+    assert opened.get_json()["controller"]["i2c_scan"] == ["0x40", "0x41"]
+    assert hardware_config.get_live_device() is plugged["device"]
+
+
+def test_a_lost_controller_is_no_device_until_it_reopens(client):
+    """design_v2.md "Setup tools", A device that does not open: while the
+    handle's controller is lost a tool is refused with `no_device`."""
+    test_client, _state = client
+    payload = _develop_payload()
+    hardware_config.apply_updates(payload, persist=False)
+    assert test_client.post("/api/operation/setup").status_code == 200
+    device = hardware_config.get_live_device()
+    device.set_fault("disconnect")
+
+    refused = test_client.post("/api/hardware/commission/open", json={"config": payload})
+    assert refused.status_code == 409
+    assert refused.get_json()["reason"] == "no_device"
+
+    device.set_fault("disconnect", False)
+    assert test_client.post(
+        "/api/hardware/commission/open", json={"config": payload}
+    ).get_json()["ok"] is True
 
 
 def test_an_expired_bench_leaves_the_session_in_setup(client, monkeypatch):

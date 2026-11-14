@@ -11,6 +11,7 @@ Run with:
 import pytest
 
 from hardware import virtual_rig
+from hardware.device_handle import SessionDeviceHandle
 from hardware.fake import FakeCh347Device
 from hardware.occupancy_bench import (
     BlockCheckRefused,
@@ -64,7 +65,7 @@ def _open(cfg):
         virtual_rig.set_block_presence(cfg, device, block_id, False)
     virtual_rig.install_drive_swamp(cfg, device)
     session = OccupancyBenchSession()
-    session.open(cfg, open_device=lambda: device)
+    session.open(cfg, SessionDeviceHandle(device, None))
     return session, device
 
 

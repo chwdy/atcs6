@@ -21,7 +21,8 @@ have.
 from __future__ import annotations
 
 import threading
-from typing import List, Mapping, Sequence
+from contextlib import nullcontext
+from typing import Any, List, Mapping, Optional, Sequence
 
 
 class SafeStateError(RuntimeError):
@@ -47,10 +48,17 @@ class OutputSafety:
         self,
         track_chips: Mapping[str, object],
         switch_chips: Mapping[str, object],
+        device: Optional[Any] = None,
     ) -> None:
         self._track_chips = dict(track_chips)
         self._switch_chips = dict(switch_chips)
         self._lock = threading.RLock()
+        # The `DeviceWriter` the chips were built on. Its
+        # `safe_state_writes()` lets this sequence through the session's
+        # device handle whoever owns the outputs (design_v2.md "Hardware
+        # interface", The safe state is accepted from anyone). A plain device
+        # has no owner check, so it needs nothing.
+        self._device = device
 
     def enter_safe_state(self) -> None:
         """Latch every coil low, then zero every PWM channel.
@@ -60,7 +68,8 @@ class OutputSafety:
         into one raise at the end. A caller that cannot act on the raise still
         gets the safest rig this transport can deliver.
         """
-        with self._lock:
+        accept = getattr(self._device, "safe_state_writes", None)
+        with self._lock, (accept() if callable(accept) else nullcontext()):
             errors = []
             for chip_id, chip in self._switch_chips.items():
                 try:

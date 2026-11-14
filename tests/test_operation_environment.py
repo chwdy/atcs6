@@ -66,6 +66,8 @@ def test_environment_api_reports_selected_separately_from_active(
             "selected": "real_hardware",
             "active": "virtual_hardware",
             "is_active": False,
+            # Outside Setup selecting opens no device handle.
+            "device_open": False,
         }
         assert client.get("/api/operation/environment").get_json() == {
             "selected": "real_hardware",

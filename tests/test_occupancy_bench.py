@@ -19,6 +19,7 @@ from hardware_config import (
     PortBinding,
     TrackBinding,
 )
+from hardware.device_handle import SessionDeviceHandle
 from hardware.fake import FakeCh347Device
 from hardware.interfaces import build_real_interfaces
 from hardware.occupancy_bench import DEFAULT_DRIVE_PERCENT, OccupancyBenchSession
@@ -59,7 +60,7 @@ def bench():
     device = FakeCh347Device(present_addresses={PWM_ADDR, 0x41})
     device.open()
     session = OccupancyBenchSession()
-    session.open(cfg, open_device=lambda: device)
+    session.open(cfg, SessionDeviceHandle(device, None))
     yield session, device, cfg
     session.close()
 
@@ -165,7 +166,7 @@ def test_a_detector_only_block_still_gets_a_row():
     del cfg.block_track["B2"]                   # detectors but no rails
     device = FakeCh347Device(present_addresses={PWM_ADDR, 0x41})
     session = OccupancyBenchSession()
-    session.open(cfg, open_device=lambda: device)
+    session.open(cfg, SessionDeviceHandle(device, None))
     try:
         assert "B2" in session.status()["block_ids"]
         assert session.read()["blocks"]["B2"]["track_bound"] is False
@@ -204,7 +205,7 @@ def test_the_bench_flip_rides_on_top_of_the_binding_and_does_not_edit_it():
     session = OccupancyBenchSession()
     session.open(
         cfg,
-        open_device=lambda: device,
+        SessionDeviceHandle(device, None),
         track_polarity_of=lambda block_id: cfg.block_track[block_id].reversed,
     )
     try:
@@ -246,7 +247,7 @@ def test_reopening_a_running_bench_re_asserts_the_drive(bench):
     session, device, cfg = bench
     session.drive(True, percent=DEFAULT_DRIVE_PERCENT, flipped=["B2"])
 
-    session.open(cfg, open_device=lambda: device)
+    session.open(cfg, SessionDeviceHandle(device, None))
 
     assert session.status()["running"] is True
     assert device.duty_cycle(PWM_ADDR, 0) == pytest.approx(0.4, abs=0.01)
@@ -336,7 +337,7 @@ def test_the_override_survives_a_reopen(bench):
     drive has to be re-asserted there."""
     session, device, cfg = bench
     session.set_current_threshold(12.5)
-    session.open(cfg, open_device=lambda: device)
+    session.open(cfg, SessionDeviceHandle(device, None))
     assert session.status()["threshold_ma"] == pytest.approx(12.5)
     assert session.read()["blocks"]["B1"]["threshold_ma"] == pytest.approx(12.5)
 
@@ -412,7 +413,7 @@ def test_a_layout_with_no_current_channels_reports_no_peak():
     cfg.block_occupancy_current = {}
     device = FakeCh347Device(present_addresses={PWM_ADDR, 0x41})
     session = OccupancyBenchSession()
-    session.open(cfg, open_device=lambda: device)
+    session.open(cfg, SessionDeviceHandle(device, None))
     try:
         peak = session.read()["peak"]
         assert peak["samples"] == 0
@@ -496,7 +497,7 @@ def test_a_block_with_no_current_binding_reports_no_peak():
     del cfg.block_occupancy_current["B2"]
     device = FakeCh347Device(present_addresses={PWM_ADDR, 0x41})
     session = OccupancyBenchSession()
-    session.open(cfg, open_device=lambda: device)
+    session.open(cfg, SessionDeviceHandle(device, None))
     try:
         entry = session.read()["blocks"]["B2"]
         assert entry["peak_ma"] is None
@@ -512,7 +513,7 @@ def test_reopening_starts_the_peaks_over(bench):
     device.set_ina3221_current(0x41, 1, 0.013)
     session.read()
 
-    session.open(cfg, open_device=lambda: device)
+    session.open(cfg, SessionDeviceHandle(device, None))
 
     assert session.read()["blocks"]["B1"]["peak_samples"] == 1
 

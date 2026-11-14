@@ -162,6 +162,13 @@ class FakeCh347Device:
     def close(self) -> None:
         self.closed = True
 
+    def connected(self) -> bool:
+        """Whether a bus operation would reach the in-memory rig: the device
+        is not closed and no disconnect is injected. `SessionDeviceHandle`
+        reads it to tell a lost controller (design_v2.md "Setup tools", A
+        device that does not open)."""
+        return not self.closed and "disconnect" not in self._active_transport_faults()
+
     def add_reconnect_hook(self, hook: Callable[[], None]) -> None:
         """Register a post-reconnect resync, same as `Ch347Device`.
 

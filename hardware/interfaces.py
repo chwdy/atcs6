@@ -39,6 +39,7 @@ from hardware.chips.hc595 import HC595Chain
 from hardware.chips.ina219 import INA219
 from hardware.chips.ina3221 import INA3221
 from hardware.chips.pca9685 import PCA9685
+from hardware.device_handle import OutputNotOwned
 from hardware.safety import OutputSafety, SafeStateError
 from hardware.watchdog import OutputWatchdog, WatchdogTripRecord
 
@@ -187,8 +188,20 @@ def _auto_release_reporter(chip_id: str) -> Callable[[int], None]:
 
 def build_chip(device: Any, spec: Any) -> Any:
     """Instantiate the chip driver for a chip spec (duck-typed: chip_id, kind,
-    bus, i2c_address, chain_length, spi_select)."""
+    bus, i2c_address, chain_length, spi_select).
+
+    A chip whose role is track output or switch output is built on the output
+    side of a `DeviceWriter`, so its register writes and shift-outs are output
+    writes the session's device handle checks against the owner of the outputs
+    (design_v2.md "Hardware interface", The device handle refuses a write from
+    anyone but the owner; `hardware/device_handle.py` says which writes count).
+    A plain device (a test's fake) has no output side and is used as it is.
+    """
     ck = CHIP_CATALOG[spec.kind]
+    if ck.role in (ROLE_TRACK, ROLE_SWITCH):
+        output_side = getattr(device, "output_side", None)
+        if callable(output_side):
+            device = output_side()
     if spec.kind == "pca9685":
         address = spec.i2c_address if spec.i2c_address is not None else ck.default_i2c_address
         return PCA9685(device, address=address)
@@ -385,8 +398,8 @@ class SwitchDriver(SwitchOutput):
       6. coil low — the bridge is already off, so this only settles the resting
          pattern for the next throw.
 
-    Steps 5-6 run in a `finally`, so a failure part-way through still leaves no
-    coil driven. A driver with no standby bit de-energizes at step 6 instead,
+    Steps 5-6 run after any failure part-way through too, so it still leaves
+    no coil driven. A driver with no standby bit de-energizes at step 6 instead,
     which is why that write is unconditional.
 
     Which bits those are is read per throw through `binding_of`, not captured
@@ -442,20 +455,37 @@ class SwitchDriver(SwitchOutput):
         state = 0 if target_state == 0 else 1
         coil = port_main if state == 0 else port_diverge
         other_coil = port_diverge if state == 0 else port_main
+        first = port_standby if port_standby is not None else coil
         try:
+            chip.set_output(first, True)
             if port_standby is not None:
-                chip.set_output(port_standby, True)
-            chip.set_output(coil, True)
+                chip.set_output(coil, True)
             chip.set_output(other_coil, False)
             time.sleep(self._pulse_s)
-        finally:
-            if port_standby is not None:
-                chip.set_output(port_standby, False)
-            chip.set_output(coil, False)
+        except OutputNotOwned as refused:
+            # The device handle refuses every write of a writer that does not
+            # own the outputs, so the first write was refused and nothing was
+            # driven: there is nothing to lower, and lowering would only be
+            # refused again (design_v2.md "Hardware interface", A refused write
+            # changes nothing).
+            raise refused
+        except BaseException:
+            self._lower(chip, coil, port_standby)
+            raise
+        self._lower(chip, coil, port_standby)
         self._last[switch_id] = state
         if self._watchdog is not None:
             self._watchdog.pet()
         return True
+
+    @staticmethod
+    def _lower(chip: Any, coil: int, port_standby: Optional[int]) -> None:
+        """Steps 5-6: standby low first, then the coil."""
+        try:
+            if port_standby is not None:
+                chip.set_output(port_standby, False)
+        finally:
+            chip.set_output(coil, False)
 
     def get_last_throw(self, switch_id: str) -> Optional[int]:
         return self._last.get(switch_id)
@@ -981,7 +1011,7 @@ def build_real_interfaces(
             else:
                 digital_chips[spec.chip_id] = chip
 
-    safety = OutputSafety(track_chips, switch_chips)
+    safety = OutputSafety(track_chips, switch_chips, device=device)
 
     # One watchdog covers both output interfaces: loss of control must drop the
     # track AND the point motors. The targets list is filled just below, before
@@ -1101,6 +1131,13 @@ def build_real_interfaces(
         not be brought back up safely.
         """
         safety.enter_safe_state()
+        # The safe state above is accepted from anyone. The chip setup below
+        # is an ordinary write, so it runs only while the writer these chips
+        # were built for owns the outputs (design_v2.md "Hardware interface",
+        # Who may write the outputs); the owner's own chips get it.
+        owns = getattr(device, "owns_outputs", None)
+        if callable(owns) and not owns():
+            return
         for chip in track_chips.values():
             chip.configure()
         if block_out is not None:

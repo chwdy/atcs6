@@ -64,20 +64,38 @@ class HC595Chain:
             self.device.latch_out(bytes(reversed(self._state)), self.select)
             self._rearm_guard()
 
+    def _write_state(self, state: bytearray) -> None:
+        """Latch `state` and keep it as the chain's state.
+
+        When the session's device handle refuses the write (its writer does not
+        own the outputs), the chain keeps its old state, because the refused
+        write reached no chip (design_v2.md "Hardware interface", A refused
+        write changes nothing). Any other failure keeps the new state, so the
+        hold guard still drops a bit that may have latched."""
+        from hardware.device_handle import OutputNotOwned
+
+        previous = self._state
+        self._state = state
+        try:
+            self.write_all()
+        except OutputNotOwned:
+            self._state = previous
+            raise
+
     def set_output(self, index: int, level: bool) -> None:
         """Set output `index` (0-based, continuous across the chain)."""
         with self._lock:
             byte_idx, bit_idx = divmod(index, 8)
+            state = bytearray(self._state)
             if level:
-                self._state[byte_idx] |= (1 << bit_idx)
+                state[byte_idx] |= (1 << bit_idx)
             else:
-                self._state[byte_idx] &= ~(1 << bit_idx)
-            self.write_all()
+                state[byte_idx] &= ~(1 << bit_idx)
+            self._write_state(state)
 
     def all_off(self) -> None:
         with self._lock:
-            self._state = bytearray(self.chain_length)
-            self.write_all()
+            self._write_state(bytearray(self.chain_length))
 
     def set_high_outputs(self, indices: Iterable[int]) -> None:
         """Atomically replace the whole latched pattern with ``indices`` high."""
@@ -88,8 +106,7 @@ class HC595Chain:
                 if byte_idx < 0 or byte_idx >= self.chain_length:
                     raise IndexError(f"output index {index} out of range")
                 state[byte_idx] |= 1 << bit_idx
-            self._state = state
-            self.write_all()
+            self._write_state(state)
 
     def probe(self) -> bool:
         """Write-only part: success == the SPI transaction issued without error."""
@@ -136,8 +153,18 @@ class HC595Chain:
             if not released:
                 return
             self._state = bytearray(self.chain_length)
+            # Dropping every bit is a move to the safe state, so it gets
+            # through the session's device handle whoever owns the outputs
+            # (design_v2.md "Hardware interface", The safe state is accepted
+            # from anyone): a guard that the owner check could stop would leave
+            # a coil burning.
+            accept = getattr(self.device, "safe_state_writes", None)
             try:
-                self.device.latch_out(bytes(reversed(self._state)), self.select)
+                if callable(accept):
+                    with accept():
+                        self.device.latch_out(bytes(reversed(self._state)), self.select)
+                else:
+                    self.device.latch_out(bytes(reversed(self._state)), self.select)
             except Exception:
                 # A failed release is the worst case (a coil may still be hot),
                 # but raising off a timer thread would only lose the report.

@@ -472,7 +472,9 @@ class RunReplay:
             ))
             replay_input = self.input
 
-            def build_session_interfaces(cfg=None, *, environment=None, track_polarity_of=None):
+            def build_session_interfaces(
+                cfg=None, *, environment=None, track_polarity_of=None, on_refused=None
+            ):
                 return replay_input, None, None
 
             stack.enter_context(mock.patch.object(

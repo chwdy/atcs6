@@ -75,6 +75,9 @@ def client():
         persistence_manager=PersistenceManager(storage_dir="layouts"),
         simulation_lock=threading.Lock(),
     )
+    # The commissioning path of the test throw runs only in Setup
+    # (design_v2.md "Hardware REST API", the switch-test row).
+    state.setup_active = True
     app = create_app(state)
     app.config["TESTING"] = True
     with app.test_client() as test_client:
@@ -132,6 +135,7 @@ def test_a_live_switch_output_drives_the_throw_itself(client):
     state.sim_controller.switch_output_interface = sw_iface
     state.network.switch_output_interface = sw_iface
     state.sim_controller.environment_active = True
+    state.setup_active = False
 
     body = _throw(test_client, 1).get_json()
 
@@ -158,9 +162,8 @@ def test_without_a_live_output_the_commissioning_session_pulses_the_coils(client
 def test_the_bench_throw_works_while_no_environment_is_active(client):
     """The state every bench throw happens in.
 
-    Commissioning takes the device by deactivating the environment, so
-    `environment_active` is False for the whole time the switch editor's Test is
-    usable. Recording where the points went is not a throw command — the coil is
+    The commissioning throw runs in Setup, where no environment is active, so
+    `environment_active` is False for the whole time it is usable. Recording where the points went is not a throw command — the coil is
     already pulsed — so it must not be refused for running with no environment
     to command."""
     test_client, state, switch = client
@@ -263,6 +266,53 @@ def test_an_unbound_switch_is_refused_rather_than_silently_moved(client):
 
     assert resp.status_code == 400
     assert "no coil binding" in resp.get_json()["error"]
+    assert int(switch.position) == 0
+
+
+def test_the_commissioning_throw_is_refused_outside_setup(client):
+    """When the runtime does not own the outputs, the test throw runs only in
+    Setup (design_v2.md "Hardware REST API", the switch-test row)."""
+    test_client, state, switch = client
+    state.setup_active = False
+
+    resp = _throw(test_client, 1)
+
+    assert resp.status_code == 409
+    assert int(switch.position) == 0
+
+
+def test_the_test_throw_opens_a_commissioning_session_that_stays_open(client):
+    """With none open, the test opens a commissioning session, and it stays
+    open; with one open, the test uses it (design_v2.md "Setup tools", The
+    switch throw test pulses through the commissioning session)."""
+    from hardware import commission
+
+    test_client, _state, switch = client
+    assert commission.get_session().is_open() is False
+
+    assert _throw(test_client, 1).get_json()["ok"] is True
+    assert commission.get_session().is_open() is True
+    assert hardware_config.get_device_handle().owner == "commissioning_session"
+
+    assert _throw(test_client, 0).get_json()["ok"] is True
+    assert commission.get_session().is_open() is True
+    assert int(switch.position) == 0
+
+
+def test_the_test_throw_is_refused_while_the_bench_is_open(client):
+    """design_v2.md "Setup tools", The switch throw test pulses through the
+    commissioning session: refused with `outputs_owned` while the occupancy
+    bench is open."""
+    test_client, _state, switch = client
+    hardware_config.apply_updates(CONFIG, persist=False)
+    assert test_client.post("/api/hardware/bench/open").get_json()["ok"] is True
+    try:
+        resp = _throw(test_client, 1)
+    finally:
+        test_client.post("/api/hardware/bench/close")
+
+    assert resp.status_code == 409
+    assert resp.get_json()["reason"] == "outputs_owned"
     assert int(switch.position) == 0
 
 

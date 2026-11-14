@@ -263,17 +263,11 @@ MAX_TRACK_VOLTAGE = 12.0
 
 _config = HardwareConfig()
 
-# The Virtual Hardware session's FakeCh347Device. None in Real Hardware. The `/api/debug/hw` endpoints poke this device's
-# input state on the live session.
-_session_device: Optional[Any] = None
-
-# Whichever device the live session opened — virtual or physical; None when
-# no session is built.
-# The commissioning tools borrow this rather than opening a second handle: the
-# controller is a single USB HID endpoint, so a transient open while a session
-# holds it fails, and it used to fail with "is it plugged in?" on a bridge that
-# was plugged in and working. A borrowed device is never closed by the borrower.
-_live_device: Optional[Any] = None
+# The session's one device handle (design_v2.md "Setup tools", Setup always
+# has one device handle): the device, the environment it was opened for, and
+# the owner of the outputs. None while no device is open. Every owner reaches
+# the rig through it; nothing else opens a device while it is open.
+_handle: Optional[Any] = None
 
 # The setup the running session was BUILT from, in persisted form, or None when
 # no hardware-backed session is up. Compared against the saved setup to answer
@@ -286,26 +280,160 @@ def get_hardware_config() -> HardwareConfig:
     return _config
 
 
-def get_session_device() -> Optional[Any]:
-    """The live Virtual Hardware device; None otherwise.
+def get_device_handle() -> Optional[Any]:
+    """The session's device handle (`hardware.device_handle.SessionDeviceHandle`),
+    or None while no device is open."""
+    return _handle
 
-    Deliberately narrower than `get_live_device`: the `/api/debug/hw` endpoints
-    gate on this because they inject fake input state, which only a fake can
-    accept.
+
+def get_session_device() -> Optional[Any]:
+    """The Virtual Hardware fake device behind the session's handle; None
+    otherwise.
+
+    The `/api/virtual-hardware` endpoints use it to set the in-memory rig's
+    input state, which only a fake can accept. Setting an input is not an
+    output write; output writes go through the handle (design_v2.md "Hardware
+    interface", Every write passes through the device handle).
     """
-    return _session_device
+    from hardware.fake import FakeCh347Device
+
+    device = _handle.device if _handle is not None else None
+    return device if isinstance(device, FakeCh347Device) else None
 
 
 def get_live_device() -> Optional[Any]:
-    """The device the running session holds — virtual or physical — or None.
+    """The raw device behind the session's handle — virtual or physical — or
+    None. For reading the device's own link state only: every chip transaction
+    goes through `get_device_handle().writer(...)`."""
+    return _handle.device if _handle is not None else None
 
-    For a caller that only wants to talk to the controller and does not care
-    which kind it is: the commissioning tests borrow it instead of opening a
-    second handle the driver would refuse. Read-only or briefly-driving callers
-    must hold `simulation_lock` while they use it, so a bench test cannot
-    interleave with a tick on the same bus.
+
+def _open_device(cfg: "HardwareConfig", environment: OperationMode) -> Any:
+    """Open the device for `environment`: the in-memory fake for Virtual
+    Hardware, the controller's USB bridge for Real Hardware. Raises
+    `HardwareBackendUnavailable` when it cannot."""
+    if environment is OperationMode.VIRTUAL_HARDWARE:
+        from hardware import virtual_rig
+        from hardware.fake import FakeCh347Device
+
+        device = FakeCh347Device(
+            present_addresses={c.i2c_address for c in cfg.chips if c.i2c_address is not None}
+        )
+        device.open()
+        # A rig at rest is an empty layout with one train parked on it, not
+        # the raw register file. See `seed_startup_presence` — on an
+        # `active_low` detector chain an unwritten fake reads every block
+        # occupied, which is the one state a real rig can never be in.
+        try:
+            virtual_rig.seed_startup_presence(cfg, device)
+            virtual_rig.install_drive_swamp(cfg, device)
+        except Exception as exc:
+            raise HardwareBackendUnavailable(
+                f"failed to set up the virtual rig: {exc}"
+            ) from exc
+        return device
+    try:
+        from hardware.ch347_device import open_ch347_device
+    except ImportError as exc:
+        raise HardwareBackendUnavailable(
+            "real mode needs the hardware driver package (ch347api), which is "
+            "not available in this build"
+        ) from exc
+    try:
+        return open_ch347_device(cfg.controller.device_port)
+    except Exception as exc:
+        raise HardwareBackendUnavailable(
+            f"could not open {cfg.controller.kind} device: {exc}"
+        ) from exc
+
+
+def open_device_handle(
+    environment: Optional[OperationMode] = None,
+    cfg: Optional["HardwareConfig"] = None,
+    *,
+    on_refused: Optional[Callable[[str, str, Optional[str]], None]] = None,
+) -> Any:
+    """Open the session's device handle for `environment` (the selected one
+    when None), closing any handle already open first. Raises
+    `HardwareBackendUnavailable` when the device cannot be opened, and leaves
+    no handle open then."""
+    global _handle
+    from hardware.device_handle import SessionDeviceHandle
+
+    environment = (
+        operation_environment.get_selected()
+        if environment is None
+        else operation_environment.parse(environment)
+    )
+    cfg = cfg if cfg is not None else _config
+    close_device_handle()
+    device = _open_device(cfg, environment)
+    _handle = SessionDeviceHandle(device, environment, on_refused=on_refused)
+    return _handle
+
+
+def ensure_device_handle(
+    environment: Optional[OperationMode] = None,
+    cfg: Optional["HardwareConfig"] = None,
+    *,
+    on_refused: Optional[Callable[[str, str, Optional[str]], None]] = None,
+) -> Optional[Any]:
+    """The session's device handle for `environment`, opened again first when
+    it is not open or its controller was lost (design_v2.md "Setup tools", A
+    device that does not open: each request that needs the device first tries
+    to open the handle again). None when it still cannot be opened.
+
+    A handle open for another environment is closed and one is opened for
+    `environment`. `cfg` is the setup the caller is about to use: on Virtual
+    Hardware, every I²C chip it names answers on the in-memory rig.
     """
-    return _live_device
+    environment = (
+        operation_environment.get_selected()
+        if environment is None
+        else operation_environment.parse(environment)
+    )
+    handle = _handle
+    if handle is not None and handle.environment is not environment:
+        close_device_handle()
+        handle = None
+    if handle is None:
+        try:
+            handle = open_device_handle(environment, _config, on_refused=on_refused)
+        except HardwareBackendUnavailable:
+            return None
+    elif not handle.reopen():
+        return None
+    if on_refused is not None:
+        handle.on_refused = on_refused
+    _add_virtual_chips(handle, cfg)
+    return handle
+
+
+def _add_virtual_chips(handle: Any, cfg: Optional["HardwareConfig"]) -> None:
+    """On Virtual Hardware, make every I²C chip `cfg` names answer on the
+    in-memory rig, so a chip added to the setup after the handle opened can be
+    tested and activated."""
+    from hardware.fake import FakeCh347Device
+
+    if cfg is None or not isinstance(handle.device, FakeCh347Device):
+        return
+    handle.device.present |= {c.i2c_address for c in cfg.chips if c.i2c_address is not None}
+
+
+def close_device_handle() -> None:
+    """Close the session's device handle, if one is open. Nobody owns the
+    outputs afterwards. Callers drive the outputs safe first."""
+    global _handle, _activated_setup
+    handle = _handle
+    _handle = None
+    # The session those interfaces belonged to is over, so there is no longer a
+    # captured setup for an edit to be pending against.
+    _activated_setup = None
+    if handle is not None:
+        # Letting go is the point: a handle whose bridge has been unplugged may
+        # fail to close, and that must not become the exception the caller
+        # sees instead of the one that actually matters.
+        handle.close()
 
 
 def setup_awaits_activation() -> bool:
@@ -352,27 +480,6 @@ def note_activated_setup(cfg: Optional[HardwareConfig]) -> None:
     """Record the setup a session was just built from, or clear it with None."""
     global _activated_setup
     _activated_setup = None if cfg is None else _activation_captured(_persist_dict(cfg))
-
-
-def close_live_device() -> None:
-    """Release the current hardware-backed session device after outputs are safe."""
-    global _session_device, _live_device, _activated_setup
-    device = _live_device
-    _session_device = None
-    _live_device = None
-    # The session those interfaces belonged to is over, so there is no longer a
-    # captured setup for an edit to be pending against.
-    _activated_setup = None
-    if device is not None:
-        try:
-            device.close()
-        except Exception:
-            # Letting go is the point, and the globals above are already clear:
-            # a handle whose bridge has been unplugged may fail to close, and
-            # that must not become the exception the caller sees instead of the
-            # one that actually matters (`CommissionSession._close_locked`
-            # swallows its close for the same reason).
-            pass
 
 
 # ---------------------------------------------------------------------------
@@ -1485,11 +1592,10 @@ def reset_to_defaults() -> HardwareConfig:
     environment singleton as well so an isolated test starts in the default
     environment (Virtual Hardware).
     """
-    global _config, _session_device, _live_device, _activated_setup
+    global _config, _handle, _activated_setup
     _config = HardwareConfig()
-    _session_device = None
-    _live_device = None
-    # The device handles above are what a session was; dropping them without
+    _handle = None
+    # The device handle above is what a session was; dropping it without
     # dropping what it captured would leave an edit pending against a session
     # that no longer exists.
     _activated_setup = None
@@ -1547,13 +1653,18 @@ def build_session_interfaces(
     *,
     environment: Optional[OperationMode] = None,
     track_polarity_of: Optional[Callable[[str], bool]] = None,
+    on_refused: Optional[Callable[[str, str, Optional[str]], None]] = None,
 ) -> Tuple[Optional[Any], Optional[Any], Optional[Any]]:
     """Resolve the configuration to the session's interface overrides:
     `(input_interface, block_output_interface, switch_output_interface)`.
 
-    Virtual Hardware opens the in-memory device and Real Hardware opens the
-    physical controller. Completeness and the removal
-    of per-role fallback are enforced by the activation phase.
+    The interfaces are built on the session's device handle: the one already
+    open for `environment` (the in-memory device for Virtual Hardware, the
+    physical controller for Real Hardware), or a new one. The runtime owns the
+    outputs from the start of the build; a failed build gives them back and
+    leaves the handle open. `on_refused` reports a write the handle refuses.
+    Completeness and the removal of per-role fallback are enforced by the
+    activation phase.
 
     `track_polarity_of` answers a block's rail-binding `reversed` flag for the
     track driver — `track_polarity_reversed` above is the canonical lookup, and
@@ -1572,71 +1683,40 @@ def build_session_interfaces(
         if environment is None
         else operation_environment.parse(environment)
     )
-    global _session_device, _live_device
-    if environment is OperationMode.VIRTUAL_HARDWARE:
-        # Virtual Hardware: the same setup-aware stack on the in-memory device.
-        # No ch347api needed, and the loss-of-control watchdog stays unarmed —
-        # there is no physical track to protect, and a paused dev session must
-        # not have its outputs zeroed under it.
-        from hardware import virtual_rig
-        from hardware.fake import FakeCh347Device
-        from hardware.interfaces import build_real_interfaces
+    from hardware.device_handle import RUNTIME
+    from hardware.interfaces import build_real_interfaces
 
-        device = FakeCh347Device(
-            present_addresses={
-                c.i2c_address for c in cfg.chips if c.i2c_address is not None
-            }
-        )
-        device.open()
-        try:
-            interfaces = build_real_interfaces(
-                device,
-                cfg.chips,
-                _track_binding_tuples(cfg.block_track),
-                _binding_tuples(cfg.block_occupancy),
-                _switch_binding_tuples(cfg.switch_output),
-                block_occupancy_current=_current_binding_tuples(cfg.block_occupancy_current),
-                idle_deadband_v=cfg.idle_deadband_v,
-                current_sense_min_drive_v=cfg.current_sense_min_drive_v,
-                track_polarity_of=track_polarity_of,
-                switch_binding_of=switch_coil_ports,
-                watchdog_timeout_s=None,
-            )
-            # A rig at rest is an empty layout with one train parked on it, not
-            # the raw register file. See `seed_startup_presence` — on an
-            # `active_low` detector chain an unwritten fake reads every block
-            # occupied, which is the one state a real rig can never be in.
-            virtual_rig.seed_startup_presence(cfg, device)
-            virtual_rig.install_drive_swamp(cfg, device)
-        except Exception as exc:
-            raise HardwareBackendUnavailable(
-                f"failed to initialize fake hardware chips: {exc}"
-            ) from exc
-        _session_device = device
-        _live_device = device
-        note_activated_setup(cfg)
-        return interfaces
-
-    try:
-        from hardware.ch347_device import open_ch347_device
-        from hardware.interfaces import build_real_interfaces
+    # Activation uses the Setup handle when it was opened for this
+    # environment, and otherwise closes it and opens one (design_v2.md "Setup
+    # tools", Activation uses the Setup handle).
+    handle = ensure_device_handle(environment, cfg, on_refused=on_refused)
+    if handle is None:
+        # Open once more to raise the reason the device did not open.
+        handle = open_device_handle(environment, cfg, on_refused=on_refused)
+    watchdog_timeout_s: Optional[float] = None
+    if environment is OperationMode.REAL_HARDWARE:
+        # A real session drives real track; arm the loss-of-control watchdog
+        # (design_v2.md "Safe state, watchdog and hardware failure",
+        # Loss-of-control watchdog). Virtual Hardware leaves it unarmed: there
+        # is no physical track to protect, and a paused dev session must not
+        # have its outputs zeroed under it.
         from hardware.watchdog import DEFAULT_WATCHDOG_TIMEOUT_S
-    except ImportError as exc:
-        raise HardwareBackendUnavailable(
-            "real mode needs the hardware driver package (ch347api), which is "
-            "not available in this build"
-        ) from exc
 
-    try:
-        device = open_ch347_device(cfg.controller.device_port)
-    except Exception as exc:
-        raise HardwareBackendUnavailable(
-            f"could not open {cfg.controller.kind} device: {exc}"
-        ) from exc
+        watchdog_timeout_s = DEFAULT_WATCHDOG_TIMEOUT_S
 
+    # Activation gives the outputs to the runtime at step 4, when the
+    # interfaces are built: the chip setup below is the runtime's first write
+    # (design_v2.md "Hardware interface", When the owner changes). Step 2 has
+    # already closed any open Setup tool, so nobody else holds them.
+    handle.take(RUNTIME)
     try:
+        if environment is OperationMode.VIRTUAL_HARDWARE:
+            from hardware import virtual_rig
+
+            # The bindings may have changed since the in-memory rig was set up.
+            virtual_rig.install_drive_swamp(cfg, handle.device)
         interfaces = build_real_interfaces(
-            device,
+            handle.writer(RUNTIME),
             cfg.chips,
             _track_binding_tuples(cfg.block_track),
             _binding_tuples(cfg.block_occupancy),
@@ -1646,28 +1726,23 @@ def build_session_interfaces(
             current_sense_min_drive_v=cfg.current_sense_min_drive_v,
             track_polarity_of=track_polarity_of,
             switch_binding_of=switch_coil_ports,
-            # A real session drives real track; arm the loss-of-control watchdog
-            # (design_v2.md "Safe state, watchdog and hardware failure",
-            # Loss-of-control watchdog).
-            watchdog_timeout_s=DEFAULT_WATCHDOG_TIMEOUT_S,
+            watchdog_timeout_s=watchdog_timeout_s,
         )
     except Exception as exc:
-        try:
-            device.close()
-        except Exception:
-            pass
+        # An activation that fails at step 4 takes the outputs from the
+        # runtime (design_v2.md "Hardware interface", When the owner changes).
+        # The handle stays open, so Setup's tools can find the fault.
+        handle.give_back(RUNTIME)
         raise HardwareBackendUnavailable(
             f"failed to initialize hardware chips: {exc}"
         ) from exc
 
-    # The device holds a USB handle for the life of the session. It is closed
-    # only through `close_live_device`: by the next activation, by commissioning
-    # or the occupancy bench taking the rig, or at process exit by shutdown.py
-    # once the safe state has been written through it. No atexit hook is registered here -- atexit runs
-    # the newest hook first, so a close registered by an activation after boot
-    # would run before the shutdown safe state and leave every write refused.
-    # Publishing it as the live device is what lets the commissioning tests run
-    # against the rig instead of failing to open a second handle for it.
-    _live_device = device
+    # The handle stays open for the life of the session. It is closed only
+    # through `close_device_handle`: when the operator selects another
+    # environment in Setup, by an activation for another environment, or at
+    # process exit by shutdown.py once the safe state has been written through
+    # it. No atexit hook is registered here -- atexit runs the newest hook
+    # first, so a close registered by an activation after boot would run
+    # before the shutdown safe state and leave every write refused.
     note_activated_setup(cfg)
     return interfaces
