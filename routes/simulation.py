@@ -228,16 +228,24 @@ def register(app, state: AppState) -> None:
 
         import shutdown
 
-        # A restart is a way out of Live, so it enters the safe state
-        # (design_v2.md "Runtime loop", Leaving Live enters the safe state).
-        # Marking the environment inactive in the same lock means the loop runs
-        # no further pass, so nothing drives the outputs again before the
-        # process is replaced.
+        # A restart is a way out of Live, so it enters the safe state and
+        # takes the outputs from the runtime (design_v2.md "Runtime loop",
+        # Leaving Live enters the safe state; "Hardware interface", When the
+        # owner changes). `os.execv` runs no atexit hook, so an open Setup tool
+        # is closed here, through its own safe-state sequence, and a failed
+        # zeroing is reported as a hardware I/O failure. Deactivating the
+        # environment in the same lock means the loop runs no further pass, so
+        # nothing drives the outputs again before the process is replaced.
         sim = getattr(state, "sim_controller", None)
         if sim is not None:
+            from hardware.setup_tools import close_setup_tools, report_close_failures
+
             with state.simulation_lock:
+                report_close_failures(sim, close_setup_tools())
                 sim.enter_output_safe_state()
-                sim.environment_active = False
+                sim.deactivate_environment(
+                    [{"code": "restart", "message": "the server is restarting"}]
+                )
         try:
             with state.simulation_lock:
                 state.persistence_manager.save_merged_layout(

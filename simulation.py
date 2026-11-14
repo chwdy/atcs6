@@ -386,17 +386,29 @@ class SimulationController(SwitchOutputOwner):
         self.activation_issues = []
         self.environment_active = True
 
-    def finish_activation(self) -> None:
+    def finish_activation(self) -> bool:
         """The rest of a successful activation (design_v2.md "Operating
         environment and activation"): remove every train, throw every switch
         once to the position the layout shows, and clear `hardware_failure`,
         because the activation rebuilt every interface and the device answers
-        again."""
+        again.
+
+        Returns False when a throw could not be issued (step 6): the
+        activation failed, no environment is active, and `hardware_failure` is
+        set."""
         # Trains are not carried from one activation to the next; the runtime
         # step finds them again from the detectors (design_v2.md "Trains").
         self.train_runtime.clear()
         if self.switch_manager is not None:
             self.switch_manager.throw_all_to_layout()
+            unthrown = sorted(
+                switch_id
+                for switch_id, switch in self.network.switches.items()
+                if not switch.motor_unavailable and not switch.position_known
+            )
+            if unthrown:
+                self._fail_activation_on_throw(unthrown)
+                return False
         if self.hardware_failure:
             self.hardware_failure = False
             self.notification_center.emit(
@@ -406,6 +418,34 @@ class SimulationController(SwitchOutputOwner):
                 message="hardware failure cleared by a successful activation",
                 event_time=time.time(),
             )
+        return True
+
+    def _fail_activation_on_throw(self, switch_ids: List[str]) -> None:
+        """A throw at activation step 6 could not be issued: a hardware I/O
+        failure, so the activation fails and leaves no environment active
+        (design_v2.md "Operating environment and activation", A refused or
+        failed activation leaves no environment active).
+
+        `SwitchPowerController` reported it to `enter_hardware_failure(...)`
+        already. When the latch was set before this activation began (an
+        activation out of Halted for `hardware_failure`), that report changed
+        nothing, so the failure path runs here: the safe state, no environment
+        active, the runtime gives up the outputs, and the latch stays set."""
+        if not self.environment_active:
+            return              # the throw's own report already ran the path
+        self.hardware_failure = False
+        self.enter_hardware_failure(
+            HardwareFailure(
+                component="switch_output",
+                operation="throw_all_to_layout",
+                resource_id=switch_ids[0],
+                message=(
+                    "activation could not throw "
+                    + ", ".join(switch_ids)
+                    + " to the layout"
+                ),
+            )
+        )
 
     def release_interfaces(self) -> None:
         """Drop the hardware boundary once its device handle is released.

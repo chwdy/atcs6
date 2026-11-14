@@ -56,6 +56,7 @@ import hardware_config
 import operation_environment
 from enums import OperationMode
 from hardware import device_handle as owners
+from hardware.setup_tools import SetupToolWriteFailed
 from runtime_payloads import HardwareFailure
 
 # The plain words the page shows for the two refusals the device handle adds
@@ -120,6 +121,22 @@ def register(app, state: AppState) -> None:
             f"Another tool is using the outputs ({owners.writer_label(exc.owner)}) "
             "— close it first",
         )
+
+    def _tool_write_failed(exc, *, locked):
+        """An open tool's own write failed: the tool has closed itself, and the
+        failure is reported as a hardware I/O failure (design_v2.md "Hardware
+        interface", A failure the tool did not cause leaves it open; "Safe
+        state, watchdog and hardware failure", Hardware I/O failure is fatal to
+        the session). `locked` says whether the caller already holds
+        `simulation_lock`."""
+        from hardware.setup_tools import report_tool_write_failure
+
+        if locked:
+            report_tool_write_failure(state.sim_controller, exc)
+        else:
+            with state.simulation_lock:
+                report_tool_write_failure(state.sim_controller, exc)
+        return jsonify({"ok": False, "error": str(exc), "tool_closed": True})
 
     def _report_refused_write(writer, output, owner):
         state.sim_controller.report_output_not_owned(writer, output, owner)
@@ -631,6 +648,8 @@ def register(app, state: AppState) -> None:
                             data.get("pulse_s"), default=SWITCH_THROW_PULSE_S
                         ),
                     )
+                except SetupToolWriteFailed as exc:
+                    return _tool_write_failed(exc, locked=True)
                 except Exception as exc:
                     return jsonify({"ok": False, "error": str(exc)})
 
@@ -813,6 +832,8 @@ def register(app, state: AppState) -> None:
                     percent=data.get("percent"),
                     flipped=data.get("flipped"),
                 )
+            except SetupToolWriteFailed as exc:
+                return _tool_write_failed(exc, locked=True)
             except Exception as exc:  # noqa: BLE001 - reported to the panel
                 return jsonify({"ok": False, "error": str(exc)}), 200
         return jsonify({"ok": True, **status})
@@ -844,6 +865,8 @@ def register(app, state: AppState) -> None:
                 result = session.check_block(block_id)
             except BlockCheckRefused as exc:
                 return jsonify({"ok": False, "error": str(exc)}), 400
+            except SetupToolWriteFailed as exc:
+                return _tool_write_failed(exc, locked=True)
             except Exception as exc:  # noqa: BLE001 - reported to the panel
                 return jsonify({"ok": False, "error": str(exc)}), 200
         return jsonify({"ok": True, **result})
@@ -951,6 +974,8 @@ def register(app, state: AppState) -> None:
                 commission.get_session().set_output(
                     data.get("chip_id"), int(data.get("port")), float(data.get("duty", 1.0))
                 )
+        except SetupToolWriteFailed as exc:
+            return _tool_write_failed(exc, locked=False)
         except Exception as exc:
             return jsonify({"ok": False, "error": str(exc)})
         return jsonify({"ok": True})
@@ -989,6 +1014,8 @@ def register(app, state: AppState) -> None:
                         data.get("pulse_s"), default=SWITCH_THROW_PULSE_S
                     ),
                 )
+        except SetupToolWriteFailed as exc:
+            return _tool_write_failed(exc, locked=False)
         except Exception as exc:
             return jsonify({"ok": False, "error": str(exc)})
         return jsonify({"ok": True})
@@ -1652,8 +1679,21 @@ def register(app, state: AppState) -> None:
                     "error": "the session is live; enter Setup or stop it before activating",
                 }), 409
             blocked = _activate_locked(selected)
+            if blocked is None and not state.sim_controller.finish_activation():
+                # A throw at step 6 could not be issued: the activation failed
+                # and leaves no environment active (design_v2.md "Operating
+                # environment and activation", A refused or failed activation
+                # leaves no environment active).
+                blocked = {
+                    "status": "blocked",
+                    "ready": False,
+                    "environment": selected.value,
+                    "issues": [{
+                        "code": "switch_throw_failed",
+                        "message": "a switch could not be thrown to the layout",
+                    }],
+                }
             if blocked is None:
-                state.sim_controller.finish_activation()
                 state.setup_active = False
         if blocked is not None:
             return jsonify(blocked), 409

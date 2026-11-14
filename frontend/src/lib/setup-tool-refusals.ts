@@ -11,10 +11,13 @@ const REFUSALS: Record<string, string> = {
 };
 
 /** The message to show for a refusal reply, or null when `body` carries no
- *  reason this module knows. */
+ *  reason this module knows. An `outputs_owned` reply keeps the server's own
+ *  text when it has one, because that text names the tool holding the
+ *  outputs; otherwise the plain text below is shown. */
 export function setupToolRefusalMessage(body: unknown): string | null {
   if (!body || typeof body !== 'object') return null;
-  const reason = (body as { reason?: unknown }).reason;
+  const { reason, error } = body as { reason?: unknown; error?: unknown };
   if (typeof reason !== 'string') return null;
+  if (reason === 'outputs_owned' && typeof error === 'string' && error) return error;
   return REFUSALS[reason] ?? null;
 }

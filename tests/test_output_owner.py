@@ -214,6 +214,122 @@ def test_a_refused_throw_pulses_no_coil_and_lowers_nothing():
     assert len(refusals) == 1          # the first write only; nothing to lower
 
 
+def _lose_the_outputs_after(handle, latches):
+    """Make the owner change once `latches` shift-outs have landed, so a later
+    write of the same pulse is refused."""
+    device = handle.device
+    real = device.latch_out
+    count = {"n": 0}
+
+    def latch_out(data, select):
+        real(data, select)
+        count["n"] += 1
+        if count["n"] == latches:
+            handle._owner = owners.COMMISSIONING_SESSION
+
+    device.latch_out = latch_out
+
+
+def test_a_throw_refused_after_its_first_write_still_lowers_every_bit():
+    """Once a pulse's on-write landed, its off-writes are a move to the safe
+    state and are never refused (design_v2.md "Hardware interface", The safe
+    state is accepted from anyone)."""
+    refusals = []
+    handle, device = _handle(refusals)
+    handle.take(owners.RUNTIME)
+    _inp, _track, switch = build_real_interfaces(
+        handle.writer(owners.RUNTIME), [SW], {}, {}, {"S1": ("sw1", 0, 1, 2)},
+    )
+    _lose_the_outputs_after(handle, 1)          # standby high lands, then refused
+
+    with pytest.raises(OutputNotOwned):
+        switch.set_throw("S1", 1)
+
+    assert device.latched_bit("cs0", 2) is False   # standby
+    assert device.latched_bit("cs0", 1) is False   # coil
+    assert len(refusals) == 1
+
+
+def test_a_commissioning_pulse_lowers_the_coil_when_lowering_standby_fails():
+    from hardware.commission import CommissionSession
+    from hardware.setup_tools import SetupToolWriteFailed
+    import hardware.commission as commission_mod
+
+    handle, device = _handle()
+    cfg = hardware_config.HardwareConfig(chips=[SW])
+    session = CommissionSession()
+    session.open(cfg, handle)
+    real = device.latch_out
+    calls = {"n": 0}
+
+    def latch_out(data, select):
+        calls["n"] += 1
+        if calls["n"] == 3:                     # standby low
+            raise OSError("bus error")
+        real(data, select)
+
+    device.latch_out = latch_out
+    sleep = commission_mod.sleep_holding
+    commission_mod.sleep_holding = lambda chip, secs: None
+    try:
+        with pytest.raises(SetupToolWriteFailed):
+            session.pulse_output("sw1", 1, standby_port=2, pulse_s=0.0)
+    finally:
+        commission_mod.sleep_holding = sleep
+
+    assert device.latched_bit("cs0", 1) is False   # the coil still went low
+    assert session.is_open() is False               # its own write failed: it ended
+    assert handle.owner is None
+
+
+def test_reopening_the_commissioning_session_zeroes_the_chips_it_drops():
+    """Open with one setup, drive a channel, reopen with a setup that lacks
+    that chip: the dropped chip is zeroed first, and the session keeps the
+    outputs across the rebuild."""
+    from hardware.commission import CommissionSession
+
+    handle, device = _handle()
+    session = CommissionSession()
+    session.open(hardware_config.HardwareConfig(chips=[PWM]), handle)
+    session.set_output("pwm1", 4, 0.5)
+    assert device.duty_cycle(0x40, 4) > 0
+
+    session.open(hardware_config.HardwareConfig(chips=[SW]), handle)
+
+    assert device.duty_cycle(0x40, 4) == 0.0
+    assert handle.owner == owners.COMMISSIONING_SESSION
+    session.close()
+
+
+def test_a_failed_throw_at_activation_fails_it_when_the_latch_was_already_set():
+    """Activating out of Halted for `hardware_failure`: a throw at step 6 that
+    cannot be issued fails the activation (design_v2.md "Operating environment
+    and activation", A refused or failed activation leaves no environment
+    active): the safe state, no environment active, the runtime gives up the
+    outputs, and the latch stays set."""
+    from network import RailwayNetwork
+    from simulation import SimulationController
+    from switch import Switch
+
+    handle, device = _handle()
+    hardware_config._handle = handle
+    network = RailwayNetwork()
+    network.switches["S1"] = Switch(switch_id="S1", x=0, y=0)
+    sim = SimulationController(network)
+    sim.hardware_failure = True                  # Halted for hardware_failure
+    handle.take(owners.RUNTIME)
+    sim.activate_interfaces(OperationMode.VIRTUAL_HARDWARE, *_runtime_interfaces(handle))
+    device.set_fault("shift_write_error")
+
+    assert sim.finish_activation() is False
+
+    assert sim.environment_active is False
+    assert sim.hardware_failure is True
+    assert handle.owner is None
+    failure = sim.notification_center.latest_by_operation("enter_hardware_failure")
+    assert failure is not None and failure.payload["component"] == "switch_output"
+
+
 # --- through the runtime -----------------------------------------------------
 
 
@@ -416,3 +532,95 @@ def test_activation_gives_the_outputs_to_the_runtime_and_setup_takes_them_back(c
     assert test_client.post("/api/operation/setup").status_code == 200
     assert hardware_config.get_device_handle() is handle
     assert handle.owner is None
+
+
+# --- a failure of a tool's own write ends the tool ---------------------------
+
+
+def test_a_failed_commissioning_write_ends_the_session_as_a_hardware_failure(client):
+    """design_v2.md "Hardware interface", A failure the tool did not cause
+    leaves it open: a failure of the tool's own write ends the tool, and it is
+    a hardware I/O failure."""
+    from hardware import commission
+
+    test_client, state = client
+    assert test_client.post("/api/operation/setup").status_code == 200
+    assert test_client.post(
+        "/api/hardware/commission/open", json={"config": _payload()}
+    ).get_json()["ok"] is True
+    hardware_config.get_live_device().set_fault("shift_write_error")
+
+    body = test_client.post(
+        "/api/hardware/commission/output", json={"chip_id": "sw1", "port": 3, "duty": 1.0}
+    ).get_json()
+
+    assert body["ok"] is False and body["tool_closed"] is True
+    assert commission.get_session().is_open() is False
+    assert hardware_config.get_device_handle().owner is None
+    assert state.sim_controller.hardware_failure is True
+    assert state.session_state().value.value == "setup"
+
+
+def test_a_failed_bench_drive_ends_the_bench(client):
+    from hardware import occupancy_bench
+
+    test_client, state = client
+    assert test_client.post("/api/operation/setup").status_code == 200
+    assert test_client.post("/api/hardware/bench/open").get_json()["ok"] is True
+    hardware_config.get_live_device().set_fault("i2c_write_error")
+
+    body = test_client.post(
+        "/api/hardware/bench/drive", json={"running": True, "percent": 40}
+    ).get_json()
+
+    assert body["ok"] is False and body["tool_closed"] is True
+    assert occupancy_bench.get_session().is_open() is False
+    assert state.sim_controller.hardware_failure is True
+
+
+def test_a_failed_read_leaves_the_commissioning_session_open(client):
+    from hardware import commission
+
+    test_client, state = client
+    assert test_client.post("/api/operation/setup").status_code == 200
+    assert test_client.post(
+        "/api/hardware/commission/open", json={"config": _payload()}
+    ).get_json()["ok"] is True
+    hardware_config.get_live_device().set_fault("shift_read_error")
+
+    body = test_client.post("/api/hardware/commission/inputs", json={"chip_id": "in1"}).get_json()
+
+    assert body["ok"] is False
+    assert commission.get_session().is_open() is True
+    assert hardware_config.get_device_handle().owner == owners.COMMISSIONING_SESSION
+
+
+def test_a_restart_closes_an_open_setup_tool_before_the_exec(client, monkeypatch):
+    """`os.execv` runs no atexit hook, so the restart closes the tool itself."""
+    from hardware import occupancy_bench
+
+    test_client, state = client
+    scheduled = []
+
+    class _NoTimer:
+        def __init__(self, delay, fn):
+            scheduled.append(fn)
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(threading, "Timer", _NoTimer)
+    monkeypatch.setattr(
+        state.persistence_manager, "save_merged_layout", lambda *a, **k: None
+    )
+    assert test_client.post("/api/operation/setup").status_code == 200
+    assert test_client.post("/api/hardware/bench/open").get_json()["ok"] is True
+    hardware_config.get_live_device()
+    test_client.post("/api/hardware/bench/drive", json={"running": True, "percent": 40})
+
+    assert test_client.post("/api/server/restart").status_code == 200
+
+    assert scheduled, "the exec was scheduled"
+    assert occupancy_bench.get_session().is_open() is False
+    assert hardware_config.get_device_handle().owner is None
+    assert hardware_config.get_live_device().duty_cycle(0x40, 0) == 0.0

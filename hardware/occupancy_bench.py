@@ -435,7 +435,11 @@ class OccupancyBenchSession:
             self._running = bool(running)
             if (self._running, self._percent, frozenset(self._flipped)) != before:
                 self._reset_peaks_locked()
-            self._apply_drive_locked()
+            try:
+                self._apply_drive_locked()
+            except Exception as exc:
+                self._end_on_write_failure_locked(exc)
+                raise
             self._touch()
             return self.status()
 
@@ -512,8 +516,19 @@ class OccupancyBenchSession:
             if self._running:
                 self._running = False
                 self._reset_peaks_locked()
+
+            def drive(bid: str, volts: float) -> None:
+                # The check's own writes. A failed one ends the bench; a failed
+                # read does not (design_v2.md "Hardware interface", A failure
+                # the tool did not cause leaves it open).
+                try:
+                    self._track.set_voltage(bid, volts)
+                except Exception as exc:
+                    self._end_on_write_failure_locked(exc)
+                    raise
+
             for bid in self._block_ids:
-                self._track.set_voltage(bid, 0.0)
+                drive(bid, 0.0)
 
             rest: List[Dict[str, Any]] = []
             for i in range(max(1, rest_reads)):
@@ -524,7 +539,7 @@ class OccupancyBenchSession:
             volts = float(self._current_sense_min_drive_v)
             pulse: List[Dict[str, Any]] = []
             try:
-                self._track.set_voltage(block_id, volts)
+                drive(block_id, volts)
                 deadline = clock() + max(0.0, pulse_s)
                 while True:
                     pulse.append(self._occupancy.read_all_sources())
@@ -532,7 +547,8 @@ class OccupancyBenchSession:
                         break
                     sleep(CHECK_READ_GAP_S)
             finally:
-                self._track.set_voltage(block_id, 0.0)
+                if self._track is not None:      # still open: drive it back to 0 V
+                    drive(block_id, 0.0)
             self._touch()
             return summarize_block_check(block_id, volts, rest, pulse)
 
@@ -625,6 +641,18 @@ class OccupancyBenchSession:
         failures = self._unreported_close_failures
         self._unreported_close_failures = []
         return failures
+
+    def _end_on_write_failure_locked(self, exc: BaseException) -> None:
+        """A failure of the bench's own write ends it (design_v2.md "Hardware
+        interface", A failure the tool did not cause leaves it open): close it
+        through its own safe-state sequence and raise `SetupToolWriteFailed`
+        for the caller to report. Any other exception leaves the bench open."""
+        from hardware.setup_tools import SetupToolWriteFailed, is_write_failure
+
+        if not is_write_failure(exc):
+            return
+        close_failures = self._close_locked()
+        raise SetupToolWriteFailed("the occupancy bench", exc, close_failures) from exc
 
     def _close_locked(self) -> List[str]:
         if self._device is None:

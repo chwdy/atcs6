@@ -4,10 +4,15 @@ import { setupToolRefusalMessage } from './setup-tool-refusals';
 
 describe('setupToolRefusalMessage', () => {
   it('names the two device-handle refusals plainly', () => {
-    expect(setupToolRefusalMessage({ reason: 'outputs_owned', error: 'x' })).toBe(
+    expect(setupToolRefusalMessage({ reason: 'outputs_owned' })).toBe(
       'Another tool is using the outputs — close it first',
     );
     expect(setupToolRefusalMessage({ reason: 'no_device' })).toBe('No controller connected');
+  });
+
+  it('keeps the server text that names the tool holding the outputs', () => {
+    const error = 'Another tool is using the outputs (the occupancy bench) — close it first';
+    expect(setupToolRefusalMessage({ reason: 'outputs_owned', error })).toBe(error);
   });
 
   it('leaves any other reply to its own error text', () => {

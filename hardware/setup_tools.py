@@ -13,6 +13,62 @@ from __future__ import annotations
 from typing import Any, List, Optional
 
 
+# The errors a failed device write raises: the transport's own (`OSError`,
+# `ConnectionError`, a chip's no-ACK `IOError`) and a lost or closed bridge
+# (`RuntimeError`, e.g. `Ch347LinkLost`). A write the device handle refuses is
+# not among them (`OutputNotOwned`, checked first): it reached no chip.
+WRITE_FAILURES = (OSError, RuntimeError)
+
+
+class SetupToolWriteFailed(RuntimeError):
+    """An open Setup tool's own write failed, so the tool ended (design_v2.md
+    "Hardware interface", A failure the tool did not cause leaves it open: a
+    failure of the tool's own write ends the tool). By the time this is raised
+    the tool has completed its own safe-state sequence and given the outputs
+    back. `close_failures` lists the zeroing writes of that close that failed.
+    The caller reports the failure through `report_tool_write_failure(...)`.
+    """
+
+    def __init__(self, tool: str, cause: BaseException, close_failures: List[str]) -> None:
+        self.tool = tool
+        self.cause = cause
+        self.close_failures = list(close_failures)
+        super().__init__(f"{tool}: output write failed, so the tool closed: {cause}")
+
+
+def is_write_failure(exc: BaseException) -> bool:
+    """Whether `exc` from a tool's own write is a failed write that ends the
+    tool, rather than a write the device handle refused."""
+    from hardware.device_handle import OutputNotOwned
+
+    return isinstance(exc, WRITE_FAILURES) and not isinstance(exc, OutputNotOwned)
+
+
+def report_tool_write_failure(sim_controller: Optional[Any], exc: SetupToolWriteFailed) -> None:
+    """Report an open tool's failed write as a hardware I/O failure
+    (design_v2.md "Safe state, watchdog and hardware failure", Hardware I/O
+    failure is fatal to the session: a failed output write). The caller holds
+    `AppState.simulation_lock`."""
+    if sim_controller is None:
+        return
+    from runtime_payloads import HardwareFailure
+
+    message = f"{exc.tool} output write failed: {exc.cause}"
+    if exc.close_failures:
+        message += (
+            "; could not zero every output while closing it: "
+            + "; ".join(exc.close_failures)
+        )
+    sim_controller.enter_hardware_failure(
+        HardwareFailure(
+            component="setup_tool",
+            operation="write",
+            resource_id=None,
+            message=message,
+        )
+    )
+
+
 def close_setup_tools() -> List[str]:
     """Close the commissioning session and the occupancy bench, if open.
 

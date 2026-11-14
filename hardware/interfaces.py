@@ -14,6 +14,7 @@ leaves everything here unchanged.
 
 import logging
 import time
+from contextlib import nullcontext
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
@@ -184,6 +185,16 @@ def _auto_release_reporter(chip_id: str) -> Callable[[int], None]:
         )
 
     return report
+
+
+def safe_state_writes(chip: Any) -> Any:
+    """A context that lets `chip`'s writes through the session's device handle
+    whoever owns the outputs, for a write that only drives an output to its
+    safe state (design_v2.md "Hardware interface", The safe state is accepted
+    from anyone). A chip on a plain device has no owner check, so it needs
+    nothing."""
+    accept = getattr(getattr(chip, "device", None), "safe_state_writes", None)
+    return accept() if callable(accept) else nullcontext()
 
 
 def build_chip(device: Any, spec: Any) -> Any:
@@ -456,19 +467,24 @@ class SwitchDriver(SwitchOutput):
         coil = port_main if state == 0 else port_diverge
         other_coil = port_diverge if state == 0 else port_main
         first = port_standby if port_standby is not None else coil
+        landed = False
         try:
             chip.set_output(first, True)
+            landed = True
             if port_standby is not None:
                 chip.set_output(coil, True)
             chip.set_output(other_coil, False)
             time.sleep(self._pulse_s)
-        except OutputNotOwned as refused:
-            # The device handle refuses every write of a writer that does not
-            # own the outputs, so the first write was refused and nothing was
-            # driven: there is nothing to lower, and lowering would only be
-            # refused again (design_v2.md "Hardware interface", A refused write
-            # changes nothing).
-            raise refused
+        except OutputNotOwned:
+            # A refused first write drove nothing, so there is nothing to lower
+            # (design_v2.md "Hardware interface", A refused write changes
+            # nothing). When a later write is refused, the first one already
+            # raised a bit: dropping it is a move to the safe state, which is
+            # accepted from anyone, so the lowering runs as one.
+            if landed:
+                with safe_state_writes(chip):
+                    self._lower(chip, coil, port_standby)
+            raise
         except BaseException:
             self._lower(chip, coil, port_standby)
             raise

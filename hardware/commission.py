@@ -21,8 +21,8 @@ from typing import Any, Callable, Dict, List, Optional
 from constants import COMMISSION_MAX_SESSION_SECONDS
 from hardware.catalog import MAX_COIL_PULSE_S, SWITCH_THROW_PULSE_S
 from hardware.chips.hc595 import sleep_holding
-from hardware.device_handle import COMMISSIONING_SESSION
-from hardware.interfaces import build_chip
+from hardware.device_handle import COMMISSIONING_SESSION, OutputNotOwned
+from hardware.interfaces import SwitchDriver, build_chip, safe_state_writes
 
 # Reclaim a session left open by an abandoned client after this long idle. This
 # is the default window; `open(timeout_seconds=...)` overrides it per session,
@@ -95,6 +95,14 @@ class CommissionSession:
             new_timeout = self._validate_timeout(timeout_seconds)
             self._expire_locked()
             handle.take(COMMISSIONING_SESSION)
+            if self._device is not None:
+                # Reopening while open: the chips about to be dropped may still
+                # be driving, and a chip the new setup lacks would never be
+                # zeroed by a later close. Zero every one first; the session
+                # keeps the outputs across the rebuild. A failed zeroing is a
+                # hardware I/O failure, kept for the next caller that can
+                # report it.
+                self._unreported_close_failures.extend(self._zero_chips_locked())
             self._timeout_s = new_timeout
             self._handle = handle
             self._device = handle.writer(COMMISSIONING_SESSION)
@@ -188,21 +196,25 @@ class CommissionSession:
                     f"port {line} on chip {chip_id!r} drives a switch coil and "
                     f"cannot be held on — pulse it instead"
                 )
-            if self._kinds.get(chip_id) == "pca9685":
-                if chip_id not in self._configured:
-                    chip.configure()
-                    self._configured.add(chip_id)
-                level = max(0.0, min(1.0, float(duty)))
-                previous = self._driven.get(chip_id)
-                if previous is not None and previous != line:
-                    chip.set_duty_cycle(previous, 0.0)
-                chip.set_duty_cycle(line, level)
-                if level > 0.0:
-                    self._driven[chip_id] = line
+            try:
+                if self._kinds.get(chip_id) == "pca9685":
+                    if chip_id not in self._configured:
+                        chip.configure()
+                        self._configured.add(chip_id)
+                    level = max(0.0, min(1.0, float(duty)))
+                    previous = self._driven.get(chip_id)
+                    if previous is not None and previous != line:
+                        chip.set_duty_cycle(previous, 0.0)
+                    chip.set_duty_cycle(line, level)
+                    if level > 0.0:
+                        self._driven[chip_id] = line
+                    else:
+                        self._driven.pop(chip_id, None)
                 else:
-                    self._driven.pop(chip_id, None)
-            else:
-                chip.set_output(line, float(duty) > 0.0)
+                    chip.set_output(line, float(duty) > 0.0)
+            except Exception as exc:
+                self._end_on_write_failure_locked(exc)
+                raise
             self._touch()
 
     def pulse_output(
@@ -245,17 +257,32 @@ class CommissionSession:
                 raise KeyError(f"chip {chip_id!r} not in session")
             if not hasattr(chip, "set_output"):
                 raise KeyError(f"chip {chip_id!r} is not a shift-out chip")
+            first = standby_port if standby_port is not None else port
+            landed = False
             try:
-                if standby_port is not None:
-                    chip.set_output(standby_port, True)
-                chip.set_output(port, True)
-                if off_port is not None:
-                    chip.set_output(off_port, False)
-                sleep_holding(chip, pulse_s)
-            finally:
-                if standby_port is not None:
-                    chip.set_output(standby_port, False)
-                chip.set_output(port, False)
+                try:
+                    chip.set_output(first, True)
+                    landed = True
+                    if standby_port is not None:
+                        chip.set_output(port, True)
+                    if off_port is not None:
+                        chip.set_output(off_port, False)
+                    sleep_holding(chip, pulse_s)
+                except OutputNotOwned:
+                    # As `SwitchDriver.set_throw`: a refused first write drove
+                    # nothing; after a landed one, lowering is a move to the
+                    # safe state and is accepted from anyone.
+                    if landed:
+                        with safe_state_writes(chip):
+                            SwitchDriver._lower(chip, port, standby_port)
+                    raise
+                except BaseException:
+                    SwitchDriver._lower(chip, port, standby_port)
+                    raise
+                SwitchDriver._lower(chip, port, standby_port)
+            except Exception as exc:
+                self._end_on_write_failure_locked(exc)
+                raise
             self._touch()
 
     def read_inputs(self, chip_id: str) -> List[bool]:
@@ -384,6 +411,32 @@ class CommissionSession:
         self._unreported_close_failures = []
         return failures
 
+    def _end_on_write_failure_locked(self, exc: BaseException) -> None:
+        """A failure of this session's own write ends it (design_v2.md
+        "Hardware interface", A failure the tool did not cause leaves it open):
+        close it through its own safe-state sequence and raise
+        `SetupToolWriteFailed` for the caller to report. Any other exception
+        (a refused write, a bad request) leaves the session open."""
+        from hardware.setup_tools import SetupToolWriteFailed, is_write_failure
+
+        if not is_write_failure(exc):
+            return
+        close_failures = self._close_locked()
+        raise SetupToolWriteFailed("the commissioning session", exc, close_failures) from exc
+
+    def _zero_chips_locked(self) -> List[str]:
+        """Write `0` to every output of every chip this session built; returns
+        one message per chip that failed."""
+        errors: List[str] = []
+        for chip_id, chip in self._chips.items():
+            if not hasattr(chip, "all_off"):
+                continue
+            try:
+                chip.all_off()
+            except Exception as exc:  # noqa: BLE001 - zero the remaining chips
+                errors.append(f"{chip_id}: {exc}")
+        return errors
+
     def _close_locked(self) -> List[str]:
         if self._device is None:
             return []
@@ -395,14 +448,7 @@ class CommissionSession:
         # Every chip is attempted even when one fails; the failures go back to
         # the caller, which reports them as a hardware I/O failure. The handle
         # stays open for the next tool and for activation.
-        errors: List[str] = []
-        for chip_id, chip in self._chips.items():
-            if not hasattr(chip, "all_off"):
-                continue
-            try:
-                chip.all_off()
-            except Exception as exc:  # noqa: BLE001 - zero the remaining chips
-                errors.append(f"{chip_id}: {exc}")
+        errors = self._zero_chips_locked()
         # The close is complete: the outputs go back to nobody (design_v2.md
         # "Hardware interface", When the owner changes).
         if self._handle is not None:
