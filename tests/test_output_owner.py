@@ -590,9 +590,123 @@ def test_a_failed_read_leaves_the_commissioning_session_open(client):
 
     body = test_client.post("/api/hardware/commission/inputs", json={"chip_id": "in1"}).get_json()
 
-    assert body["ok"] is False
+    # design_v2.md "Safe state, watchdog and hardware failure", Hardware I/O
+    # failure is fatal to the session: a failed detector read latches the
+    # hardware failure, in Setup too. The session did not cause it, so it
+    # stays open and stays the owner.
+    assert body["ok"] is False and body["hardware_failure"] is True
+    assert state.sim_controller.hardware_failure is True
     assert commission.get_session().is_open() is True
     assert hardware_config.get_device_handle().owner == owners.COMMISSIONING_SESSION
+
+
+def test_a_failed_current_read_in_the_commissioning_session_is_a_hardware_failure(client):
+    from hardware import commission
+
+    test_client, state = client
+    assert test_client.post("/api/operation/setup").status_code == 200
+    assert test_client.post(
+        "/api/hardware/commission/open", json={"config": _payload()}
+    ).get_json()["ok"] is True
+    hardware_config.get_live_device().set_fault("i2c_read_error")
+
+    body = test_client.post("/api/hardware/commission/currents", json={"chip_id": "cur1"}).get_json()
+
+    assert body["ok"] is False and body["hardware_failure"] is True
+    assert state.sim_controller.hardware_failure is True
+    assert commission.get_session().is_open() is True
+
+
+def test_a_bad_commissioning_request_is_not_a_hardware_failure(client):
+    test_client, state = client
+    assert test_client.post("/api/operation/setup").status_code == 200
+    assert test_client.post(
+        "/api/hardware/commission/open", json={"config": _payload()}
+    ).get_json()["ok"] is True
+
+    body = test_client.post("/api/hardware/commission/inputs", json={"chip_id": "nope"}).get_json()
+
+    assert body["ok"] is False and "hardware_failure" not in body
+    assert state.sim_controller.hardware_failure is False
+
+
+def test_a_failed_bench_read_zeroes_the_rails_and_leaves_the_bench_open(client):
+    """design_v2.md "Hardware interface", A failure the tool did not cause
+    leaves it open: the safe state is driven, the bench stays open and the
+    owner, and its recorded drive is left as it was."""
+    from hardware import occupancy_bench
+
+    test_client, state = client
+    assert test_client.post("/api/operation/setup").status_code == 200
+    assert test_client.post("/api/hardware/bench/open").get_json()["ok"] is True
+    assert test_client.post(
+        "/api/hardware/bench/drive", json={"running": True, "percent": 40}
+    ).get_json()["ok"] is True
+    device = hardware_config.get_live_device()
+    assert device.duty_cycle(0x40, 0) > 0.0
+    device.set_fault("shift_read_error")
+
+    body = test_client.get("/api/hardware/bench/state").get_json()
+
+    assert body["ok"] is False and body["hardware_failure"] is True
+    assert state.sim_controller.hardware_failure is True
+    assert device.duty_cycle(0x40, 0) == 0.0
+    session = occupancy_bench.get_session()
+    assert session.is_open() is True
+    assert session.status()["running"] is True
+    assert hardware_config.get_device_handle().owner == owners.OCCUPANCY_BENCH
+
+
+def test_a_failed_read_during_a_block_check_is_a_hardware_failure(client):
+    from hardware import occupancy_bench
+
+    test_client, state = client
+    assert test_client.post("/api/operation/setup").status_code == 200
+    assert test_client.post("/api/hardware/bench/open").get_json()["ok"] is True
+    hardware_config.get_live_device().set_fault("shift_read_error")
+
+    body = test_client.post(
+        "/api/hardware/bench/check-block", json={"block_id": "B1"}
+    ).get_json()
+
+    assert body["ok"] is False and body["hardware_failure"] is True
+    assert state.sim_controller.hardware_failure is True
+    assert hardware_config.get_live_device().duty_cycle(0x40, 0) == 0.0
+    assert occupancy_bench.get_session().is_open() is True
+
+
+def test_a_failure_after_the_latch_still_zeroes_a_bench_driven_again(client):
+    test_client, state = client
+    assert test_client.post("/api/operation/setup").status_code == 200
+    assert test_client.post("/api/hardware/bench/open").get_json()["ok"] is True
+    device = hardware_config.get_live_device()
+    device.set_fault("shift_read_error")
+    test_client.get("/api/hardware/bench/state")
+    assert state.sim_controller.hardware_failure is True
+    device.clear_faults()
+    assert test_client.post(
+        "/api/hardware/bench/drive", json={"running": True, "percent": 40}
+    ).get_json()["ok"] is True
+    assert device.duty_cycle(0x40, 0) > 0.0
+    device.set_fault("shift_read_error")
+
+    test_client.get("/api/hardware/bench/state")
+
+    assert device.duty_cycle(0x40, 0) == 0.0
+
+
+def test_a_failed_read_in_the_block_occupancy_test_is_a_hardware_failure(client):
+    test_client, state = client
+    assert test_client.post("/api/operation/setup").status_code == 200
+    hardware_config.get_live_device().set_fault("shift_read_error")
+
+    body = test_client.post(
+        "/api/hardware/occupancy-test", json={"config": _payload(), "block_id": "B1"}
+    ).get_json()
+
+    assert body["hardware_failure"] is True
+    assert body["digital"]["error"]
+    assert state.sim_controller.hardware_failure is True
 
 
 def test_a_restart_closes_an_open_setup_tool_before_the_exec(client, monkeypatch):

@@ -56,7 +56,7 @@ import hardware_config
 import operation_environment
 from enums import OperationMode
 from hardware import device_handle as owners
-from hardware.setup_tools import SetupToolWriteFailed
+from hardware.setup_tools import SetupToolReadFailed, SetupToolWriteFailed
 from runtime_payloads import HardwareFailure
 
 # The plain words the page shows for the two refusals the device handle adds
@@ -137,6 +137,16 @@ def register(app, state: AppState) -> None:
             with state.simulation_lock:
                 report_tool_write_failure(state.sim_controller, exc)
         return jsonify({"ok": False, "error": str(exc), "tool_closed": True})
+
+    def _tool_read_failed(exc):
+        """A detector read inside an open tool failed: a hardware I/O failure
+        the tool did not cause, so the tool stays open (design_v2.md "Hardware
+        interface", A failure the tool did not cause leaves it open). Caller
+        holds `simulation_lock`."""
+        from hardware.setup_tools import report_tool_read_failure
+
+        report_tool_read_failure(state.sim_controller, exc)
+        return jsonify({"ok": False, "error": str(exc), "hardware_failure": True})
 
     def _report_refused_write(writer, output, owner):
         state.sim_controller.report_output_not_owned(writer, output, owner)
@@ -442,9 +452,22 @@ def register(app, state: AppState) -> None:
             if refused is not None:
                 return refused
             if device is not None:
-                return jsonify(
-                    self_test.run_occupancy_test(cfg, str(block_id), device=device)
-                )
+                result = self_test.run_occupancy_test(cfg, str(block_id), device=device)
+                failed = self_test.failed_detector_reads(result)
+                if failed:
+                    # A failed detector read on the session's device handle is
+                    # a hardware I/O failure (design_v2.md "Safe state,
+                    # watchdog and hardware failure", Hardware I/O failure is
+                    # fatal to the session).
+                    from hardware.setup_tools import report_detector_read_failure
+
+                    report_detector_read_failure(
+                        state.sim_controller,
+                        f"block occupancy test of {block_id}: detector read failed: "
+                        + "; ".join(failed),
+                    )
+                    result["hardware_failure"] = True
+                return jsonify(result)
         return jsonify(
             self_test.run_occupancy_test(
                 cfg, str(block_id), open_device=_transient_opener(cfg)
@@ -806,6 +829,8 @@ def register(app, state: AppState) -> None:
         with state.simulation_lock:
             try:
                 payload = session.read()
+            except SetupToolReadFailed as exc:
+                return _tool_read_failed(exc)
             except Exception as exc:  # noqa: BLE001 - reported to the panel
                 return jsonify({"ok": False, "open": True, "error": str(exc)}), 200
             payload["link"] = session.link_status()
@@ -867,6 +892,8 @@ def register(app, state: AppState) -> None:
                 return jsonify({"ok": False, "error": str(exc)}), 400
             except SetupToolWriteFailed as exc:
                 return _tool_write_failed(exc, locked=True)
+            except SetupToolReadFailed as exc:
+                return _tool_read_failed(exc)
             except Exception as exc:  # noqa: BLE001 - reported to the panel
                 return jsonify({"ok": False, "error": str(exc)}), 200
         return jsonify({"ok": True, **result})
@@ -1033,7 +1060,10 @@ def register(app, state: AppState) -> None:
                 refused = _open_tool_device()
                 if refused is not None:
                     return refused
-                bits = commission.get_session().read_inputs(data.get("chip_id"))
+                try:
+                    bits = commission.get_session().read_inputs(data.get("chip_id"))
+                except SetupToolReadFailed as exc:
+                    return _tool_read_failed(exc)
         except Exception as exc:
             return jsonify({"ok": False, "error": str(exc)})
         return jsonify({"ok": True, "ports": [{"port": i, "value": v} for i, v in enumerate(bits)]})
@@ -1051,7 +1081,10 @@ def register(app, state: AppState) -> None:
                 refused = _open_tool_device()
                 if refused is not None:
                     return refused
-                currents = commission.get_session().read_currents(data.get("chip_id"))
+                try:
+                    currents = commission.get_session().read_currents(data.get("chip_id"))
+                except SetupToolReadFailed as exc:
+                    return _tool_read_failed(exc)
         except Exception as exc:
             return jsonify({"ok": False, "error": str(exc)})
         return jsonify({

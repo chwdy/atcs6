@@ -178,9 +178,14 @@ def test_the_block_goes_back_to_zero_when_a_read_fails_mid_pulse(bench, monkeypa
         return real_read()
 
     monkeypatch.setattr(session._occupancy, "read_all_sources", failing_read)
-    with pytest.raises(IOError):
+    # A failed read is a hardware I/O failure the bench did not cause: it is
+    # raised for the caller to report, and the bench stays open.
+    from hardware.setup_tools import SetupToolReadFailed
+
+    with pytest.raises(SetupToolReadFailed):
         _check(session, "B1")
     assert device.duty_cycle(PWM_ADDR, 0) == 0 and device.duty_cycle(PWM_ADDR, 1) == 0
+    assert session.is_open() is True
 
 
 def test_a_block_with_no_rail_binding_is_refused(bench):

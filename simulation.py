@@ -50,6 +50,16 @@ def _hardware_entity_ref(payload: HardwareFailure) -> Optional[EntityRef]:
     return block_ref(payload.resource_id)
 
 
+def _zero_open_tool_outputs() -> List[str]:
+    try:
+        from hardware.setup_tools import zero_open_tool_outputs
+
+        return zero_open_tool_outputs()
+    except Exception as exc:  # noqa: BLE001 - the failure still must latch
+        logger.exception("could not zero the open Setup tool's outputs")
+        return [str(exc)]
+
+
 class SimulationController(SwitchOutputOwner):
     """The runtime (design_v2.md "Terms", The runtime).
 
@@ -325,6 +335,10 @@ class SimulationController(SwitchOutputOwner):
         flag is latched even if the safe-state write itself fails.
         """
         if self.runtime_halted:
+            # Already latched, but an open Setup tool may have driven its
+            # outputs again since the first failure; they still go to the
+            # safe state.
+            _zero_open_tool_outputs()
             return
         safe_state_error: Optional[str] = None
         try:
@@ -333,6 +347,20 @@ class SimulationController(SwitchOutputOwner):
             safe_state_error = str(exc)
             logger.exception("hardware safe-state command failed")
         finally:
+            # An open Setup tool drives the outputs through chips it built
+            # itself, so its outputs are zeroed here too, and it stays open
+            # (design_v2.md "Hardware interface", A failure the tool did not
+            # cause leaves it open).
+            tool_errors = _zero_open_tool_outputs()
+            if tool_errors:
+                tool_message = (
+                    "could not zero every output of the open Setup tool: "
+                    + "; ".join(tool_errors)
+                )
+                safe_state_error = (
+                    tool_message if safe_state_error is None
+                    else f"{safe_state_error}; {tool_message}"
+                )
             self.hardware_failure = True
             self.environment_active = False
             self._give_up_outputs()

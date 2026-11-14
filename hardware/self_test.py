@@ -479,6 +479,16 @@ def run_occupancy_test(
                 pass
 
 
+def failed_detector_reads(result: Dict[str, Any]) -> List[str]:
+    """The errors of the detector reads that failed in a block occupancy test
+    result: a read that raised, not a missing binding or an unknown chip."""
+    return [
+        f"{name}: {result[name].get('error')}"
+        for name in ("digital", "current")
+        if isinstance(result.get(name), dict) and result[name].get("read_failed")
+    ]
+
+
 def _idle_deadband_v(cfg: Any) -> float:
     """The drive-state deadband the runtime uses, taken from the configuration
     the session was built with — both zone thresholds are per-configuration
@@ -562,6 +572,7 @@ def _read_digital_detector(device: Any, cfg: Any, block_id: str) -> Dict[str, An
         result["occupied"] = resolve_detector_bit(value, active_low=active_low)
     except Exception as exc:
         result["error"] = str(exc)
+        result["read_failed"] = True
     return result
 
 
@@ -603,4 +614,5 @@ def _read_current_detector(
         result["occupied"] = abs(current_ma - baseline) >= threshold
     except Exception as exc:
         result["error"] = str(exc)
+        result["read_failed"] = True
     return result

@@ -36,6 +36,23 @@ class SetupToolWriteFailed(RuntimeError):
         super().__init__(f"{tool}: output write failed, so the tool closed: {cause}")
 
 
+class SetupToolReadFailed(Exception):
+    """A detector read inside an open Setup tool failed (design_v2.md "Safe
+    state, watchdog and hardware failure", Hardware I/O failure is fatal to the
+    session: a failed or invalid detector read). The tool did not cause it, so
+    it stays open and stays the owner (design_v2.md "Hardware interface", A
+    failure the tool did not cause leaves it open). The caller reports it
+    through `report_tool_read_failure(...)`.
+
+    Not an `OSError` or `RuntimeError`, so no tool mistakes it for a failure
+    of its own write."""
+
+    def __init__(self, tool: str, cause: BaseException) -> None:
+        self.tool = tool
+        self.cause = cause
+        super().__init__(f"{tool}: detector read failed: {cause}")
+
+
 def is_write_failure(exc: BaseException) -> bool:
     """Whether `exc` from a tool's own write is a failed write that ends the
     tool, rather than a write the device handle refused."""
@@ -67,6 +84,50 @@ def report_tool_write_failure(sim_controller: Optional[Any], exc: SetupToolWrite
             message=message,
         )
     )
+
+
+def report_tool_read_failure(sim_controller: Optional[Any], exc: SetupToolReadFailed) -> None:
+    """Report a failed detector read inside an open tool as a hardware I/O
+    failure. `enter_hardware_failure(...)` drives the safe state, including
+    the open tool's own outputs, and the tool stays open. The caller holds
+    `AppState.simulation_lock`."""
+    report_detector_read_failure(sim_controller, f"{exc.tool} detector read failed: {exc.cause}")
+
+
+def report_detector_read_failure(sim_controller: Optional[Any], message: str) -> None:
+    """Report a failed detector read on the session's device handle as a
+    hardware I/O failure (design_v2.md "Safe state, watchdog and hardware
+    failure", Hardware I/O failure is fatal to the session). The caller holds
+    `AppState.simulation_lock`."""
+    if sim_controller is None:
+        return
+    from runtime_payloads import HardwareFailure
+
+    sim_controller.enter_hardware_failure(
+        HardwareFailure(
+            component="setup_tool",
+            operation="read",
+            resource_id=None,
+            message=message,
+        )
+    )
+
+
+def zero_open_tool_outputs() -> List[str]:
+    """Zero every output of an open Setup tool and leave the tool open, as the
+    safe state of a hardware failure the tool did not cause (design_v2.md
+    "Hardware interface", A failure the tool did not cause leaves it open: the
+    safe state is driven, the tool stays open and stays the owner, and its
+    recorded drive is left as it was).
+
+    The runtime's own safe state cannot do this: while a tool holds the
+    outputs, the tool drives them through chips it built itself. Returns one
+    message per chip whose zeroing failed."""
+    from hardware import commission, occupancy_bench
+
+    errors = list(commission.get_session().zero_outputs_keep_open())
+    errors.extend(occupancy_bench.get_session().zero_outputs_keep_open())
+    return errors
 
 
 def close_setup_tools() -> List[str]:

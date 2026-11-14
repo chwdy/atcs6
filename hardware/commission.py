@@ -292,7 +292,10 @@ class CommissionSession:
             chip = self._chips.get(chip_id)
             if chip is None or not hasattr(chip, "read_all"):
                 raise KeyError(f"chip {chip_id!r} is not a readable input chip")
-            data = chip.read_all()
+            try:
+                data = chip.read_all()
+            except Exception as exc:  # noqa: BLE001 - a failed read is fatal
+                raise _read_failed(exc) from exc
             bits: List[bool] = []
             for port in range(chip.num_inputs):
                 byte_idx, bit_idx = divmod(port, 8)
@@ -314,14 +317,17 @@ class CommissionSession:
             chip = self._chips.get(chip_id)
             if chip is None or not hasattr(chip, "read_current"):
                 raise KeyError(f"chip {chip_id!r} is not a current-sense chip")
-            if chip_id not in self._configured:
-                if hasattr(chip, "configure"):
-                    chip.configure()
-                self._configured.add(chip_id)
             channels = getattr(chip, "NUM_CHANNELS", 3)
             readings: List[float] = []
-            for channel in range(1, channels + 1):
-                readings.append(chip.read_current(channel) * 1000.0)
+            try:
+                if chip_id not in self._configured:
+                    if hasattr(chip, "configure"):
+                        chip.configure()
+                    self._configured.add(chip_id)
+                for channel in range(1, channels + 1):
+                    readings.append(chip.read_current(channel) * 1000.0)
+            except Exception as exc:  # noqa: BLE001 - a failed read is fatal
+                raise _read_failed(exc) from exc
             self._touch()
             return readings
 
@@ -337,6 +343,17 @@ class CommissionSession:
         unreported."""
         with self._lock:
             return self._take_close_failures_locked() + self._close_locked()
+
+    def zero_outputs_keep_open(self) -> List[str]:
+        """Zero every output of every chip this session built, and stay open
+        and the owner, with the recorded drive left as it was (design_v2.md
+        "Hardware interface", A failure the tool did not cause leaves it
+        open). Returns one message per chip that failed; nothing when the
+        session is not open."""
+        with self._lock:
+            if self._device is None:
+                return []
+            return self._zero_chips_locked()
 
     def is_holding_outputs(self) -> bool:
         """Whether the tool is open. Read without the lock: the runtime loop
@@ -461,6 +478,12 @@ class CommissionSession:
         self._driven = {}
         self._switch_ports = set()
         return errors
+
+
+def _read_failed(exc: BaseException) -> Exception:
+    from hardware.setup_tools import SetupToolReadFailed
+
+    return SetupToolReadFailed("the commissioning session", exc)
 
 
 _session = CommissionSession()

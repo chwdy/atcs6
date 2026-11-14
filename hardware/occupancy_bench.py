@@ -470,7 +470,7 @@ class OccupancyBenchSession:
         with self._lock:
             self._require_open()
             blocks: Dict[str, Any] = (
-                self._occupancy.read_all_sources() if self._occupancy is not None else {}
+                self._read_all_sources_locked() if self._occupancy is not None else {}
             )
             self._observe_peaks_locked(blocks)
             for block_id in self._block_ids:
@@ -519,7 +519,7 @@ class OccupancyBenchSession:
 
             def drive(bid: str, volts: float) -> None:
                 # The check's own writes. A failed one ends the bench; a failed
-                # read does not (design_v2.md "Hardware interface", A failure
+                # read is reported as a hardware I/O failure and does not (design_v2.md "Hardware interface", A failure
                 # the tool did not cause leaves it open).
                 try:
                     self._track.set_voltage(bid, volts)
@@ -534,7 +534,7 @@ class OccupancyBenchSession:
             for i in range(max(1, rest_reads)):
                 if i:
                     sleep(CHECK_READ_GAP_S)
-                rest.append(self._occupancy.read_all_sources())
+                rest.append(self._read_all_sources_locked())
 
             volts = float(self._current_sense_min_drive_v)
             pulse: List[Dict[str, Any]] = []
@@ -542,7 +542,7 @@ class OccupancyBenchSession:
                 drive(block_id, volts)
                 deadline = clock() + max(0.0, pulse_s)
                 while True:
-                    pulse.append(self._occupancy.read_all_sources())
+                    pulse.append(self._read_all_sources_locked())
                     if clock() >= deadline:
                         break
                     sleep(CHECK_READ_GAP_S)
@@ -551,6 +551,32 @@ class OccupancyBenchSession:
                     drive(block_id, 0.0)
             self._touch()
             return summarize_block_check(block_id, volts, rest, pulse)
+
+    def _read_all_sources_locked(self) -> Dict[str, Any]:
+        """Read both detectors of every bound block. A failed read raises
+        `SetupToolReadFailed`, which the caller reports as a hardware I/O
+        failure; the bench stays open (design_v2.md "Hardware interface", A
+        failure the tool did not cause leaves it open)."""
+        from hardware.setup_tools import SetupToolReadFailed
+
+        try:
+            return self._occupancy.read_all_sources()
+        except Exception as exc:  # noqa: BLE001 - a failed read is fatal
+            raise SetupToolReadFailed("the occupancy bench", exc) from exc
+
+    def zero_outputs_keep_open(self) -> List[str]:
+        """Zero every channel of the chips the bench drives, and stay open and
+        the owner, with the recorded drive (`running`, `percent`, `flipped`)
+        left as it was (design_v2.md "Hardware interface", A failure the tool
+        did not cause leaves it open). Returns one message per chip that
+        failed; nothing when the bench is not open."""
+        with self._lock:
+            if self._device is None or self._track is None:
+                return []
+            try:
+                return list(self._track.zero_every_channel())
+            except Exception as exc:  # noqa: BLE001 - reported by the caller
+                return [str(exc)]
 
     def link_status(self) -> Optional[Dict[str, Any]]:
         """The USB bridge's own view of itself, or None for a device with no link
