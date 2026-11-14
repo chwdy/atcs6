@@ -55,7 +55,6 @@ use."""
 BLOCK_TAKEN = "block_taken"
 OWN_BLOCK = "own_block"
 SWITCH_HELD = "switch_held"
-TRACK_AHEAD_TAKEN = "track_ahead_taken"
 
 Result = Tuple[bool, Optional[str]]
 """An operator request's answer: `(success, reason)`."""
@@ -682,14 +681,6 @@ class TrainRuntime:
             position = other
         return legs[position], (switch_id, position)
 
-    def _leaving_passing_block(self, train: RunningTrain) -> bool:
-        """Whether the train's front block is a passing block it runs out of
-        away from the switch."""
-        return any(
-            passing.get(train.front_block) == train.direction
-            for passing in self.passing_blocks.values()
-        )
-
     def _give_claims(self, now: float) -> None:
         """Serve the running trains in first-come order (design_v2.md
         "Claiming the next block")."""
@@ -774,16 +765,6 @@ class TrainRuntime:
             return OWN_BLOCK
         if self.block_is_taken(walk.block_id):
             return BLOCK_TAKEN
-        if self._leaving_passing_block(train):
-            # A train leaves a passing block only when two blocks ahead are
-            # free.
-            after = next_block_ahead(self._network, walk.block_id, walk.direction or FORWARD)
-            if (
-                after.block_id is not None
-                and after.block_id not in train.blocks
-                and self.block_is_taken(after.block_id)
-            ):
-                return TRACK_AHEAD_TAKEN
         return None
 
     # --- item 6: set every block's voltage ----------------------------

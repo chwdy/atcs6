@@ -59,7 +59,7 @@ These are the terms this document uses for v2's own ideas. Names of code (classe
 - **Taken**: a block is taken when it reads occupied, is one of a train's blocks, or is claimed.
 - **The way**: the blocks and switches a train with a destination will pass to reach it. See **Switches**, The way to a destination.
 - **Held switch**: a switch a train may be on or about to cross, which is therefore not thrown. See **Switches**.
-- **Passing block**: one of the two blocks the legs of a switch with alternate arrivals on lead to. A train waits there until two blocks ahead are free. See **Switches**, Alternate arrivals.
+- **Passing block**: one of the two blocks the legs of a switch with alternate arrivals on lead to. See **Switches**, Alternate arrivals.
 - **Destination**: a block the operator picks for a train to run to and stop in. Optional.
 - **Hold time**: 5 seconds (the runtime setting `hold_time_s`). A block that reads empty while no block further forward in its train reads occupied stays the train's block for this long. See **Trains**.
 - **Pass**: one turn of the runtime loop that reads the detectors. While the session is Live a pass is a whole runtime step; in Setup it is the stopped pass; in Halted the loop makes no pass. See **Runtime loop**.
@@ -303,7 +303,7 @@ Two trains are never let into the same block. To make sure, a train claims a blo
   - that block is not one of any train's blocks, a lost train's included;
   - no other train has claimed it;
   - for a train with a destination, no switch on the way to that block that needs throwing is held (see **Switches**, A held switch is not thrown);
-  - for a train in a passing block, or one coming to the toe of a switch with alternate arrivals on, the conditions under **Switches**, Alternate arrivals.
+  - for a train coming to the toe of a switch with alternate arrivals on, the conditions under **Switches**, Alternate arrivals.
 - **A taken block.** A block is taken when it reads occupied, is one of a train's blocks, or is claimed. A train is never given a claim on a taken block.
 - **One block ahead.** A train holds at most one claim, and nothing is claimed all the way to a destination.
 - **First come, first served.** A train that asks and is not given the claim keeps asking on every pass. The runtime records the pass on which it first asked for that block, and that pass is when it began to wait for the order below, whether or not it has come to rest yet (see **When a train waits**). On each step the runtime serves the trains in the order they began to wait, the longest wait first, and trains that began on the same step in order of `train_id`. Claims have no other priority.
@@ -333,7 +333,7 @@ How a switch is thrown, and what a throw does on the rig, is under **Switch**. T
     - when both are taken, the train waits with `block_taken`.
   - **The switch is thrown as part of claiming.** When every condition for the claim on the chosen passing block holds and the switch is not set for it, the runtime throws the switch and then gives the claim. When the switch is held, or the runtime may not throw it yet (see The runtime does not throw a switch a train has just left), or the throw fails, the train waits with `switch_held` and nothing is thrown.
   - **An arrival is an entry.** A train has arrived when the passing block it claimed reads occupied. A stopped train that never enters its claimed block is not an arrival.
-  - **A train leaves a passing block only when two blocks ahead are free.** A train whose front block is a passing block, and which runs away from the switch, is given the claim on its next block ahead only when the block after that one is not taken either. The block after is found by the walk under **Claiming the next block**, The next block ahead, started from the next block ahead in the direction the train would run it. One of the train's own blocks does not count as taken here, and when the walk finds no block the condition holds. Otherwise the train waits with `track_ahead_taken`. The train claims only the next block ahead, as every train does. The reason: on a short loop two trains cannot both keep two blocks between them, so one of them has to wait on every lap. This rule makes that wait happen in a passing block, like a station stop, and a train that leaves one has room to run the lap without waiting again.
+  - **A train leaves a passing block when its next block ahead is free.** A train whose front block is a passing block is given the claim on its next block ahead under the same conditions as every other train (see **Claiming the next block**, When a claim is given). The block after the next block ahead plays no part. The reason: on a short loop, a train that waited for more room would stand still while the track in front of it is free, and the evening is for watching trains go round.
   - **Turning alternate arrivals off.** The operator's request, a successful throw of the switch by the operator, and leaving Live each turn them off. Claims already given stay.
 - **Without a destination or a switch with alternate arrivals on ahead, the runtime never throws a switch for a train.** The train follows the switches as they are set, and the operator throws them from the page.
 - **With a destination, the runtime throws the switches on the way.** Once every condition for the claim holds (see **Claiming the next block**, When a claim is given), and only then, the runtime throws each switch between the train's front block and the block being claimed that is not already set for the way, and gives the claim. A switch that is already set for the way is not thrown. A switch is thrown as part of claiming, not earlier, so a train that is waiting throws nothing.
@@ -364,7 +364,6 @@ A train that cannot be given a claim and is not yet wholly in its front block ke
 - `block_taken`: the next block ahead is taken by another train (see **Claiming the next block**, A taken block);
 - `switch_against`: a switch met from a leg is set to the other leg, and the train has no destination;
 - `switch_held`: a switch that has to be thrown for the train's destination or for alternate arrivals is held, is marked manual, or the runtime may not throw it yet;
-- `track_ahead_taken`: the train is in a passing block and the block after its next block ahead is taken (see **Switches**, Alternate arrivals);
 - `own_block`: the next block ahead is one of the train's own blocks.
 
 - **A waiting train stays waiting until it is given the claim.** Once a train waits, its blocks stay at 0 V until it is given the claim or it is stopped, whatever its front block reads in between. A train at 0 V does not move, so a front block that reads empty for a moment is a detector flicker, and putting voltage back on the train would drive it toward the train ahead.

@@ -597,23 +597,18 @@ def test_alternate_arrivals_name_the_two_passing_blocks(rig):
     assert rig.runtime.passing_blocks == {}
 
 
-def test_a_train_leaves_a_passing_block_only_when_two_blocks_ahead_are_free(rig):
+def test_a_train_leaves_a_passing_block_when_its_next_block_ahead_is_free(rig):
     _throwing(rig)
     rig.runtime.enable_alternation(RIGHT_SWITCH)
     rig.step("Right", "Up")
     assert rig.blocks("T1") == ["Right"]
     _run_into_main(rig)
 
-    # Left is free, but a train stands on Up, the block after it.
-    assert rig.state("T1") == "waiting"
-    assert rig.train("T1").waiting_reason == "track_ahead_taken"
-    assert rig.claim("T1") is None
-    assert rig.volts["Main"] == 0
-
-    # The standing train is lifted off: Up is free after the hold time.
-    rig.step("Main", seconds=6)
+    # Left is free. A train stands on Up, the block after it, and that
+    # plays no part.
     assert rig.claim("T1") == "Left"
     assert rig.state("T1") == "moving"
+    assert rig.volts["Main"] != 0
 
 
 def test_without_alternate_arrivals_a_train_leaves_on_one_free_block(rig):

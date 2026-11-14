@@ -306,7 +306,7 @@ class LapTrain:
             self.rear_passing_block = self.passing_block
 
 
-def test_two_trains_lap_the_rig_and_wait_only_in_the_passing_blocks(session, monkeypatch):
+def test_two_trains_lap_the_rig_without_sharing_a_block(session, monkeypatch):
     # One pass is a tenth of a second, so the hold time runs as it does on
     # the rig.
     clock = {"now": time.time()}
@@ -325,8 +325,6 @@ def test_two_trains_lap_the_rig_and_wait_only_in_the_passing_blocks(session, mon
         assert runtime.walk_ahead(train).block_id == session.ids["Left"]
         session.client.put(f"/api/trains/{train.train_id}/knob", json={"volts": 6})
 
-    names = {block_id: name for name, block_id in session.ids.items()}
-    waited_in = set()
     for _ in range(6000):
         for model in models:
             model.move(session)
@@ -335,8 +333,5 @@ def test_two_trains_lap_the_rig_and_wait_only_in_the_passing_blocks(session, mon
         session.passes(*(models[0].blocks() | models[1].blocks()), count=1)
         for train in trains:
             assert not train.lost
-            if runtime.state_of(train) == "waiting":
-                waited_in.add(names[train.front_block])
 
     assert all(model.front > 1.8 + 4 * 5 for model in models), [m.front for m in models]
-    assert waited_in <= {"Main", "Sideline"}, waited_in
