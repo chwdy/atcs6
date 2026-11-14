@@ -457,9 +457,14 @@ function EnterSetup(props: StepProps) {
       intro={
         <>
           <p>
-            Setup hands the outputs to the Setup tools, so each chip and wire can be tested. The
-            outputs go to the safe state, the selected environment stops running, and the
-            session reads Setup. No train moves in Setup unless a Setup tool moves it on purpose.
+            Setup is where each chip and wire is tested. The outputs go to the safe state, the
+            selected environment stops running, the controller is connected, and the session
+            reads Setup. One Setup tool at a time may drive the outputs, while it is open. No train
+            moves in Setup unless a Setup tool moves it on purpose.
+          </p>
+          <p>
+            If the controller cannot be connected, Setup is still entered so you can fix the setup
+            or plug it in; the tools then report "No controller connected" until it connects.
           </p>
           <p>
             The detectors keep being read when Setup was entered from a running hardware session;
