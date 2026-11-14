@@ -128,12 +128,6 @@ describe('distinctValues', () => {
 });
 
 describe('entityLabel', () => {
-    it('shows a walk position as its index, not the packed run#index id', () => {
-        // The run is already named by its own sibling chip on the same event, so
-        // repeating it in the task chip is noise.
-        expect(entityLabel({ entity_type: 'walk_position', entity_id: 'RUN7#3' })).toBe('task 3');
-    });
-
     it('passes an ordinary ref through unchanged', () => {
         expect(entityLabel({ entity_type: 'train', entity_id: 'T1' })).toBe('T1');
     });

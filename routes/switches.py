@@ -51,8 +51,9 @@ def register(app, state: AppState) -> None:
         """
         data = request.get_json(silent=True) or {}
         try:
-            already_existed = switch_service.get_switch_at(state, x, y) is not None
-            switch = switch_service.create_switch_at_track(state, x, y, data=data)
+            with state.simulation_lock:
+                already_existed = switch_service.get_switch_at(state, x, y) is not None
+                switch = switch_service.create_switch_at_track(state, x, y, data=data)
         except NotFoundError as exc:
             return jsonify({"error": str(exc)}), 404
         except ValidationError as exc:
@@ -95,15 +96,16 @@ def register(app, state: AppState) -> None:
 
     @app.route("/api/switches/<switch_id>", methods=["PATCH"])
     def patch_switch_availability(switch_id: str):
-        """PATCH mirror of PUT for the availability flags (`disabled`,
-        `manual`), so the entity-editor UI can use a uniform PATCH endpoint."""
+        """PATCH mirror of PUT, which the page uses to mark a switch manual
+        or not (`manual`)."""
         return update_switch(switch_id)
 
     @app.route("/api/switches/<switch_id>", methods=["DELETE"])
     def delete_switch(switch_id: str):
         """Remove switch configuration."""
         try:
-            switch_service.delete_switch(state, switch_id)
+            with state.simulation_lock:
+                switch_service.delete_switch(state, switch_id)
         except NotFoundError as exc:
             return jsonify({"error": str(exc)}), 404
         return jsonify({"success": True})
@@ -121,7 +123,7 @@ def register(app, state: AppState) -> None:
             if switch is None:
                 return jsonify({"error": "Switch not found"}), 404
             if data["enabled"]:
-                if switch.disabled or switch.manual or switch.motor_unavailable:
+                if switch.manual or switch.motor_unavailable:
                     return jsonify({"error": "This switch is unavailable for automatic throws"}), 409
                 if not runtime.enable_alternation(switch_id):
                     return jsonify({"error": "Each leg of this switch must lead to a block of its own"}), 409
@@ -137,8 +139,10 @@ def register(app, state: AppState) -> None:
         synchronously. The actual command result surfaces through
         NotificationCenter as a `command_result` event with source="Switch".
 
-        Request body: {"state": 0 or 1, "command_id": "<optional>",
-        "manual_override": <optional bool>}
+        Request body: {"state": 0 or 1, "command_id": "<optional>"}
+
+        This is the operator's throw, so a switch marked manual is thrown
+        (design_v2.md "Switches", A switch marked manual).
 
         Returns:
             202: {"command_id": "...", "status": "queued"}
@@ -163,7 +167,6 @@ def register(app, state: AppState) -> None:
                     switch_id,
                     new_state=data["state"],
                     command_id=data.get("command_id"),
-                    manual_override=bool(data.get("manual_override", False)),
                 )
         except ValidationError as exc:
             return jsonify({"error": str(exc)}), 400

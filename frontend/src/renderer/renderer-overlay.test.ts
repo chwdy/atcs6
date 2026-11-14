@@ -36,7 +36,6 @@ describe('renderer overlay hook', () => {
       highlightHandler: { draw: vi.fn() },
       drawBlockDirectionOverlay: vi.fn(),
       drawTileDirectionDebug: vi.fn(),
-      drawOneWayDirectionDebug: vi.fn(),
       drawBoxSelection: vi.fn(),
       drawBoxSelectRect: vi.fn(),
       drawLassoPath: vi.fn(),

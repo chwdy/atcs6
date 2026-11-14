@@ -32,9 +32,7 @@ BLOCK_LAYOUT_FIELDS = frozenset({
     "length_cm",
     "min_radius_cm",
     "grade_percent",
-    "is_holding_point",
     "speed_limit_kmh",
-    "allowed_travel_directions",
     "ordered_tiles",
     "segment_ids",
     "segments",
@@ -51,11 +49,17 @@ SWITCH_LAYOUT_FIELDS = frozenset({
     "switch_type",
     "name",
     "notes",
+    # Saved settings: they change only when the layout is edited, so they
+    # are layout, not live (design_v2.md "Live fields": a switch's live
+    # fields are `position`, `position_known` and `held`).
+    "manual",
+    "motor_unavailable",
+    "allow_exit_from_either_leg",
 })
 
 # The live fields of a tile. A tile carries live fields only when it holds a
 # switch; every field of any other tile is layout.
-TRACK_LIVE_FIELDS = frozenset({"switch_state", "switch_states"})
+TRACK_LIVE_FIELDS = frozenset({"switch_state"})
 
 
 def _track_has_live_fields(track: Dict[str, Any]) -> bool:

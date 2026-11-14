@@ -103,20 +103,6 @@ class TestBlock:
         assert restored.segments[0].name == "Left"
 
 
-class TestDisabledBlock:
-    """Tests for disabled block behavior."""
-
-
-
-    def test_disabled_block_serialization(self):
-        block = Block(block_id="BLK_001", disabled=True)
-        block_dict = block.to_dict()
-        assert block_dict["disabled"] == True
-        restored = Block.from_dict(block_dict)
-        assert restored.disabled == True
-
-
-
 class TestBlockValidation:
     """Tests for segment_validation.py functions"""
 

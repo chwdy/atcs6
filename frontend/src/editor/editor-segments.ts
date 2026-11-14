@@ -3,9 +3,8 @@
 // A `Segment` is the geometry unit: the run of tiles you draw, plus its length,
 // min radius, grade and speed limit. Those edits go to `/api/segments`.
 //
-// Availability (disabled / manual), allowed travel direction and occupancy are
-// NOT geometry — they belong to the `Block` that owns this segment, so the
-// panel routes those reads/writes to `/api/blocks/<blockId>`. The two ids are
+// Occupancy is NOT geometry — it belongs to the `Block` that owns this
+// segment, so the panel reads it from `/api/blocks/<blockId>`. The two ids are
 // tracked separately throughout (`segmentId` vs `blockId`): for a single-segment
 // block they happen to be equal, which is exactly why they must never be mixed.
 //
@@ -19,10 +18,6 @@ import { copyIdButton } from '../lib/copy-id';
 import type { EditorHost } from './types';
 import {
   renderTileList,
-  renderAvailabilitySegment,
-  renderDirectionSegment,
-  bindAvailabilitySegment,
-  bindDirectionSegment,
   showConfirmModal,
   detectOrientation,
   calculateNextTile,
@@ -33,6 +28,7 @@ import {
   parseOptionalMmToCm,
   parseOptionalInt,
   applyStructuralLock,
+  blockStatus,
 } from '../lib/helpers';
 import { anchorToTiles } from '../lib/popover-anchor';
 
@@ -97,8 +93,7 @@ export class SegmentEditorHandler {
 
   // Map a block's runtime state to the §11 status-header left accent and the
   // §7 state-chip variant. The block's runtime state is always one of
-  // free / reserved / occupied / caution (block.py:198); disabled / manual are
-  // separate availability flags edited by the segment below, not states here.
+  // free / reserved / occupied / caution.
   // FREE inherits cyan (--info-color) per the §1 block-state palette; RESERVED
   // is the green "enter" state. The default is a meaningful palette color
   // (info), never --border-color (§11 "Status header block").
@@ -136,22 +131,17 @@ export class SegmentEditorHandler {
       }
     }
 
-    // The owning block carries availability, travel direction and occupancy —
-    // none of which are geometry. `block_id` comes off the segment payload; for
+    // The owning block carries occupancy, which is not geometry. `block_id` comes off the segment payload; for
     // a single-segment block it equals `segmentId`, but it is read explicitly so
-    // a grouped segment still edits the right block.
+    // a grouped segment still edits the right block. Its live fields come from
+    // the snapshot (design_v2.md "Live fields"), not from the block endpoint.
     const blockId: string = segment.block_id || segmentId;
-    let block: any = {};
-    try {
-      const fetched = await this.api.getBlock(blockId);
-      if (fetched && !fetched.error) block = fetched;
-    } catch (err) {
-      console.warn('[SegmentEditorHandler] Owning block not readable:', blockId, err);
-    }
+    const block: any = this.editor.cachedNetwork?.blocks?.[blockId] || {};
 
-    // Occupancy / availability state comes from the owning block.
-    const stateText = (block.state || 'free').toUpperCase();
-    const { accentClass, chipClass } = this.getBlockStateAccent(block.state);
+    // Occupancy state comes from the owning block.
+    const status = blockStatus(block);
+    const stateText = status.toUpperCase();
+    const { accentClass, chipClass } = this.getBlockStateAccent(status);
     // Geometry comes from the segment.
     const trackCount = segment.track_count || 0;
     const lengthCm = segment.length_cm || 0;
@@ -226,13 +216,13 @@ export class SegmentEditorHandler {
                     </div>
                 </div>
 
-                <!-- §6 banner — surfaces the occupying train. Hidden when clear. -->
+                <!-- §6 banner — surfaces the train whose block this is. Hidden when none. -->
                 ${
-                  block.occupied_by
+                  block.train_id
                     ? `
                 <div class="banner banner-danger">
                     <div class="banner-label">Occupied by</div>
-                    <div class="banner-value banner-text">${block.occupied_by}</div>
+                    <div class="banner-value banner-text">${escapeAttr(block.train_id)}</div>
                 </div>
                 `
                     : ''
@@ -272,26 +262,6 @@ export class SegmentEditorHandler {
                         <label class="input-small-label input-small-label-inline" for="segment-speed-input">Max Speed (km/h)</label>
                         <input type="number" id="segment-speed-input" class="input-small-field input-small-field-compact" value="${speedKmh}" min="0" step="1" inputmode="numeric" placeholder="No limit">
                     </div>
-
-                    <!-- Availability and travel direction are BLOCK policy, not
-                         segment geometry: they apply to the whole block this
-                         segment belongs to, so they read and write the owning
-                         block. -->
-                    ${renderAvailabilitySegment('block', block, {
-                      idBase: 'block-availability',
-                      explanations: {
-                        normal: 'automatic routing can plan through and reserve this block.',
-                        manual:
-                          'automatic routing skips it; an operator route with override (Quick Route) can still use it.',
-                        disabled: 'off-limits to all trains; treated as missing track.',
-                      },
-                    })}
-
-                    ${renderDirectionSegment('block', block, {
-                      idBase: 'block-direction',
-                      label: 'Allowed travel direction',
-                      help: 'Forward and reverse follow the direction arrows shown on the layout. Automatic routing obeys this; an operator route with override (Quick Route) can ignore it.',
-                    })}
                 </div>
 
                 <!-- Deleting the whole segment is a segment-level action, not a
@@ -326,43 +296,6 @@ export class SegmentEditorHandler {
     const lengthInput = this.editor.$id('segment-length-input') as HTMLInputElement | null;
     const radiusInput = this.editor.$id('segment-radius-input') as HTMLInputElement | null;
     const speedInput = this.editor.$id('segment-speed-input') as HTMLInputElement | null;
-
-    // Availability segment (normal / manual / disabled). Auto-applies on click
-    // (§5C); no success toast. On reject, re-render so the active cell rolls
-    // back to the server's value.
-    bindAvailabilitySegment('block-availability', async (_state, flags) => {
-      try {
-        const result = await this.api.updateBlock(blockId, flags);
-        if (result && result.error) {
-          showToast(`Cannot change availability: ${result.error}`, 'error', 4000);
-          this.showEditor(segmentId);
-        } else {
-          await this.editor.host?.refreshNetwork();
-        }
-      } catch (err: any) {
-        console.error('Failed to update block availability:', err);
-        showToast(`Cannot change availability: ${err.message || err}`, 'error', 4000);
-        this.showEditor(segmentId);
-      }
-    });
-
-    // Allowed-travel-direction segment (both / forward / reverse). Same
-    // auto-apply contract as availability above.
-    bindDirectionSegment('block-direction', async (_state, payload) => {
-      try {
-        const result = await this.api.updateBlock(blockId, payload);
-        if (result && result.error) {
-          showToast(`Cannot change travel direction: ${result.error}`, 'error', 4000);
-          this.showEditor(segmentId);
-        } else {
-          await this.editor.host?.refreshNetwork();
-        }
-      } catch (err: any) {
-        console.error('Failed to update block travel direction:', err);
-        showToast(`Cannot change travel direction: ${err.message || err}`, 'error', 4000);
-        this.showEditor(segmentId);
-      }
-    });
 
     // --- Per-field auto-save (§5C / §19) -----------------------------------
     // Each property field commits on blur (or Enter) via the shared
@@ -504,8 +437,8 @@ export class SegmentEditorHandler {
     });
 
     // In Simulation mode the physical layout is frozen: structural fields and
-    // buttons go read-only while the availability / direction segments stay
-    // live. The lock re-applies on every render and on mode flips.
+    // buttons go read-only. The lock re-applies on every render and on mode
+    // flips.
     applyStructuralLock(this.editor.$id('secondary-sidebar-content'));
   }
 
@@ -813,7 +746,7 @@ export class SegmentEditorHandler {
 
   // The panel tracks its OWNING BLOCK in the state manager: `blocks` is the
   // only track-model collection the network payload publishes, and it is what
-  // carries the occupancy/availability this panel shows.
+  // carries the occupancy this panel shows.
   _setupSubscription(blockId: string): void {
     this._cleanup();
 

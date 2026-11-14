@@ -74,14 +74,6 @@ class Direction(Enum):
     WEST = (-1, 0)
 
 
-class BlockState(Enum):
-    """Block section occupancy states"""
-
-    FREE = "free"  # 空闲
-    OCCUPIED = "occupied"  # 占用
-    RESERVED = "reserved"  # 预约
-
-
 class SessionStateValue(Enum):
     """The three values of the session state (design_v2.md "Session state").
 

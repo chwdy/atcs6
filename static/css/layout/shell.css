@@ -710,13 +710,6 @@ textarea {
     color: var(--text-secondary);
 }
 
-/* Two flags side by side (§4 "a set of flags stacks into a grid"). */
-.ms-flags {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 4px 12px;
-}
-
 .ms-hint {
     margin: 0;
     font-size: 10px;

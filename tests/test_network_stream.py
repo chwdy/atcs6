@@ -26,7 +26,7 @@ from persistence import PersistenceManager
 from simulation import SimulationController
 
 # The live train map every reply carries (design_v2.md "Live fields").
-SIBLING_GROUPS = ("running_trains",)
+SIBLING_GROUPS = ("trains",)
 
 
 @pytest.fixture

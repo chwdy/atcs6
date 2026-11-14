@@ -3,7 +3,7 @@
 `TrackDriver.set_voltage` (hardware/interfaces.py) returns False for a block it
 cannot drive — one with no `block_track` binding, or a binding naming a chip the
 session did not build. Nothing above it looked at that return value, so the
-runtime commanded 10V onto a dead rail, wrote `Block.current_voltage = 10`, and
+runtime commanded 10V onto a dead rail, recorded 10V as the block voltage, and
 the locomotive never moved. From the layout that is indistinguishable from a
 software fault: the app shows a train running, with the block energized, on
 track carrying no volts.

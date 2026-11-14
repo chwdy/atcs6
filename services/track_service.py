@@ -8,6 +8,10 @@ this layer owns the track-tile mutations:
     switch-creation that a bit change implies, and
   * bulk add / delete with the same impact aggregation.
 
+Every function that changes the layout holds ``state.simulation_lock`` for
+the whole change, so a runtime step never reads a half-edited layout
+(design_v2.md "About this document").
+
 Lookup raises ``NotFoundError`` and bad input raises ``ValidationError``.
 The richer outcomes a single update can produce -- an orphan-impact that
 needs operator confirmation, a switch locked by a live path, an empty
@@ -24,7 +28,8 @@ knowing any status codes:
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Tuple
+import functools
+from typing import Any, Callable, Dict, List, Tuple, TypeVar
 
 from app_state import AppState
 from services.exceptions import NotFoundError, ValidationError
@@ -38,6 +43,19 @@ _SQUARE_CORNER_MESSAGE = (
     "eases at 45°."
 )
 _VALID_PORTS = {"N", "E", "S", "W"}
+
+_F = TypeVar("_F", bound=Callable[..., Any])
+
+
+def _holds_simulation_lock(func: _F) -> _F:
+    """Run `func(state, ...)` while holding `state.simulation_lock`."""
+
+    @functools.wraps(func)
+    def wrapper(state: AppState, *args: Any, **kwargs: Any) -> Any:
+        with state.simulation_lock:
+            return func(state, *args, **kwargs)
+
+    return wrapper  # type: ignore[return-value]
 
 
 def _ensure_switch_for_tile(state: AppState, track, x: int, y: int) -> None:
@@ -63,6 +81,7 @@ def get_track(state: AppState, x: int, y: int):
 
 
 
+@_holds_simulation_lock
 def update_track(
     state: AppState, x: int, y: int, *, data: Any, force: bool = False
 ) -> Dict[str, Any]:
@@ -150,8 +169,10 @@ def update_track(
             # Runtime is wired: route the alignment change through
             # SwitchManager, which writes Switch.position and drives the throw.
             # Nothing writes Switch.position directly while a runtime exists.
+            # This is the operator's throw, so a switch marked manual is
+            # thrown (design_v2.md "Switches", A switch marked manual).
             success, message = switch_manager.request_position_change(
-                track.switch_id, int(data["switch_state"])
+                track.switch_id, int(data["switch_state"]), manual_override=True
             )
             if not success:
                 return {"status": "switch_change_rejected", "reason": message}
@@ -170,6 +191,7 @@ def update_track(
     return {"status": "updated", "track": track}
 
 
+@_holds_simulation_lock
 def delete_track(state: AppState, x: int, y: int) -> bool:
     """Remove a track tile. Returns True.
 
@@ -186,6 +208,7 @@ def delete_track(state: AppState, x: int, y: int) -> bool:
     return True
 
 
+@_holds_simulation_lock
 def add_tracks_bulk(
     state: AppState, *, tracks_data: List[Dict[str, Any]]
 ) -> Dict[str, List]:
@@ -258,6 +281,7 @@ def add_tracks_bulk(
     return {"added": added, "updated": updated}
 
 
+@_holds_simulation_lock
 def delete_tracks_bulk(
     state: AppState, *, positions: List[Any], force: bool = False
 ) -> Dict[str, Any]:

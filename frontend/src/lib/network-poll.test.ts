@@ -49,15 +49,15 @@ function pollerWith(replies: any[]) {
 
 describe('withLiveFields', () => {
   it('keeps the same object when no live field changed', () => {
-    const cached = { block_id: 'B1', state: 'free', reservation: { path_id: 'P' } };
-    expect(withLiveFields(cached, { state: 'free', reservation: { path_id: 'P' } })).toBe(cached);
+    const cached = { block_id: 'B1', reads_occupied: false, train_id: null };
+    expect(withLiveFields(cached, { reads_occupied: false, train_id: null })).toBe(cached);
   });
 
   it('returns a new object with the live fields laid over when one changed', () => {
-    const cached = { block_id: 'B1', state: 'free', ordered_tiles: [[0, 0, 'E']] };
-    const merged = withLiveFields(cached, { state: 'occupied' });
+    const cached = { block_id: 'B1', reads_occupied: false, ordered_tiles: [[0, 0, 'E']] };
+    const merged = withLiveFields(cached, { reads_occupied: true });
     expect(merged).not.toBe(cached);
-    expect(merged).toEqual({ block_id: 'B1', state: 'occupied', ordered_tiles: [[0, 0, 'E']] });
+    expect(merged).toEqual({ block_id: 'B1', reads_occupied: true, ordered_tiles: [[0, 0, 'E']] });
     expect(merged.ordered_tiles).toBe(cached.ordered_tiles);
   });
 });

@@ -508,8 +508,9 @@ def register(app, state: AppState) -> None:
         if drives_coils:
             # The session's own switch output owns these coils, so the ordinary
             # operating throw IS the test. The operator explicitly asked for
-            # this alignment, so a `manual` switch participates — the same
-            # override the manual throw controls send.
+            # this alignment, so a switch marked manual is thrown too, as any
+            # operator throw does (design_v2.md "Switches", A switch marked
+            # manual).
             with state.simulation_lock:
                 ok, message = switch_manager.request_position_change(
                     switch_id, position, manual_override=True
@@ -1015,7 +1016,7 @@ def register(app, state: AppState) -> None:
             # reading the device again here. Two reasons, and both bit:
             #
             #   - This is the column that answers "did the app react", so it has
-            #     to be the debounced confirmed set `Block.occupied_by` follows.
+            #     to be the debounced confirmed set a block's `reads_occupied` follows.
             #     A raw read reports a clear OCCUPANCY_OFF_THRESHOLD ticks before
             #     the app acts on one, so the panel would say clear while the
             #     layout still showed the block held — which reads as the app

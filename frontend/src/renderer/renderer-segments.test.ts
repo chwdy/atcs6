@@ -142,7 +142,7 @@ describe('RendererSegmentHandler.drawSegmentMetrics', () => {
   it('puts a forward (positive) block voltage on the + rail and pills the segment', () => {
     const ctx = makeCtx();
     const r = makeRenderer(ctx);
-    r.currentBlocks = { BLK_A: { current_voltage: 6 } };
+    r.currentBlocks = { BLK_A: { voltage: 6 } };
     const h = new RendererSegmentHandler(r);
     h.drawSegmentMetrics(
       [{ x: 0, y: 0, segment_id: 'S1', block_section_id: 'BLK_A', track_bits: 1 }],
@@ -158,7 +158,7 @@ describe('RendererSegmentHandler.drawSegmentMetrics', () => {
   it('puts a reverse (negative) block voltage on the − rail', () => {
     const ctx = makeCtx();
     const r = makeRenderer(ctx);
-    r.currentBlocks = { BLK_A: { current_voltage: -6 } };
+    r.currentBlocks = { BLK_A: { voltage: -6 } };
     const h = new RendererSegmentHandler(r);
     h.drawSegmentMetrics(
       [{ x: 0, y: 0, segment_id: 'S1', block_section_id: 'BLK_A', track_bits: 1 }],
@@ -173,7 +173,7 @@ describe('RendererSegmentHandler.drawSegmentMetrics', () => {
   it('labels both rails but draws no pill for an unpowered block (0V)', () => {
     const ctx = makeCtx();
     const r = makeRenderer(ctx);
-    r.currentBlocks = { BLK_A: { current_voltage: 0 } };
+    r.currentBlocks = { BLK_A: { voltage: 0 } };
     const h = new RendererSegmentHandler(r);
     h.drawSegmentMetrics(
       [{ x: 0, y: 0, segment_id: 'S1', block_section_id: 'BLK_A', track_bits: 1 }],
@@ -189,7 +189,7 @@ describe('RendererSegmentHandler.drawSegmentMetrics', () => {
   it('every segment of one grouped block reads that block\'s shared voltage', () => {
     const ctx = makeCtx();
     const r = makeRenderer(ctx);
-    r.currentBlocks = { BLK_A: { current_voltage: 6 } };
+    r.currentBlocks = { BLK_A: { voltage: 6 } };
     const h = new RendererSegmentHandler(r);
     h.drawSegmentMetrics(
       [
@@ -223,7 +223,7 @@ describe('RendererSegmentHandler.drawSegmentMetrics', () => {
     const ctx = makeCtx();
     const r = makeRenderer(ctx);
     r.currentSegments = { S1: { length_cm: 60, speed_limit_kmh: 45 } };
-    r.currentBlocks = { BLK_A: { current_voltage: 6 } };
+    r.currentBlocks = { BLK_A: { voltage: 6 } };
     const h = new RendererSegmentHandler(r);
     h.drawSegmentMetrics(
       [{ x: 0, y: 0, segment_id: 'S1', block_section_id: 'BLK_A', track_bits: 1 }],

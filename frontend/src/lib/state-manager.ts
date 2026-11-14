@@ -42,7 +42,7 @@ export class StateManager {
     // Canonical cache - mirrors the snapshot (design_v2.md "Data flow to
     // the page"). Using Map for O(1) lookup and easy iteration.
     this.state = {
-      runningTrains: new Map(), // trainId → train entry (design_v2.md "Live fields")
+      trains: new Map(), // trainId → train entry (design_v2.md "Live fields")
       blocks: new Map(), // blockId → block data object
       switches: new Map(), // switchId → switch data object
       tracks: new Map(), // "x,y" string → track data object
@@ -56,7 +56,7 @@ export class StateManager {
     // Structure: Map<entityId, Set<callback>>
     // Special key '*' means "all entities of this type"
     this.subscribers = {
-      runningTrains: new Map(),
+      trains: new Map(),
       blocks: new Map(),
       switches: new Map(),
       tracks: new Map(),
@@ -86,7 +86,7 @@ export class StateManager {
   /**
    * Subscribe to changes for a specific entity.
    *
-   * @param type - Entity type: 'runningTrains', 'blocks', 'switches', 'tracks'
+   * @param type - Entity type: 'trains', 'blocks', 'switches', 'tracks'
    * @param id - Entity ID, or '*' for all entities of this type
    * @param callback - Called with (newData, oldData, entityId); newData is
    *                   null if the entity was deleted
@@ -251,13 +251,13 @@ export class StateManager {
       if (typeof network.operation_mode === 'string') {
         this.operationMode = network.operation_mode;
       }
-      const currentRunningIds = new Set(this.state.runningTrains.keys());
-      for (const [tid, entry] of Object.entries(network.running_trains || {})) {
-        this.updateEntity('runningTrains', tid, entry);
-        currentRunningIds.delete(tid);
+      const currentTrainIds = new Set(this.state.trains.keys());
+      for (const [tid, entry] of Object.entries(network.trains || {})) {
+        this.updateEntity('trains', tid, entry);
+        currentTrainIds.delete(tid);
       }
-      for (const deletedId of currentRunningIds) {
-        this.removeEntity('runningTrains', deletedId);
+      for (const deletedId of currentTrainIds) {
+        this.removeEntity('trains', deletedId);
       }
 
       // ─────────────────────────────────────────────────────────

@@ -129,7 +129,7 @@ Some endpoints return bare arrays, others wrap them in an object:
 [{ "block_id": "BLK_1", ... }, { "block_id": "BLK_2", ... }]
 
 // Wrapped (e.g., GET /api/network)
-{ "tracks": [ ... ], "blocks": { ... }, "running_trains": { ... } }
+{ "tracks": [ ... ], "blocks": { ... }, "trains": { ... } }
 ```
 
 ### Guideline
@@ -154,10 +154,14 @@ A request that reads or changes runtime state holds `state.simulation_lock`, so 
 
 | Module | Holds the lock? |
 |--------|-----------------|
-| `running_trains.py`, `hardware.py`, `simulation.py`, `settings.py` | Yes, in the route |
-| `blocks.py`, `segments.py`, `layouts.py` | Yes, in `services/block_service.py`, `segment_service.py`, `layout_service.py` (and in the route for reads that need it) |
-| `switches.py` | Yes, in the route for `PUT`, `/state` and `/alternate` |
-| `tracks.py`, `tunnels.py` | No |
+| `running_trains.py`, `hardware.py`, `simulation.py`, `settings.py`, `tunnels.py` | Yes, in the route |
+| `blocks.py`, `segments.py` | Yes: in the route for grouping, create, delete, extend and tile changes; in `services/block_service.py` / `segment_service.py` for the block `PATCH`, segment `PATCH` and `reverse-orientation` |
+| `layouts.py` | Yes, in `services/layout_service.py` for save and load |
+| `tracks.py` | Yes, in `services/track_service.py` |
+| `switches.py` | Yes, in the route for create, `PUT`, `DELETE`, `/state` and `/alternate` |
+
+The lock is a plain `threading.Lock`, not reentrant: a route that holds it
+must not call a service function that takes it again.
 
 **Guideline:** Any endpoint that **mutates** network state should acquire the simulation lock:
 

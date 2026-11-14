@@ -8,8 +8,8 @@ Single source of truth:
 Design notes:
 - Follows OpenTTD-style tile geometry (45° isometric UI), so the six
   possible segments are the only physical shapes.
-- Switch points are inferred when an edge has 2+ exits; switch_states
-  stores the active exit index per edge.
+- Switch points are inferred when an edge has 2+ exits; the tile's one
+  alignment is `switch_state`, read from its `Switch`.
 
 Curve Detection (connection-based):
 - A CURVE is defined by orientation group CHANGE between connected paths
@@ -421,17 +421,6 @@ class Tile:
         self._switch_state_local = normalized
 
     @property
-    def switch_states(self) -> Dict[str, int]:
-        """Per-entry-port switch states for display/debugging.
-
-        Maps each switch point entry edge to its active exit.
-        All switches share the same global state (MAIN=0, DIVERGE=1).
-        """
-        if not self.is_switch:
-            return {}
-        return {entry: self.switch_state for entry in self.switch_points.keys()}
-
-    @property
     def track_type(self) -> TrackType:
         """Classify track geometry (feature-aware).
 
@@ -629,17 +618,6 @@ class Tile:
         if not self.is_switch:
             return sorted(all_exits)
 
-        # Disabled switches have no traversable exits. Resolve the owning Switch entity from the network
-        # registry; if `switch.disabled` is True return [] immediately.
-        if (
-            self.network is not None
-            and self.switch_id is not None
-            and hasattr(self.network, "switches")
-        ):
-            switch = self.network.switches.get(self.switch_id)
-            if switch is not None and switch.disabled:
-                return []
-
         # For switches: categorize exits by segment type (main vs diverge)
         # AND verify the entry edge is part of an active segment
         #
@@ -786,7 +764,6 @@ class Tile:
             "long_path_type": self.long_path_type,
             "num_paths": self.num_paths,
             "is_valid": self.is_valid,
-            "switch_states": self.switch_states if self.is_switch else None,
         }
 
     def to_layout_dict(self) -> dict:

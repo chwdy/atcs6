@@ -18,8 +18,7 @@ import type { TileExtentStyle } from './renderer-tracks';
 export type { EdgePoint };
 
 /**
- * A block as the network payload carries it: power / occupancy / availability
- * state, plus its member segments. The geometry keys (`length_cm`,
+ * A block as the network payload carries it: power / occupancy state, plus its member segments. The geometry keys (`length_cm`,
  * `min_radius_cm`, `grade_percent`, `speed_limit_kmh`) are the server's derived
  * aggregate reads over the members — per-segment geometry is read from
  * `segments`, never written here.
@@ -27,15 +26,13 @@ export type { EdgePoint };
 export interface BlockInfo {
   block_id?: string;
   name?: string;
-  state?: string;
-  disabled?: boolean;
-  manual?: boolean;
-  occupied_by?: string | null;
-  is_holding_point?: boolean;
-  allowed_travel_directions?: string[];
+  // Live fields (design_v2.md "Live fields", A block's live fields).
+  reads_occupied?: boolean;
+  train_id?: string | null;
+  claimed_by_train_id?: string | null;
   // Single signed track voltage (-12V..+12V): magnitude is the drive level,
   // sign is polarity. The voltage debug overlay splits it into + / - rails.
-  current_voltage?: number;
+  voltage?: number;
   // Grouping: the member segment ids, and each member's own geometry.
   segment_ids?: string[];
   segments?: SegmentInfo[];

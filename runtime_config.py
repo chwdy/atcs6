@@ -6,7 +6,7 @@ Seeded from the documented defaults; mutated through the settings API
 (`routes/settings.py`).
 
 How it takes effect without code churn: the consuming modules already read these
-values as *module-level globals* (e.g. `STOPPED_SPEED_THRESHOLD_KMH`), and a
+values as *module-level globals* (e.g. `HOLD_TIME_S` in `train_runtime`), and a
 module-global name lookup is dynamic — it re-reads the module's attribute on
 every access. So `apply_updates` writes the new value back onto every module
 that holds that name (the `_TARGETS` map below), and existing consumer code

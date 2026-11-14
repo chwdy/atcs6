@@ -20,6 +20,7 @@ import {
   showConfirmModal,
   renderBitToggle,
   getBlockStateColor,
+  blockStatus,
   applyStructuralLock,
 } from '../lib/helpers';
 import { FORBIDDEN_TRACK_BITS, isSquareCornerSwitch } from '../lib/constants';
@@ -1754,14 +1755,15 @@ export class Editor {
                 ? (() => {
                     const block = this.cachedNetwork?.blocks?.[track.block_section_id];
                     const blockColor = blockColorCss(track.block_section_id);
-                    const stateColor = block ? getBlockStateColor(block.state) : 'var(--text-secondary)';
+                    const status = block ? blockStatus(block) : null;
+                    const stateColor = status ? getBlockStateColor(status) : 'var(--text-secondary)';
                     return `
                 <div class="property-group-header">Block</div>
                 <div class="property-item-row">
                     <div class="entity-card" style="--card-accent: ${blockColor}">
                         <div class="entity-card-body">
                             <span class="entity-card-id">${track.block_section_id}</span>
-                            <span class="entity-card-state" style="color: ${stateColor}">${block ? block.state : 'UNKNOWN'}</span>
+                            <span class="entity-card-state" style="color: ${stateColor}">${status ? status.toUpperCase() : 'UNKNOWN'}</span>
                         </div>
                         ${copyIdButton(track.block_section_id, 'Block ID')}
                         <button class="edit-btn edit-block-btn" data-block-id="${track.block_section_id}">Edit</button>

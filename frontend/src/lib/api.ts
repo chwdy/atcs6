@@ -847,8 +847,8 @@ export class API implements LayoutDataClient, SimClient {
 
   // === Block Management (grouping + power + occupancy: /api/blocks) ===
   //
-  // A `Block` groups one or more segments and owns occupancy,
-  // availability, power and the static travel policy. Geometry is NOT edited
+  // A `Block` groups one or more segments and is the unit of power and
+  // occupancy. Geometry is NOT edited
   // here — that is the segment surface above. Every id in this section is a
   // BLOCK id.
 
@@ -882,9 +882,8 @@ export class API implements LayoutDataClient, SimClient {
   }
 
   /**
-   * Update block config / availability (name, is_holding_point, disabled,
-   * manual, allowed_travel_directions). Geometry is rejected here — patch the
-   * member segments instead.
+   * Update block config (name). Geometry is rejected here — patch the member
+   * segments instead.
    */
   async updateBlock(blockId: string, data: unknown): Promise<any> {
     return this._request(

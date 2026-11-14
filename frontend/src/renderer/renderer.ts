@@ -234,7 +234,7 @@ class Renderer {
   _pendingResizeFrame!: number | null;
   _pendingFlush!: { world: boolean; live: boolean; reason: string } | null;
   _flushFrame!: number | null;
-  debugFlags!: { showBlocks: boolean; showTunnelLinks: boolean; showSwitches?: boolean; showTileDirections?: boolean; showBlockDirections?: boolean; showOneWayDirections?: boolean; showBlockVoltage?: boolean; showBlockLength?: boolean; showBlockRadius?: boolean; showBlockSpeedLimit?: boolean };
+  debugFlags!: { showBlocks: boolean; showTunnelLinks: boolean; showSwitches?: boolean; showTileDirections?: boolean; showBlockDirections?: boolean; showBlockVoltage?: boolean; showBlockLength?: boolean; showBlockRadius?: boolean; showBlockSpeedLimit?: boolean };
   _resizeObserver?: ResizeObserver;
   // Derived per-network state, set by _updateNetworkState.
   trackMap!: Record<string, Track>;
@@ -502,7 +502,6 @@ class Renderer {
       showSwitches: on('switches'),
       showTileDirections: on('tile-directions'),
       showBlockDirections: on('block-dir'),
-      showOneWayDirections: on('oneway-dir'),
       showBlockVoltage: on('block-voltage'),
       showBlockLength: on('block-length'),
       showBlockRadius: on('block-radius'),
@@ -815,10 +814,6 @@ class Renderer {
     // operator set on that tile.
     this.drawTileDirectionDebug();
 
-    // One-way constraint arrows: amber per-tile arrows on blocks that allow only
-    // one direction. Same inspection z-order as the forward-dir arrows above.
-    this.drawOneWayDirectionDebug();
-
     // Box/lasso-select overlay (also paints the inspect "peek" highlight).
     this.drawBoxSelection();
     this.drawBoxSelectRect();
@@ -1066,8 +1061,7 @@ class Renderer {
    * Block forward / reverse direction arrows. For each block in scope, draw a
    * green F arrow at the forward terminal and a cyan R arrow at the reverse
    * terminal — each tracing that terminal tile's track segment and pointing out
-   * of the block, the same edge-to-edge style as the per-tile arrows. A
-   * direction not in the block's `allowed_travel_directions` is drawn dimmed.
+   * of the block, the same edge-to-edge style as the per-tile arrows.
    * Scope is every block when the Debug panel's "Block dir" toggle is on,
    * otherwise just the block the editor is focused on (if any).
    */
@@ -1087,9 +1081,6 @@ class Renderer {
       const block: any = blocks[id];
       const ordered = block && block.ordered_tiles;
       if (!Array.isArray(ordered) || ordered.length === 0) continue;
-      const allowed: string[] = Array.isArray(block.allowed_travel_directions)
-        ? block.allowed_travel_directions
-        : ['forward', 'reverse'];
       // forward = success-green, reverse = info-cyan — two distinct accents.
       const fwd = blockTerminalArrowSpec(ordered, this.trackMap, 'forward');
       const rev = blockTerminalArrowSpec(ordered, this.trackMap, 'reverse');
@@ -1101,14 +1092,12 @@ class Renderer {
       if (fwd) {
         this._drawTileForwardArrow(fwd.x, fwd.y, fwd.entryEdge, fwd.exitEdge, p.success, {
           letter: 'F',
-          dimmed: !allowed.includes('forward'),
           laneOffset: lane,
         });
       }
       if (rev) {
         this._drawTileForwardArrow(rev.x, rev.y, rev.entryEdge, rev.exitEdge, p.info, {
           letter: 'R',
-          dimmed: !allowed.includes('reverse'),
           laneOffset: lane,
         });
       }
@@ -1127,51 +1116,21 @@ class Renderer {
    */
   drawTileDirectionDebug(): void {
     if (!this.debugFlags?.showTileDirections) return;
-    this._drawBlockDirectionArrows('forward');
+    this._drawBlockDirectionArrows();
   }
 
   /**
-   * One-way block direction arrows. For every block whose travel is restricted
-   * to a single direction (not "both"), draw an amber arrow along each of its
-   * tiles pointing the way travel is actually allowed: forward-only points the
-   * same way as the "Forward dir" arrows, reverse-only points the opposite way
-   * (its arrowheads read as "<"). Blocks that allow both directions are skipped,
-   * so the only marks on screen are the one-way constraints. Amber sets these
-   * apart from the green forward / cyan reverse arrows. Same per-tile,
-   * on-the-track geometry as drawTileDirectionDebug. Inspection only, gated by
-   * the Debug panel's "One-way dir" toggle.
+   * The per-tile overlay behind the Forward-dir debug toggle: for each block,
+   * draws a green arrow along each tile from the edge forward travel enters to
+   * the edge it exits, using forwardArrowEdges for the on-track geometry.
    */
-  drawOneWayDirectionDebug(): void {
-    if (!this.debugFlags?.showOneWayDirections) return;
-    this._drawBlockDirectionArrows('oneway');
-  }
-
-  /**
-   * Shared per-tile direction-arrow overlay behind the Forward-dir and
-   * One-way-dir debug toggles. For each block (every block in `'forward'` mode,
-   * only one-way blocks in `'oneway'` mode) draws an arrow along each tile from
-   * the edge forward travel enters to the edge it exits, using forwardArrowEdges
-   * for the on-track geometry. `'forward'` is green and dims blocks that forbid
-   * forward travel; `'oneway'` is amber and swaps the arrow for reverse-only
-   * blocks so the head points the way travel is allowed.
-   */
-  private _drawBlockDirectionArrows(mode: 'forward' | 'oneway'): void {
+  private _drawBlockDirectionArrows(): void {
     const blocks = this.currentBlocks;
     if (!blocks || !this.trackMap) return;
     const p = getCanvasPalette();
     for (const block of Object.values(blocks) as any[]) {
       const ordered = block && block.ordered_tiles;
       if (!Array.isArray(ordered) || ordered.length === 0) continue;
-      const allowed: string[] = Array.isArray(block.allowed_travel_directions)
-        ? block.allowed_travel_directions
-        : ['forward', 'reverse'];
-      const hasForward = allowed.includes('forward');
-      const hasReverse = allowed.includes('reverse');
-      // 'oneway' mode draws only one-way blocks: skip both-allowed (the common
-      // case) and, defensively, neither-allowed — no single direction to point.
-      if (mode === 'oneway' && hasForward === hasReverse) continue;
-      const dimmed = mode === 'forward' && !hasForward;
-      const color = mode === 'forward' ? p.success : p.warning;
       const n = ordered.length;
       for (let i = 0; i < n; i++) {
         const x = ordered[i][0];
@@ -1186,11 +1145,8 @@ class Renderer {
         const edges = forwardArrowEdges(track.track_bits || 0, storedEntry, arrivalDir, departDir);
         if (!edges) continue;
         // forwardArrowEdges gives [entry, exit] for the forward direction, with
-        // the arrowhead at exit. A reverse-only one-way block traces the same
-        // segment but swaps the two so the head points backward along the tile
-        // order.
-        const [a, b] = mode === 'oneway' && !hasForward ? [edges[1], edges[0]] : edges;
-        this._drawTileForwardArrow(x, y, a, b, color, mode === 'forward' ? { dimmed } : {});
+        // the arrowhead at exit.
+        this._drawTileForwardArrow(x, y, edges[0], edges[1], p.success);
       }
     }
   }
@@ -1202,8 +1158,7 @@ class Renderer {
    * track renderer uses — so the arrow lies on the track centerline and meets
    * the neighbouring tiles' arrows at the shared edge, keeping a straight run's
    * arrows collinear instead of bobbing tile to tile. `opts.letter` adds a
-   * centered F / R pill (for the block arrows); `opts.dimmed` fades the whole
-   * arrow (a direction the block does not allow).
+   * centered F / R pill (for the block arrows).
    */
   _drawTileForwardArrow(
     x: number,
@@ -1211,7 +1166,7 @@ class Renderer {
     entryEdge: string,
     exitEdge: string,
     color: string,
-    opts: { letter?: string; dimmed?: boolean; laneOffset?: number } = {}
+    opts: { letter?: string; laneOffset?: number } = {}
   ): void {
     const cx = this.gridToScreenX(x, y);
     const cy = this.gridToScreenY(x, y);
@@ -1272,7 +1227,6 @@ class Renderer {
     const headW = headLen * 0.52;
     const lineW = Math.min(Math.max(2, this.scale * 0.9), 4);
 
-    if (opts.dimmed) this.ctx.globalAlpha = 0.25;
     this.ctx.strokeStyle = color;
     this.ctx.fillStyle = color;
     this.ctx.lineWidth = lineW;

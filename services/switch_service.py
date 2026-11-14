@@ -9,8 +9,9 @@ more than one collaborator:
     the outcome on the event stream rather than a synchronous return.
 
 The HTTP layer in ``routes/switches.py`` parses JSON and maps the typed
-exceptions raised here to status codes. Unlike ``speed_profile_service``
-this layer takes no ``simulation_lock`` -- the switch routes never did.
+exceptions raised here to status codes. The routes hold
+``state.simulation_lock`` around each call that changes a switch, so this
+layer takes no lock itself.
 """
 
 from __future__ import annotations
@@ -88,10 +89,11 @@ def create_switch_at_track(
 def update_switch(
     state: AppState, switch_id: str, *, data: Dict[str, Any]
 ) -> Switch:
-    """Apply an update to a switch's config and/or availability flags.
+    """Apply an update to a switch's config.
 
-    ``disabled`` and ``manual`` are handled here; any remaining fields are
-    forwarded to ``RailwayNetwork.update_switch``.
+    ``manual`` (design_v2.md "Switches", A switch marked manual) is handled
+    here; any remaining fields are forwarded to
+    ``RailwayNetwork.update_switch``.
 
     Raises:
         NotFoundError when no switch has that id.
@@ -101,8 +103,7 @@ def update_switch(
     if switch is None:
         raise NotFoundError("Switch not found")
 
-    # Pull the availability flags out before forwarding the rest; we own
-    # those two here.
+    # Pull out the settings this service owns before forwarding the rest.
     data = dict(data or {})
     physical_settings = {
         name: data.pop(name)
@@ -113,11 +114,7 @@ def update_switch(
         raise ConflictError("Leave Live before changing how the switch works")
     if any(type(value) is not bool for value in physical_settings.values()):
         raise ValidationError("Switch motor and exit settings must be true or false")
-    disabled_change = data.pop("disabled", None)
     manual_change = data.pop("manual", None)
-
-    if disabled_change is not None:
-        switch.disabled = bool(disabled_change)
 
     if manual_change is not None:
         switch.manual = bool(manual_change)
@@ -160,9 +157,11 @@ def request_position_change(
     *,
     new_state: int,
     command_id: Optional[str] = None,
-    manual_override: bool = False,
 ) -> str:
     """Command a switch to MAIN (0) or DIVERGE (1).
+
+    This is the operator's throw, so a switch marked manual is thrown
+    (design_v2.md "Switches", A switch marked manual).
 
     Routes through ``SwitchManager``, then emits a ``command_result`` event
     on ``NotificationCenter``. The command outcome surfaces on that event
@@ -192,7 +191,7 @@ def request_position_change(
     resolved_command_id = command_id or str(uuid.uuid4())
 
     success, message = switch_manager.request_position_change(
-        switch_id, new_state, manual_override=bool(manual_override)
+        switch_id, new_state, manual_override=True
     )
 
     if success:

@@ -183,6 +183,7 @@ These are all the things the operator can do to trains and switches from the Ope
   - the session state is not Live;
   - the layout has no such switch;
   - the switch's motor is marked unavailable;
+  - the switch is marked manual;
   - the switch's two legs do not each lead to a block of its own, with no other switch between.
 - **Throw a switch.** `PUT /api/switches/<switch_id>/state` throws a switch (see **Switch**, Canonical `Switch.position` mutation workflow). It is refused while the session is not Live (`not_live`), and while the switch is held (`switch_held`, see **Switches**, A held switch is not thrown).
 - **Edit the layout.** The layout is drawn and edited on the Editor screen. Loading a layout, clearing it, and every edit to tiles, segments, blocks, switches and tunnels are refused while the session is Live (`live`), because the rig is wired to the layout it was activated with. Saving a layout is accepted in every session state. Loading or clearing a layout, and any edit that adds, deletes or regroups a block, removes every train; the detectors then find them again.
@@ -315,7 +316,9 @@ A claim is one block deep on purpose. It is how "trains don't hit each other" wo
 
 ## Switches
 
-**A switch with an unavailable motor.** The layout saves whether a switch motor is available and whether trains can leave either leg without a throw. Both settings are edited outside Live. A motor marked unavailable needs no motor binding and is skipped by activation and switch throw tests. The switch still needs its track feed. The runtime refuses to lead a train into the single end of this switch because it does not know where the points lie.
+**A switch with an unavailable motor.** The layout saves whether a switch motor is available (`Switch.motor_unavailable`) and whether trains can leave either leg without a throw (`Switch.allow_exit_from_either_leg`). Both settings are edited outside Live. A motor marked unavailable needs no motor binding and is skipped by activation and switch throw tests. The switch still needs its track feed. The runtime refuses to lead a train into the single end of this switch because it does not know where the points lie.
+
+**A switch marked manual.** The layout saves whether a switch is marked manual (`Switch.manual`). The runtime never throws a manual switch for a train. The operator throws it from the page, and the activation throw throws it like any other switch. When a train's way to its destination needs a manual switch thrown, the train waits with `switch_held`. Turning alternate arrivals on for a manual switch is refused (see **Running a train**, Alternate arrivals). The reason: a switch the operator sets by hand stays where the operator left it while trains run.
 
 How a switch is thrown, and what a throw does on the rig, is under **Switch**. This section says when the runtime throws one and when a throw is refused.
 
@@ -356,7 +359,7 @@ A train that cannot be given a claim and is not yet wholly in its front block ke
 
 - `block_taken`: the next block ahead is taken by another train (see **Claiming the next block**, A taken block);
 - `switch_against`: a switch met from a leg is set to the other leg, and the train has no destination;
-- `switch_held`: a switch that has to be thrown for the train's destination or for alternate arrivals is held, or the runtime may not throw it yet;
+- `switch_held`: a switch that has to be thrown for the train's destination or for alternate arrivals is held, is marked manual, or the runtime may not throw it yet;
 - `track_ahead_taken`: the train is in a passing block and the block after its next block ahead is taken (see **Switches**, Alternate arrivals);
 - `own_block`: the next block ahead is one of the train's own blocks.
 
@@ -820,6 +823,7 @@ Segment create, extend, delete, split, tile removal and `name` edits each have t
 - **An operator's throw is not forced.** `SwitchManager.request_position_change(...)` drives the throw on every accepted command, without force. Whether a coil fires is then decided by the last alignment the output itself drove (`get_last_throw`), not by whether `Switch.position` changed. A command that names the alignment the model already holds therefore still re-seats points the model has drifted from.
 - **Who checks and who writes.** `SwitchManager.request_position_change(...)` performs the check, because whether a switch is held depends on every train's blocks and claims, which the runtime holds. `Switch.apply_position_change(new_position)` performs the write only, and the write sets `position_known = True`. It is a pure data operation: it drives no motor, and its caller issues the throw.
 - **One entry point for a throw while Live.** `SwitchManager.request_position_change(switch_id, new_position)` is the single entry point for an operator's throw request and for the runtime's throw for a destination. Every page and API handler that throws a switch goes through it. It runs the whole check, write and throw at once, and returns the `(success, reason)` result for that request.
+- **Only the operator's throw moves a manual switch.** `request_position_change(...)` takes `manual_override`, a flag that says the throw comes from the operator. An operator's throw passes `True`. The runtime's throw for a destination or for alternate arrivals passes `False`, and it is refused for a switch marked manual (see **Switches**, A switch marked manual).
 - **The endpoint.** `PUT /api/switches/<switch_id>/state` with body `{ "state": int }` is the operator's throw request, where `state` is the commanded `Switch.position` value. The request service calls `SwitchManager.request_position_change(switch_id, position)` with `position` taken from `state`. The HTTP handler only maps the result to an HTTP reply.
 - **Operating-throw gate.** `SwitchManager.request_position_change(...)` is refused while the session is not Live, before any stage runs. It returns `success = False` with `reason = "not_live"`. A throw command reaches a coil, and the coil belongs to whoever owns the outputs; while the session is not Live, the runtime does not.
 - **How the gate reads the session.** The gate reads `AppState.session_state()`, like every other reader (see **Session state**).
@@ -1368,7 +1372,7 @@ The live part of the snapshot is these fields and no others.
 | --- | --- |
 | `tunnels` | the whole section |
 | `blocks` | per block: `block_id`, `name`, `length_cm`, `ordered_tiles`, `segment_ids`, `segments` |
-| `switches` | per switch: `switch_id`, `x`, `y`, `main_length_cm`, `diverge_length_cm`, `main_radius_cm`, `diverge_radius_cm`, `switch_type`, `name`, `notes` |
+| `switches` | per switch: `switch_id`, `x`, `y`, `main_length_cm`, `diverge_length_cm`, `main_radius_cm`, `diverge_radius_cm`, `switch_type`, `name`, `notes`, `manual`, `motor_unavailable`, `allow_exit_from_either_leg` |
 | `tracks` | per tile: every field, except `switch_state` on a tile that holds a switch |
 
 - **`layout_version` names one layout.** It is a hash of the layout part, and the endpoint computes it on every read. No component stores it or bumps it. Two reads of the same layout carry the same `layout_version`. A layout loaded from a save keeps its `layout_version` across a server restart.

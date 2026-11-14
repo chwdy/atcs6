@@ -28,7 +28,7 @@ from persistence import PersistenceManager
 from simulation import SimulationController, build_network_payload
 
 # The live train map every reply carries (design_v2.md "Live fields").
-SIBLING_GROUPS = ("running_trains",)
+SIBLING_GROUPS = ("trains",)
 
 
 @pytest.fixture
@@ -73,10 +73,22 @@ def test_request_with_current_version_gets_live_fields_only(client):
     assert body["session_state"] == full["session_state"]
 
     assert set(body["live_blocks"]) == set(full["blocks"])
+    # design_v2.md "Live fields": a block's live fields are these and no
+    # others.
     for live in body["live_blocks"].values():
         assert not BLOCK_LAYOUT_FIELDS & set(live)
-        assert "reads_occupied" in live and "train_id" in live
+        assert set(live) == {
+            "reads_occupied", "train_id", "claimed_by_train_id", "voltage",
+        }
     assert set(body["live_switches"]) == set(full["switches"])
+    # A switch's live fields are `position`, `position_known` and `held`;
+    # its saved settings are layout.
+    for live in body["live_switches"].values():
+        assert {"position", "position_known", "held"} <= set(live)
+        assert not {"manual", "motor_unavailable", "allow_exit_from_either_leg"} & set(live)
+    # A tile's only live field is `switch_state`.
+    for live in body["live_tracks"]:
+        assert set(live) == {"x", "y", "switch_state"}
 
     live_tiles = {(t["x"], t["y"]) for t in body["live_tracks"]}
     expected = {
@@ -117,7 +129,7 @@ def test_live_fields_do_not_change_version():
 
     changed = copy.deepcopy(payload)
     block = next(iter(changed["blocks"].values()))
-    block.update(reads_occupied=True, train_id="T9", current_voltage=6.0)
+    block.update(reads_occupied=True, train_id="T9", voltage=6.0)
     switch = next(iter(changed["switches"].values()))
     switch.update(position=1, held=True)
     tile = next(t for t in changed["tracks"] if t["is_switch"])

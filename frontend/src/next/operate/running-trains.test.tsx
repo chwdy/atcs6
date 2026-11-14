@@ -26,7 +26,7 @@ const train = (over: Record<string, unknown>) => ({
 const NETWORK = {
   operation_mode: 'real_hardware',
   blocks: { B_LEFT: { block_id: 'B_LEFT', name: 'Left' }, B_MAIN: { block_id: 'B_MAIN', name: 'Main' } },
-  running_trains: {
+  trains: {
     T2: train({ train_id: 'T2', name: 'T2', state: 'waiting', knob_volts: 6, waiting_reason: 'block_taken' }),
     T10: train({ train_id: 'T10', name: 'T10', state: 'lost', lost: true }),
     T1: train({ state: 'moving', knob_volts: 6, claimed_block_id: 'B_MAIN' }),
@@ -50,7 +50,7 @@ describe('RunningTrainsRow', () => {
   afterEach(() => {
     render(null, root);
     root.remove();
-    stateManager.updateFromNetwork({ operation_mode: 'simulation', running_trains: {} });
+    stateManager.updateFromNetwork({ operation_mode: 'simulation', trains: {} });
     vi.restoreAllMocks();
   });
 
@@ -112,7 +112,7 @@ describe('RunningTrainsRow', () => {
     const sliders = [...root.querySelectorAll('input[type=range]')] as HTMLInputElement[];
     expect(sliders.map((s) => s.disabled)).toEqual([false, false, true]);
 
-    stateManager.updateFromNetwork({ ...NETWORK, running_trains: { T1: train({}) } });
+    stateManager.updateFromNetwork({ ...NETWORK, trains: { T1: train({}) } });
     await act(async () => {
       liveVersion.value++;
     });

@@ -7,7 +7,7 @@
  * thrown (design_v2.md "Switches", A held switch is not thrown).
  */
 import { api } from '../../lib/api';
-import { availabilityStateToFlags, deriveAvailabilityState } from '../../lib/helpers';
+import { availabilityStateToFlags, deriveAvailabilityState, MANUAL_SWITCH_HELP } from '../../lib/helpers';
 import { stateManager } from '../../lib/state-manager';
 import { showToast } from '../../lib/toast';
 import { Segment, sendChange } from './block-panel';
@@ -15,10 +15,10 @@ import { CopyId } from './copy-id';
 import { liveVersion } from './live';
 import type { OperateHost } from './operate-state';
 
+// `Switch.manual` (design_v2.md "Switches", A switch marked manual).
 const AVAILABILITY_OPTIONS = [
-  { value: 'available', label: 'Normal', title: 'Normal' },
-  { value: 'manual', label: 'Manual', title: 'Manual — alternate arrivals skip it and a plain throw is refused' },
-  { value: 'disabled', label: 'Disabled', title: 'Disabled — treated as missing track' },
+  { value: 'available', label: 'Normal', title: 'Normal — trains throw this switch when they need it' },
+  { value: 'manual', label: 'Manual', title: MANUAL_SWITCH_HELP },
 ];
 
 /** `Switch.position`: 0 is the main route, 1 the diverging one. */
@@ -88,7 +88,7 @@ export function SwitchPanel({ host, switchId }: { host: OperateHost; switchId: s
         {supportsAlternate && !sw.motor_unavailable && (
           <div class="op-row">
             <span>{alternating ? 'Alternate arrivals on' : 'Thrown by hand'}</span>
-            <button type="button" class="btn btn-sm" disabled={!!sw.manual || !!sw.disabled}
+            <button type="button" class="btn btn-sm" disabled={!!sw.manual}
               onClick={() => void sendChange('switch mode', () => api.setSwitchAlternate(switchId, !alternating), host)}>
               {alternating ? 'Turn off' : 'Alternate arrivals'}
             </button>
@@ -110,6 +110,7 @@ export function SwitchPanel({ host, switchId }: { host: OperateHost; switchId: s
             void sendChange('availability', () => api.updateSwitch(switchId, availabilityStateToFlags(v)), host)
           }
         />
+        <div class="text-xxs text-muted">{MANUAL_SWITCH_HELP}</div>
       </div>
     </div>
   );

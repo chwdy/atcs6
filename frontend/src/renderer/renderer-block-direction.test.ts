@@ -112,7 +112,7 @@ describe('drawBlockDirectionOverlay — single-tile blocks', () => {
     const stub = makeStub(rec, {
       debugFlags: { showBlockDirections: true },
       currentBlocks: {
-        B1: { ordered_tiles: [[0, 0, 'W']], allowed_travel_directions: ['forward', 'reverse'] },
+        B1: { ordered_tiles: [[0, 0, 'W']] },
       },
       trackMap: { '0,0': { track_bits: 2 } },
     });

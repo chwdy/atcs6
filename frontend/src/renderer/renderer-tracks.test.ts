@@ -97,25 +97,12 @@ describe('RendererTrackHandler', () => {
       expect(blockTrackColor(null)).toBeNull();
     });
 
-    it('delegates each live state to the --block-* token consumer', () => {
-      expect(blockTrackColor({ state: 'occupied' })).toBe('token:occupied');
-      expect(blockTrackColor({ state: 'reserved' })).toBe('token:reserved');
-      expect(blockTrackColor({ state: 'free' })).toBe('token:free');
-      expect(blockTrackColor({ state: 'caution' })).toBe('token:caution');
-      expect(blockTrackColor({})).toBe('token:free'); // missing state -> free
-      expect(blockTrackColor({ state: 'mystery' })).toBeNull(); // unknown -> default
-    });
-
-    it('maps availability (disabled/manual) to its --block-* token', () => {
-      expect(blockTrackColor({ disabled: true })).toBe('token:disabled');
-      expect(blockTrackColor({ manual: true })).toBe('token:manual');
-    });
-
-    it('lets availability override live state, with disabled winning over manual', () => {
-      // A manual or disabled block reads its availability token even when occupied.
-      expect(blockTrackColor({ manual: true, state: 'occupied' })).toBe('token:manual');
-      expect(blockTrackColor({ disabled: true, state: 'occupied' })).toBe('token:disabled');
-      expect(blockTrackColor({ disabled: true, manual: true, state: 'occupied' })).toBe('token:disabled');
+    it('colours a block from its live fields through the --block-* token consumer', () => {
+      expect(blockTrackColor({ reads_occupied: true })).toBe('token:occupied');
+      expect(blockTrackColor({ train_id: 'T1' })).toBe('token:free'); // the detector decides
+      expect(blockTrackColor({ claimed_by_train_id: 'T1' })).toBe('token:reserved');
+      expect(blockTrackColor({ reads_occupied: false, train_id: null })).toBe('token:free');
+      expect(blockTrackColor({})).toBe('token:free');
     });
   });
 

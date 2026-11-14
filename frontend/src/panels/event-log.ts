@@ -206,13 +206,7 @@ export function formatEventTime(seconds: number): string {
     )}`;
 }
 
-/** Short label for an entity chip. The walk-position ref packs its run id and
- *  index as `run#index`, so show just the index — the run is already named by
- *  its own sibling chip on the same event. */
+/** Short label for an entity chip: the entity's own id. */
 export function entityLabel(ref: EventEntityRef): string {
-    if (ref.entity_type === 'walk_position') {
-        const hash = ref.entity_id.lastIndexOf('#');
-        if (hash >= 0) return `task ${ref.entity_id.slice(hash + 1)}`;
-    }
     return ref.entity_id;
 }

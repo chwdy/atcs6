@@ -23,7 +23,7 @@ from persistence import PersistenceManager
 from track import Tile
 from block import Block
 from switch import Switch
-from enums import Direction, BlockState
+from enums import Direction
 from tests.segment_test_helpers import make_segment_block, make_segment_block_with_tracks
 
 
@@ -190,61 +190,6 @@ class TestBlockRoutes:
         make_segment_block(app_state.network, "BLK_001", "Test")
         response = client.patch("/api/blocks/BLK_001", json={"length_cm": 50.0})
         assert response.status_code == 400
-
-    def test_update_block_allowed_travel_directions_one_way(
-        self, client, app_state
-    ):
-        """PATCH should set a one-way `allowed_travel_directions` policy and
-        round-trip it through `to_dict` (sorted list)."""
-        block = make_segment_block(app_state.network, "BLK_001", "Test")
-        response = client.patch(
-            "/api/blocks/BLK_001",
-            json={"allowed_travel_directions": ["forward"]},
-        )
-        assert response.status_code == 200
-        data = response.get_json()
-        assert data["allowed_travel_directions"] == ["forward"]
-        # The field is actually mutated on the entity, as a set.
-        assert block.allowed_travel_directions == {"forward"}
-
-    def test_update_block_allowed_travel_directions_both(
-        self, client, app_state
-    ):
-        """PATCH with both directions stores the full bidirectional policy."""
-        make_segment_block(app_state.network, "BLK_001", "Test")
-        response = client.patch(
-            "/api/blocks/BLK_001",
-            json={"allowed_travel_directions": ["reverse", "forward"]},
-        )
-        assert response.status_code == 200
-        data = response.get_json()
-        assert data["allowed_travel_directions"] == ["forward", "reverse"]
-
-    def test_update_block_allowed_travel_directions_empty_rejected(
-        self, client, app_state
-    ):
-        """An empty set is rejected with 400 — a block must allow at least
-        one direction (it defaults to both, never none)."""
-        block = make_segment_block(app_state.network, "BLK_001", "Test")
-        response = client.patch(
-            "/api/blocks/BLK_001",
-            json={"allowed_travel_directions": []},
-        )
-        assert response.status_code == 400
-        # The block's policy is left untouched on rejection.
-        assert block.allowed_travel_directions == {"forward", "reverse"}
-
-    def test_update_block_allowed_travel_directions_unknown_rejected(
-        self, client, app_state
-    ):
-        """An unknown direction token is rejected with 400."""
-        block = make_segment_block(app_state.network, "BLK_001", "Test")
-        response = client.patch(
-            "/api/blocks/BLK_001",
-            json={"allowed_travel_directions": ["sideways"]},
-        )
-        assert response.status_code == 400
-        assert block.allowed_travel_directions == {"forward", "reverse"}
 
     def test_delete_block_ungroups(self, client, app_state):
         """DELETE /api/blocks/<block_id> dissolves the grouping (ungroup)."""
@@ -823,3 +768,37 @@ suite. Live switch, speed-profile, scale, train-route CRUD, and train-position
 contracts are covered above; removed v0 train commands are pinned as 404s so a
 stale compatibility surface cannot return silently.
 """
+
+
+# design_v2.md "About this document", One thread at a time: every web request
+# holds `state.simulation_lock` while it changes runtime state, layout edits
+# included.
+@pytest.mark.parametrize(
+    "service, name, method, url, body, error",
+    [
+        ("block_service", "create_block", "post", "/api/blocks", {"segment_ids": ["S"]}, "validation"),
+        ("block_service", "delete_block", "delete", "/api/blocks/B", None, "not_found"),
+        ("block_service", "add_segment_to_block", "post", "/api/blocks/B/segments", {"segment_id": "S"}, "not_found"),
+        ("block_service", "remove_segment_from_block", "delete", "/api/blocks/B/segments/S", None, "not_found"),
+        ("segment_service", "create_segment_with_tracks", "post", "/api/segments", {"positions": [[0, 0]]}, "validation"),
+        ("segment_service", "delete_segment", "delete", "/api/segments/S", None, "not_found"),
+        ("segment_service", "extend_segment", "post", "/api/segments/S/extend", {"positions": [[0, 0]]}, "not_found"),
+        ("segment_service", "add_tracks_to_segment", "post", "/api/segments/S/tracks", {"positions": [[0, 0]]}, "not_found"),
+        ("segment_service", "remove_tracks_from_segment", "delete", "/api/segments/S/tracks", {"positions": [[0, 0]]}, "not_found"),
+    ],
+)
+def test_layout_write_holds_simulation_lock(
+    client, app_state, monkeypatch, service, name, method, url, body, error
+):
+    import services
+    from services import NotFoundError, ValidationError
+
+    seen = []
+
+    def fake(*args, **kwargs):
+        seen.append(app_state.simulation_lock.locked())
+        raise NotFoundError("x") if error == "not_found" else ValidationError("x")
+
+    monkeypatch.setattr(getattr(services, service), name, fake)
+    getattr(client, method)(url, json=body)
+    assert seen == [True]

@@ -165,9 +165,7 @@ def next_block_ahead(
             )
             switch = network.switches.get(switch_id)
             if switch is not None:
-                if switch.disabled:
-                    exits = []
-                elif entry_edge in neighbour.switch_points:
+                if entry_edge in neighbour.switch_points:
                     if switch.motor_unavailable:
                         exits = []
                 elif switch.allow_exit_from_either_leg:

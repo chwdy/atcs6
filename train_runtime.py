@@ -671,7 +671,7 @@ class TrainRuntime:
         switch_id = walk.switch_ids[0]
         preferred = self.alternate_next.get(switch_id)
         switch = self._network.switches.get(switch_id)
-        if preferred is None or switch is None or switch.disabled or switch.manual or switch.motor_unavailable:
+        if preferred is None or switch is None or switch.manual or switch.motor_unavailable:
             return walk, None
         legs = self._legs_from(train.front_block, train.direction, switch_id)
         if legs is None:

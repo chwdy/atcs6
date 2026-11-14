@@ -1,7 +1,8 @@
 """Activation throws every switch to the layout (design_v2.md "Operating
 environment and activation", Activation throws every switch): an activation
 throws every switch with an available motor once to the position the layout
-shows, which makes its position known.
+shows, which makes its position known. A switch marked manual is thrown like
+any other (design_v2.md "Switches", A switch marked manual).
 """
 
 from enums import OperationMode
@@ -23,7 +24,7 @@ def _network_with_switches():
         switches[name] = switch
     switches["SW_A"].position = SwitchState.DIVERGE
     switches["SW_M"].manual = True
-    switches["SW_D"].disabled = True
+    switches["SW_D"].motor_unavailable = True
     return network, switches
 
 
@@ -38,12 +39,13 @@ def test_a_hardware_activation_throws_every_switch_to_the_layout():
     power = sim.switch_power_controller
     assert power.get_last_throw("SW_A") == 1  # thrown to the layout's DIVERGE
     assert switches["SW_A"].position_known is True
-    assert switches["SW_A"].flip_count == 0  # the model's position did not change
-    for skipped in ("SW_M", "SW_D"):
-        assert power.get_last_throw(skipped) is None
-        assert switches[skipped].position_known is False
+    assert switches["SW_A"].position == SwitchState.DIVERGE  # model unchanged
+    assert power.get_last_throw("SW_M") == 0  # the manual switch is thrown too
+    assert switches["SW_M"].position_known is True
+    assert power.get_last_throw("SW_D") is None  # motor unavailable: skipped
+    assert switches["SW_D"].position_known is False
     (event,) = [
         n for n in sim.notification_center.peek_recent(50)
         if n.operation == "throw_all_to_layout"
     ]
-    assert event.payload == {"thrown": ["SW_A"], "skipped": ["SW_D", "SW_M"], "failed": []}
+    assert event.payload == {"thrown": ["SW_A", "SW_M"], "skipped": ["SW_D"], "failed": []}

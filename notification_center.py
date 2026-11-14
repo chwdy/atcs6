@@ -42,12 +42,9 @@ KINDS = frozenset({Kind.DEBUG, Kind.INFO, Kind.WARNING, Kind.ERROR})
 #: `latest_error_for` answers with.
 ERROR_KINDS = frozenset({Kind.WARNING, Kind.ERROR})
 
-#: The accepted `entity_type` values. design_v2.md "Runtime notifications",
-#: Entity types, lists only "train", "block" and "switch"; "route_run",
-#: "walk_position" and "path" are v1 values still accepted here.
-ENTITY_TYPES = frozenset(
-    {"train", "route_run", "walk_position", "path", "block", "switch"}
-)
+#: The `entity_type` values (design_v2.md "Runtime notifications", Entity
+#: types).
+ENTITY_TYPES = frozenset({"train", "block", "switch"})
 
 
 @dataclass(frozen=True)
@@ -212,7 +209,6 @@ class NotificationCenter:
         error: Optional[ErrorRecord] = None,
         payload: Optional[Dict[str, Any]] = None,
         event_time: Optional[float] = None,
-        latch_event: bool = False,
         condition_key: Optional[str] = None,
     ) -> Optional[Notification]:
         """Append one event and return it, or `None` when it was dropped as an
@@ -235,37 +231,28 @@ class NotificationCenter:
                 one case design_v2.md "Units and clocks", Time sampling allows. Never pass
                 `simulation_time`: the stream is wall-clock by design, so a
                 playback-scaled value would not order against its siblings.
-            latch_event: True from a latch writer helper or a latch's
-                consume-side emitter. It exempts the event from the
-                active-condition suppression below and is a control argument
-                only — it is not part of the persisted Event schema and is
-                never stored. The point of the write/consume pair is to show
-                intent and commit separately, so dropping either one as a repeat
-                would hide the very thing the pair exists to show.
             condition_key: Identifies one live suppressible error condition
                 (design_v2.md "Error events", Suppression mechanism). A
                 control argument only — not part of the persisted Event schema
                 and never stored. When it is set on an event that carries an
-                `ErrorRecord` and is not a latch event, this event is that
+                `ErrorRecord`, this event is that
                 condition's current occurrence: the call is dropped while the
                 key is already active with the same `entities`, `operation`,
                 `ErrorRecord.origin`, and `payload`, and a changed fingerprint
                 is appended and replaces the active value. The condition's owner
                 clears the key with `resolve_condition(...)` when its predicate
                 goes false, after which the otherwise-identical event emits
-                again. Events with `error is None`, latch events, and events
-                with no condition key are always appended.
+                again. Events with `error is None` and events with no
+                condition key are always appended.
         """
         refs = list(entities or [])
         data = dict(payload) if payload else {}
 
-        # Suppression applies only to an error-carrying, non-latch event that
-        # names a live condition (design_v2.md "Error events", Suppression
-        # mechanism). Everything else — command results, error-free events,
-        # latch writes/consumptions, and un-keyed errors — is always appended.
-        suppressible = (
-            error is not None and not latch_event and condition_key is not None
-        )
+        # Suppression applies only to an error-carrying event that names a
+        # live condition (design_v2.md "Error events", Suppression mechanism).
+        # Everything else — command results, error-free events and un-keyed
+        # errors — is always appended.
+        suppressible = error is not None and condition_key is not None
         if suppressible:
             active = self._active_conditions.get(condition_key)
             if active is not None and self._same_condition_fingerprint(

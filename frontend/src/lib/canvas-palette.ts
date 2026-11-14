@@ -47,8 +47,6 @@ export interface CanvasPalette {
   blockReserved: string;
   blockOccupied: string;
   blockCaution: string;
-  blockDisabled: string;
-  blockManual: string;
   // train bodies (the outline reuses `ink`)
   trainBody: string;
   trainBodyManual: string;
@@ -96,8 +94,6 @@ const TOKENS: Record<keyof CanvasPalette, string> = {
   blockReserved: '--block-reserved',
   blockOccupied: '--block-occupied',
   blockCaution: '--block-caution',
-  blockDisabled: '--block-disabled',
-  blockManual: '--block-manual',
   trainBody: '--train-body',
   trainBodyManual: '--train-body-manual',
   trainBodyTeardown: '--train-body-teardown',
@@ -142,8 +138,6 @@ const FALLBACK: CanvasPalette = {
   blockReserved: '#04d361',
   blockOccupied: '#ef4444',
   blockCaution: '#fde047',
-  blockDisabled: '#6c6c78',
-  blockManual: '#ff9500',
   trainBody: '#ffffff',
   trainBodyManual: '#ffe066',
   trainBodyTeardown: '#c8a2ff',

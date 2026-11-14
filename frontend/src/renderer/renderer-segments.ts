@@ -18,7 +18,7 @@ import {
   TRACK_WIDTH,
   DEBUG_BLOCK_WIDTH,
 } from '../lib/constants';
-import { getBlockStateColor } from '../lib/helpers';
+import { blockStatus, getBlockStateColor } from '../lib/helpers';
 import { getCanvasPalette, withAlpha } from '../lib/canvas-palette';
 import type { BlockInfo } from './renderer-blocks';
 import type { TileExtentStyle } from './renderer-tracks';
@@ -437,7 +437,7 @@ export class RendererSegmentHandler {
       this.ctx.restore();
 
       const segmentName = segmentInfo.name || '';
-      const blockState = (blockInfo.state || 'FREE').toUpperCase();
+      const blockState = blockStatus(blockInfo).toUpperCase();
       const stateColor = getBlockStateColor(blockState);
 
       const shortId = hoveredSegmentId.length > 10 ? hoveredSegmentId.slice(-6) : hoveredSegmentId;
@@ -510,7 +510,7 @@ export class RendererSegmentHandler {
    * scattering a separate pill per metric.
    *
    * Rows (top to bottom, only the ones whose flag is set):
-   *  - voltage — the owning block's signed `current_voltage` (-12V..+12V) split
+   *  - voltage — the owning block's signed `voltage` (-12V..+12V) split
    *    into a + rail (red, forward polarity) and a − rail (blue, reverse
    *    polarity); 0V leaves both cold. Voltage is a block property: every
    *    segment of a grouped block reads the same feed.
@@ -542,7 +542,7 @@ export class RendererSegmentHandler {
       const rows: Array<{ segments: Array<{ text: string; color: string }>; live: boolean }> = [];
 
       if (opts.voltage) {
-        const v = this._blockOf(blockId).current_voltage || 0;
+        const v = this._blockOf(blockId).voltage || 0;
         const plus = v > 0 ? v : 0;
         const minus = v < 0 ? -v : 0;
         rows.push({

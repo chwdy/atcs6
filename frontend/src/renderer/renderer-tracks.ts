@@ -11,7 +11,7 @@
 // (`new RendererTrackHandler(this)`).
 
 import { getActiveSegments, trackBitsToEdges, isCrossing, TRACK_WIDTH, EDGE_MASKS, OPPOSITE_EDGE } from '../lib/constants';
-import { getBlockStateColor } from '../lib/helpers';
+import { getBlockStateColor, type BlockLiveFields } from '../lib/helpers';
 import { getCanvasPalette, withAlpha } from '../lib/canvas-palette';
 
 export interface EdgePoint {
@@ -49,13 +49,7 @@ export interface Track {
 }
 
 /** The slice of the Renderer the track handler reads through its back-reference. */
-interface TrackBlock {
-  state?: string;
-  disabled?: boolean;
-  manual?: boolean;
-  reads_occupied?: boolean;
-  claimed_by_train_id?: string | null;
-}
+type TrackBlock = BlockLiveFields;
 
 export interface TrackHandlerRenderer {
   ctx: CanvasRenderingContext2D;
@@ -72,32 +66,21 @@ export interface TrackHandlerRenderer {
 }
 
 /**
- * Track fill color for a block, by availability then live state. Availability
- * (disabled/manual) is a separate axis that overrides live state: a disabled
- * block reads grey and a manual-mode block reads orange regardless of
- * occupancy/reservation. Disabled wins over manual, matching
- * deriveAvailabilityState; the grey/orange match the --block-disabled /
- * --block-manual design tokens. Returns null when the block is absent or its
- * state is unrecognized, so the caller keeps its default track color.
+ * Track fill color for a block, by its live fields (design_v2.md "Live
+ * fields"): the detector reading first, then a claim. A train's block that
+ * does not read occupied is not painted occupied, so the track shows what the
+ * detector sees. Returns null when the block is absent, so the caller keeps
+ * its default track color.
  */
-export function blockTrackColor(
-  block: TrackBlock | undefined | null,
-  detectorColor = false,
-): string | null {
+export function blockTrackColor(block: TrackBlock | undefined | null): string | null {
   if (!block) return null;
   // Consume the --block-* design tokens via the canonical resolver, the same
   // path renderer-blocks / train-monitor use (DESIGN_LANGUAGE.md: "Track / block
   // renderers consume these tokens; do not hard-code hex literals at the call
-  // site"). Availability (disabled/manual) overrides live state.
-  if (block.disabled) return getBlockStateColor('disabled');
-  if (block.manual) return getBlockStateColor('manual');
-  const state = detectorColor && typeof block.reads_occupied === 'boolean'
-    ? block.reads_occupied ? 'occupied' : block.claimed_by_train_id ? 'reserved' : 'free'
-    : (block.state || 'free').toLowerCase();
-  if (state === 'occupied' || state === 'reserved' || state === 'free' || state === 'caution') {
-    return getBlockStateColor(state);
-  }
-  return null;
+  // site").
+  return getBlockStateColor(
+    block.reads_occupied ? 'occupied' : block.claimed_by_train_id ? 'reserved' : 'free',
+  );
 }
 
 export class RendererTrackHandler {
@@ -159,8 +142,7 @@ export class RendererTrackHandler {
 
     let trackColor = p.track;
     if (track.block_section_id && this.currentBlocks) {
-      const mode = this.currentNetwork?.operation_mode;
-      const resolved = blockTrackColor(this.currentBlocks[track.block_section_id], !!mode);
+      const resolved = blockTrackColor(this.currentBlocks[track.block_section_id]);
       if (resolved) trackColor = resolved;
     }
 

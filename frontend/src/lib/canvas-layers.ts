@@ -18,7 +18,6 @@ export type LayerId =
   | 'tile-directions'
   | 'blocks'
   | 'block-dir'
-  | 'oneway-dir'
   | 'block-voltage'
   | 'block-length'
   | 'block-radius'
@@ -47,8 +46,6 @@ export const LAYERS: readonly LayerDef[] = [
   { id: 'blocks', label: 'Blocks', group: 'Blocks', redraw: 'world', defaultOn: false },
   // Each block's forward (F) and reverse (R) end arrows.
   { id: 'block-dir', label: 'Block direction', group: 'Blocks', redraw: 'live', defaultOn: false },
-  // An arrow on each tile of a block that allows only one travel direction.
-  { id: 'oneway-dir', label: 'One-way direction', group: 'Blocks', redraw: 'live', defaultOn: false },
   { id: 'block-voltage', label: 'Block voltage', group: 'Blocks', redraw: 'world', defaultOn: false },
   { id: 'block-length', label: 'Block length', group: 'Blocks', redraw: 'world', defaultOn: false },
   { id: 'block-radius', label: 'Block radius', group: 'Blocks', redraw: 'world', defaultOn: false },

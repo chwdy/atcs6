@@ -80,7 +80,6 @@ open, and uses this request for one-off reads and while the stream is down.
     "is_switch": false,
     "switch_id": null,
     "switch_state": null,
-    "switch_states": null,
     "switch_points": {},
     "segment_id": "SEG_4F110A",
     "block_section_id": "BLK_C37589A5",
@@ -103,12 +102,6 @@ open, and uses this request for one-off reads and while the stream is down.
       "min_radius_cm": null,
       "grade_percent": null,
       "speed_limit_kmh": null,
-      "is_holding_point": false,
-      "allowed_travel_directions": ["forward", "reverse"],
-      "disabled": false,
-      "manual": false,
-      "current_voltage": 0.0,
-      "state": "free",
       "reads_occupied": false,
       "train_id": null,
       "claimed_by_train_id": null,
@@ -128,8 +121,6 @@ open, and uses this request for one-off reads and while the stream is down.
       "diverge_radius_cm": null,
       "position": 0,
       "position_known": true,
-      "flip_count": 0,
-      "disabled": false,
       "manual": false,
       "motor_unavailable": false,
       "allow_exit_from_either_leg": false,
@@ -138,7 +129,7 @@ open, and uses this request for one-off reads and while the stream is down.
     }
   },
   "tunnels": [],
-  "running_trains": {},
+  "trains": {},
   "session_state": { "value": "halted", "halt_reason": "not_activated" },
   "operation_environment": "virtual_hardware",
   "operation_mode": "virtual_hardware",
@@ -153,20 +144,24 @@ open, and uses this request for one-off reads and while the stream is down.
 }
 ```
 
+The live fields are the ones design_v2.md **Live fields** lists: per block
+`reads_occupied`, `train_id`, `claimed_by_train_id` and `voltage`; per switch
+`position`, `position_known` and `held`; per switch tile `switch_state`; and
+the `trains` map. `add_train_runtime_fields` in `simulation.py` adds the
+block, switch and train fields when the snapshot is built.
+
 What the code sends, where it differs from design_v2.md **Live fields**:
 
-- The train map is sent as `running_trains`, not `trains`. Each entry is the
-  train entry **Live fields** describes.
-- Each block also carries `state`: `"occupied"` when the block reads occupied
-  or is one of a train's blocks, `"reserved"` when a train holds a claim on it,
-  and `"free"` otherwise. A block whose `state` is `"occupied"` also carries
-  `occupied_by`, the `train_id` of the train whose block it is, or `null`.
-  These two are worked out in `add_train_runtime_fields` in `simulation.py`.
-- Each block carries `current_voltage` as well as `voltage`; both are the
-  voltage `BlockPowerController` last recorded for the block.
-- `disabled` and `manual` on blocks and switches, and `flip_count`,
-  `motor_unavailable` and `allow_exit_from_either_leg` on switches, are sent
-  in the live part.
+- Each switch also carries `alternate_next` in the live part: while alternate
+  arrivals are on for the switch, the position (`0` main, `1` diverge) the next
+  train coming to its toe is sent to, and `null` while they are off. The
+  Operate switch panel reads it to show the alternate-arrivals control.
+- `manual`, `motor_unavailable` and `allow_exit_from_either_leg` on switches
+  are saved settings and are sent in the layout part, which design_v2.md
+  **Layout version** does not list.
+- Each block also carries `min_radius_cm`, `grade_percent` and
+  `speed_limit_kmh` in the layout part, which design_v2.md **Layout version**
+  does not list.
 
 ### GET /api/network/stream
 
@@ -216,7 +211,7 @@ Changes one tile.
 |-------|------|-------------|
 | track_bits | int | New tile geometry. A tile that becomes a switch leaves its segment, and a switch record is made for it. |
 | dead_end_ports | array | Edges (`N`, `E`, `S`, `W`) that end the track. |
-| switch_state | int | `0` = main, `1` = diverge. On a tile that holds a switch, sent to `SwitchManager.request_position_change` when the runtime is present. |
+| switch_state | int | `0` = main, `1` = diverge. On a tile that holds a switch, sent to `SwitchManager.request_position_change` as the operator's throw (a switch marked manual is thrown) when the runtime is present. |
 | segment_id | string | Sets the tile's `segment_id` directly. |
 | force | bool | Confirms a change that would remove a switch. |
 
@@ -456,9 +451,12 @@ switch, or the tile is not next to the segment.
 
 A block groups one or more segments that share one power feed and one
 occupancy detector (design_v2.md **Block**). Geometry is edited on the
-segments; the block requests change grouping, name and the availability flags.
+segments; the block requests change grouping and name.
 
-A block reply is the block's own fields plus `current_voltage`:
+A block reply is the block's own fields. It carries no live field: the
+block's voltage is owned by `BlockPowerController` and is read from
+`GET /api/blocks/{block_id}/voltage`, and the other live fields come with the
+snapshot (design_v2.md **Who owns each part of a payload**).
 
 ```json
 {
@@ -470,12 +468,7 @@ A block reply is the block's own fields plus `current_voltage`:
   "length_cm": 50,
   "min_radius_cm": 40.0,
   "grade_percent": null,
-  "speed_limit_kmh": null,
-  "is_holding_point": false,
-  "allowed_travel_directions": ["forward", "reverse"],
-  "disabled": false,
-  "manual": false,
-  "current_voltage": 0.0
+  "speed_limit_kmh": null
 }
 ```
 
@@ -513,17 +506,14 @@ first with `POST /api/segments/{segment_id}/reverse-orientation`).
 
 ### PATCH /api/blocks/{block_id}
 
-Changes `name`, `is_holding_point`, `allowed_travel_directions` (a non-empty
-list of `"forward"` / `"reverse"`), `disabled` or `manual`.
+Changes the block's `name`. Other keys are ignored, except:
 
 - A geometry field (`length_cm` and the like) is refused with `400`: edit it on
   the segment.
 - `polarity_reversed` is refused with `400`: it is part of the block's
   `block_track` binding, set through `PUT /api/hardware/binding`.
 
-**Response:** the block reply. **Errors:** `404`, `400`, `409`, `410`. Each
-call also adds a `command_result` event (`source` `"Block"`, `command_name`
-`"update_flags"`) to the event stream, on success and on a `409` refusal.
+**Response:** the block reply. **Errors:** `404`, `400`.
 
 ### DELETE /api/blocks/{block_id}
 
@@ -597,8 +587,6 @@ A switch reply:
   "diverge_radius_cm": null,
   "position": 0,
   "position_known": true,
-  "flip_count": 0,
-  "disabled": false,
   "manual": false,
   "motor_unavailable": false,
   "allow_exit_from_either_leg": false
@@ -627,8 +615,9 @@ when the tile already has a switch; `404` when there is no tile; `400`
 
 ### PUT /api/switches/{switch_id}
 
-Changes any of the switch's fields, including `disabled`, `manual`,
-`motor_unavailable` and `allow_exit_from_either_leg`.
+Changes any of the switch's fields, including `manual` (design_v2.md
+**Switches**, A switch marked manual), `motor_unavailable` and
+`allow_exit_from_either_leg`.
 
 **Response:** the switch reply. **Errors:** `400` (also for an empty body),
 `404`, `409` when a physical setting changes while the session is Live. Each
@@ -655,10 +644,11 @@ Throw a switch, and **Switch**).
 ```json
 {
   "state": 1,
-  "command_id": "optional",
-  "manual_override": false
+  "command_id": "optional"
 }
 ```
+
+This is the operator's throw, so a switch marked manual is thrown.
 
 **Responses:**
 
@@ -678,7 +668,7 @@ arrivals).
 
 **Response:** `{"alternate_next": 0}`: the position (`0` main, `1` diverge)
 the switch is set to for the next train, or `null` once turned off. **Errors:** `400` when `enabled` is not a bool; `404`; `409` while
-the session is not Live, when the switch is disabled, manual or has no motor,
+the session is not Live, when the switch is marked manual or has no motor,
 or when its two legs do not each lead to a block of their own.
 
 ---

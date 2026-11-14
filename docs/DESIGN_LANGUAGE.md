@@ -342,8 +342,7 @@ Muted *text* in prose means `--text-secondary`.
 ### Block / track status
 
 The block-state palette has its own tokens. It reuses two accent hues
-(FREE, RESERVED), retunes two (OCCUPIED, CAUTION), and adds two domain-only
-hues for static availability flags. Track / block renderers
+(FREE, RESERVED) and retunes two (OCCUPIED, CAUTION). Track / block renderers
 consume these tokens; do not hard-code hex literals at the call site.
 
 | State | Token | Hex | Semantic |
@@ -352,8 +351,6 @@ consume these tokens; do not hard-code hex literals at the call site.
 | RESERVED | `--block-reserved` | `#04d361` (= `--success-color`) | Go / enter — the next train may proceed |
 | OCCUPIED | `--block-occupied` | `#ef4444` | Train physically present |
 | CAUTION | `--block-caution` | `#fde047` | Restricted entry |
-| DISABLED | `--block-disabled` | `#6c6c78` | Out of service (physical absence) |
-| MANUAL | `--block-manual` | `#ff9500` | Manual override active |
 
 The FREE / RESERVED mapping is deliberate: green is the "enter" signal a
 driver reads on the canvas, so it lives on the state the next train is
@@ -684,34 +681,20 @@ Reference: `.ned-tool` and `.ned-options` in
 
 A row of mutually-exclusive buttons inside a single `var(--bg-dark)` container with a 1px outer border, **no internal dividers**. Buttons inside are flat ghosts — the active accent tint and hover bg-tint give every cell its own legible state without needing vertical hairlines. Active button: `color: var(--accent-hover)`, `background-color: rgba(var(--accent-rgb), 0.18)`. Hover: same accent color, `var(--bg-hover)` background. The container's outline does the grouping. For when to reach for this over a select, tab strip, or checkbox, see §4 "Choosing a selection control."
 
-**Equal-width by default; `fluid` for long labels.** By default each cell takes an equal share of the row. That breaks when the labels differ in length — `Normal | Manual | Disabled` forced into thirds clips the longest word to `Disable…`. When a small fixed set has labels too long for equal cells, add a `fluid` modifier: each cell sizes to its own label and the row wraps to a second line rather than clipping. The set is still small and fixed, so it stays a segment (§4) — `fluid` changes only how the labels fit, not the control. Reach for it whenever a label would otherwise be cut off; don't pre-shrink to a cryptic abbreviation to keep one row, and don't drop to a select just because a label is long.
+**Equal-width by default; `fluid` for long labels.** By default each cell takes an equal share of the row. That breaks when the labels differ in length — three labels of uneven length forced into thirds clip the longest word. When a small fixed set has labels too long for equal cells, add a `fluid` modifier: each cell sizes to its own label and the row wraps to a second line rather than clipping. The set is still small and fixed, so it stays a segment (§4) — `fluid` changes only how the labels fit, not the control. Reach for it whenever a label would otherwise be cut off; don't pre-shrink to a cryptic abbreviation to keep one row, and don't drop to a select just because a label is long.
 
 Reference: `.switch-group` / `.switch-btn` (+ `.switch-group.fluid`, and the `.success` / `.danger` / `.warning` variants) in [components/design-system.css](../static/css/components/design-system.css) is the canonical segmented control — every panel that needs one consumes it directly. The active cell is the accent **tint** (`rgba(var(--accent-rgb), 0.18)` + `--accent-hover`), never a solid fill, and there are **no internal dividers** — the container outline groups the cells and the active tint marks the selection.
 
-**Explaining the options.** A one-line help string under the segment is the
-default; when each option needs its own gloss, stack one line per option
-instead of cramming them into a run-on sentence (`Manual = … Disabled = …`).
-Each line leads with the option term one brightness tier above its
-description, so the column of terms scans like a small legend. Keep it to one
-short clause per option — an option that needs a paragraph belongs in a
-tooltip, not under the control. Reference: `.seg-explain` /
-`.seg-explain-term` in
-[components/design-system.css](../static/css/components/design-system.css),
-rendered by the `explanations` option of `renderAvailabilitySegment`
-([helpers.ts](../frontend/src/lib/helpers.ts)) for the block editor's
-availability control.
+**Explaining the options.** A one-line help string under the segment says
+what the options mean. Keep it to one short clause per option — an option
+that needs a paragraph belongs in a tooltip, not under the control.
 
-**The availability segment shows two flags as one pick.** An entity's
-`disabled` and `manual` flags are independent and may both be true
-(design_new.md, **Entity-editor UI controls**). A segment still fits because
-the flags have a fixed precedence — `disabled` wins (§17 Block state fills) —
-so together they mean one effective state. The segment lights **Disabled**
-whenever `disabled` is true, **Manual** when only `manual` is true, and
-**Normal** otherwise. Each cell writes both flags: Normal
-`{disabled: false, manual: false}`, Manual `{disabled: false, manual: true}`,
-Disabled `{disabled: true, manual: false}`. So picking Disabled clears
-`manual`, and re-enabling the entity returns it to Normal. Flags with no
-precedence between them stay checkboxes (§4).
+**The switch availability segment.** A switch's Normal / Manual segment writes
+`Switch.manual` (design_v2.md **Switches**, A switch marked manual): Normal
+`{manual: false}`, Manual `{manual: true}`. Its help line says that trains
+never throw a manual switch and the operator throws it from the page.
+Reference: `renderAvailabilitySegment` in
+[helpers.ts](../frontend/src/lib/helpers.ts).
 
 ### Tab strip
 
@@ -1047,9 +1030,8 @@ are all disabled. A one-line hint at the top of the panel
 control dims to `opacity: 0.55`.
 
 What stays live is the **operational** set — the controls a dispatcher uses
-while running the railroad: the availability segment (Normal / Manual /
-Disabled), the allowed-travel-direction segment, and panel navigation
-links. Operate's
+while running the railroad: the switch availability segment (Normal /
+Manual) and panel navigation links. Operate's
 block and switch panels hold the same set, plus the switch's **Throw to …**
 button. These keep full contrast, so the live dispatch controls read
 clearly against the dimmed structure. The split line is simple: **typed
@@ -1058,9 +1040,9 @@ toggles and navigation stay live.**
 
 This is one general mechanism, not a per-panel rule: a control opts out of
 the freeze by carrying `data-sim-keep` (on itself or an ancestor), and the
-shared `applyStructuralLock` helper disables everything else. The two segment
-render helpers (`renderAvailabilitySegment`, `renderDirectionSegment`) carry
-the marker, so the Block and Switch panels inherit it.
+shared `applyStructuralLock` helper disables everything else. The switch
+availability render helper (`renderAvailabilitySegment`) carries the marker,
+so the Switch panel inherits it.
 
 Reference: `applyStructuralLock` in
 [lib/helpers.ts](../frontend/src/lib/helpers.ts); `.sim-lock-hint` /
@@ -2224,9 +2206,8 @@ at the call site.
 
 Track geometry fills with the §1 block palette. `blockTrackColor` in
 [renderer-tracks.ts](../frontend/src/renderer/renderer-tracks.ts)
-resolves availability first — DISABLED (grey) wins over MANUAL
-(orange), and both override live state — then the live state
-(occupied / reserved / free / caution) through `getBlockStateColor`.
+resolves the live state (occupied / reserved / free / caution) through
+`getBlockStateColor`.
 An unrecognized state keeps the default track color rather than
 guessing one.
 

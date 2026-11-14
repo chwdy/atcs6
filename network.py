@@ -454,7 +454,7 @@ class RailwayNetwork(SwitchOutputOwner):
         This updates derived data (dead-ends, switch states) when:
         - A tile's track_bits changes
         - A tile is added or removed
-        - A tile's switch_states changes
+        - A tile's switch alignment changes
 
         The wave visits each affected tile once and calls propagate_update().
         """
@@ -1078,18 +1078,6 @@ class RailwayNetwork(SwitchOutputOwner):
                         exc2,
                     )
 
-    def _recorded_block_voltage(self, block_id: str) -> float:
-        """The applied-output voltage recorded for `block_id`, or `0`.
-
-        Read from the `BlockPowerController` (voltage's applied-output mirror is
-        controller-owned, not a `Block` field); `0` when no controller is wired,
-        as in bootstrap or isolated tests.
-        """
-        controller = getattr(self, "power_controller", None)
-        if controller is None:
-            return 0.0
-        return float(controller.get_recorded_voltage(block_id))
-
     def to_dict(self) -> dict:
         """Convert network to dictionary for the live frontend payload.
 
@@ -1097,15 +1085,10 @@ class RailwayNetwork(SwitchOutputOwner):
         """
         return {
             "tracks": [t.to_dict() for t in self.tracks.values()],
-            # `current_voltage` is the applied-output mirror owned by
-            # `BlockPowerController`, not a `Block` field; inject it onto each
-            # block's live payload here (design_v2.md "Data flow to the page",
-            # Live fields). It defaults to `0` when no controller is
-            # wired (bootstrap / isolated tests).
-            "blocks": {
-                k: {**v.to_dict(), "current_voltage": self._recorded_block_voltage(k)}
-                for k, v in self.blocks.items()
-            },
+            # Each block writes its own payload. The live fields, `voltage`
+            # included, are added by `simulation.add_train_runtime_fields`
+            # (design_v2.md "Live fields").
+            "blocks": {k: v.to_dict() for k, v in self.blocks.items()},
             "switches": {
                 k: v.to_dict() for k, v in self.switches.items()
             },

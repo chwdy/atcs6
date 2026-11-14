@@ -10,7 +10,7 @@ function managerWith(network: Record<string, any>): StateManager {
 }
 
 const NETWORK = {
-  running_trains: { T_A: { block_id: 'B1' }, T_B: { block_id: 'B2' } },
+  trains: { T_A: { block_id: 'B1' }, T_B: { block_id: 'B2' } },
   blocks: { B1: { reads_occupied: true }, B2: { reads_occupied: false } },
 };
 

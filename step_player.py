@@ -188,7 +188,6 @@ class StepPlayer:
             name=op.get("name", ""),
             notes=op.get("notes", ""),
         )
-        switch.disabled = bool(op.get("disabled", False))
         network.add_switch(switch)
         return switch.switch_id
 

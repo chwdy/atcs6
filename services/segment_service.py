@@ -17,8 +17,10 @@ mutations:
     deletes that block too.
 
 Lookup raises ``NotFoundError``; bad input raises ``ValidationError``.
-``update_segment`` takes ``state.simulation_lock`` so the per-tick phase loop
-cannot observe a torn read; the other mutations run at edit time.
+``update_segment`` and ``reverse_segment`` take ``state.simulation_lock``
+themselves; ``routes/segments.py`` holds it around every other mutation
+(design_v2.md "About this document"). The lock is not reentrant, so no
+function here calls another that takes it.
 """
 
 from __future__ import annotations

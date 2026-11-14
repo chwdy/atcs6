@@ -253,8 +253,8 @@ class SegmentGeometryManager:
 
         Returns:
             The owning Block. Callers configure geometry (length, speed limit)
-            and block policy (holding point, disabled) through it; its geometry
-            properties delegate to the single member segment.
+            through it; its geometry properties delegate to the single member
+            segment.
 
         Raises:
             ValueError: If segment_id or the owning block's id already exists

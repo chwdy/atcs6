@@ -102,16 +102,6 @@ class TestSwitchService:
         assert updated.main_length_cm == 12.5
 
 
-    def test_disable_free_switch_succeeds(self, state_with_switch_track):
-        """A free switch accepts the availability flags."""
-        state = state_with_switch_track
-        switch_service.create_switch_at_track(state, 5, 0, data={})
-        updated = switch_service.update_switch(
-            state, "SW_5_0", data={"disabled": True, "manual": True}
-        )
-        assert updated.disabled is True
-        assert updated.manual is True
-
     def test_delete_switch_missing_raises_not_found(self, state):
         with pytest.raises(NotFoundError):
             switch_service.delete_switch(state, "NOPE")
@@ -205,28 +195,6 @@ class TestBlockService:
         with pytest.raises(ValidationError):
             block_service.update_block(state, "BLK_GEO", data={"length_cm": 50.0})
 
-
-    def test_disable_free_block_succeeds(self, state):
-        make_segment_block(state.network, "BLK_F")
-        updated = block_service.update_block(
-            state, "BLK_F", data={"disabled": True, "manual": True}
-        )
-        assert updated.disabled is True
-        assert updated.manual is True
-
-    def test_allowed_travel_directions_invalid_raises_validation(self, state):
-        make_segment_block(state.network, "BLK_D")
-        with pytest.raises(ValidationError):
-            block_service.update_block(
-                state, "BLK_D", data={"allowed_travel_directions": ["sideways"]}
-            )
-
-    def test_allowed_travel_directions_valid(self, state):
-        make_segment_block(state.network, "BLK_D2")
-        updated = block_service.update_block(
-            state, "BLK_D2", data={"allowed_travel_directions": ["forward"]}
-        )
-        assert updated.allowed_travel_directions == {"forward"}
 
     def test_delete_block_ungroups_to_own_blocks(self, state):
         """Dissolving a grouping re-homes each member into its own block; the

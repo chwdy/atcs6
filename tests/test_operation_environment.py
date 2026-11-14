@@ -120,7 +120,7 @@ def test_incomplete_virtual_setup_is_not_activated(tmp_path, monkeypatch):
         str(tmp_path / "operation_environment.json"),
     )
     network = RailwayNetwork()
-    network.blocks["B1"] = type("BlockStub", (), {"current_voltage": 0.0})()
+    network.blocks["B1"] = type("BlockStub", (), {})()
     sim = SimulationController(network)
     state = AppState(
         network=network,

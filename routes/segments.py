@@ -6,6 +6,11 @@ translate typed exceptions (ValidationError -> 400, NotFoundError -> 404), and
 serialize. A `Segment` owns geometry only (`ordered_tiles`, `length_cm`,
 `min_radius_cm`, `grade_percent`, `speed_limit_kmh`); occupancy / reservation /
 power / grouping live on its owning `Block` under `/api/blocks`.
+
+A request that changes a segment holds `state.simulation_lock` while it
+writes (design_v2.md "About this document"). `PATCH` and
+`reverse-orientation` take it inside the service; every other write takes it
+here.
 """
 
 from flask import jsonify, request
@@ -60,19 +65,21 @@ def register(app, state: AppState) -> None:
         if not positions:
             return jsonify({"error": "positions required"}), 400
         try:
-            block = segment_service.create_segment_with_tracks(
-                state,
-                segment_id=data.get("segment_id"),
-                positions=positions,
-                name=data.get("name", ""),
-                length_cm=data.get("length_cm", 0.0),
-                speed_limit_kmh=data.get("speed_limit_kmh", data.get("max_speed_kmh")),
-            )
+            with state.simulation_lock:
+                block = segment_service.create_segment_with_tracks(
+                    state,
+                    segment_id=data.get("segment_id"),
+                    positions=positions,
+                    name=data.get("name", ""),
+                    length_cm=data.get("length_cm", 0.0),
+                    speed_limit_kmh=data.get("speed_limit_kmh", data.get("max_speed_kmh")),
+                )
+                # A fresh segment gets its own block; the new segment is that
+                # block's sole member.
+                reply = _serialize(block.segments[0])
         except ValidationError as exc:
             return jsonify({"error": str(exc)}), 400
-        # A fresh segment gets its own block; the new segment is that block's
-        # sole member.
-        return jsonify(_serialize(block.segments[0]))
+        return jsonify(reply)
 
     @app.route("/api/segments/<segment_id>", methods=["PATCH"])
     def update_segment(segment_id: str):
@@ -98,7 +105,8 @@ def register(app, state: AppState) -> None:
         deleting it would leave the block as two pieces.
         """
         try:
-            segment_service.delete_segment(state, segment_id)
+            with state.simulation_lock:
+                segment_service.delete_segment(state, segment_id)
         except NotFoundError:
             return jsonify({"error": "Segment not found"}), 404
         except ValidationError as exc:
@@ -137,31 +145,32 @@ def register(app, state: AppState) -> None:
         if not positions:
             return jsonify({"error": "positions required"}), 400
         try:
-            block = segment_service.extend_segment(
-                state,
-                segment_id,
-                positions=positions,
-                force_overwrite=data.get("force_overwrite", False),
-            )
+            with state.simulation_lock:
+                segment_service.extend_segment(
+                    state,
+                    segment_id,
+                    positions=positions,
+                    force_overwrite=data.get("force_overwrite", False),
+                )
+                reply = _serialize(state.network.get_segment(segment_id))
         except NotFoundError:
             return jsonify({"error": "Segment not found"}), 404
         except ValidationError as exc:
             return jsonify({"error": str(exc)}), 400
-
-        segment = state.network.get_segment(segment_id)
-        return jsonify(_serialize(segment))
+        return jsonify(reply)
 
     @app.route("/api/segments/<segment_id>/tracks", methods=["POST"])
     def add_tracks_to_segment(segment_id: str):
         """Add tracks to a segment by positions."""
         data = request.json or {}
         try:
-            result = segment_service.add_tracks_to_segment(
-                state,
-                segment_id,
-                positions=data.get("positions", []),
-                force=data.get("force", False),
-            )
+            with state.simulation_lock:
+                result = segment_service.add_tracks_to_segment(
+                    state,
+                    segment_id,
+                    positions=data.get("positions", []),
+                    force=data.get("force", False),
+                )
         except NotFoundError:
             return jsonify({"error": "Segment not found"}), 404
         return jsonify(result)
@@ -172,9 +181,10 @@ def register(app, state: AppState) -> None:
         validation."""
         data = request.json or {}
         try:
-            result = segment_service.remove_tracks_from_segment(
-                state, segment_id, positions=data.get("positions", [])
-            )
+            with state.simulation_lock:
+                result = segment_service.remove_tracks_from_segment(
+                    state, segment_id, positions=data.get("positions", [])
+                )
         except NotFoundError:
             return jsonify({"error": "Segment not found"}), 404
         except ValidationError as exc:

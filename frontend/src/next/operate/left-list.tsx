@@ -133,8 +133,8 @@ function EntityList({ host, kind }: { host: OperateHost; kind: 'block' | 'switch
           label={name || id}
           meta={
             kind === 'block'
-              ? e.occupied_by
-                ? `Occupied by ${e.occupied_by}`
+              ? e.train_id
+                ? `Occupied by ${e.train_id}`
                 : undefined
               : e.position === 1
                 ? 'Diverge'

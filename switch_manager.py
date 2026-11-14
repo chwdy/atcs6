@@ -81,11 +81,9 @@ class SwitchManager:
         then drives the throw. Returns the
         `(success, message)` tuple from the data-layer helper.
 
-        `manual_override` (default False) is the operator-override flag for
-        the `disabled` and `manual` availability flags. Without the override, a
-        switch with `Switch.manual == True` rejects the request; with the
-        override, the manual filter is bypassed (the disabled filter always
-        applies regardless).
+        `manual_override` is True for an operator's throw and False for the
+        runtime's own throw for a train. Without it, a switch marked manual
+        refuses the request (design_v2.md "Switches", A switch marked manual).
 
         This is the OPERATING throw, so it needs an operating environment: a
         command that reaches a coil belongs to whoever owns the outputs, and
@@ -285,9 +283,10 @@ class SwitchManager:
 
         A fresh hardware session does not know where any points lie; one pulse
         to `Switch.position` puts them there, so each switch it reaches becomes
-        known. Disabled and manual switches are left alone: automation does not
-        drive them. The write is the position the model already holds, so
-        nothing changes in the model and no flip is counted. Returns the ids
+        known. A switch marked manual is thrown like any other (design_v2.md
+        "Switches", A switch marked manual); only a switch whose motor is
+        marked unavailable is skipped. The write is the position the model
+        already holds, so nothing changes in the model. Returns the ids
         thrown.
         """
         thrown: List[str] = []
@@ -295,7 +294,7 @@ class SwitchManager:
         failed: List[str] = []
         for switch_id in sorted(self._switch_registry):
             switch = self._switch_registry[switch_id]
-            if switch.disabled or switch.manual or switch.motor_unavailable:
+            if switch.motor_unavailable:
                 skipped.append(switch_id)
                 continue
             if self._drive_throw(switch, int(switch.position), force=True) is None:

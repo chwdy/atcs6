@@ -29,12 +29,7 @@ interface TrackLike {
 }
 
 interface AvailabilityEntity {
-  disabled?: boolean;
   manual?: boolean;
-}
-
-interface DirectionEntity {
-  allowed_travel_directions?: string[];
 }
 
 type Coord = [number, number];
@@ -362,68 +357,39 @@ export function renderBitToggle(bit: number, name: string, trackBits: number): s
 }
 
 // ============================================================================
-// AVAILABILITY SEGMENT (Block / Switch)
+// SWITCH AVAILABILITY SEGMENT
 // ----------------------------------------------------------------------------
-// Three-state segmented control per docs/DESIGN_LANGUAGE.md §3:
-//   Available  — disabled=false, manual=false  (default)
-//   Manual     — disabled=false, manual=true   (auto blocks; operator can use)
-//   Disabled   — disabled=true                 (off-limits to everything)
+// Two-state segmented control for `Switch.manual` (design_v2.md "Switches",
+// A switch marked manual):
+//   Normal — manual=false (default)
+//   Manual — manual=true: the runtime never throws it for a train; the
+//            operator throws it from the page.
 //
-// Returns the markup for the segmented control. The caller wires three
-// buttons by ID and applies the chosen state back via the entity PATCH
-// endpoint (`{disabled: ..., manual: ...}`).
-//
-// `entityKind` is used only for ID prefixing so multiple availability
-// segments can coexist on one screen (e.g. block-editor + adjacent switch).
+// Returns the markup for the segmented control. The caller wires the two
+// buttons by ID and sends the chosen state to the switch PATCH endpoint
+// (`{manual: ...}`).
 // ============================================================================
 
 export function deriveAvailabilityState(entity?: AvailabilityEntity | null): string {
-  if (!entity) return 'available';
-  if (entity.disabled) return 'disabled';
-  if (entity.manual) return 'manual';
-  return 'available';
+  return entity?.manual ? 'manual' : 'available';
 }
 
-export function availabilityStateToFlags(state: string): { disabled: boolean; manual: boolean } {
-  switch (state) {
-    case 'disabled':
-      return { disabled: true, manual: false };
-    case 'manual':
-      return { disabled: false, manual: true };
-    case 'available':
-    default:
-      return { disabled: false, manual: false };
-  }
+export function availabilityStateToFlags(state: string): { manual: boolean } {
+  return { manual: state === 'manual' };
 }
+
+export const MANUAL_SWITCH_HELP =
+  'Manual = trains never throw this switch; you throw it from the page.';
 
 export function renderAvailabilitySegment(
   entityKind: string,
   entity: AvailabilityEntity | null,
-  opts: {
-    idBase?: string;
-    label?: string;
-    help?: string;
-    // When provided, the three states are explained one per line below the
-    // segment (block editor) instead of the single-line `help` string the
-    // other panels keep.
-    explanations?: { normal: string; manual: string; disabled: string };
-  } = {}
+  opts: { idBase?: string; label?: string } = {}
 ): string {
   const state = deriveAvailabilityState(entity);
   const idBase = (opts.idBase || `${entityKind}-availability`).replace(/[^a-z0-9-]/gi, '-');
   const label = opts.label || 'Availability';
-  const help =
-    opts.help ||
-    'Manual = hidden from automatic routing (operator can still override). Disabled = fully off-limits.';
   const dis = (s: string) => (state === s ? 'active' : '');
-  const ex = opts.explanations;
-  const explain = ex
-    ? `<div class="seg-explain mt-4">
-                <div><span class="seg-explain-term">Normal</span> — ${ex.normal}</div>
-                <div><span class="seg-explain-term">Manual</span> — ${ex.manual}</div>
-                <div><span class="seg-explain-term">Disabled</span> — ${ex.disabled}</div>
-            </div>`
-    : `<div class="text-xxs text-muted mt-4">${help}</div>`;
   return `
         <div class="input-large-container mb-8" data-availability-segment="${entityKind}" data-sim-keep>
             <label class="input-large-label">${label}</label>
@@ -432,19 +398,14 @@ export function renderAvailabilitySegment(
                     class="switch-btn ${dis('available')}"
                     id="${idBase}-available"
                     data-availability="available"
-                    title="Normal — works under automatic routing and ATO">Normal</button>
+                    title="Normal — trains throw this switch when they need it">Normal</button>
                 <button type="button"
                     class="switch-btn ${dis('manual')}"
                     id="${idBase}-manual"
                     data-availability="manual"
-                    title="Manual — automatic routing skips it; an operator route with override can still use it">Manual</button>
-                <button type="button"
-                    class="switch-btn ${dis('disabled')}"
-                    id="${idBase}-disabled"
-                    data-availability="disabled"
-                    title="Disabled — off-limits to all trains; treated as missing track">Disabled</button>
+                    title="Manual — trains never throw this switch; you throw it from the page">Manual</button>
             </div>
-            ${explain}
+            <div class="text-xxs text-muted mt-4">${MANUAL_SWITCH_HELP}</div>
         </div>
     `;
 }
@@ -484,7 +445,7 @@ export function validateIntegerInput(
 // inspector panels still open — Inspect is always live — but their structural
 // controls (names, geometry, lengths, radii, and the create / extend / remove /
 // delete buttons) must be read-only. The dispatch controls stay live: the
-// availability and direction segments, the switch Toggle State, and navigation
+// switch availability segment, the switch Toggle State, and navigation
 // buttons are marked `data-sim-keep` (on the control or an ancestor) and are
 // never frozen.
 
@@ -667,13 +628,14 @@ export function parseOptionalInt(label: string): (raw: string) => FieldParseResu
   };
 }
 
-// receives `(state, flags)` where `flags = {disabled, manual}` ready to send
-// to the entity PATCH endpoint.
+// Wire the two buttons of a `renderAvailabilitySegment` control. `onChange`
+// receives `(state, flags)` where `flags = {manual}` ready to send to the
+// switch PATCH endpoint.
 export function bindAvailabilitySegment(
   idBase: string,
-  onChange: (state: string, flags: { disabled: boolean; manual: boolean }) => void
+  onChange: (state: string, flags: { manual: boolean }) => void
 ): void {
-  const states = ['available', 'manual', 'disabled'];
+  const states = ['available', 'manual'];
   states.forEach((state) => {
     const btn = document.getElementById(`${idBase}-${state}`);
     if (!btn) return;
@@ -692,117 +654,11 @@ export function bindAvailabilitySegment(
 }
 
 // ============================================================================
-// BLOCK ALLOWED-TRAVEL-DIRECTION SEGMENTED CONTROL
-// ============================================================================
-//
-// `Block.allowed_travel_directions` is a non-empty subset of
-// {"forward", "reverse"} (defaults to both). "forward" means the increasing
-// direction of the block's tile order; "reverse" the decreasing direction.
-// The three mutually-exclusive UI states map 1:1 onto the allowed subset:
-//   both    -> ["forward", "reverse"]
-//   forward -> ["forward"]
-//   reverse -> ["reverse"]
-//
-// Mirrors the availability segmented control above (same `switch-group` /
-// `switch-btn` design-language component, same render/bind split). The caller
-// wires three buttons by ID and sends the chosen subset to the block PATCH
-// endpoint as `{ allowed_travel_directions: [...] }`.
-// ============================================================================
-
-export function deriveDirectionState(entity?: DirectionEntity | null): string {
-  const atd = (entity && entity.allowed_travel_directions) || ['forward', 'reverse'];
-  const set = new Set(atd);
-  const hasForward = set.has('forward');
-  const hasReverse = set.has('reverse');
-  if (hasForward && hasReverse) return 'both';
-  if (hasForward) return 'forward';
-  if (hasReverse) return 'reverse';
-  // Empty / unknown — fall back to the block default (both directions).
-  return 'both';
-}
-
-export function directionStateToPayload(state: string): { allowed_travel_directions: string[] } {
-  switch (state) {
-    case 'forward':
-      return { allowed_travel_directions: ['forward'] };
-    case 'reverse':
-      return { allowed_travel_directions: ['reverse'] };
-    case 'both':
-    default:
-      return { allowed_travel_directions: ['forward', 'reverse'] };
-  }
-}
-
-export function renderDirectionSegment(
-  entityKind: string,
-  entity: DirectionEntity | null,
-  opts: { idBase?: string; label?: string; help?: string } = {}
-): string {
-  const state = deriveDirectionState(entity);
-  const idBase = (opts.idBase || `${entityKind}-direction`).replace(/[^a-z0-9-]/gi, '-');
-  const label = opts.label || 'Allowed travel';
-  const help =
-    opts.help ||
-    'Which way trains may travel through this block. Auto-routing obeys this; an operator can override it.';
-  const dir = (s: string) => (state === s ? 'active' : '');
-  return `
-        <div class="input-large-container mb-8" data-direction-segment="${entityKind}" data-sim-keep>
-            <label class="input-large-label">${label}</label>
-            <div class="switch-group fluid" role="radiogroup" aria-label="${label}">
-                <button type="button"
-                    class="switch-btn ${dir('both')}"
-                    id="${idBase}-both"
-                    data-direction="both"
-                    title="Both directions allowed">Both</button>
-                <button type="button"
-                    class="switch-btn ${dir('forward')}"
-                    id="${idBase}-forward"
-                    data-direction="forward"
-                    title="Forward only — follow the direction arrows on the layout">Forward</button>
-                <button type="button"
-                    class="switch-btn ${dir('reverse')}"
-                    id="${idBase}-reverse"
-                    data-direction="reverse"
-                    title="Reverse only — follow the direction arrows on the layout">Reverse</button>
-            </div>
-            <div class="text-xxs text-muted mt-4">${help}</div>
-        </div>
-    `;
-}
-
-// Wire the three buttons of a `renderDirectionSegment` block. `onChange`
-// receives `(state, payload)` where `payload = {allowed_travel_directions}`
-// ready to send to the block PATCH endpoint.
-export function bindDirectionSegment(
-  idBase: string,
-  onChange: (state: string, payload: { allowed_travel_directions: string[] }) => void
-): void {
-  const states = ['both', 'forward', 'reverse'];
-  states.forEach((state) => {
-    const btn = document.getElementById(`${idBase}-${state}`);
-    if (!btn) return;
-    btn.onclick = () => {
-      states.forEach((s) => {
-        const b = document.getElementById(`${idBase}-${s}`);
-        if (b) b.classList.toggle('active', s === state);
-      });
-      try {
-        onChange(state, directionStateToPayload(state));
-      } catch (err) {
-        console.error('[direction-segment] onChange failed', err);
-      }
-    };
-  });
-}
-
-// ============================================================================
 // TRACK POLARITY SEGMENTED CONTROL
 // ----------------------------------------------------------------------------
-// Same `switch-group` / `switch-btn` component and render/bind split as the two
-// controls above, with two cells instead of three. Distinct from the travel
-// direction control it sits near: that one is a routing policy the pathfinder
-// reads, this one is wiring — which physical rail a positive voltage drives.
-// The two steps are separate on purpose: the block's tile order fixes which way
+// Same `switch-group` / `switch-btn` component and render/bind split as the
+// switch availability control above. It is wiring — which physical rail a
+// positive voltage drives. The two steps are separate on purpose: the block's tile order fixes which way
 // a positive voltage MEANS (toward the F arrow the renderer draws at the
 // higher-index end), and this flag fixes which rail carries it. Only the second
 // can be checked by eye, which is what the track Test sweep is for.
@@ -962,6 +818,28 @@ export function renderTileList(sortedPositions: Coord[], options: TileListOption
 // UTILITY FUNCTIONS
 // ============================================================================
 
+/** The live block fields the page reads off the snapshot (design_v2.md
+ *  "Live fields", A block's live fields). */
+export interface BlockLiveFields {
+  reads_occupied?: boolean;
+  train_id?: string | null;
+  claimed_by_train_id?: string | null;
+  voltage?: number;
+}
+
+/**
+ * The status word a block is drawn and labelled with, worked out from its
+ * live fields: `occupied` when the block reads occupied or is a train's
+ * block, `reserved` when a train holds a claim on it, `free` otherwise. The
+ * words are the keys `getBlockStateColor` takes.
+ */
+export function blockStatus(block: BlockLiveFields | null | undefined): 'occupied' | 'reserved' | 'free' {
+  if (!block) return 'free';
+  if (block.reads_occupied || block.train_id) return 'occupied';
+  if (block.claimed_by_train_id) return 'reserved';
+  return 'free';
+}
+
 export function getBlockStateColor(state?: string, alpha = 1): string {
   const p = getCanvasPalette();
   const stateMap: Record<string, string> = {
@@ -969,8 +847,6 @@ export function getBlockStateColor(state?: string, alpha = 1): string {
     reserved: p.blockReserved,
     occupied: p.blockOccupied,
     caution: p.blockCaution,
-    disabled: p.blockDisabled,
-    manual: p.blockManual,
   };
   const hex = stateMap[(state || '').toLowerCase()] || '#888';
   return withAlpha(hex, alpha);

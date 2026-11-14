@@ -169,8 +169,6 @@ class StepRecorder:
                 op["name"] = switch.name
             if switch.notes:
                 op["notes"] = switch.notes
-            if switch.disabled:
-                op["disabled"] = True
 
             steps.append(
                 {

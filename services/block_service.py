@@ -8,8 +8,7 @@ this layer owns the block-side mutations:
     block, and add / remove a member `Segment` at either end. These are the
     four-method `BlockGroupingManager` surface (design_v2.md "Block", Block
     grouping), the replacement for the old power-district grouping API.
-  * Config + availability — name, holding-point flag, `disabled` / `manual`
-    availability flags, and the static `allowed_travel_directions` policy.
+  * Config — the block's name.
 
 Geometry (length / radius / grade / speed-limit / tiles) is NOT edited here —
 it lives on the member segments and is written through
@@ -17,8 +16,10 @@ it lives on the member segments and is written through
 rejected so the caller addresses the segment it means.
 
 Lookup raises ``NotFoundError``; bad input raises ``ValidationError``.
-``update_block`` takes ``state.simulation_lock`` so the per-tick
-phase loop cannot observe a torn read.
+``update_block`` takes ``state.simulation_lock`` itself;
+``routes/blocks.py`` holds it around every grouping change (design_v2.md
+"About this document"). The lock is not reentrant, so no function here calls
+another that takes it.
 """
 
 from __future__ import annotations
@@ -172,20 +173,19 @@ def remove_segment_from_block(
 
 
 def update_block(state: AppState, block_id: str, *, data: Dict[str, Any]):
-    """Update a block's config and/or availability flags (NOT geometry).
+    """Update a block's config (NOT geometry).
 
-    Handles ``name``, ``is_holding_point``, the
-    ``disabled`` / ``manual`` availability flags, and the static
-    ``allowed_travel_directions`` policy. Geometry fields are rejected — they live on the member segments and are
-    written through ``services.segment_service.update_segment``.
+    Handles ``name``. Geometry fields are rejected — they live on the member
+    segments and are written through
+    ``services.segment_service.update_segment``.
 
     Mutations happen under ``state.simulation_lock`` so the per-tick phase loop
     cannot observe a torn read.
 
     Raises:
         NotFoundError when no block has that id.
-        ValidationError when a geometry field is present, or
-            ``allowed_travel_directions`` is malformed.
+        ValidationError when a geometry field or ``polarity_reversed`` is
+            present.
     """
     data = dict(data or {})
 
@@ -204,17 +204,6 @@ def update_block(state: AppState, block_id: str, *, data: Dict[str, Any]):
         if "name" in data:
             block.name = data["name"] if data["name"] is not None else ""
 
-        # Availability flags; both always succeed.
-        if "disabled" in data:
-            block.disabled = bool(data["disabled"])
-        if "manual" in data:
-            block.manual = bool(data["manual"])
-        # Holding-point config flag. No precondition — it does not affect
-        # availability, claims, or runtime state. Nothing reads it now: its
-        # only reader was v1 route planning, which is deleted.
-        if "is_holding_point" in data:
-            block.is_holding_point = bool(data["is_holding_point"])
-
         # Rail polarity moved onto the block's `block_track` hardware binding
         # (design_v2.md "Hardware setup", A block's rails). It
         # is wiring, so it is edited and auto-persisted with the wiring — PUT
@@ -225,29 +214,5 @@ def update_block(state: AppState, block_id: str, *, data: Dict[str, Any]):
                 "polarity_reversed lives on the block's rail binding now. "
                 "Set it via PUT /api/hardware/binding (map 'block_track')."
             )
-
-        # Static block-level travel policy, `Block.allowed_travel_directions`.
-        # Must be a non-empty subset of
-        # {"forward", "reverse"}; editing it has no occupancy precondition.
-        if "allowed_travel_directions" in data:
-            raw = data["allowed_travel_directions"]
-            if not isinstance(raw, (list, tuple, set)):
-                raise ValidationError(
-                    "allowed_travel_directions must be a list of "
-                    "'forward' / 'reverse'"
-                )
-            requested = {str(d) for d in raw}
-            unknown = requested - {"forward", "reverse"}
-            if unknown:
-                raise ValidationError(
-                    f"Unknown travel direction(s): {sorted(unknown)}. "
-                    "Allowed: forward, reverse"
-                )
-            if not requested:
-                raise ValidationError(
-                    "allowed_travel_directions must include at least one of "
-                    "'forward' / 'reverse'"
-                )
-            block.allowed_travel_directions = requested
 
         return block

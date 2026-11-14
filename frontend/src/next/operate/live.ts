@@ -12,7 +12,7 @@ import { signal } from '@preact/signals';
 import { stateManager, type StateManager } from '../../lib/state-manager';
 
 /** The StateManager maps the Operate screen shows. */
-const WATCHED = ['runningTrains', 'blocks', 'switches'];
+const WATCHED = ['trains', 'blocks', 'switches'];
 
 /** Goes up after each poll that changed a watched entity. */
 export const liveVersion = signal(0);
@@ -59,7 +59,7 @@ export function usesRunningTrains(sm: StateManager = stateManager): boolean {
 /** Every v2 train, oldest first, so the cards keep their places. */
 export function runningTrains(sm: StateManager = stateManager): RunningTrain[] {
   const number = (id: string) => Number(id.replace(/\D/g, '')) || 0;
-  return (sm.getAll('runningTrains') as unknown as RunningTrain[])
+  return (sm.getAll('trains') as unknown as RunningTrain[])
     .slice()
     .sort((a, b) => number(a.train_id) - number(b.train_id));
 }

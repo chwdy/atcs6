@@ -3,11 +3,11 @@ Block Routes - the power + occupancy + reservation + grouping surface.
 
 Thin HTTP layer over `services.block_service` for mutations: parse JSON, call
 the service, translate `ServiceError` subclasses to status codes
-(ValidationError -> 400, NotFoundError -> 404, ConflictError -> 409,
-GoneError -> 410). Read-only endpoints keep their serialization here.
+(ValidationError -> 400, NotFoundError -> 404). Read-only endpoints keep
+their serialization here.
 
-A `Block` groups one or more `Segment`s (its geometry) and owns occupancy,
-reservation, availability, power and the static travel policy. Grouping —
+A `Block` groups one or more `Segment`s (its geometry) and is the unit of
+power and occupancy. Grouping —
 creating a block from a `segment_ids` list, dissolving it, and adding / removing
 a member segment — is the four-method `BlockGroupingManager` surface, the
 replacement for the old power-district grouping API. Geometry (length / radius /
@@ -20,29 +20,22 @@ from flask import jsonify, request
 
 from app_state import AppState
 from routes._positions import sort_positions_traversal
-from services import ConflictError, GoneError, NotFoundError, ValidationError
+from services import NotFoundError, ValidationError
 from services import block_service
-from services.notifications import emit_command_result
 
 
 def register(app, state: AppState) -> None:
     """Register block routes."""
 
-    def _inject_voltage(block_dict: dict, block_id: str) -> dict:
-        """Add the applied-output `current_voltage` mirror (owned by
-        `BlockPowerController`, not `Block`) to a block payload; `0` when no
-        controller is wired."""
-        controller = getattr(state.sim_controller, "power_controller", None)
-        block_dict["current_voltage"] = (
-            float(controller.get_recorded_voltage(block_id))
-            if controller is not None
-            else 0.0
-        )
-        return block_dict
-
     def _read_block_dict(block) -> dict:
-        """Block runtime dict + track counts and positions."""
-        block_dict = _inject_voltage(block.to_dict(), block.block_id)
+        """The block's own dict + track counts and positions.
+
+        A block reply carries no voltage: the voltage is owned by
+        `BlockPowerController`, and an endpoint never merges one owner's live
+        fields into another owner's payload (design_v2.md "Who owns each part
+        of a payload"). `GET /api/blocks/<block_id>/voltage` serves it.
+        """
+        block_dict = block.to_dict()
         tracks = state.network.get_block_tracks(block.block_id)
         block_dict["track_count"] = len(tracks)
         block_dict["track_positions"] = state.network.get_block_positions(
@@ -69,15 +62,19 @@ def register(app, state: AppState) -> None:
         """
         data = request.json or {}
         try:
-            block = block_service.create_block(
-                state,
-                block_id=data.get("block_id"),
-                segment_ids=data.get("segment_ids", []),
-                name=data.get("name", ""),
-            )
+            # Every layout write holds the one lock (design_v2.md "About this
+            # document", One thread at a time).
+            with state.simulation_lock:
+                block = block_service.create_block(
+                    state,
+                    block_id=data.get("block_id"),
+                    segment_ids=data.get("segment_ids", []),
+                    name=data.get("name", ""),
+                )
+                reply = block.to_dict()
         except ValidationError as exc:
             return jsonify({"error": str(exc)}), 400
-        return jsonify(_inject_voltage(block.to_dict(), block.block_id))
+        return jsonify(reply)
 
     @app.route("/api/blocks/<block_id>", methods=["GET"])
     def get_block(block_id):
@@ -108,44 +105,28 @@ def register(app, state: AppState) -> None:
 
     @app.route("/api/blocks/<block_id>", methods=["PATCH"])
     def update_block(block_id):
-        """Update block config / availability flags (NOT geometry).
+        """Update a block's name (NOT geometry).
 
-        Changes to a block happen between runtime steps per design_v2.md
-        "Operator requests", Requests run between runtime steps — the service
-        holds `state.simulation_lock` while writing entity fields so a runtime
-        step cannot observe a torn read. Geometry lives on the member
-        segments (PATCH /api/segments/<segment_id>).
+        The service holds `state.simulation_lock` while it writes (design_v2.md
+        "About this document"). Geometry lives on the member segments (PATCH
+        /api/segments/<segment_id>).
         """
         data = request.json or {}
         try:
             block = block_service.update_block(state, block_id, data=data)
         except NotFoundError:
             return jsonify({"error": "Block not found"}), 404
-        except GoneError as exc:
-            return jsonify({"error": str(exc)}), 410
-        except ConflictError as exc:
-            # The flag PATCH emits a command_result even on the 409
-            # admin-reject, carrying the rejection reason.
-            emit_command_result(
-                state, source="Block", entity_id_key="block_id",
-                entity_id=block_id, command_name="update_flags",
-                success=False, reason=str(exc),
-            )
-            return jsonify({"error": str(exc)}), 409
         except ValidationError as exc:
             return jsonify({"error": str(exc)}), 400
-        emit_command_result(
-            state, source="Block", entity_id_key="block_id",
-            entity_id=block_id, command_name="update_flags", success=True,
-        )
-        return jsonify(_inject_voltage(block.to_dict(), block.block_id))
+        return jsonify(block.to_dict())
 
     @app.route("/api/blocks/<block_id>", methods=["DELETE"])
     def delete_block(block_id):
         """Dissolve a block grouping (ungroup); member segments return to their
         own single-segment blocks. Geometry survives."""
         try:
-            block_service.delete_block(state, block_id)
+            with state.simulation_lock:
+                block_service.delete_block(state, block_id)
         except NotFoundError:
             return jsonify({"error": "Block not found"}), 404
         return jsonify(
@@ -163,12 +144,14 @@ def register(app, state: AppState) -> None:
         if not segment_id:
             return jsonify({"error": "segment_id required"}), 400
         try:
-            block = block_service.add_segment_to_block(state, block_id, segment_id)
+            with state.simulation_lock:
+                block = block_service.add_segment_to_block(state, block_id, segment_id)
+                reply = block.to_dict()
         except NotFoundError as exc:
             return jsonify({"error": str(exc)}), 404
         except ValidationError as exc:
             return jsonify({"error": str(exc)}), 400
-        return jsonify(_inject_voltage(block.to_dict(), block.block_id))
+        return jsonify(reply)
 
     @app.route(
         "/api/blocks/<block_id>/segments/<segment_id>", methods=["DELETE"]
@@ -180,13 +163,15 @@ def register(app, state: AppState) -> None:
         block's last member dissolves the block.
         """
         try:
-            block_service.remove_segment_from_block(state, block_id, segment_id)
+            with state.simulation_lock:
+                block_service.remove_segment_from_block(state, block_id, segment_id)
+                block = block_service.get_block(state, block_id)
+                reply = block.to_dict() if block is not None else None
         except NotFoundError as exc:
             return jsonify({"error": str(exc)}), 404
         except ValidationError as exc:
             return jsonify({"error": str(exc)}), 400
-        block = block_service.get_block(state, block_id)
-        if block is None:
+        if reply is None:
             # Removing the last member dissolved the block.
             return jsonify(
                 {
@@ -195,7 +180,7 @@ def register(app, state: AppState) -> None:
                     "message": f"Block {block_id} dissolved (last member removed)",
                 }
             )
-        return jsonify(_inject_voltage(block.to_dict(), block.block_id))
+        return jsonify(reply)
 
     @app.route("/api/blocks/<block_id>/voltage", methods=["GET"])
     def get_block_voltage(block_id: str):

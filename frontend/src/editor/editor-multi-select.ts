@@ -140,7 +140,7 @@ export class MultiSelectActionsHandler {
     const affectedSegments = this._affectedSegments(summary.segmentIds);
     const affectedBlocks = this._affectedBlocks(summary.blockIds);
     if (affectedSegments.length > 0 || affectedBlocks.length > 0) {
-      this._wirePropertyInputs(panel, affectedSegments, affectedBlocks);
+      this._wirePropertyInputs(panel, affectedSegments);
     }
   }
 
@@ -320,15 +320,11 @@ export class MultiSelectActionsHandler {
     return parts.join('');
   }
 
-  // Max speed / min radius are SEGMENT geometry; disabled / manual are BLOCK
-  // availability. One section, but each field reads (and later writes) the axis
-  // it actually belongs to.
+  // Max speed / min radius are SEGMENT geometry, written to each selected
+  // segment.
   _renderPropertiesSection(segments: any[], blocks: any[]): string {
     const speeds = new Set(segments.map((sg) => sg.speed_limit_kmh ?? null));
     const radii = new Set(segments.map((sg) => sg.min_radius_cm ?? null));
-    const disabledSet = new Set(blocks.map((b) => !!b.disabled));
-    const manualSet = new Set(blocks.map((b) => !!b.manual));
-
     const speedShared = speeds.size === 1 ? [...speeds][0] : null;
     const radiusShared = radii.size === 1 ? [...radii][0] : null;
     const speedMixed = speeds.size > 1;
@@ -338,9 +334,6 @@ export class MultiSelectActionsHandler {
     const radiusValue = radiusShared == null ? '' : String(radiusShared);
     const speedPlaceholder = speedMixed ? 'Mixed' : 'Not set';
     const radiusPlaceholder = radiusMixed ? 'Mixed' : 'Not set';
-
-    const disabledChecked = !disabledSet.has(true) ? '' : disabledSet.size === 1 ? 'checked' : '';
-    const manualChecked = !manualSet.has(true) ? '' : manualSet.size === 1 ? 'checked' : '';
 
     return `
             <div class="ms-group">
@@ -360,18 +353,6 @@ export class MultiSelectActionsHandler {
                                value="${radiusValue}" placeholder="${radiusPlaceholder}" min="0" step="1" />
                         <span class="ms-unit">cm</span>
                     </div>
-                </div>
-                <div class="ms-flags">
-                    <label class="checkbox-wrapper">
-                        <input type="checkbox" class="checkbox-input" data-field="disabled" ${disabledChecked} />
-                        <span class="checkbox-custom"></span>
-                        <span class="checkbox-label">Disabled</span>
-                    </label>
-                    <label class="checkbox-wrapper">
-                        <input type="checkbox" class="checkbox-input" data-field="manual" ${manualChecked} />
-                        <span class="checkbox-custom"></span>
-                        <span class="checkbox-label">Manual</span>
-                    </label>
                 </div>
                 <button type="button" class="btn btn-accent ms-btn-block" data-action="apply-properties">
                     Apply
@@ -421,35 +402,21 @@ export class MultiSelectActionsHandler {
     });
   }
 
-  _wirePropertyInputs(panel: HTMLElement, affectedSegments: any[], affectedBlocks: any[]): void {
-    // Mark mixed-value checkboxes as indeterminate (a visual "third state").
-    const disabledSet = new Set(affectedBlocks.map((b) => !!b.disabled));
-    const manualSet = new Set(affectedBlocks.map((b) => !!b.manual));
-    if (disabledSet.size > 1) {
-      const c = panel.querySelector<HTMLInputElement>('[data-field="disabled"]');
-      if (c) c.indeterminate = true;
-    }
-    if (manualSet.size > 1) {
-      const c = panel.querySelector<HTMLInputElement>('[data-field="manual"]');
-      if (c) c.indeterminate = true;
-    }
-
+  _wirePropertyInputs(panel: HTMLElement, affectedSegments: any[]): void {
     // Track which inputs the user has explicitly touched. Only touched
     // fields end up in the PATCH payload — untouched ones leave existing
     // values untouched even if their displayed value is empty/mixed.
-    const propertyFields = ['speed_limit_kmh', 'min_radius_cm', 'disabled', 'manual'];
+    const propertyFields = ['speed_limit_kmh', 'min_radius_cm'];
     propertyFields.forEach((field) => {
       const el = panel.querySelector<HTMLInputElement>(`[data-field="${field}"]`);
       if (!el) return;
-      const evt = el.type === 'checkbox' ? 'change' : 'input';
-      el.addEventListener(evt, () => {
+      el.addEventListener('input', () => {
         el.dataset.touched = 'true';
-        if (el.type === 'checkbox') el.indeterminate = false;
       });
     });
 
     panel.querySelector('[data-action="apply-properties"]')?.addEventListener('click', () => {
-      this._applyProperties(affectedSegments, affectedBlocks).catch((err) =>
+      this._applyProperties(affectedSegments).catch((err) =>
         this._reportError('apply properties', err)
       );
     });
@@ -682,17 +649,14 @@ export class MultiSelectActionsHandler {
     await this._afterMutation();
   }
 
-  // === Property batch edit (split across both axes) ===
+  // === Property batch edit ===
 
-  // Max speed and min radius are segment geometry (`PATCH /api/segments/<id>`);
-  // disabled and manual are block availability (`PATCH /api/blocks/<id>`). Each
-  // touched field is sent only to the entities that own it.
-  async _applyProperties(affectedSegments: any[], affectedBlocks: any[]): Promise<void> {
+  // Max speed and min radius are segment geometry (`PATCH /api/segments/<id>`).
+  async _applyProperties(affectedSegments: any[]): Promise<void> {
     const panel = this.panel;
     if (!panel) return;
 
     const segmentPayload: Record<string, unknown> = {};
-    const blockPayload: Record<string, unknown> = {};
 
     const speedEl = panel.querySelector<HTMLInputElement>('[data-field="speed_limit_kmh"]');
     if (speedEl?.dataset.touched === 'true') {
@@ -710,43 +674,17 @@ export class MultiSelectActionsHandler {
         if (Number.isFinite(num)) segmentPayload.min_radius_cm = num;
       }
     }
-    const disabledEl = panel.querySelector<HTMLInputElement>('[data-field="disabled"]');
-    if (disabledEl?.dataset.touched === 'true') {
-      blockPayload.disabled = disabledEl.checked;
-    }
-    const manualEl = panel.querySelector<HTMLInputElement>('[data-field="manual"]');
-    if (manualEl?.dataset.touched === 'true') {
-      blockPayload.manual = manualEl.checked;
-    }
-
-    const hasSegmentEdit = Object.keys(segmentPayload).length > 0;
-    const hasBlockEdit = Object.keys(blockPayload).length > 0;
-    if (!hasSegmentEdit && !hasBlockEdit) {
+    if (Object.keys(segmentPayload).length === 0) {
       showToast('Nothing to apply — touch a field first', 'info', 2500);
       return;
     }
 
-    const tasks: Array<Promise<{ id: string; err: any }>> = [];
-    if (hasSegmentEdit) {
-      for (const sg of affectedSegments) {
-        tasks.push(
-          this.api
-            .updateSegment(sg.segment_id, segmentPayload)
-            .then(() => ({ id: sg.segment_id, err: null }))
-            .catch((err: any) => ({ id: sg.segment_id, err }))
-        );
-      }
-    }
-    if (hasBlockEdit) {
-      for (const b of affectedBlocks) {
-        tasks.push(
-          this.api
-            .updateBlock(b.block_id, blockPayload)
-            .then(() => ({ id: b.block_id, err: null }))
-            .catch((err: any) => ({ id: b.block_id, err }))
-        );
-      }
-    }
+    const tasks: Array<Promise<{ id: string; err: any }>> = affectedSegments.map((sg) =>
+      this.api
+        .updateSegment(sg.segment_id, segmentPayload)
+        .then(() => ({ id: sg.segment_id, err: null }))
+        .catch((err: any) => ({ id: sg.segment_id, err }))
+    );
     const results = await Promise.all(tasks);
 
     const ok = results.filter((r) => !r.err);

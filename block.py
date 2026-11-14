@@ -13,7 +13,7 @@ Key concepts:
   segment unchanged.
 """
 
-from typing import List, Optional, Dict, Any, Set
+from typing import List, Optional, Dict, Any
 from entity_ids import segment_id_for_block
 from segment import Segment, SegmentTileEntry
 
@@ -33,10 +33,6 @@ class Block:
         min_radius_cm: Optional[float] = None,
         grade_percent: Optional[float] = None,
         speed_limit_kmh: Optional[float] = None,
-        is_holding_point: bool = False,
-        disabled: bool = False,
-        manual: bool = False,
-        allowed_travel_directions: Optional[Set[str]] = None,
         ordered_tiles: Optional[List[SegmentTileEntry]] = None,
         segments: Optional[List[Segment]] = None,
         segment_id: Optional[str] = None,
@@ -44,32 +40,17 @@ class Block:
         self.block_id = block_id  # Unique ID (e.g., "BLK_001")
         self.name = name  # Human-readable name
 
-        # Static config flag: operator-marked wait place. Saved with the
-        # layout and never written by the runtime. Nothing reads it now: its
-        # only reader was v1 route planning, which is deleted.
-        self.is_holding_point = is_holding_point
-
         # Rail polarity is NOT a block field. A block whose rails are wired the
         # opposite way round is corrected on its `block_track` hardware binding
         # (`TrackBinding.reversed`, hardware_config.py), which auto-persists
         # like every other wiring edit (design_v2.md "Hardware setup", A
         # block's rails).
 
-        self.disabled = disabled  # Static availability flag (physical-absence)
-        self.manual = manual  # Virtual-disable flag (manual_override bypasses)
-
         # Track voltage is not a `Block` field. The voltage commanded to the
         # rail is recorded by `BlockPowerController`
         # (`get_recorded_voltage(block_id)`), which the live page payload reads
         # through `RailwayNetwork.to_dict` (design_v2.md "Block and switch
         # power controllers", BlockPowerController).
-
-        # Static block-level travel policy. Defaults to both directions allowed.
-        self.allowed_travel_directions: Set[str] = (
-            set(allowed_travel_directions)
-            if allowed_travel_directions is not None
-            else {"forward", "reverse"}
-        )
 
         # Member segments own this block's geometry. A block created with
         # geometry keywords (length_cm / ordered_tiles / ...) gets one auto
@@ -218,14 +199,7 @@ class Block:
             "length_cm": self.length_cm,
             "min_radius_cm": self.min_radius_cm,
             "grade_percent": self.grade_percent,
-            "is_holding_point": self.is_holding_point,
             "speed_limit_kmh": self.speed_limit_kmh,
-            "disabled": self.disabled,
-            "manual": self.manual,
-            # `current_voltage` is not a `Block` field: the live frontend payload
-            # gets the applied-output mirror injected by `RailwayNetwork.to_dict`
-            # from `BlockPowerController.get_recorded_voltage(...)`.
-            "allowed_travel_directions": sorted(self.allowed_travel_directions),
             "ordered_tiles": [
                 [int(x), int(y), str(edge)] for (x, y, edge) in self.ordered_tiles
             ],
@@ -255,11 +229,7 @@ class Block:
             "length_cm": self.length_cm,
             "min_radius_cm": self.min_radius_cm,
             "grade_percent": self.grade_percent,
-            "is_holding_point": self.is_holding_point,
             "speed_limit_kmh": self.speed_limit_kmh,
-            "disabled": self.disabled,
-            "manual": self.manual,
-            "allowed_travel_directions": sorted(self.allowed_travel_directions),
             "ordered_tiles": [
                 [int(x), int(y), str(edge)] for (x, y, edge) in self.ordered_tiles
             ],
@@ -290,8 +260,9 @@ class Block:
     def from_dict(cls, data: Dict[str, Any]) -> "Block":
         """Reconstruct block from a layout snapshot.
 
-        Keys this loader does not know, such as runtime fields in an older
-        save, are skipped; track voltage is not a `Block` field.
+        Keys this loader does not know, such as runtime fields or v1 block
+        settings in an older save, are skipped; track voltage is not a `Block`
+        field.
 
         Member segments come from the nested `segments` list. A snapshot
         written before segments were nested carries the block's geometry inline
@@ -322,26 +293,11 @@ class Block:
             for segment in segments:
                 if segment.segment_id == block_id:
                     segment.segment_id = segment_id_for_block(block_id)
-            atd_nested = data.get("allowed_travel_directions")
             return cls(
                 block_id=block_id,
                 name=cls._loaded_name(data.get("name", ""), segments),
-                is_holding_point=bool(data.get("is_holding_point", False)),
-                disabled=bool(data.get("disabled", False)),
-                manual=bool(data.get("manual", False)),
-                allowed_travel_directions=(
-                    {str(d) for d in atd_nested}
-                    if atd_nested is not None
-                    else {"forward", "reverse"}
-                ),
                 segments=segments,
             )
-
-        atd = data.get("allowed_travel_directions")
-        if atd is None:
-            allowed = {"forward", "reverse"}
-        else:
-            allowed = {str(d) for d in atd}
 
         raw_tiles = data.get("ordered_tiles") or []
         ordered_tiles: List[SegmentTileEntry] = []
@@ -368,10 +324,6 @@ class Block:
             length_cm=float(data["length_cm"]),
             min_radius_cm=data.get("min_radius_cm"),
             grade_percent=data.get("grade_percent"),
-            is_holding_point=bool(data.get("is_holding_point", False)),
             speed_limit_kmh=data.get("speed_limit_kmh", data.get("max_speed_kmh")),
-            disabled=bool(data.get("disabled", False)),
-            manual=bool(data.get("manual", False)),
-            allowed_travel_directions=allowed,
             ordered_tiles=ordered_tiles,
         )

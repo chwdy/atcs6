@@ -106,7 +106,7 @@ def test_the_snapshot_carries_the_live_fields(session):
     switches = snap.get("switches") or snap.get("live_switches")
     assert switches["SW_7_5"]["held"] is True
     assert switches["SW_11_9"]["held"] is False
-    assert snap["running_trains"]["T1"]["state"] == "moving"
+    assert snap["trains"]["T1"]["state"] == "moving"
 
 
 def test_requests_are_refused_with_their_reason(session):
@@ -203,6 +203,19 @@ def test_alternation_waits_for_entry_and_manual_throw_takes_over(session):
     put(f"{switch_url}/alternate", json={"enabled": True})
     assert put(f"{switch_url}/state", json={"state": 1}).status_code == 202
     assert switch_id not in runtime.alternate_next
+
+
+def test_alternation_is_refused_on_a_switch_marked_manual(session):
+    """design_v2.md "Running a train", Alternate arrivals: turning them on is
+    refused for a switch marked manual, and the operator still throws it."""
+    switch_id = "SW_11_9"
+    switch_url = f"/api/switches/{switch_id}"
+    put = session.client.put
+    assert session.client.patch(switch_url, json={"manual": True}).status_code == 200
+    assert put(f"{switch_url}/alternate", json={"enabled": True}).status_code == 409
+    assert switch_id not in session.sim.train_runtime.alternate_next
+    assert put(f"{switch_url}/state", json={"state": 1}).status_code == 202
+    assert session.sim.network.switches[switch_id].position == 1
 
 
 def test_alternation_throws_before_powering_siding(session):

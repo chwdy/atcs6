@@ -57,12 +57,10 @@ export function updateTileDetails(gridX: number, gridY: number, network: any): v
     html += `<tr><td class="debug-label">Dead-Ends:</td><td class="debug-value-deadend">${track.dead_end_ports.join(', ')}</td></tr>`;
   }
 
-  // Switch states
-  if (track.switch_states && Object.keys(track.switch_states).length > 0) {
-    const switches = Object.entries(track.switch_states)
-      .map(([edge, pos]) => `${edge}:${pos}`)
-      .join(', ');
-    html += `<tr><td class="debug-label">Switches:</td><td class="debug-value-switches">${switches}</td></tr>`;
+  // A switch tile's one live field: its switch's position (design_v2.md
+  // "Live fields", A tile's live fields).
+  if (track.switch_state != null) {
+    html += `<tr><td class="debug-label">Switch:</td><td class="debug-value-switches">${track.switch_state === 1 ? 'Diverge' : 'Main'}</td></tr>`;
   }
 
   // Validation - check if forbidden

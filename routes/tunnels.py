@@ -2,6 +2,9 @@
 
 Tunnels pair two dead-end edges so they behave as a single tile-to-tile
 connection. See design_v2.md "Tunnel" for the invariants.
+
+A request that changes the tunnel table holds `state.simulation_lock` while it
+writes (design_v2.md "About this document").
 """
 
 from flask import jsonify, request
@@ -22,10 +25,11 @@ def register(app, state: AppState) -> None:
         try:
             a = data["a"]
             b = data["b"]
-            state.network.add_tunnel(
-                (a["x"], a["y"], a["edge"]),
-                (b["x"], b["y"], b["edge"]),
-            )
+            with state.simulation_lock:
+                state.network.add_tunnel(
+                    (a["x"], a["y"], a["edge"]),
+                    (b["x"], b["y"], b["edge"]),
+                )
         except (KeyError, TypeError) as exc:
             return jsonify({"error": f"Malformed tunnel body: {exc}"}), 400
         except ValueError as exc:
@@ -41,7 +45,8 @@ def register(app, state: AppState) -> None:
             edge = data["edge"]
         except (KeyError, TypeError, ValueError) as exc:
             return jsonify({"error": f"Malformed delete body: {exc}"}), 400
-        removed = state.network.remove_tunnel((x, y, edge))
+        with state.simulation_lock:
+            removed = state.network.remove_tunnel((x, y, edge))
         if not removed:
             return jsonify({"error": "No tunnel at that endpoint"}), 404
         return jsonify(state.network.tunnels_to_list()), 200

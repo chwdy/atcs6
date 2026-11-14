@@ -186,16 +186,6 @@ export class SwitchEditorHandler {
 
             ${switchHardwareSectionHtml(hwCfg, switchData.switch_id)}
 
-            <!-- Maintenance — read-only wear counter; counts real alignment
-                 changes. -->
-            <div class="control-section">
-                <div class="control-section-header">Maintenance</div>
-                <div class="input-small-row">
-                    <span class="input-small-label input-small-label-inline">Times flipped</span>
-                    <span class="font-mono" title="Number of times this switch has changed alignment">${switchData.flip_count || 0}</span>
-                </div>
-            </div>
-
             <!-- Deleting the switch config is a switch-level action, not a
                  property edit — kept apart at the foot as a quiet danger button. -->
             <div class="control-section control-section-divider mt-12 pt-12">
@@ -211,9 +201,8 @@ export class SwitchEditorHandler {
 
   bindEventHandlers(switchData: any, hwCfg: any = null): void {
     bindSwitchHardwareSection(hwCfg, switchData.switch_id);
-    // Availability segment (disabled / manual). Per docs/DESIGN_LANGUAGE.md
-    // §3 segmented control. Toggling `disabled = True` runs admin-reject preconditions
-    // on the server (HTTP 409); toggling `manual` always succeeds.
+    // Normal / Manual segment for `Switch.manual` (design_v2.md "Switches",
+    // A switch marked manual).
     bindAvailabilitySegment('switch-availability', async (_state, flags) => {
       try {
         const result = await this.api.updateSwitch(switchData.switch_id, flags);
@@ -442,12 +431,11 @@ export class SwitchEditorHandler {
     const stateChip = position === 0 ? 'chip-success' : 'chip-warn';
 
     const isHeld = !!this.editor.cachedNetwork?.switches?.[sw.switch_id]?.held;
-    const isDisabled = !!sw.disabled;
     const isManual = !!sw.manual;
 
-    // §6 left-border accent: a disabled switch reads as muted; otherwise the
-    // accent mirrors the per-switch editor (MAIN → success, DIVERGE → warn).
-    const accent = isDisabled ? 'accent-muted' : position === 0 ? 'accent-success' : 'accent-warn';
+    // §6 left-border accent mirrors the per-switch editor (MAIN → success,
+    // DIVERGE → warn).
+    const accent = position === 0 ? 'accent-success' : 'accent-warn';
 
     const name = sw.name && String(sw.name).trim() ? String(sw.name).trim() : '';
     const title = name || sw.switch_id;
@@ -457,7 +445,6 @@ export class SwitchEditorHandler {
 
     const chips = [`<span class="chip chip-state ${stateChip}">${stateText}</span>`];
     if (isHeld) chips.push('<span class="chip chip-warn">Held</span>');
-    if (isDisabled) chips.push('<span class="chip chip-muted">Disabled</span>');
     if (isManual) chips.push('<span class="chip chip-muted">Manual</span>');
 
     return `
@@ -538,7 +525,6 @@ export class SwitchEditorHandler {
         s.name,
         s.position,
         !!this.editor.cachedNetwork?.switches?.[s.switch_id]?.held,
-        !!s.disabled,
         !!s.manual,
       ]),
     );

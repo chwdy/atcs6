@@ -3,24 +3,24 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { NetworkPoller } from './network-poll';
 import { NetworkStream, type EventSourceLike } from './network-stream';
 
-function fullReply(version: string, state = 'free') {
+function fullReply(version: string, occupied = false) {
   return {
     layout_version: version,
     layout_unchanged: false,
     trains: [{ id: 'T1' }],
     tracks: [{ x: 0, y: 0, is_switch: false }],
-    blocks: { B1: { block_id: 'B1', ordered_tiles: [[0, 0, 'E']], state, occupied_by: null } },
+    blocks: { B1: { block_id: 'B1', ordered_tiles: [[0, 0, 'E']], reads_occupied: occupied, train_id: null } },
     switches: {},
     tunnels: [],
   };
 }
 
-function liveReply(version: string, state = 'free') {
+function liveReply(version: string, occupied = false) {
   return {
     layout_version: version,
     layout_unchanged: true,
     trains: [{ id: 'T1' }],
-    live_blocks: { B1: { state, occupied_by: state === 'occupied' ? 'T1' : null } },
+    live_blocks: { B1: { reads_occupied: occupied, train_id: occupied ? 'T1' : null } },
     live_switches: {},
     live_tracks: [],
   };
@@ -94,15 +94,15 @@ describe('NetworkStream', () => {
       expect.objectContaining({ layoutChanged: true })
     );
 
-    latest().send(liveReply('v1', 'occupied'));
+    latest().send(liveReply('v1', true));
     const { network, layoutChanged } = onMessage.mock.calls[1][0];
     expect(layoutChanged).toBe(false);
     expect(network.tracks).toHaveLength(1);
     expect(network.blocks.B1).toMatchObject({
       block_id: 'B1',
       ordered_tiles: [[0, 0, 'E']],
-      state: 'occupied',
-      occupied_by: 'T1',
+      reads_occupied: true,
+      train_id: 'T1',
     });
     expect(network.live_blocks).toBeUndefined();
 
@@ -128,7 +128,7 @@ describe('NetworkStream', () => {
     expect(sources).toHaveLength(2);
     expect(latest().url).toBe('/api/network/stream?layout_version=v1');
 
-    latest().send(liveReply('v1', 'occupied'));
+    latest().send(liveReply('v1', true));
     expect(stream.isPolling).toBe(false);
     expect(onMessage).toHaveBeenCalledTimes(2);
     const polls = pollOnce.mock.calls.length;
@@ -198,8 +198,8 @@ describe('NetworkStream', () => {
     expect(poller.heldLayoutVersion).toBe('v1');
     stream.start();
     expect(latest().url).toBe('/api/network/stream?layout_version=v1');
-    latest().send(liveReply('v1', 'occupied'));
-    expect(onMessage.mock.calls[0][0].network.blocks.B1.state).toBe('occupied');
+    latest().send(liveReply('v1', true));
+    expect(onMessage.mock.calls[0][0].network.blocks.B1.reads_occupied).toBe(true);
   });
 
   it('closes the stream while the tab is hidden and opens a new one when it shows', async () => {

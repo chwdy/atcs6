@@ -55,8 +55,6 @@
     --block-reserved: #04d361;
     --block-occupied: #ef4444;
     --block-caution: #fde047;
-    --block-disabled: #6c6c78;
-    --block-manual: #ff9500;
     --train-body: #ffffff;
     --train-body-manual: #ffe066;
     --train-body-teardown: #c8a2ff;
@@ -96,8 +94,6 @@
     --block-reserved: #0a9b4b;
     --block-occupied: #d62a4c;
     --block-caution: #b07d00;
-    --block-disabled: #9a9aa4;
-    --block-manual: #c2570c;
     --train-body: #2a2a30;
     --train-body-manual: #b07d00;
     --train-body-teardown: #7c3aed;
@@ -136,8 +132,6 @@
     --block-reserved: #5effa6;
     --block-occupied: #ff6b81;
     --block-caution: #ffe46b;
-    --block-disabled: #5a7a9a;
-    --block-manual: #ffb454;
     --train-body: #ffffff;
     --train-body-manual: #ffe066;
     --train-body-teardown: #c8a2ff;

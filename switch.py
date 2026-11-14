@@ -63,23 +63,13 @@ class Switch:
     through `apply_position_change(...)` sets it True. Runtime only, never
     saved."""
 
-    flip_count: int = 0
-    """Maintenance counter: number of times the switch actually changed
-    alignment. Incremented by `apply_position_change(...)` only on a real
-    change. Unlike `position`, this is persisted with the layout."""
-
     allow_exit_from_either_leg: bool = False
     motor_unavailable: bool = False
-    disabled: bool = False
-    """When True, the switch is treated as missing track / open circuit. No
-    operator override bypasses this; physical entry is a fatal conflict."""
-
     manual: bool = False
-    """When True, automatic systems treat the switch as if disabled
-    (switch-state commands fail, and the runtime does not throw it), but an
-    operator command carrying `manual_override=True` bypasses the filter.
-    Physical entry into a manual (but not disabled) switch is ordinary clean
-    entry."""
+    """Marked manual (design_v2.md "Switches", A switch marked manual): the
+    runtime never throws it for a train. The operator throws it from the page
+    (a request carrying `manual_override=True`), and the activation throw
+    throws it like any other switch."""
 
     # ========================================================================
     # TrackResource identity
@@ -98,35 +88,25 @@ class Switch:
     ) -> Tuple[bool, str]:
         """Validate and apply a position change to `self.position`.
 
-        Pure data operation: checks availability (disabled, manual), and on
-        success mutates `self.position`. Callers go through
+        Pure data operation: refuses a manual switch unless the caller is the
+        operator, and on success mutates `self.position`. Callers go through
         `SwitchManager.request_position_change`.
 
         Args:
             new_position: Desired switch position (0=MAIN, 1=DIVERGE).
-            manual_override: When True (operator opt-in), allow position
-                changes on a manual switch. The disabled filter always
-                applies regardless.
+            manual_override: True for an operator's throw, which may move a
+                manual switch. The runtime's own throw passes False.
 
         Returns:
             (success, message) tuple.
         """
-        # Disabled switches cannot be targeted by manual/API position-change commands.
-        if self.disabled:
-            return (False, f"Switch {self.switch_id} is disabled")
-
-        # Manual switches require an explicit operator override.
+        # Only the operator throws a manual switch.
         if self.manual and not manual_override:
             return (
                 False,
                 f"Switch {self.switch_id} is set to manual (manual_override required)",
             )
 
-        # Mutate authoritative position. Count a maintenance flip only when the
-        # alignment actually changes; re-aligning to the position the switch
-        # already holds is a no-op flip.
-        if self.position != SwitchState(new_position):
-            self.flip_count += 1
         self.position = SwitchState(new_position)
         self.position_known = True
 
@@ -157,10 +137,8 @@ class Switch:
             "notes": self.notes,
             "position": int(self.position),
             "position_known": self.position_known,
-            "flip_count": self.flip_count,
             "allow_exit_from_either_leg": self.allow_exit_from_either_leg,
             "motor_unavailable": self.motor_unavailable,
-            "disabled": self.disabled,
             "manual": self.manual,
         }
 
@@ -183,9 +161,7 @@ class Switch:
             "notes": self.notes,
             "allow_exit_from_either_leg": self.allow_exit_from_either_leg,
             "motor_unavailable": self.motor_unavailable,
-            "disabled": self.disabled,
             "manual": self.manual,
-            "flip_count": self.flip_count,
         }
 
     @classmethod
@@ -215,9 +191,7 @@ class Switch:
         )
         switch.allow_exit_from_either_leg = data.get("allow_exit_from_either_leg") is True
         switch.motor_unavailable = data.get("motor_unavailable") is True
-        switch.disabled = bool(data.get("disabled", False))
         switch.manual = bool(data.get("manual", False))
-        switch.flip_count = int(data.get("flip_count", 0))
         return switch
 
     def __repr__(self) -> str:

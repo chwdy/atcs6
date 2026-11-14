@@ -8,8 +8,8 @@ describe('StateManager.updateEntity', () => {
     // cached from the last full reply while an entity is unchanged, so the
     // manager must hold that same object for later polls to skip it on identity.
     const manager = new StateManager();
-    const first = { block_id: 'B1', state: 'free' };
-    const equal = { block_id: 'B1', state: 'free' };
+    const first = { block_id: 'B1', reads_occupied: false };
+    const equal = { block_id: 'B1', reads_occupied: false };
     expect(manager.updateEntity('blocks', 'B1', first)).toBe(true);
     const listener = vi.fn();
     manager.subscribe('blocks', 'B1', listener, { immediate: false });
@@ -22,7 +22,7 @@ describe('StateManager.updateEntity', () => {
 
   it('skips a repeat of the same object without a deep compare', () => {
     const manager = new StateManager();
-    const block = { block_id: 'B1', state: 'free' };
+    const block = { block_id: 'B1', reads_occupied: false };
     manager.updateEntity('blocks', 'B1', block);
     const isEqual = vi.spyOn(JSON, 'stringify');
 

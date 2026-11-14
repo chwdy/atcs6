@@ -9,35 +9,6 @@ If a value should be configurable per entity, it belongs on that entity
 instead of here.
 """
 
-# v1 "considered stopped" speed threshold. v2 has no train speed (a train is
-# stopped while its knob is at 0 V); only `runtime_config.py`'s docstring still
-# names this value.
-STOPPED_SPEED_THRESHOLD_KMH: float = 0.1
-
-# v1 controller safety margins. No code reads them.
-TRACK_END_SAFETY_MARGIN_CM: float = 25.0
-PLATFORM_SAFETY_MARGIN_CM: float = 5.0
-
-# v1 stop-arrival tolerance. No code reads it.
-RESERVATION_STOP_ARRIVAL_TOLERANCE_CM: float = 2.0
-
-# v1 flank protection distance. No code reads it.
-FLANK_PROTECTION_DISTANCE_CM: float = 5.0
-
-# CAUTION speed cap applied by TrainController lookahead when it samples a block
-# whose computed Block.state is CAUTION. Owned by the controller; not a signal
-# property.
-CAUTION_SPEED_LIMIT_KMH: float = 40.0
-
-# ATO horizon-sampling constant for the lookahead two-point sample. Used by
-# TrainController._ato_calculate_handle to project a future point at
-# `speed_cm_s * tick_delta * LOOKAHEAD_TICKS`.
-LOOKAHEAD_TICKS: int = 5
-
-# v1 braking-distance reservation margins. No code reads them.
-BRAKING_LOCK_ACCEL_HEADROOM_KMH: float = 20.0
-BRAKING_LOCK_LIMIT_MARGIN_KMH: float = 5.0
-
 # How many of the most recent events `NotificationCenter` keeps before dropping
 # the oldest (design_v2.md "Runtime notifications", Retention).
 # `notification_id` keeps counting past a drop, so a gap in the ids
@@ -54,9 +25,6 @@ NOTIFICATION_RETENTION_ROWS: int = 10000
 # 17 trains) wrote about 1 MB under v1, so the budget keeps days of runs.
 DETECTOR_READING_LOG_MAX_FILE_BYTES: int = 20 * 1024 * 1024
 DETECTOR_READING_LOG_MAX_TOTAL_BYTES: int = 200 * 1024 * 1024
-
-# v1 route-task delay tolerance. No code reads it.
-DELAY_CLASS_ON_TIME_TOLERANCE_SECONDS: float = 30.0
 
 # Block occupancy detection debounce per design_v2.md "Occupancy detection".
 # Each electrically-isolated block has a current detector; current present
@@ -87,10 +55,6 @@ DELAY_CLASS_ON_TIME_TOLERANCE_SECONDS: float = 30.0
 OCCUPANCY_ON_THRESHOLD: int = 2
 OCCUPANCY_OFF_THRESHOLD: int = 10
 
-# v1 overrun-report threshold for its span correction. No code reads it; v2
-# reports an overrun its own way (design_v2.md "When a train overruns").
-OVERRUN_REPORT_MIN_BLOCKS: int = 2
-
 # How many consecutive reads the lighting zone's deciding source — the current
 # channel, or the '165 on a block that has no current channel — must call a
 # block clear before the driver stops holding it occupied (design_v2.md
@@ -109,109 +73,6 @@ OVERRUN_REPORT_MIN_BLOCKS: int = 2
 # on a block with nothing on it), so letting it reset the count made the hold a
 # latch no empty block ever escaped — see `OccupancyDriver`'s class docstring.
 LIGHTING_CLEAR_HOLD_READS: int = 30
-
-# v1 hold for an unidentified train with no blocks. No code reads it; v2's
-# hold time is the runtime setting `hold_time_s`.
-UNIDENTIFIED_GAP_HOLD_S: float = 5.0
-
-# v1 speed calibration and speed profile values, down to the Default profile
-# below. v2 has no speed calibration and no speed profiles, and no code reads
-# these.
-CALIBRATION_VOLTAGE_STEP_V: float = 2.0
-
-# The narrowing halves the gap between the lowest step that passed and the step
-# that failed below it (or the starting voltage when none failed) until the gap
-# is no more than this; the lowest step that passed is then the curve's first
-# point. A filled step needs its two neighbours more than twice this apart.
-CALIBRATION_MIN_VOLTAGE_GAP_V: float = 0.25
-
-# The pass measures the voltage halfway between two neighbouring passed steps
-# whose speeds differ by more than this fraction of the top step's speed, so the
-# curve has its points where the speed changes fast.
-CALIBRATION_FILL_SPEED_FRACTION: float = 0.15
-
-# A step that measures faster than the step above it by no more than this
-# fraction of that step's speed is the same speed: the step records the step
-# above's speed, so the curve runs flat there. A light motor often reaches its
-# top speed well below 100% power, and on that flat stretch a few hundredths of
-# a second of detector timing decide which step reads faster.
-CALIBRATION_SAME_SPEED_FRACTION: float = 0.10
-
-# Each step runs this many round trips across the measured block, so it
-# collects twice this many crossings, half in each direction, and takes their
-# median. Equal counts each way cancel the stretch's grade: the uphill leg
-# measures slow by very nearly what the downhill leg measures fast.
-CALIBRATION_ROUND_TRIPS: int = 2
-
-# A step whose measured-block entry does not confirm within this many seconds
-# of `AppState.operating_time` records 0 km/h, as does every step below it, and
-# the sweep ends. The flat bottom this leaves on the curve is that locomotive's
-# real stall band. The same limit bounds driving the train off the measured
-# block after a crossing.
-CALIBRATION_STEP_TIMEOUT_S: float = 30.0
-
-# The slowest crossing speed the pass times, in scale km/h. A crossing gets the
-# time the measured block's length takes at this speed (the crossing window);
-# one that has not reached the far outer block by then stopped inside the
-# stretch, and ends the sweep like a step that does not move the train.
-CALIBRATION_MIN_CROSSING_SPEED_KMH: float = 2.0
-
-# Each leg starts at half the step's power for this many seconds before the
-# step's power, and each stop after a crossing holds half the step's power for
-# this long before cutting it, so the locomotive never takes a full step of
-# track voltage at once.
-CALIBRATION_HALF_POWER_S: float = 0.5
-
-# Each end of the calibration stretch takes run-off blocks past its outer block
-# until it holds the train's entered length plus this many centimetres, then
-# one block more. The margin covers the
-# detector's lag on the far block's entry and a length entered a little short.
-CALIBRATION_RUNOFF_MARGIN_CM: float = 5.0
-
-# How many detector reads a standing train is given for the measured block to
-# read clear before the pass decides the train stopped with its tail still on
-# it. Below `current_sense_min_drive_v` a block holds its presence for
-# LIGHTING_CLEAR_HOLD_READS clear reads, then takes OCCUPANCY_OFF_THRESHOLD more
-# to confirm clear; ten reads more absorb a lone noisy read pausing the count.
-CALIBRATION_OFF_B_WAIT_READS: int = LIGHTING_CLEAR_HOLD_READS + OCCUPANCY_OFF_THRESHOLD + 10
-
-# When a pass opens with the train not standing in an outer block, it first
-# drives the train at this voltage into the nearer one. A fixed voltage,
-# because a target speed and a power percent are both read through the curve
-# the pass is about to measure.
-CALIBRATION_MOVE_VOLTAGE_V: float = 6.0
-
-# When a measured crossing is capped by the leg's own reservation end (the
-# stretch is too short for this step's speed even at the zero reservation-end
-# standoff) or by a repeated conflict, that crossing is discarded and
-# re-measured. This many consecutive discarded crossings of one step ends the
-# pass with a "stretch too short" report, so a too-short stretch fails rather
-# than shuttling forever.
-CALIBRATION_CAP_RETRY_LIMIT: int = 4
-
-# A speed pass opens with two trial stages in which the operator sets the
-# voltage by hand. The lighting trial starts here when the train's profile sets
-# no lighting voltage, and the panel steps the trial voltage by
-# CALIBRATION_TRIAL_STEP_V. The ATO minimum test uses the same step.
-CALIBRATION_LIGHTING_TRIAL_START_V: float = 1.5
-CALIBRATION_TRIAL_STEP_V: float = 0.1
-
-# The ATO minimum test marks its test voltage steady once this many round trips
-# in a row have finished at it with no stalled crossing.
-ATO_MINIMUM_TEST_ROUND_TRIPS: int = 3
-
-# The Default profile's values. `DEFAULT_SEEDED_MAX_VOLTAGE_V`
-# is the top of the usable `track_voltage` range. `DEFAULT_SEEDED_STARTING_VOLTAGE_V`
-# is the Default `starting_voltage`. The Default curve is the straight line from
-# 0 V -> 0 km/h to `max_voltage` -> `DEFAULT_SEEDED_TOP_SPEED_KMH`, with its
-# first point at `DEFAULT_SEEDED_FIRST_POINT_VOLTAGE_V`, above the starting
-# voltage; a copy into a train's instance profile draws the line to the train's
-# `max_speed` instead. The Default profile sets no `lighting_voltage`.
-DEFAULT_SEEDED_MAX_VOLTAGE_V: float = 12.0
-DEFAULT_SEEDED_STARTING_VOLTAGE_V: float = 1.0
-DEFAULT_SEEDED_FIRST_POINT_VOLTAGE_V: float = 1.5
-DEFAULT_SEEDED_TOP_SPEED_KMH: float = 100.0
-
 
 # Commissioning session bounds (design_v2.md "Hardware REST API", Commissioning
 # limits live in `constants.py`).

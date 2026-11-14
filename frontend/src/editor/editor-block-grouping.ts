@@ -116,7 +116,8 @@ export class BlockGroupingEditorHandler {
         const name = b.name && String(b.name).trim() ? String(b.name).trim() : '';
         const title = name || b.block_id;
         const count = (b.segment_ids || []).length;
-        const held = b.occupied_by;
+        // The train whose block this is (design_v2.md "Live fields").
+        const held = b.train_id;
         const swatch = `<span class="bg-swatch" style="background:${blockColorCss(b.block_id)}"></span>`;
         const stateChip = held ? '<span class="chip chip-state chip-warn">LIVE</span>' : '';
         const meta = `${count} segment${count === 1 ? '' : 's'}${held ? ` · held by ${escAttr(held)}` : ''}`;
@@ -250,8 +251,12 @@ export class BlockGroupingEditorHandler {
       })
       .join('');
 
-    const held = block.occupied_by;
-    const voltage = block.current_voltage || 0;
+    // The block endpoint carries no live fields; they come from the snapshot
+    // (design_v2.md "Live fields"): the train whose block this is, and the
+    // voltage last commanded on it.
+    const live: any = this.editor.cachedNetwork?.blocks?.[blockId] || {};
+    const held = live.train_id;
+    const voltage = live.voltage || 0;
     // The feed banner reflects runtime state. In Editor mode no train holds a
     // block, so it reads idle; in Simulation it shows the holder + voltage.
     const feedBanner = held

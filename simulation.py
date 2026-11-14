@@ -13,7 +13,7 @@ import operation_environment
 from block_occupancy import BlockOccupancyDetector, InactiveOccupancyInput
 from block_power import BlockPowerController
 from detector_reading_log import DetectorReadingLog
-from enums import BlockState, OperationMode
+from enums import OperationMode
 from hardware.safety import SafeStateError
 from hardware.watchdog import WatchdogTripRecord
 from network import RailwayNetwork
@@ -514,10 +514,10 @@ def add_train_runtime_fields(
 ) -> None:
     """Add the live fields to a snapshot (design_v2.md "Live fields").
 
-    - each block gets `state`, `occupied_by`, `reads_occupied`, `train_id`,
-      `claimed_by_train_id` and `voltage`;
+    - each block gets `reads_occupied`, `train_id`, `claimed_by_train_id`
+      and `voltage`;
     - each switch gets `held` and `alternate_next`;
-    - `running_trains` is the map from `train_id` to a train entry.
+    - `trains` is the map from `train_id` to a train entry.
 
     Every field is worked out here on each read from the train runtime;
     nothing stores a second copy.
@@ -527,13 +527,6 @@ def add_train_runtime_fields(
     for block_id, entry in (payload.get("blocks") or {}).items():
         owner = runtime.train_of_block(block_id)
         claimer = runtime.claimer_of_block(block_id)
-        if owner is not None or block_id in runtime.occupied:
-            entry["state"] = BlockState.OCCUPIED.value
-            entry["occupied_by"] = owner.train_id if owner is not None else None
-        elif claimer is not None:
-            entry["state"] = BlockState.RESERVED.value
-        else:
-            entry["state"] = BlockState.FREE.value
         entry["reads_occupied"] = block_id in runtime.occupied
         entry["train_id"] = owner.train_id if owner is not None else None
         entry["claimed_by_train_id"] = claimer.train_id if claimer is not None else None
@@ -544,7 +537,7 @@ def add_train_runtime_fields(
     for switch_id, entry in (switches.items() if isinstance(switches, dict) else ()):
         entry["held"] = switch_id in held
         entry["alternate_next"] = runtime.alternate_next.get(switch_id)
-    payload["running_trains"] = runtime.trains_payload()
+    payload["trains"] = runtime.trains_payload()
 
 
 def build_network_payload(

@@ -56,7 +56,6 @@ _SWITCH_DEFAULTS = {
     "switch_type": "standard",
     "name": "",
     "notes": "",
-    "disabled": False,
     "manual": False,
 }
 

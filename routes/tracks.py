@@ -4,7 +4,7 @@ Track Routes - Track CRUD and bulk operations.
 Thin HTTP layer over `services.track_service`: parse JSON, call the
 service, translate typed exceptions (NotFoundError -> 404,
 ValidationError -> 400) and the tagged update outcomes to their exact
-responses.
+responses. The service holds `state.simulation_lock` for every change.
 """
 
 from flask import jsonify, request

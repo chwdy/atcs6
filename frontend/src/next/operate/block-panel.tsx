@@ -72,7 +72,7 @@ export function BlockPanel({ host, blockId }: { host: OperateHost; blockId: stri
   const readsOccupied = !!block.reads_occupied;
   const trainId = (block.train_id as string | null) ?? null;
   const claimedBy = (block.claimed_by_train_id as string | null) ?? null;
-  const voltage = Number(block.voltage ?? block.current_voltage ?? 0);
+  const voltage = Number(block.voltage ?? 0);
   const name = String(block.name || '').trim();
   const chip = readsOccupied ? ['OCCUPIED', 'chip-danger'] : claimedBy ? ['CLAIMED', 'chip-success'] : ['EMPTY', 'chip-info'];
   const train = (id: string | null) => (id ? <span class="font-mono">{id}</span> : <span class="text-muted">No train</span>);

@@ -539,22 +539,6 @@
     cursor: pointer;
 }
 
-/* Per-line segment explanations (block-editor availability). One short line
-   per state; the state term reads one brightness tier above its description. */
-.seg-explain {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    font-size: 10px;
-    line-height: 1.5;
-    color: var(--text-tertiary);
-}
-
-.seg-explain-term {
-    color: var(--text-secondary);
-    font-weight: 600;
-}
-
 /* Field-edit feedback — a one-shot border flash on auto-save (§5C): accent for
    an accepted value, danger for a rejected/reverted one. The global
    reduced-motion rule in base/motion.css collapses these to their end state. */

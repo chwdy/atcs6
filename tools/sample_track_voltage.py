@@ -25,8 +25,8 @@ def sample(base: str, seconds: float, interval: float):
         with urllib.request.urlopen(base + "/api/network", timeout=5) as response:
             network = json.load(response)
         for block_id, block in (network.get("blocks") or {}).items():
-            volts[block_id].append(round(float(block.get("current_voltage") or 0.0), 2))
-            occupied[block_id].append(block.get("occupied_by") or "-")
+            volts[block_id].append(round(float(block.get("voltage") or 0.0), 2))
+            occupied[block_id].append(block.get("train_id") or "-")
         time.sleep(interval)
     return volts, occupied
 
@@ -55,7 +55,7 @@ def main() -> None:
         owners = sorted(set(occupied[block_id]))
         print(
             f"{block_id:<16} min={min(series):>6.2f} max={max(series):>6.2f} "
-            f"zero-crossings={cuts:<4} occupied_by={owners}"
+            f"zero-crossings={cuts:<4} train_id={owners}"
         )
         print(f"    {series[:40]}")
 
