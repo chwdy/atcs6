@@ -76,15 +76,16 @@
     --canvas-highlight-locate: #ffd93d;
 }
 
-/* ── LIGHT — light paper, dark rails, status hues darkened to hold
-   contrast on a near-white ground. ── */
+/* ── LIGHT — a quiet mid-light grey ground with near-white track, so
+   the track is the brightest thing on the canvas, not the ground. Block
+   colours are darkened to hold contrast on the pale track. ── */
 :root[data-canvas-theme="light"] {
-    --canvas-bg: #f4f4f6;
-    --canvas-grid: #dcdce2;
-    --canvas-axis: #c2c2cc;
+    --canvas-bg: #c9cad2;
+    --canvas-grid: #bcbdc7;
+    --canvas-axis: #a9aab6;
     --canvas-origin: #7048cf;
-    --canvas-track: #c4c4ce;
-    --canvas-track-dim: #dfdfe5;
+    --canvas-track: #f2f2f6;
+    --canvas-track-dim: #dadbe2;
     --canvas-success: #0a9b4b;
     --canvas-success-bright: #07b85c;
     --canvas-caution: #b07d00;
@@ -95,9 +96,9 @@
     --canvas-info: #0e85a8;
     --canvas-hold: #8b4513;
     --canvas-lock: #c2570c;
-    --block-free: #0e85a8;
-    --block-reserved: #0a9b4b;
-    --block-occupied: #d62a4c;
+    --block-free: #0a86ad;
+    --block-reserved: #0a964a;
+    --block-occupied: #dc2444;
     --block-caution: #b07d00;
     --train-body: #2a2a30;
     --train-body-manual: #b07d00;
@@ -109,15 +110,15 @@
     --canvas-highlight-locate: #b07d00;
 }
 
-/* ── BLUEPRINT — deep blue ground, pale cyan-white linework, bright
-   status hues. The classic engineering drawing look. ── */
+/* ── BLUEPRINT — deep blue ground, blue-grey track, and the dark
+   theme's block colours tuned for the blue ground. ── */
 :root[data-canvas-theme="blueprint"] {
-    --canvas-bg: #0d2847;
-    --canvas-grid: #1c4a7a;
+    --canvas-bg: #0c2444;
+    --canvas-grid: #183a63;
     --canvas-axis: #2f6299;
     --canvas-origin: #7fd4ff;
-    --canvas-track: #2f5f92;
-    --canvas-track-dim: #1a406b;
+    --canvas-track: #35557f;
+    --canvas-track-dim: #1c3a60;
     --canvas-success: #5effa6;
     --canvas-success-bright: #00ff88;
     --canvas-caution: #ffe46b;
@@ -128,9 +129,9 @@
     --canvas-info: #00d4ff;
     --canvas-hold: #d2a679;
     --canvas-lock: #ffb454;
-    --block-free: #7fd4ff;
-    --block-reserved: #5effa6;
-    --block-occupied: #ff6b81;
+    --block-free: #38c6ee;
+    --block-reserved: #3fe58c;
+    --block-occupied: #ff5f6d;
     --block-caution: #ffe46b;
     --train-body: #ffffff;
     --train-body-manual: #ffe066;

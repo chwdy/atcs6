@@ -1,251 +1,208 @@
 # Reference: Track Display and Rendering
 
-> **Last Verified:** 2026-01-16
+> **Last Verified:** 2026-11-15
 
 ## Context
-This document explains how our system renders tracks using the 6-bit `track_bits` system (inspired by OpenTTD's tile geometry). The system uses canvas-based rendering where each track segment is drawn as a line between edge midpoints.
 
-## 1. The 6-Bit Track System
+This note explains how the page draws track on the canvas. What the drawing means to the person
+running trains is in `design_v2.md`, "Seeing trains on the layout". The colours and the look are in
+`docs/DESIGN_LANGUAGE.md`. This note covers only how the code does it.
 
-### Track Bits Overview
-Our system uses a **6-bit integer** called `track_bits` (0-63) where each bit represents one of 6 possible rail segments on a tile:
+The code is in `frontend/src/renderer/`:
 
-| Bit | Value | Segment | Description |
-|:---:|:-----:|:-------:|:------------|
-| 0 | 1 | **NS** | North to South (vertical) |
-| 1 | 2 | **EW** | East to West (horizontal) |
-| 2 | 4 | **NE** | North to East (diagonal) |
-| 3 | 8 | **NW** | North to West (diagonal) |
-| 4 | 16 | **SE** | South to East (diagonal) |
-| 5 | 32 | **SW** | South to West (diagonal) |
-
-**Examples:**
-*   Vertical straight track: `track_bits = 1` (NS only)
-*   Horizontal straight track: `track_bits = 2` (EW only)
-*   Right curve (NE): `track_bits = 4`
-*   Simple crossing (NS + EW): `track_bits = 3`
-*   Switch (NS + NE): `track_bits = 5`
-*   Diamond crossing (NE + SW): `track_bits = 36`
-
-### Edge Masks
-To determine which edges are connected, use these bitmasks:
-*   **North** = 13 (0b001101) = NS + NE + NW
-*   **East** = 22 (0b010110) = EW + NE + SE
-*   **South** = 49 (0b110001) = NS + SE + SW
-*   **West** = 42 (0b101010) = EW + NW + SW
-
-**Usage:** `if (track_bits & 13) // North edge is connected`
-
-### Forbidden Configurations
-28 `track_bits` values are **forbidden** (cannot be built):
-*   **3-way switches**: 13, 22, 42, 49
-*   **Multi-diagonal (no through route)**: 28, 44, 52, 56, 60
-*   **Complex 4+ path configs**: 15, 23, 29, 30, 43, 45, 46, 51, 53, 54, 57, 58
-*   **5+ path configs**: 31, 47, 55, 59, 61, 62, 63
+| File | What it draws |
+|:-----|:--------------|
+| `renderer-tracks.ts` | The track, each block's state line, switches and their marks |
+| `track-path.ts` | One line of track with round bends, shared by everything that follows the track |
+| `running-train-overlay.ts` | Each train's border, chevron and tag |
+| `renderer-debug.ts` | The bar across an end of track, and the debug overlays |
 
 ---
 
-## 2. Rendering Implementation
+## 1. What a tile holds
 
-### Track Width Constants
-Track rendering uses centralized constants for consistent visual appearance:
+A tile's track is a 6-bit number, `track_bits` (0–63). Each bit is one segment, and a segment runs
+from the middle of one tile edge to the middle of another.
 
-```javascript
-const TRACK_WIDTH = 4;         // Base track width in pixels (at scale=1)
-const DEBUG_BLOCK_WIDTH = 12;  // Debug block overlay width (at scale=1)
-```
+| Bit | Value | Segment | Edges it joins |
+|:---:|:-----:|:-------:|:---------------|
+| 0 | 1 | **NS** | North and South |
+| 1 | 2 | **EW** | East and West |
+| 2 | 4 | **NE** | North and East |
+| 3 | 8 | **NW** | North and West |
+| 4 | 16 | **SE** | South and East |
+| 5 | 32 | **SW** | South and West |
 
-### `drawGridSegment(start, end, width, e1, e2, fillColor)`
-**Core rendering primitive** - draws a filled polygon segment along a track path:
-
-```javascript
-/**
- * Draw a filled polygon segment along a track path in the isometric grid.
- * 
- * Width parameter controls offset along grid lines (perpendicular to edges).
- * Each edge has its own perpendicular direction (positive = counter-clockwise).
- */
-drawGridSegment(start, end, width, e1, e2, fillColor) {
-    const halfWidth = width / 2;
-    
-    // Get perpendicular offset for each edge
-    // Positive direction is counter-clockwise around the tile
-    const getEdgeOffset = (edge) => {
-        switch(edge) {
-            case 'N': return {x: -halfWidth, y: -halfWidth};
-            case 'E': return {x: halfWidth, y: -halfWidth};
-            case 'S': return {x: halfWidth, y: halfWidth};
-            case 'W': return {x: -halfWidth, y: halfWidth};
-        }
-    };
-    
-    const offset1 = getEdgeOffset(e1);
-    const offset2 = getEdgeOffset(e2);
-    
-    // Create 4 corner points - alternating pattern around perimeter
-    const p1 = {x: start.x + offset1.x, y: start.y + offset1.y};  // Start + offset
-    const p2 = {x: start.x - offset1.x, y: start.y - offset1.y};  // Start - offset
-    const p3 = {x: end.x + offset2.x, y: end.y + offset2.y};      // End + offset
-    const p4 = {x: end.x - offset2.x, y: end.y - offset2.y};      // End - offset
-    // Draw: p1 → p2 → p3 → p4 → close
-}
-```
-
-**Key features:**
-- **Per-edge offsets**: Each edge (N/E/S/W) has its own perpendicular direction
-- **Counter-clockwise convention**: Positive offset is CCW around tile
-- **Grid-aligned width**: Width parameter is offset along grid lines
-- **Alternating point pattern**: p1(start+), p2(start-), p3(end+), p4(end-) creates proper shape
-
-**Edge Perpendicular Offsets:**
-
-| Edge | Position | Perpendicular Offset (CCW) |
-|------|----------|---------------------------|
-| N | `(h/2, -h/2)` | `(-halfWidth, -halfWidth)` |
-| E | `(h/2, h/2)` | `(+halfWidth, -halfWidth)` |
-| S | `(-h/2, h/2)` | `(+halfWidth, +halfWidth)` |
-| W | `(-h/2, -h/2)` | `(-halfWidth, +halfWidth)` |
-
-### `drawTrackFromBits(trackBits, half, color)`
-Iterates through all 6 bits and draws active segments using `drawGridSegment()`:
-
-```javascript
-const segments = getActiveSegments(trackBits);
-for (const [e1, e2] of segments) {
-    const start = edgePoints[e1];
-    const end = edgePoints[e2];
-    if (start && end) {
-        this.drawGridSegment(start, end, TRACK_WIDTH * this.scale, e1, e2, color);
-    }
-}
-```
-
-### Edge Points (Isometric Diamond)
-In our **45° rotated isometric view** with 1:1 square diamond tiles:
-
-**Coordinate System:**
-*   **X+ points East** (toward screen bottom-right)
-*   **Y+ points North** (toward screen bottom-left)
-
-**Grid-to-Screen Transformation:**
-```javascript
-// Updated convention: X+ goes down-right, Y+ goes up-right
-// Tile center at (x+0.5, y+0.5), so we add 1 to (gridX + gridY)
-screenX = centerX + panX + (gridX + gridY + 1) * tileSize / 2
-screenY = centerY + panY + (gridX - gridY) * tileSize / 2
-```
-
-**Diamond Tile Geometry:**
-The tile is a square rotated 45° with corners at:
-*   **Top corner**: (0, -tileSize/2)
-*   **Right corner**: (+tileSize/2, 0)
-*   **Bottom corner**: (0, +tileSize/2)
-*   **Left corner**: (-tileSize/2, 0)
-
-**Edge Midpoints (where tracks connect to neighbors):**
-Each edge connects to a neighbor tile in that cardinal direction:
-*   **N edge** (connects to y+1 neighbor, up-right on screen): `(+h/2, -h/2)` top-right
-*   **E edge** (connects to x+1 neighbor, down-right on screen): `(+h/2, +h/2)` bottom-right
-*   **S edge** (connects to y-1 neighbor, down-left on screen): `(-h/2, +h/2)` bottom-left
-*   **W edge** (connects to x-1 neighbor, up-left on screen): `(-h/2, -h/2)` top-left
-
-**Screen appearance of segments:**
-| Segment | Screen Appearance | Description |
-|---------|-------------------|-------------|
-| NS | `╱` diagonal | Top-right to bottom-left |
-| EW | `╲` diagonal | Bottom-right to top-left |
-| NE | Right edge | Top-right to bottom-right (vertical on screen) |
-| NW | Top edge | Top-right to top-left (horizontal on screen) |
-| SE | Bottom edge | Bottom-left to bottom-right |
-| SW | Left edge | Bottom-left to top-left |
-
-### Switch Rendering
-When a track has switch points (edge with 2+ exits):
-1. **All segments** are drawn using `drawGridSegment()`
-2. **Active path**: Uses `TRACK_WIDTH` with track color
-3. **Inactive paths**: Uses `2px` width with `#444` grey color
-4. **Switch indicator** (M/D) drawn at tile center
-
-```javascript
-const segmentColor = isActive ? color : '#444';
-const segmentWidth = isActive ? TRACK_WIDTH * this.scale : 2 * this.scale;
-this.drawGridSegment(start, end, segmentWidth, e1, e2, segmentColor);
-```
-
-### Block Boundary Markers
-Small 2px segments at block boundaries, extending inward from the edge:
-
-```javascript
-// Create segment extending (TRACK_WIDTH / 2)px inward from boundary edge
-const markerDepth = (TRACK_WIDTH * this.scale) / 2;
-const segmentEnd = {
-    x: edgePoint.x + (dx / length) * markerDepth,
-    y: edgePoint.y + (dy / length) * markerDepth
-};
-this.drawGridSegment(edgePoint, segmentEnd, TRACK_WIDTH * this.scale, edge, segmentPartner, '#666');
-```
-
-### Debug Block Colors
-Thick colored overlays (12px) for visualizing block assignments:
-
-```javascript
-this.drawGridSegment(start, end, DEBUG_BLOCK_WIDTH * this.scale, e1, e2, color);
-```
-
-### Block Boundary Markers
-Small 2px segments at block boundaries, extending inward from the edge:
-
-```javascript
-// Create segment extending (TRACK_WIDTH / 2)px inward from boundary edge
-const markerDepth = (TRACK_WIDTH * this.scale) / 2;
-const segmentEnd = {
-    x: edgePoint.x + (dx / length) * markerDepth,
-    y: edgePoint.y + (dy / length) * markerDepth
-};
-this.drawGridSegment(edgePoint, segmentEnd, TRACK_WIDTH * this.scale, e1, e2, '#666');
-```
-
-### Debug Block Colors
-Thick colored overlays (12px) for visualizing block assignments:
-
-```javascript
-this.drawGridSegment(start, end, DEBUG_BLOCK_WIDTH * this.scale, e1, e2, blockColor);
-```
+`getActiveSegments(track_bits)` in `frontend/src/lib/constants.ts` returns the segments as pairs of
+edge names. The full table of values, the edge masks and the values that cannot be built are in
+`Reference_6Bit_Track_System.md`.
 
 ---
 
-## 3. Track Bits Value Reference (0-63)
+## 2. Where a tile is on screen
 
-### Single Segments (6 values)
-| track_bits | Binary | Segments | Description |
-|:----------:|:------:|:--------:|:------------|
-| 1 | 000001 | NS | Vertical straight |
-| 2 | 000010 | EW | Horizontal straight |
-| 4 | 000100 | NE | NE diagonal |
-| 8 | 001000 | NW | NW diagonal |
-| 16 | 010000 | SE | SE diagonal |
-| 32 | 100000 | SW | SW diagonal |
+The grid is drawn turned 45°, so a tile is a diamond.
 
-### Common Combinations
-| track_bits | Binary | Segments | Description |
-|:----------:|:------:|:--------:|:------------|
-| 3 | 000011 | NS+EW | Simple crossing |
-| 5 | 000101 | NS+NE | Switch (N or S → E) |
-| 9 | 001001 | NS+NW | Switch (N or S → W) |
-| 24 | 011000 | NW+SE | Diamond (NW-SE diagonal) |
-| 36 | 100100 | NE+SW | Diamond (NE-SW diagonal) |
+```ts
+// frontend/src/lib/camera.ts
+tileSize = gridSize * scale
+screenX  = centerX + panX + (gridX + gridY + 1) * tileSize / 2
+screenY  = centerY + panY + (gridX - gridY) * tileSize / 2
+```
+
+`gridToScreenX/Y` give the centre of the tile. The middle of each tile edge is a quarter of a tile
+away from it:
+
+| Edge | Neighbour across it | Offset from the tile centre | On screen |
+|:----:|:--------------------|:----------------------------|:----------|
+| N | y + 1 | `(+tileSize/4, −tileSize/4)` | up and right |
+| E | x + 1 | `(+tileSize/4, +tileSize/4)` | down and right |
+| S | y − 1 | `(−tileSize/4, +tileSize/4)` | down and left |
+| W | x − 1 | `(−tileSize/4, −tileSize/4)` | up and left |
+
+So a segment looks like this on screen:
+
+| Segment | On screen |
+|:-------:|:----------|
+| NS | 45° line, top right to bottom left |
+| EW | 45° line, bottom right to top left |
+| NE | vertical, on the right of the tile |
+| SW | vertical, on the left of the tile |
+| NW | horizontal, along the top of the tile |
+| SE | horizontal, along the bottom of the tile |
 
 ---
 
-## German-to-English Keyword Translation
+## 3. Sizes
 
-| German Term | English Meaning | Description |
-|:------------|:----------------|:------------|
-| `weg` | Way | Generic term for road/rail/path. |
-| `schiene` | Rail | Railway specific implementation. |
-| `weiche` | Switch | Railway switch/turnout. |
-| `kreuzung` | Crossing | Intersection of two ways. |
-| `bild` | Image | Sprite/Graphic. |
-| `vordergrund` | Foreground | Top visual layer (wires/bridges). |
-| `oberleitung` | Overhead Line | Catenary/Electrification. |
-| `schnee` | Snow | Winter textures. |
+All in `frontend/src/lib/constants.ts`, in pixels at `scale = 1`. Each is multiplied by the zoom.
+
+| Constant | Value | What it sets |
+|:---------|:-----:|:-------------|
+| `TRACK_LINE_WIDTH` | 10 | How thick the track is drawn, the same in every direction |
+| `TRACK_STATUS_WIDTH` | 2 | How thick a block's state line is |
+| `TRACK_BEND_RADIUS` | 12 | The radius of a bend |
+| `TRACK_WIDTH` | 6 | How far a block's state line stops short of each end of the block. Also sizes the gap beside a switch leg and the selection highlight |
+| `DEBUG_BLOCK_WIDTH` | 12 | The width of the debug overlays that colour track by block or by segment |
+
+---
+
+## 4. Track is drawn as lines, not tile by tile
+
+Drawing each tile's segment on its own leaves a notch or an overlap wherever two segments meet at
+an angle. So `drawTracks` first joins the segments into lines and then strokes each line once.
+
+1. **Collect pieces.** Each segment of each tile becomes a piece (`tilePiece`): its two screen
+   points and a name for each of its two tile edges. An edge has one name whichever tile asks
+   (`edgeName`), so two pieces that meet on a shared edge carry the same name there.
+2. **Link pieces into lines** (`linkPieces`). Where exactly two pieces share an edge, they join. A
+   line ends where it meets no other piece, or where three or more pieces meet. Pieces left over
+   after that form closed loops.
+3. **Carry on past a three-way meeting.** Where three or more pieces meet, each line is extended
+   along one piece of the neighbouring tile. The canvas then joins the line to that piece instead
+   of leaving a square end with a notch beside it. The extra length lies on top of track the same
+   stroke already draws.
+4. **Trace each line with round bends** (`traceTrackLine` in `track-path.ts`). Each bend is an arc
+   of radius `TRACK_BEND_RADIUS`. An arc uses at most half of the shorter straight on either side of
+   its bend, so two bends close together never overlap.
+5. **Stroke all the lines of one colour in a single stroke** (`strokeLinePieces`), so lines that
+   overlap do not darken each other.
+
+The train's border and a block's state line are traced by the same `traceTrackLine` with the same
+points, so their bends lie exactly on the track's bends.
+
+---
+
+## 5. What `drawTracks` draws, in order
+
+1. **All track** in the track colour (`--canvas-track`), `TRACK_LINE_WIDTH` thick, with square
+   ends.
+2. **The switch legs not set**, each as a filled four-cornered shape in the dim track colour
+   (`--canvas-track-dim`). See section 6.
+3. **Each block's state line**, `TRACK_STATUS_WIDTH` thick with round ends, along the middle of the
+   block's track. The colour comes from `blockTrackColor`: occupied if the block's detector reads
+   occupied, otherwise reserved if a train claims it, otherwise free. A tile with no block, or a
+   block the snapshot says nothing about, gets no line. The line's open ends are pulled back by
+   `TRACK_WIDTH`, so the lines of two neighbouring blocks never touch and the gap shows where one
+   block ends.
+4. **A dot on each crossing tile** (`track_bits = 3`), radius 4, in `--canvas-accent`.
+5. **A bar across each end of track** (`highlightDeadEnds` in `renderer-debug.ts`), in
+   `--canvas-warning`. It is as thick as a state line and its inner face sits on the end of the
+   track, so it never covers the track.
+
+`drawSwitchMarks` runs straight after `drawTracks`.
+
+---
+
+## 6. Switches
+
+`switchArms` works out which segments of a switch tile are the set leg and which are not. On a
+regular switch the straight-through segment is the set leg in position 0 (main) and the turning
+segment is the set leg in position 1 (diverge). A switch with no straight-through segment takes
+its first exit clockwise for position 0 and its second for position 1.
+
+| The switch is | How its legs are drawn |
+|:--------------|:-----------------------|
+| Plain, held or manual | The set leg whole, in the track colour. The other leg dim, from its outer edge to just short of the set leg |
+| Position not known | Every leg dim, edge to edge |
+| Alternate arrivals on | Every leg whole, because the runtime picks the leg |
+
+**The leg not set.** Its end is cut parallel to the set leg, and a strip of the background shows
+between the two. The strip is `TRACK_WIDTH / 2` wide. The leg never stops more than 85% of its
+length short of the shared edge. Track-colour is drawn under the leg as far as its shorter side, so
+the canvas joins the leg to the track beyond its outer edge.
+
+**The state line on a switch.** The set leg carries the state line of the tile's block, edge to
+edge, with no gap at the ends.
+
+**The mark** (`switchMark`, `drawSwitchMarks`). A switch that is not plain gets one round badge
+beside its tile, on the side no track leaves by. A switch can be in several conditions at once; the
+badge shows the first one that applies:
+
+| Order | Condition | Badge | Colour |
+|:-----:|:----------|:------|:-------|
+| 1 | Held | lock | `--train-line`, because a train holds it |
+| 2 | Position not known | `?` | `--canvas-text-dim` |
+| 3 | Manual | hand | `--canvas-text-dim` |
+| 4 | Alternate arrivals on | two circling arrows | `--canvas-text-dim` |
+
+The badge is a circle filled with the background colour, with a radius between 7 and 11 pixels
+whatever the zoom. The lock, hand and arrows are glyphs from the Tabler icon font.
+
+**The M/D letters.** `drawSwitchBadgeAt` draws a small M or D dot on each switch. It is drawn only
+when the "Switch States" debug toggle is on, which is off by default.
+
+---
+
+## 7. Trains
+
+`running-train-overlay.ts` draws on top of the track.
+
+- **The border.** One stroke along the track of the train's blocks, from its rear block to its
+  front block, across any switch between them. It is drawn in three passes: a dark stroke slightly
+  wider than the track (`--train-line-edge`), a white stroke as wide as the track (`--train-line`),
+  then the middle is cut out again with `destination-out`. What is left is a thin white line along
+  each edge of the track with a dark line outside it, and the track and its state line show through
+  the middle. The border has its own canvas layer, so the cut does not remove the track.
+- **A claimed block ahead** carries the border on to the middle of that block, where a thin chevron
+  closes it.
+- **The chevron.** A thick chevron on the middle tile of the front block points the way the train
+  faces. It reaches past both edges of the track.
+- **The tag** sits beside that chevron (`tagSide`). Its fill is the train's state
+  (`trainTagColor`).
+- **A lost train** has a dashed border and no chevron.
+- **A highlighted train** has a border twice as thick, in `--train-highlight`.
+
+---
+
+## 8. Other things drawn along the track
+
+| What | Function | How |
+|:-----|:---------|:----|
+| Track the track tool is about to lay | `drawPreviewTracks` | Linked and traced like real track, in `--canvas-caution` at 80% |
+| A selection, or a block being dragged out | `drawTileExtentHighlight` | A wide soft stroke and a thin bright stroke over each selected tile's segments, and a tick across each edge where the track leaves the selection. Drawn tile by tile, with round ends |
+| Track coloured by block or by segment (debug) | `drawBlockGroupingColors`, `drawSegmentIdColors` | Under the track, `DEBUG_BLOCK_WIDTH` wide, using `drawGridSegment` |
+| The mark where one segment ends and the next begins (debug) | `drawSegmentBoundaryMarkers` | A short piece at the tile edge, using `drawGridSegment` |
+
+`drawGridSegment` is the older way of drawing a segment: a filled four-cornered shape on one tile.
+Only these debug drawings still use it.
