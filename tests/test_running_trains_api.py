@@ -364,3 +364,71 @@ def test_assigned_leg_request_snapshot_and_operator_throw(session):
     put(f"/api/trains/{train_id}/assigned-leg", json={"switch_id": switch_id, "leg": 1})
     assert put(f"/api/switches/{switch_id}/state", json={"state": 0}).status_code == 202
     assert runtime.trains[train_id].assigned_legs == {}
+
+
+def test_each_train_request_emits_one_command_result(session):
+    """design_v2.md "Event log", Operator requests about trains report a
+    command result."""
+    session.passes("Left")
+    commands = ("set_knob", "stop", "reverse", "remove_train", "stop_all")
+
+    def results():
+        return [
+            e.to_dict()
+            for e in session.sim.notification_center.peek_recent(500)
+            if e.operation in commands
+        ]
+
+    session.client.put("/api/trains/T1/knob", json={"volts": 6})
+    session.client.put("/api/trains/T1/knob", json={"volts": 13})
+    session.client.post("/api/trains/T1/reverse")
+    session.client.post("/api/trains/T1/stop")
+    session.client.post("/api/trains/stop-all")
+    session.client.delete("/api/trains/T9")
+    session.client.delete("/api/trains/T1")
+
+    got = results()
+    assert [(e["operation"], e["kind"], e["payload"]["reason"]) for e in got] == [
+        ("set_knob", "info", ""),
+        ("set_knob", "warning", "out_of_range"),
+        ("reverse", "warning", "not_stopped"),
+        ("stop", "info", ""),
+        ("stop_all", "info", ""),
+        ("remove_train", "warning", "unknown_train"),
+        ("remove_train", "info", ""),
+    ]
+    assert all(e["source"] == "SimulationController" for e in got)
+    knob = got[0]
+    assert knob["entities"] == [{"entity_type": "train", "entity_id": "T1"}]
+    assert set(knob["payload"]) == {"command_id", "train_id", "success", "reason"}
+    assert knob["payload"]["train_id"] == "T1" and knob["payload"]["success"] is True
+    assert knob["message"] == "T1: knob to 6 V."
+    stop_all = got[4]
+    assert stop_all["entities"] == []
+    assert set(stop_all["payload"]) == {"command_id", "success", "reason"}
+
+
+def test_a_trains_notifications_are_a_filter_over_the_one_stream(session):
+    """design_v2.md "Runtime notifications", Per-entity reads are filters."""
+    session.passes("Left", "Right")  # T1 and T2
+    session.client.put("/api/trains/T1/knob", json={"volts": 6})
+    session.client.put("/api/trains/T1/knob", json={"volts": 13})
+    session.client.put("/api/trains/T2/knob", json={"volts": 5})
+
+    def read(query=""):
+        reply = session.client.get(f"/api/trains/T1/notifications{query}")
+        return reply.get_json()["notifications"]
+
+    events = read()
+    ids = [e["notification_id"] for e in events]
+    assert ids == sorted(ids, reverse=True)  # most recent first
+    assert all({"entity_type": "train", "entity_id": "T1"} in e["entities"] for e in events)
+    assert [e["operation"] for e in events[:2]] == ["set_knob", "set_knob"]
+
+    warnings = read("?kind=warning")
+    assert [e["payload"]["reason"] for e in warnings] == ["out_of_range"]
+    assert [e["notification_id"] for e in read(f"?since_notification_id={ids[1]}")] == ids[:1]
+    # A `since_notification_id` that is not a number is left out of the filter.
+    assert read("?since_notification_id=x") == events
+    # A read acknowledges nothing and empties nothing.
+    assert read() == events

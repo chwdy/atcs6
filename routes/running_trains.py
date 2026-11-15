@@ -6,6 +6,10 @@ the reason and changes nothing.
 
 A request that names a train the runtime does not hold is refused with
 `unknown_train`.
+
+Each request also emits one command-result event, so the event log holds what
+the operator asked for beside what the runtime did (design_v2.md "Event log",
+Operator requests about trains report a command result).
 """
 
 import time
@@ -13,6 +17,7 @@ import time
 from flask import jsonify, request
 
 from app_state import AppState
+from services.notifications import emit_command_result
 
 
 def _answer(result):
@@ -31,27 +36,54 @@ def _runtime(state: AppState):
 def register(app, state: AppState) -> None:
     """Register the v2 train routes."""
 
-    def _refuse_without_runtime():
-        return jsonify({"success": False, "reason": "unknown_train"}), 400
+    def _report(operation, result, train_id=None, asked=""):
+        """Emit the request's command-result event and answer the request.
+        `asked` says what was asked for, for example "knob to 4.5 V"."""
+        success, reason = result
+        runtime = _runtime(state)
+        train = runtime.trains.get(train_id) if runtime and train_id else None
+        who = train.name if train is not None else (train_id or "every train")
+        what = asked or operation
+        emit_command_result(
+            state,
+            source="SimulationController",
+            command_name=operation,
+            success=success,
+            entity_id_key="train_id" if train_id else "",
+            entity_id=train_id or "",
+            reason=reason or "",
+            message=(
+                f"{who}: {what}." if success else f"{who}: {what} refused ({reason})."
+            ),
+        )
+        return _answer(result)
+
+    def _refuse_without_runtime(operation, train_id):
+        return _report(operation, (False, "unknown_train"), train_id)
 
     @app.route("/api/trains/<train_id>/knob", methods=["PUT"])
     def set_train_knob(train_id):
         runtime = _runtime(state)
         if runtime is None:
-            return _refuse_without_runtime()
+            return _refuse_without_runtime("set_knob", train_id)
         data = request.get_json(silent=True) or {}
         with state.simulation_lock:
             live = state.session_state().is_live
-            return _answer(runtime.set_knob(train_id, data.get("volts"), time.time(), live))
+            return _report(
+                "set_knob",
+                runtime.set_knob(train_id, data.get("volts"), time.time(), live),
+                train_id,
+                asked=f"knob to {data.get('volts')} V",
+            )
 
     @app.route("/api/trains/<train_id>/reverse", methods=["POST"])
     def reverse_train(train_id):
         runtime = _runtime(state)
         if runtime is None:
-            return _refuse_without_runtime()
+            return _refuse_without_runtime("reverse", train_id)
         with state.simulation_lock:
             live = state.session_state().is_live
-            return _answer(runtime.reverse(train_id, live))
+            return _report("reverse", runtime.reverse(train_id, live), train_id)
 
     @app.route("/api/trains/<train_id>/assigned-leg", methods=["PUT"])
     def set_train_assigned_leg(train_id):
@@ -59,7 +91,7 @@ def register(app, state: AppState) -> None:
         "Running a train", Assign a leg)."""
         runtime = _runtime(state)
         if runtime is None:
-            return _refuse_without_runtime()
+            return jsonify({"success": False, "reason": "unknown_train"}), 400
         data = request.get_json(silent=True) or {}
         with state.simulation_lock:
             live = state.session_state().is_live
@@ -73,18 +105,22 @@ def register(app, state: AppState) -> None:
         (design_v2.md "Running a train", Stop)."""
         runtime = _runtime(state)
         if runtime is None:
-            return _refuse_without_runtime()
+            return _refuse_without_runtime("stop", train_id)
         with state.simulation_lock:
-            return _answer(runtime.stop(train_id, time.time()))
+            return _report("stop", runtime.stop(train_id, time.time()), train_id)
 
     @app.route("/api/trains/<train_id>", methods=["DELETE"])
     def remove_train(train_id):
         """Remove a train (design_v2.md "Trains", Removing a train)."""
         runtime = _runtime(state)
         if runtime is None:
-            return _refuse_without_runtime()
+            return _refuse_without_runtime("remove_train", train_id)
         with state.simulation_lock:
-            return _answer(runtime.remove(train_id))
+            # The name is read before the train is gone.
+            train = runtime.trains.get(train_id)
+            name = train.name if train is not None else train_id
+            result = runtime.remove(train_id)
+            return _report("remove_train", result, train_id, asked=f"remove {name}")
 
     @app.route("/api/trains/<train_id>/notifications", methods=["GET"])
     def get_train_notifications(train_id):
@@ -123,5 +159,5 @@ def register(app, state: AppState) -> None:
             if not live:
                 report_close_failures(state.sim_controller, close_setup_tools())
             if runtime is None:
-                return jsonify({"success": True, "reason": None})
-            return _answer(runtime.stop_all(time.time(), live))
+                return _report("stop_all", (True, None))
+            return _report("stop_all", runtime.stop_all(time.time(), live))

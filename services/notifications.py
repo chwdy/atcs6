@@ -19,14 +19,20 @@ def emit_command_result(
     state: AppState,
     *,
     source: str,
-    entity_id_key: str,
-    entity_id: str,
     command_name: str,
     success: bool,
+    entity_id_key: str = "",
+    entity_id: str = "",
     reason: str = "",
     command_id: Optional[str] = None,
+    message: str = "",
 ) -> str:
     """Emit one `command_result` event; never raises.
+
+    A command that targets no single entity (Stop all) leaves `entity_id_key`
+    empty: the event then names no entity and its payload carries no id field.
+    `message` is the event's one-line message; without it the reason, or the
+    command name with "accepted" / "rejected", is used.
 
     Returns the (possibly generated) `command_id` so a caller can correlate.
     Notification failure must not affect the caller, so every step is guarded —
@@ -46,7 +52,7 @@ def emit_command_result(
             source=source,
             operation=command_name,
             kind=Kind.INFO if success else Kind.WARNING,
-            message=reason or (
+            message=message or reason or (
                 f"{command_name} accepted" if success
                 else f"{command_name} rejected"
             ),
@@ -55,7 +61,7 @@ def emit_command_result(
             ),
             payload={
                 "command_id": resolved_command_id,
-                entity_id_key: entity_id,
+                **({entity_id_key: entity_id} if entity_id_key else {}),
                 "success": success,
                 "reason": reason or "",
             },

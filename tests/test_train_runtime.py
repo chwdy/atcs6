@@ -887,3 +887,104 @@ def test_an_assigned_leg_ends_on_request_and_on_leaving_live(rig):
     _assign(rig, "T1", 0)
     rig.runtime.leave_live(rig.now)
     assert rig.train("T1").assigned_legs == {}
+
+
+# --- a switch another train holds (design_v2.md "Switches") ------------------
+
+
+def _stand_across_left_and_main(rig):
+    """T1 stops across Left and Main, and Main, under its lit cars, reads
+    empty. Main is still T1's block, so both switches next to it are held."""
+    rig.step("Left")
+    rig.knob("T1", 6.0)
+    rig.step("Left")
+    rig.step("Left", "Main")
+    rig.runtime.stop("T1", rig.now)
+    rig.step("Left", seconds=6.0)  # its claim on Right ends after the hold time
+    assert rig.blocks("T1") == ["Left", "Main"]
+    assert rig.claim("T1") is None
+    assert RIGHT_SWITCH in rig.runtime.held_switch_ids()
+
+
+def test_an_arrival_waits_while_another_train_holds_the_switch(rig):
+    _stand_across_left_and_main(rig)
+    _throwing(rig)
+    rig.runtime.enable_alternation(RIGHT_SWITCH)
+    rig.step("Left", "Right")  # T2 at the toe of the right switch
+    rig.knob("T2", 6.0)
+    rig.step("Left", "Right")
+
+    # Sideline is free, and the switch is not thrown under T1 to reach it.
+    assert rig.state("T2") == "waiting"
+    assert rig.train("T2").waiting_reason == "switch_held"
+    assert rig.claim("T2") is None
+    assert int(rig.network.switches[RIGHT_SWITCH].position) == 0
+
+
+def test_an_assigned_leg_waits_while_another_train_holds_the_switch(rig):
+    _stand_across_left_and_main(rig)
+    _throwing(rig)
+    rig.step("Left", "Right")
+    assert _assign(rig, "T2", 1) == (True, None)
+    rig.knob("T2", 6.0)
+    rig.step("Left", "Right")
+
+    assert rig.state("T2") == "waiting"
+    assert rig.train("T2").waiting_reason == "switch_held"
+    assert rig.claim("T2") is None
+    assert int(rig.network.switches[RIGHT_SWITCH].position) == 0
+
+
+@pytest.mark.parametrize("alternate", [True, False])
+def test_a_throw_that_fails_the_hardware_gives_no_claim(rig, alternate):
+    """A failed throw that took the outputs away ends the step's claims: the
+    train is given nothing and no waiting reason is recorded for it."""
+    outputs = {"active": True}
+
+    def throw(switch_id, position):
+        outputs["active"] = False
+        return False
+
+    rig.runtime._throw_switch = throw
+    rig.runtime._outputs_active = lambda: outputs["active"]
+    rig.step("Right")
+    if alternate:
+        rig.runtime.enable_alternation(RIGHT_SWITCH)
+        rig.runtime.alternate_next[RIGHT_SWITCH] = 1
+    else:
+        _assign(rig, "T1", 1)
+    rig.knob("T1", 6.0)
+    writes = rig.writes
+    rig.step("Right")
+
+    assert rig.claim("T1") is None
+    assert rig.train("T1").waiting_reason is None
+    assert rig.writes == writes
+
+
+# --- a block a stopped train keeps, and the train behind it ----------------
+
+
+def test_the_train_behind_gets_a_kept_block_when_the_stopped_train_runs_again(rig):
+    """Rig run 2026-11-15: a train was stopped just before its rear block read
+    empty, kept that block while it stood, and gave it up on the first step
+    after its knob was turned up again."""
+    rig.step("Left")  # T1
+    rig.step("Left", "Up")  # T2, behind it
+    assert rig.runtime.reverse("T2", rig.live) == (True, None)  # Up leads to Left
+    rig.knob("T1", 6.0)
+    rig.knob("T2", 6.0)
+    rig.step("Left", "Up")
+    rig.step("Left", "Main", "Up")
+    rig.runtime.stop("T1", rig.now)
+    rig.step("Main", "Up", seconds=8.0)  # Left reads empty after the stop
+
+    assert rig.blocks("T1") == ["Left", "Main"]
+    assert rig.state("T2") == "waiting"
+    assert rig.train("T2").waiting_reason == "block_taken"
+
+    rig.knob("T1", 6.0)
+    rig.step("Main", "Up")
+    assert rig.blocks("T1") == ["Main"]
+    assert rig.claim("T2") == "Left"
+    assert rig.state("T2") == "moving"
