@@ -78,7 +78,8 @@ def test_request_with_current_version_gets_live_fields_only(client):
     for live in body["live_blocks"].values():
         assert not BLOCK_LAYOUT_FIELDS & set(live)
         assert set(live) == {
-            "reads_occupied", "train_id", "claimed_by_train_id", "voltage",
+            "reads_occupied", "train_id", "claimed_by_train_id", "train_ahead",
+            "voltage",
         }
     assert set(body["live_switches"]) == set(full["switches"])
     # A switch's live fields are `position`, `position_known` and `held`;

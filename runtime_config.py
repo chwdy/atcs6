@@ -27,6 +27,7 @@ class RuntimeConfig:
 
     # --- Trains (the runtime) ---
     hold_time_s: float = 5.0
+    caution_volts: float = 4.5
     # --- Event stream ---
     notification_retention_rows: int = C.NOTIFICATION_RETENTION_ROWS
 
@@ -35,6 +36,7 @@ class RuntimeConfig:
 # update so live consumers (which read the module global per access) see it.
 _TARGETS: Dict[str, List[Tuple[str, str]]] = {
     "hold_time_s": [("train_runtime", "HOLD_TIME_S")],
+    "caution_volts": [("train_runtime", "CAUTION_VOLTS")],
     "notification_retention_rows": [
         ("constants", "NOTIFICATION_RETENTION_ROWS"),
         ("notification_center", "NOTIFICATION_RETENTION_ROWS"),
@@ -53,12 +55,19 @@ _MIN_INCLUSIVE: Dict[str, float] = {
 }
 _MIN_EXCLUSIVE: Dict[str, float] = {
     "hold_time_s": 0.0,
+    "caution_volts": 0.0,
+}
+# Single-field upper bounds, `<= b`.
+_MAX_INCLUSIVE: Dict[str, float] = {
+    "caution_volts": 12.0,
 }
 
 
 def _passes_single_field_bound(field_name: str, value: Any) -> bool:
     """Whether `value` satisfies `field_name`'s single-field bound (or has
     none). Finiteness is checked separately by the caller."""
+    if field_name in _MAX_INCLUSIVE and value > _MAX_INCLUSIVE[field_name]:
+        return False
     if field_name in _MIN_INCLUSIVE:
         return value >= _MIN_INCLUSIVE[field_name]
     if field_name in _MIN_EXCLUSIVE:

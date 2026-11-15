@@ -105,6 +105,7 @@ open, and uses this request for one-off reads and while the stream is down.
       "reads_occupied": false,
       "train_id": null,
       "claimed_by_train_id": null,
+      "train_ahead": false,
       "voltage": 0.0
     }
   },
@@ -145,7 +146,7 @@ open, and uses this request for one-off reads and while the stream is down.
 ```
 
 The live fields are the ones design_v2.md **Live fields** lists: per block
-`reads_occupied`, `train_id`, `claimed_by_train_id` and `voltage`; per switch
+`reads_occupied`, `train_id`, `claimed_by_train_id`, `train_ahead` and `voltage`; per switch
 `position`, `position_known` and `held`; per switch tile `switch_state`; and
 the `trains` map. `add_train_runtime_fields` in `simulation.py` adds the
 block, switch and train fields when the snapshot is built.

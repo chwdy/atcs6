@@ -94,7 +94,9 @@ export interface TrackHandlerRenderer {
 
 /**
  * Track fill color for a block, by its live fields (design_v2.md "Live
- * fields"): the detector reading first, then a claim. A train's block that
+ * fields"): the detector reading first, then a claim, which shows the
+ * caution color while another train is in the block beyond (design_v2.md
+ * "Seeing trains on the layout"). A train's block that
  * does not read occupied is not painted occupied, so the track shows what the
  * detector sees. Returns null when the block is absent, so the caller keeps
  * its default track color.
@@ -106,7 +108,13 @@ export function blockTrackColor(block: TrackBlock | undefined | null): string | 
   // renderers consume these tokens; do not hard-code hex literals at the call
   // site").
   return getBlockStateColor(
-    block.reads_occupied ? 'occupied' : block.claimed_by_train_id ? 'reserved' : 'free',
+    block.reads_occupied
+      ? 'occupied'
+      : block.claimed_by_train_id
+        ? block.train_ahead
+          ? 'caution'
+          : 'reserved'
+        : 'free',
   );
 }
 

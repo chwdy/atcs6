@@ -824,6 +824,7 @@ export interface BlockLiveFields {
   reads_occupied?: boolean;
   train_id?: string | null;
   claimed_by_train_id?: string | null;
+  train_ahead?: boolean;
   voltage?: number;
 }
 

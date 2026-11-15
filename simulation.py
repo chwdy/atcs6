@@ -624,8 +624,8 @@ def add_train_runtime_fields(
 ) -> None:
     """Add the live fields to a snapshot (design_v2.md "Live fields").
 
-    - each block gets `reads_occupied`, `train_id`, `claimed_by_train_id`
-      and `voltage`;
+    - each block gets `reads_occupied`, `train_id`, `claimed_by_train_id`,
+      `train_ahead` and `voltage`;
     - each switch gets `held` and `alternate_next`;
     - `trains` is the map from `train_id` to a train entry.
 
@@ -640,6 +640,7 @@ def add_train_runtime_fields(
         entry["reads_occupied"] = block_id in runtime.occupied
         entry["train_id"] = owner.train_id if owner is not None else None
         entry["claimed_by_train_id"] = claimer.train_id if claimer is not None else None
+        entry["train_ahead"] = runtime.train_ahead_of_claim(block_id)
         entry["voltage"] = float(
             sim_controller.power_controller.get_recorded_voltage(block_id)
         )

@@ -308,10 +308,94 @@ def test_a_train_keeps_moving_until_it_is_wholly_in_its_front_block(rig):
     rig.step("Right", "Left", "Main")  # T2's front is now Main; Right is taken
     assert rig.blocks("T2") == ["Left", "Main"]
     assert rig.state("T2") == "moving"
-    assert rig.volts["Left"] == 6.0 and rig.volts["Main"] == 6.0 and rig.volts["Right"] == 0.0
+    # It cannot be given the claim, so its blocks get the caution voltage.
+    assert rig.volts["Left"] == 4.5 and rig.volts["Main"] == 4.5 and rig.volts["Right"] == 0.0
     rig.step("Right", "Main")  # its rear has left Left
     assert rig.state("T2") == "waiting"
     assert rig.volts["Left"] == 0.0 and rig.volts["Main"] == 0.0
+
+
+# --- the caution voltage (design_v2.md "Track power") ---------------------
+
+
+def _t2_entering_main_behind_t1(rig, knob):
+    rig.step("Right")  # T1, the train in the way
+    rig.step("Right", "Left")  # T2
+    rig.knob("T2", knob)
+    rig.step("Right", "Left")
+    assert rig.claim("T2") == "Main"
+
+
+def test_a_train_with_a_claim_gets_its_knob_voltage(rig):
+    _t2_entering_main_behind_t1(rig, 9.0)
+    assert rig.volts["Left"] == 9.0 and rig.volts["Main"] == 9.0
+
+
+def test_a_knob_below_the_caution_voltage_is_not_raised(rig):
+    _t2_entering_main_behind_t1(rig, 3.0)
+    rig.step("Right", "Left", "Main")
+    assert rig.claim("T2") is None
+    assert rig.volts["Left"] == 3.0 and rig.volts["Main"] == 3.0
+
+
+def test_the_caution_voltage_is_signed_like_the_knob_voltage(rig):
+    rig.step("Left")  # T1, the train in the way
+    rig.step("Left", "Right")  # T2
+    assert rig.runtime.reverse("T2", rig.live) == (True, None)  # Right reverse -> Up
+    rig.knob("T2", 9.0)
+    rig.step("Left", "Right")
+    assert rig.volts["Right"] == -9.0 and rig.volts["Up"] == -9.0
+    rig.step("Left", "Right", "Up")  # T2's front is now Up; Left is taken
+    assert rig.volts["Right"] == -4.5 and rig.volts["Up"] == -4.5
+
+
+def test_the_caution_voltage_setting_is_read_on_each_step(rig, monkeypatch):
+    import train_runtime
+
+    _t2_entering_main_behind_t1(rig, 9.0)
+    rig.step("Right", "Left", "Main")
+    assert rig.volts["Main"] == 4.5
+    monkeypatch.setattr(train_runtime, "CAUTION_VOLTS", 6.0)
+    rig.step("Right", "Left", "Main")
+    assert rig.volts["Main"] == 6.0
+
+
+def test_a_train_given_the_claim_gets_its_knob_voltage_again(rig):
+    _t2_entering_main_behind_t1(rig, 9.0)
+    rig.step("Right", "Left", "Main")
+    assert rig.volts["Main"] == 4.5
+    rig.step("Left", "Main", seconds=6.0)  # T1 is lifted off Right
+    assert rig.claim("T2") == "Right"
+    assert rig.volts["Left"] == 9.0 and rig.volts["Main"] == 9.0
+    assert rig.volts["Right"] == -9.0
+
+
+def test_a_train_that_owes_a_stop_gets_the_caution_voltage(rig):
+    rig.network.blocks[rig.ids["Main"]].stop_time_s = 3.0
+    rig.step("Left")
+    rig.knob("T1", 9.0)
+    rig.step("Left")
+    rig.step("Left", "Main")  # Right is free, but Main is owed a stop
+    assert rig.claim("T1") is None and rig.state("T1") == "moving"
+    assert rig.volts["Left"] == 4.5 and rig.volts["Main"] == 4.5
+
+
+# --- `train_ahead` (design_v2.md "Live fields") ---------------------------
+
+
+def test_a_claimed_block_with_a_train_beyond_it_has_a_train_ahead(rig):
+    _t2_entering_main_behind_t1(rig, 6.0)  # T2 claims Main; T1 is in Right
+    assert rig.runtime.train_ahead_of_claim(rig.ids["Main"]) is True
+    assert rig.runtime.train_ahead_of_claim(rig.ids["Right"]) is False  # not claimed
+
+
+def test_a_claimed_block_with_a_free_block_beyond_it_has_no_train_ahead(rig):
+    rig.step("Up")  # T1 is two blocks on from Main
+    rig.step("Up", "Left")
+    rig.knob("T2", 6.0)
+    rig.step("Up", "Left")
+    assert rig.claim("T2") == "Main"
+    assert rig.runtime.train_ahead_of_claim(rig.ids["Main"]) is False
 
 
 def test_claims_are_given_first_come_first_served(rig):
@@ -503,6 +587,10 @@ def test_the_runtime_stops_a_train_where_the_track_ends_once(rig):
     assert rig.state("T1") == "moving"
     assert rig.volts["Left"] == 4.0
     assert rig.operations().count("end_of_track") == 1
+    # A train in its last block is not held to the caution voltage.
+    rig.knob("T1", 9.0)
+    rig.step("Left")
+    assert rig.volts["Left"] == 9.0
 
 
 # --- reverse ----------------------------------------------------------------

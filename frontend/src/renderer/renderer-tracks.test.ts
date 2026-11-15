@@ -104,6 +104,8 @@ describe('RendererTrackHandler', () => {
       expect(blockTrackColor({ reads_occupied: true })).toBe('token:occupied');
       expect(blockTrackColor({ train_id: 'T1' })).toBe('token:free'); // the detector decides
       expect(blockTrackColor({ claimed_by_train_id: 'T1' })).toBe('token:reserved');
+      expect(blockTrackColor({ claimed_by_train_id: 'T1', train_ahead: true })).toBe('token:caution');
+      expect(blockTrackColor({ reads_occupied: true, claimed_by_train_id: 'T1', train_ahead: true })).toBe('token:occupied');
       expect(blockTrackColor({ reads_occupied: false, train_id: null })).toBe('token:free');
       expect(blockTrackColor({})).toBe('token:free');
     });

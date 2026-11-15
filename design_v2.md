@@ -52,6 +52,7 @@ These are the terms this document uses for v2's own ideas. Names of code (classe
 - **A train's blocks, front block, rear block**: the blocks that carry a train's label, in order along the track; the front block is the one the train leaves by, the rear block the one at its other end.
 - **Direction**: which way a train faces in its front block. See **Direction**.
 - **Speed knob**: the voltage, from 0 V to 12 V, that a train's blocks get while it moves.
+- **Caution voltage**: 4.5 V (the runtime setting `caution_volts`). A moving train that is going to come to rest in its front block gets at most this voltage. See **Track power**.
 - **Stopped, running, waiting, moving**: a train is stopped while its knob is at 0 V and running while it is above 0 V. A running train is waiting while the runtime keeps its blocks at 0 V because it cannot claim the next block ahead, and moving otherwise.
 - **Wholly in its front block**: a train is wholly in its front block when that block is the only one of its blocks that reads occupied. The detectors then say its rear has left the block behind.
 - **Next block ahead**: the block a train enters next. See **Claiming the next block**.
@@ -208,7 +209,10 @@ These are all the things the operator can do to trains and switches from the Ope
 
 All track is drawn in one quiet colour. Each block shows what it reads as a
 thin coloured line along the middle of its track: one colour when it reads
-occupied, one when it reads empty and one when it is claimed. A block's line
+occupied, one when it reads empty and one when it is claimed. A claimed block
+whose `train_ahead` is true (see **Live fields**, A block's live fields) shows
+yellow in place of the claimed colour: the train that enters it will have
+another train in the block beyond. A block's line
 stops short of each end of the block, so the gap between two lines shows where
 one block ends and the next begins. A switch is in no block and has no such
 line.
@@ -413,7 +417,7 @@ A running train begins to wait, with its blocks at 0 V, when **both hold**:
 - it cannot be given a claim;
 - it is wholly in its front block.
 
-A train that cannot be given a claim and is not yet wholly in its front block keeps moving on its own blocks until the block behind it reads empty. The detectors, not a guess, say when the whole train is inside, so a waiting train stands clear of the block and the switch behind it and another train can use them. Its payload names the reason it cannot be given the claim:
+A train that cannot be given a claim and is not yet wholly in its front block keeps moving on its own blocks, at no more than the caution voltage (see **Track power**), until the block behind it reads empty. The detectors, not a guess, say when the whole train is inside, so a waiting train stands clear of the block and the switch behind it and another train can use them. Its payload names the reason it cannot be given the claim:
 
 - `block_taken`: the next block ahead is taken by another train (see **Claiming the next block**, A taken block);
 - `switch_against`: a switch met from a leg is set to the other leg, and the train has no destination;
@@ -446,13 +450,20 @@ A train runs on a voltage knob, not a speed curve, so it will often roll past th
 - **Rolling into a block another train has claimed, or has just left.** The block reads empty, so the detector does see the overrunning train arrive, but the block is not free. A block another train has claimed goes to that train (rule 1 of **Trains**, An occupied block with no train gets one), and a block another train still holds for the hold time stays that train's. Either way the overrunning train is not given the block. Its own blocks then read empty, and it becomes a lost train with the warning `"train_lost"`.
 - **Rolling into a block another train stands in cannot be seen.** That block already reads occupied, so the detector reports nothing (see **Occupancy detection**, A second train on an occupied block is not detected). What the runtime does see is the overrunning train's own blocks reading empty, and it becomes a lost train. This is why a train that cannot claim the next block loses its voltage as soon as it is wholly in its front block: it has the rest of that block to come to rest in.
 
-A train that rolls a whole block past its stop is a reason to turn its knob down, not to leave a bigger gap between trains.
+A train that rolls a whole block past its stop is a reason to turn its knob or the caution voltage down, not to leave a bigger gap between trains.
 
 ## Track power
 
 Each block gets one voltage at a time, signed for direction (see **Direction**). Item 6 of **Runtime step** decides every block's voltage on every step from these rules alone, and `BlockPowerController` is the one place that sends a block's voltage while the session is Live:
 
 - **A moving train's blocks, and the block it has claimed, get its knob voltage.** Each block is signed by the train's line of travel through it. A block the train still holds for the hold time (see **Trains**, A block that reads empty is taken off at once or after the hold time) counts as the train's, so it keeps its voltage through a short loss of contact.
+- **A moving train that is going to come to rest in its front block gets at most the caution voltage.** While **either of these holds** for a moving train, each of its blocks, and the block it has claimed, gets the lower of its knob voltage and the caution voltage (4.5 V, the runtime setting `caution_volts`), signed as its knob voltage would be:
+  - the train holds no claim — it cannot be given one or owes its front block a stop (see **When a train waits**), or its track ends ahead (see **When the runtime stops a train**, End of track);
+  - the train's front block is its destination.
+
+  On the step the train is given the claim, its blocks get its knob voltage again. The reason: such a train loses its voltage once it is wholly in its front block, and from a lower speed it rolls less far past that point.
+  - **A train the runtime has stopped for End of track is not held to the caution voltage.** When the operator turns its knob up again in that block, its blocks get its knob voltage, because a train in its last block is the operator's to drive.
+  - **A caution voltage below `current_sense_min_drive_v` makes a train come to rest later.** Its blocks are then in the lighting zone, where a block takes 3 seconds longer to read empty (see **Occupancy source and drive zones**, The lighting hold).
 - **Every other block gets 0 V.** That covers an empty block, a stopped train's blocks, a waiting train's blocks, and a lost train's block. At or below `idle_deadband_v` the '165 detector decides whether the block reads occupied, and it sees a train standing on rails that carry no voltage (see **Occupancy source follows drive state**). A stopped train therefore stays visible, and a train put on an empty block shows up straight away.
 - **A switch has no voltage of its own.** Its rails carry its feed block's voltage (see **Block and switch power controllers**, A switch's rails are fed from one block). A train crossing a switch from the toe stands on the feed block; a train crossing toward the toe is entering the feed block, which it has claimed. Either way the feed block already carries the train's voltage.
 - **A block is never asked for two voltages.** A block is one train's block or one train's claim, never two, so each block has one answer.
@@ -1439,6 +1450,7 @@ The live part of the snapshot is these fields and no others.
   - `reads_occupied` — `bool`, whether the block reads occupied (see **Occupancy detection**);
   - `train_id` — the train whose block this is, or `null`;
   - `claimed_by_train_id` — the train that holds a claim on this block, or `null`;
+  - `train_ahead` — `bool`, whether the block is claimed and the block its claiming train would enter after it is taken by another train. That block is found as **Claiming the next block**, The next block ahead, finds one, walking on from the claimed block in the direction the train will run it in;
   - `voltage` — the signed voltage `BlockPowerController` last commanded on the block, in volts.
 - **A switch's live fields.**
   - `position` — `0` (main) or `1` (diverge), the position last commanded;
@@ -1453,7 +1465,7 @@ The live part of the snapshot is these fields and no others.
   - `waiting_reason` — while `state` is `"waiting"`, one of the reasons under **When a train waits**; otherwise `null`;
   - `next_block_id` — the next block ahead, or `null` when there is none;
   - `claimed_block_id` — the block the train holds a claim on, or `null`.
-- **Derived fields are worked out on each read.** `state`, `waiting_reason`, `next_block_id`, a block's `train_id` and `claimed_by_train_id`, and a switch's `held` are read from the runtime's trains when the snapshot is built. Nothing stores a second copy of them.
+- **Derived fields are worked out on each read.** `state`, `waiting_reason`, `next_block_id`, a block's `train_id`, `claimed_by_train_id` and `train_ahead`, and a switch's `held` are read from the runtime's trains when the snapshot is built. Nothing stores a second copy of them.
 
 ### Layout version
 
@@ -1751,7 +1763,8 @@ An operator can change a fixed set of values from a live session, with no restar
 - **Coercion.** An accepted field's incoming value is coerced to that field's own type. A value that cannot be coerced is ignored, and that field is left unchanged. Every other field in the same request is still applied. Every tunable is `int` or `float` (see **Tunable fields**).
 - **Field rules.** After coercion, every numeric value must be finite and must satisfy its field rule. A value that fails is ignored in the same way as a value that cannot be coerced, and valid fields in the same request still apply. The field rule is:
   - `notification_retention_rows >= 1`;
-  - `hold_time_s > 0`.
+  - `hold_time_s > 0`;
+  - `0 < caution_volts <= 12`.
 
 **Tunable fields**
 
@@ -1762,6 +1775,7 @@ Every field is a top-level key in the `GET` / `PUT /api/settings` payload, named
 | Field | Type | Default | Controls |
 | --- | --- | --- | --- |
 | `hold_time_s` | `float` | `5.0` | The hold time: how long a block that reads empty stays its train's block while no block further forward reads occupied — see **Trains**, A block that reads empty is taken off at once or after the hold time. Raising it carries a train across a longer loss of contact. Lowering it does the opposite. |
+| `caution_volts` | `float` | `4.5` | The caution voltage: the most a moving train's blocks get while the train is going to come to rest in its front block — see **Track power**. Raising it keeps a locomotive that stalls at a low voltage moving, and lets a train roll further past its stop. Lowering it does the opposite. |
 
 *Event stream (`notification_center.py`):*
 

@@ -51,6 +51,11 @@ setting `hold_time_s` writes this module attribute (design_v2.md "Runtime
 settings"), and a `TrainRuntime` built without its own value reads it on every
 use."""
 
+CAUTION_VOLTS: float = 4.5
+"""The caution voltage: the most a moving train's blocks get while the train
+is going to come to rest in its front block (design_v2.md "Track power"). The
+runtime setting `caution_volts` writes this module attribute."""
+
 # Why a train cannot be given a claim (design_v2.md "When a train waits").
 BLOCK_TAKEN = "block_taken"
 OWN_BLOCK = "own_block"
@@ -210,9 +215,26 @@ class TrainRuntime:
         """The walk from the train's front block in its direction. A switch
         met at its toe where the train has an assigned leg leads out of that
         leg."""
+        return self._walk_from(train, train.front_block, train.direction)
+
+    def _walk_from(self, train: RunningTrain, block_id: str, direction: str) -> WalkResult:
         return next_block_ahead(
-            self._network, train.front_block, train.direction,
-            toe_positions=train.assigned_legs,
+            self._network, block_id, direction, toe_positions=train.assigned_legs,
+        )
+
+    def train_ahead_of_claim(self, block_id: str) -> bool:
+        """Whether the block is claimed and the block its claiming train
+        would enter after it is taken by another train (design_v2.md "Live
+        fields", A block's live fields)."""
+        train = self.claimer_of_block(block_id)
+        if train is None:
+            return False
+        walk, _, _ = self._claim_walk(train, block_id, train.claim_direction or FORWARD)
+        beyond = walk.block_id
+        return (
+            beyond is not None
+            and beyond not in train.blocks
+            and self.block_is_taken(beyond)
         )
 
     def state_of(self, train: RunningTrain) -> str:
@@ -659,13 +681,20 @@ class TrainRuntime:
         return None
 
     def _claim_walk(
-        self, train: RunningTrain
+        self,
+        train: RunningTrain,
+        block_id: Optional[str] = None,
+        direction: Optional[str] = None,
     ) -> Tuple[WalkResult, Dict[str, int], Optional[Tuple[str, int]]]:
         """The walk the train claims by, the position each switch on it has
         to be in for the train's assigned legs, and the alternate-arrivals
         switch and leg it crosses, if any (design_v2.md "Switches", Assigned
-        leg and Which passing block a train gets)."""
-        walk = self.walk_ahead(train)
+        leg and Which passing block a train gets). It starts from the train's
+        front block in its direction unless another block is given."""
+        if block_id is None:
+            block_id, direction = train.front_block, train.direction
+        direction = direction or FORWARD
+        walk = self._walk_from(train, block_id, direction)
         assigned = {
             switch_id: train.assigned_legs[switch_id]
             for switch_id in walk.toe_switch_ids
@@ -679,7 +708,7 @@ class TrainRuntime:
         switch = self._network.switches.get(switch_id)
         if preferred is None or switch is None or switch.manual or switch.motor_unavailable:
             return walk, assigned, None
-        legs = self._legs_from(train.front_block, train.direction, switch_id)
+        legs = self._legs_from(block_id, direction, switch_id)
         if legs is None:
             return walk, assigned, None
         other = 1 - preferred
@@ -827,18 +856,33 @@ class TrainRuntime:
     def block_voltages(self) -> Dict[str, float]:
         """The voltage each block gets on this step (design_v2.md "Track
         power"): a moving train's blocks and its claim get its knob voltage,
-        signed by its line of travel, and every other block gets 0 V."""
+        or the caution voltage when that is lower and the train is going to
+        come to rest in its front block, signed by its line of travel. Every
+        other block gets 0 V."""
         volts: Dict[str, float] = {block_id: 0.0 for block_id in self._network.blocks}
         for train in self.trains.values():
             if self.state_of(train) != "moving":
                 continue
+            drive = self.drive_volts(train)
             for block_id in train.blocks:
-                volts[block_id] = self._signed(train.knob_volts, train.directions.get(block_id))
+                volts[block_id] = self._signed(drive, train.directions.get(block_id))
             if train.claim_block_id is not None:
-                volts[train.claim_block_id] = self._signed(
-                    train.knob_volts, train.claim_direction
-                )
+                volts[train.claim_block_id] = self._signed(drive, train.claim_direction)
         return volts
+
+    def drive_volts(self, train: RunningTrain) -> float:
+        """The voltage a moving train's blocks get before the sign: its knob
+        voltage, or the caution voltage when that is lower and the train
+        holds no claim or its front block is its destination. A train the
+        runtime has stopped for End of track is the operator's to drive and
+        gets its knob voltage."""
+        no_claim = (
+            train.claim_block_id is None
+            and train.end_of_track_block != train.front_block
+        )
+        if no_claim or train.destination_block_id == train.front_block:
+            return min(train.knob_volts, CAUTION_VOLTS)
+        return train.knob_volts
 
     @staticmethod
     def _signed(volts: float, direction: Optional[str]) -> float:

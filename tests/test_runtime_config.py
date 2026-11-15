@@ -19,8 +19,20 @@ def _reset_runtime_config():
     rc.reset_to_defaults()
 
 
-def test_the_fields_are_the_two_the_document_names():
-    assert rc.as_dict() == {"hold_time_s": 5.0, "notification_retention_rows": 10000}
+def test_the_fields_are_the_ones_the_document_names():
+    assert rc.as_dict() == {
+        "hold_time_s": 5.0,
+        "caution_volts": 4.5,
+        "notification_retention_rows": 10000,
+    }
+
+
+def test_a_caution_voltage_write_reaches_the_train_runtime():
+    import train_runtime
+
+    rc.apply_updates({"caution_volts": 6})
+    assert rc.get_runtime_config().caution_volts == 6.0
+    assert train_runtime.CAUTION_VOLTS == 6.0
 
 
 def test_a_hold_time_write_reaches_a_running_train_runtime():
@@ -134,7 +146,10 @@ def test_a_value_that_is_not_a_finite_number_is_ignored(value):
 
 @pytest.mark.parametrize(
     "field_name,value",
-    [("hold_time_s", 0), ("hold_time_s", -1), ("notification_retention_rows", 0)],
+    [
+        ("hold_time_s", 0), ("hold_time_s", -1), ("notification_retention_rows", 0),
+        ("caution_volts", 0), ("caution_volts", -1), ("caution_volts", 12.5),
+    ],
 )
 def test_a_value_that_breaks_its_field_rule_is_ignored(field_name, value):
     before = getattr(rc.get_runtime_config(), field_name)

@@ -30,6 +30,7 @@ export interface BlockInfo {
   reads_occupied?: boolean;
   train_id?: string | null;
   claimed_by_train_id?: string | null;
+  train_ahead?: boolean;
   // Single signed track voltage (-12V..+12V): magnitude is the drive level,
   // sign is polarity. The voltage debug overlay splits it into + / - rails.
   voltage?: number;
