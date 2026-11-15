@@ -158,11 +158,11 @@ names the operating environment.
 
 | Region | What lives there |
 |--------|------------------|
-| **Top bar** | App-level commands on every screen: the Layout menu, the screen tabs, the status control with its one next-step button, Emergency stop, and the View and Settings menus ("Composing the top bar" below). The one region where the 32px `--control-height-sm` controls belong (§1 Layout). |
+| **Top bar** | App-level commands on every screen: the Layout menu, the screen tabs, the status control with its one next-step button, Stop all, and the View and Settings menus ("Composing the top bar" below). The one region where the 32px `--control-height-sm` controls belong (§1 Layout). |
 | **Canvas** | The layout itself — two stacked `<canvas>` layers ([canvas.css](../static/css/layout/canvas.css); §16 "Two-canvas implementation"). Shown on Editor, Operate and Logs. |
 | **Editor tool bar** | One flat bar of the things you place, across the top of the Editor screen, with an options row under it for the picked tool's variants (§3 "Tool bar button"; [next/editor.css](../static/css/next/editor.css)). |
 | **Right panel** | The selection, one record at a time, right of the canvas. On Editor it edits the selected entity; on Operate it shows a train, block or switch. One panel shows at a time — there are no tabs. Its pop-out button moves it into a floating window and back (§12 "Popping the right panel out"). |
-| **Operate's left list and cards row** | The lists of blocks and switches in a column left of the canvas, which folds away; a card per train along the bottom of the screen, ending with Stop all ([next/operate.css](../static/css/next/operate.css)). |
+| **Operate's left list and cards row** | The lists of blocks and switches in a column left of the canvas. The column starts folded away, so the canvas has the room, and opens from its button. A card per train runs along the bottom of the screen ([next/operate.css](../static/css/next/operate.css)). |
 | **Hardware Setup steps** | The seven steps in a column, the picked step beside it, over the whole screen area ([next/hardware.css](../static/css/next/hardware.css)). |
 | **Logs screen** | A tab strip (Event log, Detectors) whose tab fills the left of the screen, with the canvas on the right at 40% of the width. A click on a block on the canvas opens the Detectors tab with that block's row marked ([next/logs.css](../static/css/next/logs.css)). |
 | **Overlay layer** | Modals, toasts, floating pickers, menus (§13). |
@@ -190,7 +190,7 @@ space-between`):
   the four screen tabs as a segmented control (§3). They are a segment,
   not a §3 tab strip, because they switch the whole screen rather than a
   pane inside one panel.
-- **Right** — the status control, **Emergency stop**, then **View** and
+- **Right** — the status control, **Stop all**, then **View** and
   **Settings**.
 
 The status control is the top bar's answer to "can my train move?". The
@@ -207,9 +207,10 @@ Reset is a warning button: `--warning-color` border and text on
 caution act, not a go act. Pause and Clear conflict are ghost buttons. In Simulation a speed menu
 (`1x`) follows. Clicking the chip opens Hardware Setup at step 1.
 
-**Emergency stop** sits in the same place on every screen: a 32px top-bar
+**Stop all** sits in the same place on every screen: a 32px top-bar
 button with icon and label, outlined in the danger color at rest and filled
-with it on hover. It stops the whole layout.
+with it on hover. It is the page's only Stop all button (design_v2.md
+**Running a train**, Stop all).
 
 **View**
 holds the two theme axes (§1 Themes), Show grid, and the canvas layers;
@@ -226,7 +227,7 @@ Reference: `TopBar` in
 [next/top-bar.tsx](../frontend/src/next/top-bar.tsx); `.app-header` /
 `.header-zone` / `.session-chip` / `.mode-switch` in
 [layout/shell.css](../static/css/layout/shell.css); the status control,
-Emergency stop and menus in
+Stop all and menus in
 [layout/next-top-bar.css](../static/css/layout/next-top-bar.css).
 
 ---
@@ -279,7 +280,7 @@ independently, so a light chrome over a blueprint canvas is a valid combination;
 the canvas is not pinned to the chrome's light/dark choice. The canvas keeps its
 own full token set — `--canvas-*` (ground, grid, track, and the state-mark hues
 in Canvas state marks below), the `--block-*` state palette and the
-`--train-body-*` tints — re-tuned per canvas theme to hold contrast on that theme's ground. The
+`--train-body-*` tints — re-tuned per canvas theme to hold contrast on that theme's ground. The v2 train line and tag tokens (§17) are the one set that is the same in every canvas theme. The
 renderer reads those tokens once into a cached palette
 ([canvas-palette.ts](../frontend/src/lib/canvas-palette.ts)) and repaints when the
 canvas theme changes (CSS custom properties read back from JS as the unresolved
@@ -341,28 +342,32 @@ Muted *text* in prose means `--text-secondary`.
 
 ### Block / track status
 
-The block-state palette has its own tokens. It reuses two accent hues
-(FREE, RESERVED) and retunes two (OCCUPIED, CAUTION). Track / block renderers
-consume these tokens; do not hard-code hex literals at the call site.
+The block-state palette has its own tokens; none of them is an accent
+token. Track / block renderers consume these tokens; do not hard-code hex
+literals at the call site.
 
 | State | Token | Hex | Semantic |
 |-------|-------|-----|----------|
-| FREE | `--block-free` | `#00d4ff` (= `--info-color`) | Clear — no train, no plan |
-| RESERVED | `--block-reserved` | `#04d361` (= `--success-color`) | Go / enter — the next train may proceed |
-| OCCUPIED | `--block-occupied` | `#ef4444` | Train physically present |
+| FREE | `--block-free` | `#14c2ea` | Reads empty — no train, no claim |
+| RESERVED | `--block-reserved` | `#1fe074` | Claimed — the next train may enter |
+| OCCUPIED | `--block-occupied` | `#ff4d4f` | Reads occupied |
 | CAUTION | `--block-caution` | `#fde047` | Restricted entry |
 
-The FREE / RESERVED mapping is deliberate: green is the "enter" signal a
-driver reads on the canvas, so it lives on the state the next train is
-cleared into. FREE inherits cyan from `--info-color` because an empty
-block is informational, not a green-light.
+A block's colour is drawn as a thin line along the middle of its track
+(§17 Track lines), on every screen. The track around it is one quiet colour,
+so the three state colours are the only strong colours on an empty layout.
 
-OCCUPIED and CAUTION diverge from the §1 accent palette by design. The
-`--danger-color` `#e83f5b` is a coral-pink tuned to harmonize with the
-accent purple in panel chrome — it reads as "alert pill" rather than
-"stop signal." On the canvas, where a red block is meant to read as a
-train physically present (a railway-aspect red), `#ef4444` is purer and
-more signal-correct. CAUTION sits at `#fde047` (lighter than
+The three are tuned as a set, close to one another in brightness, so no state
+shouts over the others. Green is the "enter" colour, so it is on the block
+the next train may enter. FREE is `--info-color`'s cyan turned down a little
+to sit level with the green and the red. As a thin line it can be that
+bright; drawn across the whole width of the track, as it once was, the same
+cyan was the loudest thing on the screen while saying the least.
+
+OCCUPIED is not `--danger-color`. The `--danger-color` `#e83f5b` is a
+coral-pink tuned to sit beside the accent purple in panel chrome; on the
+canvas a block that reads occupied wants a purer red. CAUTION sits at
+`#fde047` (lighter than
 `--warning-color` lemon) so that the three warm hues — OCCUPIED red,
 CAUTION yellow, MANUAL orange — space cleanly on the hue wheel and also
 separate by lightness. The accent-tuned lemon `#ffcd1e` and the MANUAL
@@ -388,7 +393,7 @@ through this resolver rather than hard-coding hex at the call site.
 
 ### Canvas state marks
 
-Every canvas mark that is not a block fill reads one of these tokens through
+Every canvas mark that is not a block's state line reads one of these tokens through
 the cached canvas palette ([canvas-palette.ts](../frontend/src/lib/canvas-palette.ts)).
 They live with `--block-*` in
 [layout-themes.css](../static/css/base/layout-themes.css) and are re-tuned per
@@ -571,7 +576,7 @@ named vocabulary.
   `icon-selections.json` rather than pasting raw SVG into a component file.
 - **Action gets a label; utility goes icon-only.** In the top bar and
   other control rows, a primary action button takes icon + label (Layout,
-  Play, Emergency stop, View); a pure utility takes an icon-only
+  Play, Stop all, View); a pure utility takes an icon-only
   square (Settings, a panel's pop-out and close). Don't mix the two arbitrarily
   on one row — icon-only for some actions and text-only for others, with no
   rule, is the "the icons feel random" smell.
@@ -999,7 +1004,7 @@ commit path), and `initVisualTrackEditor` (canvas) in
 For continuous inputs, such as the speed knob on a running-train card.
 Native `<input type="range">` with custom track + thumb styling:
 
-- **Plain slider** (`.tc-power-slider`) — 6px-tall `--border-color` track, circular thumb in the relevant accent (e.g. `--success-color` for a power slider).
+- **Plain slider** (`.tc-power-slider`) — 8px-tall `--border-color` track, 22px circular `--text-primary` thumb. The thumb carries no state colour: on a train card the tag says the train's state, and the knob is only a knob. The thumb is taller than the track, so the slider's row is at least 24px tall (the thumb with its ring) and the thumb never reaches into the rows above and below it.
 
 Disabled state: the shared rule (Disabled controls, below).
 Reference: `.tc-power-slider` in
@@ -1708,28 +1713,34 @@ Operate's cards row has one card per train, and it is the reference for a
 card that stands for one record the operator acts on as a whole (Container
 matches data):
 
-- **Left edge:** a §6 status stripe read from the train's state: success
-  while it moves, info while it waits, danger when it is lost, none when it
-  is stopped.
-- **Head line:** the train's id and name, then its state as a §7 state
-  chip.
+- **Head line:** the train's ID in a pointed tag, the train's name when it
+  has one of its own, its state as a word, and the knob's voltage as the
+  card's large number (§9 Hero number), pushed to the right.
+- **The tag is the layout's tag.** It has the same pointed shape and the
+  same fill as the tag on the train's front block (§17): `--train-tag-moving`,
+  `-waiting`, `-stopped` or `-lost`. The state word takes the same colour.
+  The card has no status stripe; the tag is its one state mark, and the
+  word beside it means the colour never carries the state alone (§14).
 - **One line of where and why:** the blocks it is on and the block ahead,
   or why it waits, cut with an ellipsis and shown whole in the tooltip
   (§5 Overflow, one-line status sentences).
 - **The card keeps its width.** A long line ends in an ellipsis; it never
   widens the card (see [§5 Overflow](#overflow-identifiers-vs-names):
   `min-width: 0` on the card as well as on the line).
-- **The controls are on the card:** the speed knob (§4 Slider), Reverse,
-  Stop, and a remove button on a lost or stopped train.
-- **A click on the train's name selects it,** the same as picking it on
+- **The speed knob is the card's biggest control.** It is a §4 slider as
+  wide as the card, on a row of its own.
+- **Reverse and Stop share the last row,** each with an icon and a label.
+  A stopped train adds an icon-only remove button there. A lost train's
+  card has one Remove button in place of the three, because nothing else
+  on it can be pressed.
+- **A click on the train's tag selects it,** the same as picking it on
   the map, and a pick on the map marks the card.
-- **The end button stays in view while the row scrolls.** Stop all sits in
-  a sticky group, and the row's right padding is on that group rather than
-  on the scrolling row, so no card shows between the group and the edge.
+- **The row has no button of its own.** Stop all is in the top bar
+  (Composing the top bar).
 
 Reference: `RunningTrainsRow` / `RunningTrainCard` in
 [next/operate/running-trains.tsx](../frontend/src/next/operate/running-trains.tsx);
-`.op-card*` and `.rt-card-*` in [next/operate.css](../static/css/next/operate.css).
+`.op-card*`, `.rt-tag` and `.rt-card-*` in [next/operate.css](../static/css/next/operate.css).
 
 ---
 
@@ -1844,8 +1855,8 @@ every list.
   selected-row layout.
 - **A status edge survives the pick.** A row with a §6 left stripe sets its
   colour in `--row-status-color`; the selected mark recolours the other
-  three sides and leaves the left edge that colour, so picking a train card
-  never hides the train's state.
+  three sides and leaves the left edge that colour, so picking a row never
+  hides its state.
 - **One class, everywhere.** Every list adds `.row-selected` to its picked
   row and writes no selected rule of its own. The rule doubles the class so
   it outranks a list's own base and `:hover` rules whatever order the
@@ -2054,7 +2065,7 @@ Reference: `MenuButton` in [next/menu.tsx](../frontend/src/next/menu.tsx);
 
 - **No color emoji anywhere in the UI.** The icon system is Tabler (see §3 Icons); monochrome Unicode glyphs (`▸ ▾ ×`) remain fine for tiny structural chrome — carets, a select-arrow decoration, a close-X on a tab. Pictographic glyphs Inter doesn't carry (`⟳` / `↻` rotate arrows, play/pause triangles) fall back to Arial and misalign inside a button box — use Tabler for those. Both render in the CSS `color` property and respect the token palette. Color emoji (`🚦 🚉 📋 📊 🚨`) render as color pictographs regardless of `color:` and fight with the palette — never use them in buttons, headers, labels, or any panel chrome. Quick test: if setting `color: red` on the character turns it red, it's a monochrome symbol and is OK; if it stays a colorful picture, it's an emoji and is not.
 - **No new colors.** If you can't reach for a token, the design doesn't have a slot for it yet — pause and discuss instead of inventing.
-- **Don't cross the canvas/panel hue firewall.** The canvas tokens (`--canvas-*`, `--block-*`, `--train-*`) paint canvas geometry and §17 state marks. In panel chrome the `--block-*` tokens appear only through `getBlockStateColor`, on an element that names a block state; the other canvas tokens never appear there. The §1 accent palette tints panel chrome; it never paints canvas geometry. The two palettes deliberately tune the "same" hue differently (OCCUPIED `#ef4444` vs `--danger-color` `#e83f5b`) — mixing them re-merges what was split on purpose. Panel UI that *describes* a block state (a chip, a legend swatch) goes through `getBlockStateColor`, not a hand-picked accent.
+- **Don't cross the canvas/panel hue firewall.** The canvas tokens (`--canvas-*`, `--block-*`, `--train-*`) paint canvas geometry and §17 state marks. In panel chrome the `--block-*` tokens appear only through `getBlockStateColor`, on an element that names a block state, and the `--train-tag-*` tokens appear only on a train card's tag and state word (§11), which name a train's state; the other canvas tokens never appear there. The §1 accent palette tints panel chrome; it never paints canvas geometry. The two palettes deliberately tune the "same" hue differently (OCCUPIED `#ff4d4f` vs `--danger-color` `#e83f5b`) — mixing them re-merges what was split on purpose. Panel UI that *describes* a block state (a chip, a legend swatch) goes through `getBlockStateColor`, not a hand-picked accent.
 - **Don't let hue carry state alone.** Roughly 8% of male users can't reliably separate red from green, and this product's audience skews male — that's a real slice of the user base, not a compliance checkbox. Every state mark pairs its hue with a second channel: position (the §6 accent is always a left border), shape or text (the switch badge carries `M`/`D`; chips carry words), or brightness (dim = inactive). A mark whose *only* meaning is red-vs-amber at 6px fails the check — give it a glyph, a label, or a position the eye can read without the hue.
 - **No freelance ornaments inside a shared shape.** The same logic that bars new colors bars adding visual elements (an inner status dot, a leading icon, a divider rule, a decorative glyph) to a canonical primitive the doc already specifies. The §7 chip is text on a tinted pill — not "text + a glowing dot." If you find yourself reaching for an extra mark to make a component read better, pause: either the component is wrong for the job (pick a different one) or the doc is missing a slot (raise it as a doc question). Quick test: would I have to mint a new class to render this? Then it's freelance.
 - **No solid filled buttons in panels.** Use the ghost + accent-tint pattern.
@@ -2088,7 +2099,7 @@ chrome into the product UI, and don't tokenize it to match.
 
 Labels rendered directly on the canvas (the train ID tag, a tunnel mouth's
 pair label) — distinct from the inline field labels in §5. These labels
-coexist with track chassis, block state colors and moving trains, so they
+coexist with track, block state lines and moving trains, so they
 need rules the panel-chrome vocabulary doesn't cover: zoom-aware borders,
 z-order under moving things, opaque fills that survive overlap.
 
@@ -2103,7 +2114,7 @@ Pick the tier by liveness:
 - **Hover / user attention** — top tier. Earns a louder treatment because
   it's one label at a time and the user is actively pointing.
 
-State indicators (block colors, switch badges) sit in a separate visual
+State indicators (block state lines, switch marks) sit in a separate visual
 channel — saturated hue marks at the entity's location, no label box. They
 coexist with these labels via the brightness vs. hue split in §12 "Color
 channels".
@@ -2138,18 +2149,18 @@ Math.min(Math.max(1.2, s * 0.4), 2.5);
 
 Pick the cap by tier — live and hover are slightly thicker so the visual
 hierarchy survives at every zoom. The same formula shape applies to
-highlight strokes, such as a train's emphasis lines (§17).
+highlight strokes, such as a highlighted train's border (§17).
 
 ### Z-order is liveness-based
 
 Draw order in [renderer.ts](../frontend/src/renderer/renderer.ts) `drawNetwork`:
 
-1. Grid, track chassis + block colors (bottom)
-2. Switch badges, block boundary dots, debug overlays, block detail labels (state)
+1. Grid, track, then each block's state line (bottom)
+2. Switch marks, block boundary dots, debug overlays, block detail labels (state)
 3. Tunnel mouths and their pair labels
 4. The Editor's reachable-tile fill and locate flash
 5. Block direction arrows (Editor only)
-6. Trains: lines and ID tags (live)
+6. Trains: borders, chevrons and ID tags (live)
 7. Tile direction debug arrows
 8. Box / lasso select overlay and build previews (top)
 
@@ -2173,7 +2184,8 @@ overlapping labels mix into illegible mush instead of one winning cleanly.
 
 Each train tag pushes its rect into `renderer.labelBounds`, a per-frame
 list reset at the top of `_drawLive`. Nothing reads the list now: the tag
-has a fixed place (the middle tile of the front block), so it does not move
+has a fixed place (beside the chevron on the middle tile of the front
+block), so it does not move
 to avoid other labels.
 
 ### Don'ts
@@ -2193,7 +2205,7 @@ to avoid other labels.
 
 §16 covers identity labels; this section covers the canvas's other
 visual channel — the saturated hue marks that show **state**: block
-fills, switch position, trains, selection. The two channels coexist by the
+lines, switch marks, trains, selection. The two channels coexist by the
 brightness-vs-hue split in §12 "Color channels": identity is quiet
 chrome, state is the saturated mark at the entity's location.
 
@@ -2202,14 +2214,41 @@ The token rule extends here: state marks consume the §1 canvas tokens —
 cached canvas palette (§1 Canvas state marks). Never hard-code a colour
 at the call site.
 
-### Block state fills
+### Track lines
 
-Track geometry fills with the §1 block palette. `blockTrackColor` in
-[renderer-tracks.ts](../frontend/src/renderer/renderer-tracks.ts)
-resolves the live state (occupied / reserved / free / caution) through
-`getBlockStateColor`.
-An unrecognized state keeps the default track color rather than
-guessing one.
+Track is drawn as lines of one thickness, `TRACK_LINE_WIDTH`, whichever
+way it runs: horizontal, vertical or at 45°. `drawTracks` in
+[renderer-tracks.ts](../frontend/src/renderer/renderer-tracks.ts) links
+the tile segments that meet on a shared tile edge into one line.
+
+- **All track is one quiet colour.** It is `--canvas-track`, a little
+  lighter than the ground in the dark and blueprint themes and a little
+  darker in the light theme. Track is the stage; what a block reads and
+  where a train is are the marks drawn on it.
+- **A block's state is a thin line along the middle.** It is
+  `TRACK_STATUS_WIDTH` thick, a fifth of the track, in the block's state
+  colour (§1 Block / track status), with round ends. `blockTrackColor`
+  resolves the colour through `getBlockStateColor`. Track in no block, and
+  a switch, has no line.
+- **A block's line stops short of the block's ends.** It stops
+  `TRACK_WIDTH` short of each end, so the lines of two blocks never touch
+  and the break between them marks the boundary.
+- **Bends are round.** `traceTrackLine` in
+  [track-path.ts](../frontend/src/renderer/track-path.ts) draws each bend as
+  an arc of radius `TRACK_BEND_RADIUS`. An arc uses at most half of the
+  shorter piece of track on either side of its bend, so a right-angle bend
+  between two short pieces gets a tighter arc. The track, a block's line and
+  a train's border are all traced by this one function, so their bends lie
+  on top of each other.
+- **A crossing has a dot.** Where two lines of track cross on one tile, a
+  `--canvas-accent` dot marks the middle of the tile.
+- **Do not draw track one tile at a time.** Tile borders run at 45° on
+  screen. A piece of track cut off at its tile's border meets the next
+  tile's piece along that border, and a 45° piece and a horizontal or
+  vertical piece of the same thickness do not cover the same length of it.
+  Matching them means drawing the 45° track √2 thicker than the rest, which
+  is how track was drawn before. A line through the tiles has no cut at the
+  border, so one thickness works.
 
 ### Locate flash and reachable tiles
 
@@ -2222,47 +2261,83 @@ clicks a tile in an editor list to find it on the map. Both are drawn by
 
 ### Switch state
 
-A switch shows its thrown position as a center badge
-([renderer-tracks.ts](../frontend/src/renderer/renderer-tracks.ts)):
-a green `M` circle when the main leg is set, a yellow `D` when the
-diverging leg is set. The leg not taken draws thin and dark so the set
-leg reads as the only continuous path.
+A switch tile is track like any other, in `--canvas-track`
+(`drawTracks` and `drawSwitchMarks` in
+[renderer-tracks.ts](../frontend/src/renderer/renderer-tracks.ts)).
+
+- **The set leg is whole; the leg not taken is dim.** The leg not taken is
+  as thick as the set leg but in `--canvas-track-dim`, and it stops just
+  short of the set leg with its end cut parallel to that leg, so a strip of
+  the ground of one width shows between the two. The set leg reads as the
+  only continuous path, and the dim leg still shows where the other one goes.
+- **A plain switch has no mark.** A layout where nothing special is going on
+  stays quiet.
+- **A switch that is not plain has one round badge beside it.** The badge
+  sits off the track, on the side of the tile no track leaves by. It is the
+  ground colour with a thin ring and one icon:
+
+  | Condition (design_v2.md **Switches**) | Icon | Track |
+  |---|---|---|
+  | Held | lock | as set; a train's border usually runs through it |
+  | Position not known | `?` | both legs dim |
+  | Marked manual | hand | as set |
+  | Alternate arrivals on | circling arrows | both legs whole, because the runtime picks the leg |
+
+- **One badge, by what matters to someone about to throw the switch.** A
+  switch can be in several conditions at once. The badge shows the first
+  that holds, in the table's order (`switchMark`).
+- **The held badge is white.** Its ring and icon use `--train-line`, the
+  colour of a train's border, because a train is what holds it. The other
+  badges use `--canvas-text-dim`.
+
+The green `M` / yellow `D` position badge is a debug layer (Debug overlays,
+below), off by default.
 
 ### V2 trains on the layout
 
 The [v2 train display](../design_v2.md#seeing-trains-on-the-layout) draws
-every train the same way: a thin line along its blocks and a pointed ID tag
-on the middle tile of its front block. The line and the tag's fill take the
-train's state color, from four tokens each layout theme sets in
-[layout-themes.css](../static/css/base/layout-themes.css):
-`--train-line-moving`, `--train-line-waiting`, `--train-line-stopped` and
-`--train-line-lost`. They are pale colors, because the line and the tag lie on
-a block's red or green band and must read against both; none of them is a
-color the theme gives a block state. The tag's edge and text use
-`--train-tag-ink`, which is dark in every theme. The line has no outline and
-is about a quarter of the band's width, so the band stays visible. It runs unbroken
-through all of the train's blocks. The rear end stops short and finishes with
-a bar across the track; the front of the front block has an open arrowhead,
-drawn as two strokes. The bar and the arrowheads reach past both edges of the
-band. The tag is one outline: a box whose end (or corner, on a diagonal) in
-the direction of travel narrows to a point. A claim ahead carries the same line on to the middle of
-the claimed block, which ends in a second open arrowhead. The tag's text
-stays level; only its point turns, to the way the train will leave.
+every train the same way: a thin white border along the edges of the track
+of its blocks, a chevron on the middle tile of its front block, and a pointed
+ID tag beside the chevron
+([running-train-overlay.ts](../frontend/src/renderer/running-train-overlay.ts)).
 
-On the Operate screen the block colors are calmer:
-[layout-themes.css](../static/css/base/layout-themes.css) redefines
-`--block-occupied`, `--block-reserved` and `--block-free` under
-`:root[data-screen="operate"]` for each layout theme, with the empty color
-close to bare track. The train display is the loudest layer there; the other
-screens, where the detector reading is what the operator is looking at, keep
-the full-strength block colors. A screen change drops the cached canvas
-palette and repaints, as a theme change does.
+- **The border is always white.** It is `--train-line`, whatever the
+  train's state, with a one-pixel `--train-line-edge` line outside it so it
+  also reads on the light theme's ground.
+- **The border runs along the edges of the track, not over it.** It is
+  drawn as one stroke as wide as the track with its middle cut out of the
+  live layer, so the track and each block's state line show through. The
+  train never hides what a block reads.
+- **The border's shape.** It runs unbroken through all of the train's
+  blocks and across the switch between two of them, traced with the same
+  round bends as the track (`traceTrackLine`). Its ends are round. A claim
+  ahead carries it on to the middle of the claimed block.
+- **A chevron shows which way the train faces.** It sits on the middle tile
+  of the front block, is white with a dark edge, and reaches past both edges
+  of the track, so it is the largest mark a train has. A second, thinner
+  chevron closes the border in the claimed block. A lost train has no
+  chevron.
+- **The tag sits beside the chevron, off the track.** It is on the upper
+  side of the track, or to the right of a stretch that runs straight up the
+  screen (`tagSide`), so it never covers a block's line.
+- **The tag's fill says the train's state.** `--train-tag-moving` is green,
+  `--train-tag-waiting` light blue, `--train-tag-stopped` grey and
+  `--train-tag-lost` yellow. The tag's edge and text use `--train-tag-ink`,
+  which is dark. The tag also holds the train's ID, and a lost train's tag
+  has a dashed edge and a question mark, so the colour never carries the
+  state alone (§14).
+- **One set of colours for every canvas theme.** The border, its edge and
+  the four tag fills are declared once, in the shared block of
+  [layout-themes.css](../static/css/base/layout-themes.css).
+- **The tag's shape.** It is one outline: a box whose end (or corner, on a
+  diagonal) in the direction of travel narrows to a point. The tag's text
+  stays level; only its point turns, to the way the train will leave.
+- **A lost train's border is dashed.**
 
-Emphasis draws two thin `--train-highlight` lines outside the edges of the
-train's blocks, cut out of the live layer so the band underneath shows
-through, and gives the tag a `--train-highlight` edge. It never changes the
-state color or covers the band. The highlight color is none of the theme's
-block-state or train-state colors.
+Emphasis draws the train's border twice as thick in `--train-highlight` and
+gives the tag a `--train-highlight` edge. It never changes the tag's fill or
+covers a block's line. The highlight color is none of the theme's
+block-state colours or the train tag's colours.
 
 ### Selection and previews
 
@@ -2271,15 +2346,30 @@ previews draw dashed: orange for track about to be placed, red for the
 eraser, purple for a block path; invalid placements drop opacity.
 These sit at the very top of the live layer (§16 draw order).
 
+Track about to be placed is drawn the way track is drawn (Track lines,
+above): one line as thick as the track, with the same round bends, in a
+see-through `--canvas-caution`. It is one stroke, so the colour is even where
+two tiles meet (`drawPreviewTracks`).
+
+### End of track
+
+Where track ends with nothing beyond it, a thin `--canvas-warning` bar is
+drawn across the end (`highlightDeadEnds` in
+[renderer-debug.ts](../frontend/src/renderer/renderer-debug.ts)). It is as
+thick as a block's state line, wider than the track, and has round ends. Its
+inner face sits on the end of the track, so it never covers the track.
+
 ### Debug overlays
 
 A separate, toggle-gated layer of diagnostic marks drawn over the world layer
 when their canvas layers are on (the View menu's Layers sections; `LAYERS` in
 [lib/canvas-layers.ts](../frontend/src/lib/canvas-layers.ts)):
 per-tile track-bit dots and a numeric bits readout, `(x, y)` coordinate labels,
-N/E/S/W edge labels, switch-state badges, and dead-end markers. These are
+N/E/S/W edge labels and switch-state badges. These are
 developer aids, not production state — off by default, and they never carry
-safety meaning. They read the cached canvas palette (`canvas-palette.ts`), so
+safety meaning. The bar at the end of a piece of track is not one of them: it
+is always drawn (End of track, above), although `highlightDeadEnds` lives in
+the same file. The debug marks read the cached canvas palette (`canvas-palette.ts`), so
 they re-tint with the canvas theme, and draw on each world-layer flush.
 Reference: `RendererDebugHandler` (`drawDebugOverlays`, `highlightDeadEnds`) in
 [renderer-debug.ts](../frontend/src/renderer/renderer-debug.ts).
@@ -2293,7 +2383,9 @@ Reference: `RendererDebugHandler` (`drawDebugOverlays`, `highlightDeadEnds`) in
   tiers. A mark that doesn't change with state doesn't get a saturated
   hue.
 - **Fail restrictive.** When a state value is unknown, render the most
-  restrictive mark or no mark at all (the block-fill null) — never guess a permissive state.
+  restrictive mark or no mark at all — never guess a permissive state. A
+  switch whose position is not known draws both legs dim, and a block the
+  snapshot says nothing about draws no state line.
 - **Blinking is reserved** for emergency-tier events. No canvas mark
   blinks now — see §18 Motion.
 

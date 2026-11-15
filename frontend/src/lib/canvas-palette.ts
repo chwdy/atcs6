@@ -53,11 +53,13 @@ export interface CanvasPalette {
   trainBodyTeardown: string;
   trainBodyEb: string;
   trainBodyUnidentified: string;
-  // v2 train line, by train state
-  trainLineMoving: string;
-  trainLineWaiting: string;
-  trainLineStopped: string;
-  trainLineLost: string;
+  // v2 train line (white with a dark edge) and tag fill, by train state
+  trainLine: string;
+  trainLineEdge: string;
+  trainTagMoving: string;
+  trainTagWaiting: string;
+  trainTagStopped: string;
+  trainTagLost: string;
   trainHighlight: string;
   trainTagInk: string;
   // highlight overlays driven by the LayoutHighlighter. Only the "locate" flash
@@ -99,10 +101,12 @@ const TOKENS: Record<keyof CanvasPalette, string> = {
   trainBodyTeardown: '--train-body-teardown',
   trainBodyEb: '--train-body-eb',
   trainBodyUnidentified: '--train-body-unidentified',
-  trainLineMoving: '--train-line-moving',
-  trainLineWaiting: '--train-line-waiting',
-  trainLineStopped: '--train-line-stopped',
-  trainLineLost: '--train-line-lost',
+  trainLine: '--train-line',
+  trainLineEdge: '--train-line-edge',
+  trainTagMoving: '--train-tag-moving',
+  trainTagWaiting: '--train-tag-waiting',
+  trainTagStopped: '--train-tag-stopped',
+  trainTagLost: '--train-tag-lost',
   trainHighlight: '--train-highlight',
   trainTagInk: '--train-tag-ink',
   highlightLocate: '--canvas-highlight-locate',
@@ -116,8 +120,8 @@ const FALLBACK: CanvasPalette = {
   grid: '#2a2a34',
   axis: '#4a4a5a',
   origin: '#8257e5',
-  track: '#666666',
-  trackDim: '#444444',
+  track: '#3a3a44',
+  trackDim: '#25252b',
   success: '#04d361',
   successBright: '#00ff88',
   caution: '#ffd93d',
@@ -134,19 +138,21 @@ const FALLBACK: CanvasPalette = {
   onAccent: '#000000',
   overlayBg: '#0d1020',
   overlayBorder: '#646496',
-  blockFree: '#00d4ff',
-  blockReserved: '#04d361',
-  blockOccupied: '#ef4444',
+  blockFree: '#14c2ea',
+  blockReserved: '#1fe074',
+  blockOccupied: '#ff4d4f',
   blockCaution: '#fde047',
   trainBody: '#ffffff',
   trainBodyManual: '#ffe066',
   trainBodyTeardown: '#c8a2ff',
   trainBodyEb: '#8257e5',
   trainBodyUnidentified: '#8a8a99',
-  trainLineMoving: '#d6deea',
-  trainLineWaiting: '#e8d58f',
-  trainLineStopped: '#a9a9b6',
-  trainLineLost: '#c9b6e6',
+  trainLine: '#ffffff',
+  trainLineEdge: '#0e0e12',
+  trainTagMoving: '#6fe89b',
+  trainTagWaiting: '#a6d4ff',
+  trainTagStopped: '#a9a9b6',
+  trainTagLost: '#ffd633',
   trainHighlight: '#ff8a3d',
   trainTagInk: '#16161c',
   highlightLocate: '#ffd93d',

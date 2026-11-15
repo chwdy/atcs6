@@ -30,6 +30,16 @@
     --canvas-overlay-bg: #0d1020;    /* info-panel background drawn on canvas */
     --canvas-overlay-border: #646496;/* info-panel border */
     --train-tag-ink: #16161c;        /* v2 train tag edge and text, on pale fills */
+    /* v2 train border and tag (design_v2.md "Seeing trains on the layout").
+       The border is white in every theme, with a thin dark line outside it
+       so it also reads on a light ground. The tag's fill says the train's
+       state. */
+    --train-line: #ffffff;
+    --train-line-edge: #0e0e12;
+    --train-tag-moving: #6fe89b;
+    --train-tag-waiting: #a6d4ff;
+    --train-tag-stopped: #a9a9b6;
+    --train-tag-lost: #ffd633;
 }
 
 /* ── DARK (bare default) — the original drawing-board palette. ── */
@@ -39,8 +49,8 @@
     --canvas-grid: #2a2a34;
     --canvas-axis: #4a4a5a;
     --canvas-origin: #8257e5;
-    --canvas-track: #666666;
-    --canvas-track-dim: #444444;
+    --canvas-track: #3a3a44;
+    --canvas-track-dim: #25252b;
     --canvas-success: #04d361;
     --canvas-success-bright: #00ff88;
     --canvas-caution: #ffd93d;
@@ -51,21 +61,16 @@
     --canvas-info: #00d4ff;
     --canvas-hold: #8b4513;
     --canvas-lock: #ff8c00;
-    --block-free: #00d4ff;
-    --block-reserved: #04d361;
-    --block-occupied: #ef4444;
+    --block-free: #14c2ea;
+    --block-reserved: #1fe074;
+    --block-occupied: #ff4d4f;
     --block-caution: #fde047;
     --train-body: #ffffff;
     --train-body-manual: #ffe066;
     --train-body-teardown: #c8a2ff;
     --train-body-eb: #8257e5;
     --train-body-unidentified: #8a8a99;
-    /* v2 train line and tag, by train state, and the train highlight
-       (design_v2.md "Seeing trains on the layout") */
-    --train-line-moving: #d6deea;
-    --train-line-waiting: #e8d58f;
-    --train-line-stopped: #a9a9b6;
-    --train-line-lost: #c9b6e6;
+    /* the train highlight (design_v2.md "Seeing trains on the layout") */
     --train-highlight: #ff8a3d;
     /* "Locate" flash from the LayoutHighlighter — a bright caution-yellow pulse. */
     --canvas-highlight-locate: #ffd93d;
@@ -78,8 +83,8 @@
     --canvas-grid: #dcdce2;
     --canvas-axis: #c2c2cc;
     --canvas-origin: #7048cf;
-    --canvas-track: #5c5c66;
-    --canvas-track-dim: #9a9aa4;
+    --canvas-track: #c4c4ce;
+    --canvas-track-dim: #dfdfe5;
     --canvas-success: #0a9b4b;
     --canvas-success-bright: #07b85c;
     --canvas-caution: #b07d00;
@@ -99,12 +104,7 @@
     --train-body-teardown: #7c3aed;
     --train-body-eb: #7048cf;
     --train-body-unidentified: #5a5a66;
-    /* v2 train line and tag, by train state, and the train highlight
-       (design_v2.md "Seeing trains on the layout") */
-    --train-line-moving: #dbe8ff;
-    --train-line-waiting: #ffe08a;
-    --train-line-stopped: #b9b9c6;
-    --train-line-lost: #d9c2ff;
+    /* the train highlight (design_v2.md "Seeing trains on the layout") */
     --train-highlight: #e8630a;
     --canvas-highlight-locate: #b07d00;
 }
@@ -116,8 +116,8 @@
     --canvas-grid: #1c4a7a;
     --canvas-axis: #2f6299;
     --canvas-origin: #7fd4ff;
-    --canvas-track: #bcd8f0;
-    --canvas-track-dim: #6a92ba;
+    --canvas-track: #2f5f92;
+    --canvas-track-dim: #1a406b;
     --canvas-success: #5effa6;
     --canvas-success-bright: #00ff88;
     --canvas-caution: #ffe46b;
@@ -137,33 +137,7 @@
     --train-body-teardown: #c8a2ff;
     --train-body-eb: #b07cff;
     --train-body-unidentified: #9a9aa8;
-    /* v2 train line and tag, by train state, and the train highlight
-       (design_v2.md "Seeing trains on the layout") */
-    --train-line-moving: #e6f0ff;
-    --train-line-waiting: #ffe7a0;
-    --train-line-stopped: #b7c3d4;
-    --train-line-lost: #e2ccff;
+    /* the train highlight (design_v2.md "Seeing trains on the layout") */
     --train-highlight: #ff9a4d;
     --canvas-highlight-locate: #ffe46b;
-}
-
-/* ── OPERATE — calmer block colours on the Operate screen only, so the train
-   display (tag, line, arrowheads) is the loudest thing on the layout and the
-   detector colour reads underneath it. Empty blocks sit close to bare track.
-   Other screens keep the full-strength block colours above.
-   (design_v2.md "Seeing trains on the layout") ── */
-:root[data-screen="operate"][data-canvas-theme="dark"] {
-    --block-occupied: #b5474d;
-    --block-reserved: #3f8f62;
-    --block-free: #4b525c;
-}
-:root[data-screen="operate"][data-canvas-theme="light"] {
-    --block-occupied: #c4636d;
-    --block-reserved: #4f9b6e;
-    --block-free: #8f9099;
-}
-:root[data-screen="operate"][data-canvas-theme="blueprint"] {
-    --block-occupied: #d7707f;
-    --block-reserved: #6fbf8f;
-    --block-free: #6f8fae;
 }

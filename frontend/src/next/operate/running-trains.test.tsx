@@ -57,8 +57,15 @@ describe('RunningTrainsRow', () => {
   it('shows one card per train, oldest first', () => {
     expect(usesRunningTrains()).toBe(true);
     expect(runningTrains().map((t) => t.train_id)).toEqual(['T1', 'T2', 'T10']);
-    const names = [...root.querySelectorAll('.op-card-name')].map((n) => n.textContent?.trim());
+    const names = [...root.querySelectorAll('.rt-tag')].map((n) => n.textContent?.trim());
     expect(names).toEqual(['T1', 'T2', 'T10']);
+  });
+
+  it('shows each train\'s state on its card, and the knob\'s voltage as a number', () => {
+    const cards = [...root.querySelectorAll('.rt-card')] as HTMLElement[];
+    expect(cards.map((c) => c.dataset.state)).toEqual(['moving', 'waiting', 'lost']);
+    expect(cards.map((c) => c.querySelector('.rt-card-state')?.textContent)).toEqual(['Moving', 'Waiting', 'Lost']);
+    expect(cards.map((c) => c.querySelector('.rt-card-volts')?.textContent)).toEqual(['6.0 V', '6.0 V', '0.0 V']);
   });
 
   it('keeps the train emphasized when focus moves between its controls', async () => {
@@ -86,11 +93,10 @@ describe('RunningTrainsRow', () => {
     expect(cardLine(t10)).toBe('Lost on Left');
   });
 
-  it('sends the knob, Stop, Reverse and Stop all', async () => {
+  it('sends the knob and Stop, and leaves Stop all to the top bar', async () => {
     const ok = { success: true, reason: null };
     const knob = vi.spyOn(api, 'setTrainKnob').mockResolvedValue(ok);
     const stop = vi.spyOn(api, 'stopRunningTrain').mockResolvedValue(ok);
-    const stopAll = vi.spyOn(api, 'stopAllTrains').mockResolvedValue(ok);
 
     const slider = root.querySelector('input[type=range]') as HTMLInputElement;
     slider.value = '8';
@@ -99,16 +105,17 @@ describe('RunningTrainsRow', () => {
     });
     expect(knob).toHaveBeenCalledWith('T1', 8);
 
-    await act(async () => buttonNamed(root, '■ Stop')[0].click());
+    await act(async () => buttonNamed(root, 'Stop')[0].click());
     expect(stop).toHaveBeenCalledWith('T1');
 
-    await act(async () => buttonNamed(root, '■ Stop all')[0].click());
-    expect(stopAll).toHaveBeenCalled();
+    expect([...root.querySelectorAll('button')].some((b) => /stop all/i.test(b.textContent ?? ''))).toBe(false);
   });
 
   it('offers Reverse only to a stopped train and locks a lost train', async () => {
-    const reverse = buttonNamed(root, '⇄ Reverse');
-    expect(reverse.map((b) => b.disabled)).toEqual([true, true, true]);
+    // A lost train's card has Remove and nothing else to press.
+    const reverse = buttonNamed(root, 'Reverse');
+    expect(reverse.map((b) => b.disabled)).toEqual([true, true]);
+    expect(buttonNamed(root, 'Remove')).toHaveLength(1);
     const sliders = [...root.querySelectorAll('input[type=range]')] as HTMLInputElement[];
     expect(sliders.map((s) => s.disabled)).toEqual([false, false, true]);
 
@@ -116,6 +123,6 @@ describe('RunningTrainsRow', () => {
     await act(async () => {
       liveVersion.value++;
     });
-    expect(buttonNamed(root, '⇄ Reverse').map((b) => b.disabled)).toEqual([false]);
+    expect(buttonNamed(root, 'Reverse').map((b) => b.disabled)).toEqual([false]);
   });
 });

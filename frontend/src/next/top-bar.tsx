@@ -3,7 +3,7 @@
  *
  * Left: the app name, the Layout menu and the five screen tabs. Right: the
  * status control (environment, session state, and the one next-step button),
- * Emergency stop, and the View and Settings menus.
+ * Stop all, and the View and Settings menus.
  *
  * Its styles are the `app-header` rules in static/css/layout/shell.css and
  * static/css/layout/next-top-bar.css. It runs no logic of its own: every

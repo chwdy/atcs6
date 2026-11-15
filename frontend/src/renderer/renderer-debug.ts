@@ -15,6 +15,7 @@
 // (`new RendererDebugHandler(this)`).
 
 import { getCanvasPalette, withAlpha } from '../lib/canvas-palette';
+import { TRACK_LINE_WIDTH, TRACK_STATUS_WIDTH } from '../lib/constants';
 import { studBar } from '../lib/track-stud';
 import { canvasLayers } from '../lib/canvas-layers';
 
@@ -181,21 +182,18 @@ export class RendererDebugHandler {
     const screenX = this.gridToScreenX(x, y);
     const screenY = this.gridToScreenY(x, y);
     const tileSize = this.gridSize * this.scale;
-    const markerLen = 6 * this.scale;
+    // A thin bar across the end of the track, wider than the track, with
+    // round ends: the same weight as a block's status line. Its inner face
+    // sits on the end of the track, so it never covers the track itself.
+    const markerLen = TRACK_LINE_WIDTH * 0.8 * this.scale;
+    const thickness = TRACK_STATUS_WIDTH * this.scale;
 
     const p = getCanvasPalette();
     this.ctx.save();
     this.ctx.strokeStyle = p.warning;
-    // The stud thickens only on the OUTER side of the rail end, never onto the
-    // track. At a diagonal dead-end the bed's mitred corner pokes past a thin
-    // centred bar, so we keep the inboard (track-side) face at its original
-    // 1.5*scale and push the outboard face out to ~3.5*scale to cap the bed
-    // (its diagonal bed is TRACK_WIDTH·√2 ≈ 5.7 wide). We get the asymmetry by
-    // shifting the centred bar outboard by half the extra width before stroking.
-    const inboardHalf = 1.5 * this.scale;
-    const outboardReach = 3.5 * this.scale;
-    this.ctx.lineWidth = inboardHalf + outboardReach;
-    const shift = (outboardReach - inboardHalf) / 2;
+    this.ctx.lineCap = 'round';
+    this.ctx.lineWidth = thickness;
+    const shift = thickness / 2;
 
     for (const edge of deadEnds) {
       // The tunnel stud reuses this same bar shape (wider, accent-colored) — see

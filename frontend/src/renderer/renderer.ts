@@ -732,12 +732,11 @@ class Renderer {
       this.segmentHandler.drawSegmentIdColors(tracks);
     }
 
-    // Tracks (with state-driven coloring). Each tile draws its own grey
-    // trapezoid bed then the block-status rectangle on top, both clipped to the
-    // tile diamond (see trackHandler.drawTrack / drawTrackBed).
-    tracks.forEach((track) => {
-      this.trackHandler.drawTrack(track);
-    });
+    // Tracks: all track in the quiet track colour, then each block's status
+    // as a thin line along its middle (see trackHandler.drawTracks), then the
+    // mark beside each switch that is not plain.
+    this.trackHandler.drawTracks(tracks as any);
+    this.trackHandler.drawSwitchMarks(tracks as any);
 
     // Switch M/D indicators, gated behind the "Switch States" debug toggle
     // (default off). Drawn in a pass on TOP of every tile's rails so a

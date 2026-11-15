@@ -202,7 +202,7 @@ html[data-screen="operate"] #train-monitor-bar {
     align-items: stretch;
     gap: var(--space-8);
     min-height: 112px;
-    padding: var(--space-8) 0 var(--space-8) var(--space-10);
+    padding: var(--space-8) var(--space-10);
     overflow-x: auto;
     background-color: var(--bg-panel);
     border-top: 1px solid var(--border-color);
@@ -221,50 +221,25 @@ html[data-screen="operate"] #train-monitor-bar {
     padding-bottom: var(--space-6);
 }
 
-/* + Place train, Hold all and the fold button end the row and stay in view
-   while it scrolls. The row's right padding is here rather than on .op-cards,
-   so no scrolled card shows between this group and the edge. */
-.op-cards-actions {
-    position: sticky;
-    right: 0;
-    margin-left: auto;
-    flex-shrink: 0;
-    display: flex;
-    align-items: center;
-    gap: var(--space-8);
-    padding: 0 var(--space-10) 0 var(--space-8);
-    background-color: var(--bg-panel);
-}
-
 /* min-width: 0 holds the card at its width. Without it a flex item is at
    least as wide as its longest line, so a long hold reason widened the card
    instead of ending in an ellipsis. */
 .op-card {
-    flex: 0 0 228px;
+    flex: 0 0 264px;
     min-width: 0;
     display: flex;
     flex-direction: column;
-    gap: var(--space-4);
-    padding: var(--space-8) var(--space-10);
+    gap: var(--space-6);
+    padding: var(--space-10) var(--space-12);
     background-color: var(--bg-dark);
     border: 1px solid var(--border-color);
-    border-left: 3px solid var(--row-status-color, var(--border-color));
     border-radius: var(--control-radius-sm);
     cursor: pointer;
 }
 
 .op-card:hover {
     border-color: var(--text-tertiary);
-    border-left-color: var(--row-status-color, var(--text-tertiary));
 }
-
-/* The left edge says whether the train needs the operator
-   (DESIGN_LANGUAGE.md §6; trainCardTone in train-display.ts). The colour
-   is a custom property so the §12 selected mark keeps it. */
-.op-card[data-tone="danger"] { --row-status-color: var(--danger-color); }
-.op-card[data-tone="warn"] { --row-status-color: var(--warning-color); }
-.op-card[data-tone="info"] { --row-status-color: var(--info-color); }
-.op-card[data-tone="ok"] { --row-status-color: var(--success-color); }
 
 .op-card:focus-visible {
     outline: 2px solid var(--accent-hover);
@@ -274,12 +249,12 @@ html[data-screen="operate"] #train-monitor-bar {
 .op-card-head {
     display: flex;
     align-items: center;
-    gap: var(--space-4);
+    gap: var(--space-8);
     min-width: 0;
 }
 
 .op-card-name {
-    flex: 1;
+    flex: 0 1 auto;
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -297,23 +272,15 @@ html[data-screen="operate"] #train-monitor-bar {
     font-size: var(--font-size-body);
 }
 
+/* The row is as tall as the slider's thumb with its ring (22px + 1px each
+   side), so the thumb never reaches into the line above or the buttons
+   below. */
 .op-card-handle {
     display: flex;
     align-items: center;
     gap: var(--space-4);
     width: 100%;
-}
-
-.op-card-handle-slider {
-    flex: 1;
-    min-width: 0;
-}
-
-.op-card-handle-pos {
-    min-width: 32px;
-    text-align: right;
-    font-family: var(--font-mono);
-    font-size: var(--font-size-value);
+    min-height: 24px;
 }
 
 /* A folded card is one line: name and chips, speed and ATC limit, then the
@@ -407,14 +374,60 @@ html[data-screen="operate"] #train-monitor-bar {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    font-size: var(--font-size-label);
+    font-size: var(--font-size-body);
     color: var(--text-secondary);
 }
 
-.rt-card-volts {
-    min-width: 48px;
-    text-align: right;
+/* The train's ID in a tag with a point, filled with the train's state colour:
+   the same tag the layout draws on the train's front block
+   (DESIGN_LANGUAGE.md §11 "A card the operator acts on"). */
+.rt-tag {
+    flex-shrink: 0;
+    padding: 2px 14px 2px var(--space-8);
+    background-color: var(--train-tag-stopped);
+    color: var(--train-tag-ink);
     font-family: var(--font-mono);
+    font-size: var(--font-size-value);
+    font-weight: 600;
+    line-height: 1.5;
+    clip-path: polygon(0 0, calc(100% - 9px) 0, 100% 50%, calc(100% - 9px) 100%, 0 100%);
+}
+
+.rt-card[data-state="moving"] { --rt-state-color: var(--train-tag-moving); }
+.rt-card[data-state="waiting"] { --rt-state-color: var(--train-tag-waiting); }
+.rt-card[data-state="stopped"] { --rt-state-color: var(--train-tag-stopped); }
+.rt-card[data-state="lost"] { --rt-state-color: var(--train-tag-lost); }
+
+.rt-card .rt-tag {
+    background-color: var(--rt-state-color);
+}
+
+.rt-card-state {
+    flex-shrink: 0;
+    font-size: var(--font-size-value);
+    color: var(--rt-state-color);
+}
+
+/* The knob's voltage, as the card's large number (§9 Hero number). */
+.rt-card-volts {
+    margin-left: auto;
+    flex-shrink: 0;
+    font-family: var(--font-mono);
+    font-size: var(--font-size-hero);
+    font-weight: 700;
+    line-height: 1;
+    letter-spacing: -0.01em;
+}
+
+.rt-card[data-state="lost"] .rt-card-volts {
+    color: var(--text-tertiary);
+}
+
+.rt-card-unit {
+    font-family: var(--font-main);
+    font-size: var(--font-size-body);
+    font-weight: 400;
+    color: var(--text-secondary);
 }
 
 .rt-card-buttons {
@@ -435,11 +448,7 @@ html[data-screen="operate"] #train-monitor-bar {
 }
 
 .rt-card-identity {
-  padding: 0;
   border: 0;
-  background: none;
-  color: inherit;
-  font: inherit;
   text-align: start;
   cursor: pointer;
 }

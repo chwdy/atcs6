@@ -3,16 +3,15 @@
 // preview overlays. Owns the shared getEdgePoints() / drawGridSegment() geometry
 // that the other renderer handlers reach for through the renderer.
 //
-// Migrated from static/js/renderer-tracks.js (longterm_todo.md item #7,
-// renderer cluster). Behavior is unchanged; covered by renderer-tracks.test.ts.
+// Covered by renderer-tracks.test.ts.
 //
-// Imports getActiveSegments, isCrossing, TRACK_WIDTH from ../lib/constants.
 // Part of the Vite bundle; the Renderer constructs it directly
 // (`new RendererTrackHandler(this)`).
 
-import { getActiveSegments, trackBitsToEdges, isCrossing, TRACK_WIDTH, EDGE_MASKS, OPPOSITE_EDGE } from '../lib/constants';
+import { getActiveSegments, trackBitsToEdges, isCrossing, TRACK_WIDTH, TRACK_LINE_WIDTH, TRACK_STATUS_WIDTH, OPPOSITE_EDGE } from '../lib/constants';
 import { getBlockStateColor, type BlockLiveFields } from '../lib/helpers';
 import { getCanvasPalette, withAlpha } from '../lib/canvas-palette';
+import { traceTrackLine } from './track-path';
 
 export interface EdgePoint {
   x: number;
@@ -48,6 +47,34 @@ export interface Track {
   dead_end_ports?: string[];
 }
 
+/** What the network payload says about a switch's condition
+ *  (design_v2.md "Switches"). */
+export interface SwitchCondition {
+  /** A train is on it or about to cross it, so nobody throws it. */
+  held?: boolean;
+  /** Marked manual: the runtime never throws it for a train. */
+  manual?: boolean;
+  /** Set while alternate arrivals are on for the switch. */
+  alternate_next?: number | null;
+  /** False until the switch has been thrown this session. */
+  position_known?: boolean;
+}
+
+/** The one mark drawn beside a switch, or null for a plain switch. A switch
+ *  can be in several conditions at once; the mark shown is the one that
+ *  matters most to someone about to throw it. */
+export function switchMark(sw: SwitchCondition | undefined): 'held' | 'unknown' | 'manual' | 'alternate' | null {
+  if (!sw) return null;
+  if (sw.held) return 'held';
+  if (sw.position_known === false) return 'unknown';
+  if (sw.manual) return 'manual';
+  if (sw.alternate_next != null) return 'alternate';
+  return null;
+}
+
+// Tabler icon font glyphs (static/vendor/tabler): lock, hand-stop, refresh.
+const SWITCH_MARK_GLYPH: Record<string, string> = { held: '\ueae2', manual: '\uec2e', alternate: '\ueb13' };
+
 /** The slice of the Renderer the track handler reads through its back-reference. */
 type TrackBlock = BlockLiveFields;
 
@@ -56,7 +83,7 @@ export interface TrackHandlerRenderer {
   scale: number;
   gridSize: number;
   currentBlocks?: Record<string, TrackBlock | undefined> | null;
-  currentNetwork?: { operation_mode?: string } | null;
+  currentNetwork?: { operation_mode?: string; switches?: Record<string, SwitchCondition | undefined> } | null;
   // "x,y" -> track, used by drawTileExtentHighlight to read each selected
   // tile's track_bits so it can light the real stroke (not just the cell).
   trackMap?: Record<string, { track_bits?: number; block_section_id?: string | null } | undefined>;
@@ -83,6 +110,94 @@ export function blockTrackColor(block: TrackBlock | undefined | null): string | 
   );
 }
 
+/** One tile segment: its two tile edges by shared name, where they are on
+ *  screen, and the tile it belongs to. */
+export type LinePiece = { a: string; b: string; pa: EdgePoint; pb: EdgePoint; tile: string };
+type LinkedLine = { points: EdgePoint[]; closed: boolean; startFree: boolean; endFree: boolean };
+
+function towards(from: EdgePoint, to: EdgePoint, distance: number): EdgePoint {
+  const len = Math.hypot(to.x - from.x, to.y - from.y) || 1;
+  const t = Math.min(distance / len, 0.5);
+  return { x: from.x + (to.x - from.x) * t, y: from.y + (to.y - from.y) * t };
+}
+
+/** The name of a tile's edge. An edge is shared with the neighbour across
+ *  it, so both tiles give it the same name and their segments link there. */
+function edgeName(x: number, y: number, edge: string): string {
+  if (edge === 'N') return `${x},${y},N`;
+  if (edge === 'S') return `${x},${y - 1},N`;
+  if (edge === 'E') return `${x},${y},E`;
+  return `${x - 1},${y},E`;
+}
+
+const EDGE_OFFSET: Record<string, [number, number]> = { N: [1, -1], E: [1, 1], S: [-1, 1], W: [-1, -1] };
+
+/** Link pieces that meet at an edge shared by exactly two of them into lines.
+ *  A line ends where it meets no other piece (a free end) or where three or
+ *  more pieces meet. What is left over after that are closed loops.
+ *
+ *  Where three or more pieces meet, each line carries on along one piece of
+ *  the neighbouring tile, so the canvas joins it to that piece instead of
+ *  leaving a square end with a notch beside it. The extra length lies on top
+ *  of track the same stroke already draws. */
+export function linkPieces(pieces: LinePiece[]): LinkedLine[] {
+  const at = new Map<string, number[]>();
+  pieces.forEach((piece, i) => {
+    for (const name of [piece.a, piece.b]) {
+      const list = at.get(name);
+      if (list) list.push(i);
+      else at.set(name, [i]);
+    }
+  });
+  const used: boolean[] = pieces.map(() => false);
+  // The far end of a piece of another tile that meets `name`, or null.
+  const beyond = (name: string, tile: string): EdgePoint | null => {
+    const meeting = at.get(name) ?? [];
+    if (meeting.length < 3) return null;
+    const other = meeting.map((i) => pieces[i]).find((piece) => piece.tile !== tile);
+    if (!other) return null;
+    return other.a === name ? other.pb : other.pa;
+  };
+  const carryOn = (points: EdgePoint[], name: string, tile: string): void => {
+    const point = beyond(name, tile);
+    if (point) points.push(point);
+  };
+  const walk = (first: number, from: string): LinkedLine => {
+    let i = first;
+    let name = from;
+    const points = [name === pieces[i].a ? pieces[i].pa : pieces[i].pb];
+    const lead = beyond(from, pieces[first].tile);
+    if (lead) points.unshift(lead);
+    for (;;) {
+      used[i] = true;
+      const piece = pieces[i];
+      const forward = name === piece.a;
+      points.push(forward ? piece.pb : piece.pa);
+      name = forward ? piece.b : piece.a;
+      const meeting = at.get(name) ?? [];
+      if (meeting.length !== 2) {
+        carryOn(points, name, piece.tile);
+        return { points, closed: false, startFree: at.get(from)?.length === 1, endFree: meeting.length === 1 };
+      }
+      const next = meeting[0] === i ? meeting[1] : meeting[0];
+      if (used[next]) {
+        points.pop();
+        return { points, closed: true, startFree: false, endFree: false };
+      }
+      i = next;
+    }
+  };
+  const lines: LinkedLine[] = [];
+  for (const [name, meeting] of at) {
+    if (meeting.length === 2) continue;
+    for (const i of meeting) if (!used[i]) lines.push(walk(i, name));
+  }
+  pieces.forEach((piece, i) => {
+    if (!used[i]) lines.push(walk(i, piece.a));
+  });
+  return lines;
+}
+
 export class RendererTrackHandler {
   renderer: TrackHandlerRenderer;
 
@@ -102,7 +217,7 @@ export class RendererTrackHandler {
   get currentBlocks(): Record<string, TrackBlock | undefined> | null | undefined {
     return this.renderer.currentBlocks;
   }
-  get currentNetwork(): { operation_mode?: string } | null | undefined {
+  get currentNetwork(): TrackHandlerRenderer['currentNetwork'] {
     return this.renderer.currentNetwork;
   }
 
@@ -111,93 +226,6 @@ export class RendererTrackHandler {
   }
   gridToScreenY(x: number, y: number): number {
     return this.renderer.gridToScreenY(x, y);
-  }
-
-  drawTrack(track: Track): void {
-    const p = getCanvasPalette();
-    const cellSize = this.gridSize * this.scale;
-    const cx = this.gridToScreenX(track.x, track.y);
-    const cy = this.gridToScreenY(track.x, track.y);
-    const half = cellSize / 2;
-
-    const trackBits = track.track_bits ?? 0;
-
-    this.ctx.save();
-    this.ctx.translate(cx, cy);
-
-    // Clip everything this tile draws to the tile's own diamond (its four corner
-    // coordinates). A perpendicular-capped band reaches the edge points exactly,
-    // but at a diagonal segment its cap corners would still poke past the border
-    // into the neighbour tile — which is a different block, so its color would
-    // bleed in. The clip keeps each tile's color strictly inside its own
-    // diamond; the neighbour draws its own half of any rail that sits on the
-    // shared border, so the rail still reads continuous across the seam.
-    this.ctx.beginPath();
-    this.ctx.moveTo(0, -half);
-    this.ctx.lineTo(half, 0);
-    this.ctx.lineTo(0, half);
-    this.ctx.lineTo(-half, 0);
-    this.ctx.closePath();
-    this.ctx.clip();
-
-    let trackColor = p.track;
-    if (track.block_section_id && this.currentBlocks) {
-      const resolved = blockTrackColor(this.currentBlocks[track.block_section_id]);
-      if (resolved) trackColor = resolved;
-    }
-
-    const isSwitch = track.is_switch || false;
-    const switchState = track.switch_state || 0;
-    const isDiagonalOnly = track.is_diagonal_only_switch || false;
-    const switchPoints = track.switch_points || {};
-
-    // Record every edge that opens onto a SAME-block neighbour whose rail meets
-    // it. drawTrackFromBits EXTENDS the colored rail past these edges so the tile
-    // clip trims it flush to the shared border and it tiles seamlessly with the
-    // neighbour's half (a straight run stays continuous, a bend turns a clean
-    // solid corner, a crossing fills solid). Every other edge (a different block,
-    // or empty) stops short with a square end, so one block's color never merges
-    // into the next.
-    const connectedEdges = new Set<string>();
-    const myBlock = track.block_section_id;
-    const tileMap = this.renderer.trackMap;
-    if (myBlock != null && tileMap) {
-      const NEIGHBOR_OFFSET: Record<string, [number, number]> = { N: [0, 1], E: [1, 0], S: [0, -1], W: [-1, 0] };
-      for (const edge of ['N', 'E', 'S', 'W']) {
-        if (!(trackBits & EDGE_MASKS[edge])) continue; // no rail leaves this edge
-        const [dx, dy] = NEIGHBOR_OFFSET[edge];
-        const nb = tileMap[`${track.x + dx},${track.y + dy}`];
-        if (!nb || nb.block_section_id !== myBlock) continue;
-        const oppE = OPPOSITE_EDGE[edge];
-        const nbBits = nb.track_bits ?? 0;
-        if (!(nbBits & EDGE_MASKS[oppE])) continue; // neighbour rail doesn't meet this border
-        connectedEdges.add(edge);
-      }
-    }
-
-    // Grey trapezoid track bed (the rail clipped to this tile's diamond). It
-    // tiles seamlessly with neighbours, so the track always reads continuous;
-    // the block-status color is then laid on top as a narrower rectangle. A
-    // switch lays its OWN bed inside drawTrackWithSwitches — the selected route
-    // full, an unselected arm cut back to a short stub — so the blanket bed
-    // below is only for plain (non-switch) track.
-    if (isSwitch) {
-      this.drawTrackWithSwitches(trackBits, half, trackColor, switchState, isDiagonalOnly, switchPoints);
-    } else {
-      this.drawTrackBed(trackBits, half);
-      this.drawTrackFromBits(trackBits, half, trackColor, track.dead_end_ports || [], connectedEdges);
-    }
-
-    this.ctx.restore();
-
-    // NOTE: the switch M/D badge is NOT drawn here. It is drawn in a separate
-    // pass after every tile's rails (renderer _drawWorld -> drawSwitchBadgeAt),
-    // so a neighbouring tile's rail or bed can't paint over it, and it is
-    // unclipped so it sits flush against the branch root (the switch entry edge).
-
-    if (track.dead_end_ports && track.dead_end_ports.length > 0) {
-      this.renderer.debugHandler.highlightDeadEnds(track.x, track.y, track.dead_end_ports, track.track_bits || 0);
-    }
   }
 
   getEdgePoints(half: number): Record<string, EdgePoint> {
@@ -241,314 +269,304 @@ export class RendererTrackHandler {
     this.ctx.fill();
   }
 
-  /**
-   * Draw a rail segment as a constant-width rectangle centered on the line from
-   * `start` to `end`, with its end caps PERPENDICULAR to that line (the true
-   * normal) — not parallel to the tile border the way drawGridSegment's fixed
-   * diagonal offset cuts them.
-   *
-   * The caps are square to the path, so the caller controls exactly where the
-   * band ends: place `start`/`end` ON the edge points for a square end that stops
-   * at the tile border, or PAST them so the tile clip (drawTrack) trims the band
-   * flush to the diamond. Both the grey bed (drawTrackBed) and the block-status
-   * color (drawTrackFromBits) build their per-segment bands this way.
-   */
-  drawCenterlineBand(start: EdgePoint, end: EdgePoint, width: number, fillColor: string): void {
-    const dx = end.x - start.x;
-    const dy = end.y - start.y;
-    const len = Math.hypot(dx, dy);
-    if (len === 0) return;
-    const halfWidth = width / 2;
-    const ox = (-dy / len) * halfWidth;
-    const oy = (dx / len) * halfWidth;
-
-    this.ctx.fillStyle = fillColor;
-    this.ctx.beginPath();
-    this.ctx.moveTo(start.x + ox, start.y + oy);
-    this.ctx.lineTo(start.x - ox, start.y - oy);
-    this.ctx.lineTo(end.x - ox, end.y - oy);
-    this.ctx.lineTo(end.x + ox, end.y + oy);
-    this.ctx.closePath();
-    this.ctx.fill();
-  }
-
-  /**
-   * Grey trapezoid track bed for one tile, drawn under drawTrack's diamond clip
-   * (it does NOT translate/clip itself — the caller has). Each segment is drawn
-   * as a band EXTENDED past its edge points, so the clip trims it to the tile
-   * diamond: a trapezoid whose slanted ends ARE the tile borders. Neighbouring
-   * tiles' trapezoids meet along those borders, so the grey track reads
-   * continuous. The block-status color is laid on top (drawTrackFromBits) as a
-   * narrower rectangle inside this trapezoid.
-   */
-  drawTrackBed(trackBits: number, half: number): void {
-    const segments = getActiveSegments(trackBits);
-    if (segments.length === 0) return;
-    const p = getCanvasPalette();
-    const edgePoints = this.getEdgePoints(half);
-    // A segment's footprint along a tile border is width / sin(angle it crosses).
-    // An axial segment (N-S, E-W) crosses head-on (footprint = width); a diagonal
-    // (N-E etc.) crosses at 45° (footprint = width·√2, i.e. √2 wider). At the same
-    // perpendicular width the diagonal's grey would spike past the axial's where
-    // they meet, so widen the axial grey by √2 — then every segment's border
-    // footprint is the same (TRACK_WIDTH·2) and the trapezoids tile with no spike.
-    const obliqueWidth = TRACK_WIDTH * Math.SQRT2 * this.scale;
-    const axialWidth = TRACK_WIDTH * 2 * this.scale;
-    for (const [e1, e2] of segments) {
-      const a = edgePoints[e1];
-      const b = edgePoints[e2];
-      if (!a || !b) continue;
-      const dx = b.x - a.x;
-      const dy = b.y - a.y;
-      const len = Math.hypot(dx, dy) || 1;
-      const ux = (dx / len) * half;
-      const uy = (dy / len) * half;
-      const bedWidth = OPPOSITE_EDGE[e1] === e2 ? axialWidth : obliqueWidth;
-      this.drawCenterlineBand({ x: a.x - ux, y: a.y - uy }, { x: b.x + ux, y: b.y + uy }, bedWidth, p.track);
-    }
-  }
-
-  drawTrackFromBits(
+  /** Which arms of a switch tile to draw: the selected route whole, and an
+   *  unselected arm as a leg drawn from its outer edge (`stubFrom`) that
+   *  stops short of the selected route. A
+   *  regular switch's straight-through segment is the route for state 0 and
+   *  its turning segments are the route for state 1. A diagonal-only switch
+   *  has no straight-through, so it takes the first exit clockwise for state
+   *  0 and the second for state 1. An unselected arm that shares no edge
+   *  with the selected route is not drawn. */
+  switchArms(
     trackBits: number,
-    half: number,
-    color: string,
-    deadEndPorts: string[] = [],
-    connectedEdges: Set<string> = new Set(),
-  ): void {
-    const p = getCanvasPalette();
-    const edgePoints = this.getEdgePoints(half);
-
-    const segments = getActiveSegments(trackBits);
-
-    // Lay the block-status color on top of the grey bed using the SAME geometry
-    // as the bed (drawTrackBed) — a filled band per segment, as wide as the bed,
-    // and footprint-matched (axial √2 wider) so every segment's
-    // border footprint is equal and the bands tile with no spike. Each end is
-    // EITHER extended past its edge point so the tile clip (set by drawTrack)
-    // trims it flush to the border, OR pulled back inside to a square end:
-    //   - A same-block edge (in connectedEdges) EXTENDS: the clip chamfers it
-    //     along the shared border and the neighbour's band meets it there, so a
-    //     straight run stays continuous, a bend turns a clean solid corner, and
-    //     two segments of a crossing fill solid instead of leaving a star.
-    //   - Every other edge (a different block, or empty) is pulled `capInset`
-    //     inside to a square end that stops short of the border, so one block's
-    //     color never bleeds into the next and a grey gap marks the boundary.
-    // (Filling each segment, rather than stroking a joined polyline, lets two
-    // same-color bands overlap cleanly — the source of the old corner triangles.)
-    const capInset = TRACK_WIDTH * this.scale;
-    for (const [e1, e2] of segments) {
-      const a = edgePoints[e1];
-      const b = edgePoints[e2];
-      if (!a || !b) continue;
-      const dx = b.x - a.x;
-      const dy = b.y - a.y;
-      const len = Math.hypot(dx, dy) || 1;
-      const ux = dx / len;
-      const uy = dy / len;
-      const isAxial = OPPOSITE_EDGE[e1] === e2;
-      const bandWidth = (isAxial ? TRACK_WIDTH * 2 : TRACK_WIDTH * Math.SQRT2) * this.scale;
-      const start = connectedEdges.has(e1)
-        ? { x: a.x - ux * half, y: a.y - uy * half }      // extend; clip trims to border
-        : { x: a.x + ux * capInset, y: a.y + uy * capInset }; // square end inside the border
-      const end = connectedEdges.has(e2)
-        ? { x: b.x + ux * half, y: b.y + uy * half }
-        : { x: b.x - ux * capInset, y: b.y - uy * capInset };
-      this.drawCenterlineBand(start, end, bandWidth, color);
-    }
-
-    for (const port of deadEndPorts) {
-      const deadEndEdge = port.charAt(0).toUpperCase();
-
-      for (const [e1, e2] of segments) {
-        if (e1 === deadEndEdge || e2 === deadEndEdge) {
-          const otherEdge = (e1 === deadEndEdge) ? e2 : e1;
-          const deadEndPoint = edgePoints[deadEndEdge];
-          const otherPoint = edgePoints[otherEdge];
-
-          const isAxial = (deadEndEdge === 'N' && otherEdge === 'S') ||
-            (deadEndEdge === 'S' && otherEdge === 'N') ||
-            (deadEndEdge === 'E' && otherEdge === 'W') ||
-            (deadEndEdge === 'W' && otherEdge === 'E');
-
-          if (isAxial) {
-            this.drawGridSegment({ x: 0, y: 0 }, otherPoint, TRACK_WIDTH * this.scale, deadEndEdge, otherEdge, color);
-          } else {
-            this.drawGridSegment(deadEndPoint, otherPoint, TRACK_WIDTH * this.scale, e1, e2, color);
-          }
-          break;
-        }
-      }
-    }
-
-    if (isCrossing(trackBits)) {
-      this.ctx.fillStyle = p.accent;
-      this.ctx.beginPath();
-      this.ctx.arc(0, 0, 4 * this.scale, 0, Math.PI * 2);
-      this.ctx.fill();
-    }
-  }
-
-  drawTrackWithSwitches(
-    trackBits: number,
-    half: number,
-    color: string,
     switchState: number,
     isDiagonalOnly: boolean,
     switchPoints: Record<string, string[]>,
-  ): void {
-    const p = getCanvasPalette();
-    const edgePoints = this.getEdgePoints(half);
-
-    const SEGMENTS = [
-      { bit: 0, edges: ['N', 'S'], name: 'NS' },
-      { bit: 1, edges: ['E', 'W'], name: 'EW' },
-      { bit: 2, edges: ['N', 'E'], name: 'NE' },
-      { bit: 3, edges: ['N', 'W'], name: 'NW' },
-      { bit: 4, edges: ['S', 'E'], name: 'SE' },
-      { bit: 5, edges: ['S', 'W'], name: 'SW' },
-    ];
-
-    const activeSegmentBits = new Set<number>();
-
-    if (isDiagonalOnly && switchPoints) {
-      const CLOCKWISE = ['N', 'E', 'S', 'W'];
-
-      for (const [entryEdge, exits] of Object.entries(switchPoints)) {
-        if (!exits || exits.length < 2) continue;
-
-        const sortedExits = [...exits].sort((a, b) =>
-          CLOCKWISE.indexOf(a) - CLOCKWISE.indexOf(b),
-        );
-
-        const activeExit = switchState === 0 ? sortedExits[0] : sortedExits[1];
-
-        for (const seg of SEGMENTS) {
-          if (!(trackBits & (1 << seg.bit))) continue;
-          const [e1, e2] = seg.edges;
-          if ((e1 === entryEdge && e2 === activeExit) ||
-            (e2 === entryEdge && e1 === activeExit)) {
-            activeSegmentBits.add(seg.bit);
-          }
-        }
+  ): Array<{ e1: string; e2: string; stubFrom: string | null }> {
+    const segments = getActiveSegments(trackBits);
+    const CLOCKWISE = ['N', 'E', 'S', 'W'];
+    const isActive = ([e1, e2]: [string, string]): boolean => {
+      if (!isDiagonalOnly) {
+        const isLong = OPPOSITE_EDGE[e1] === e2;
+        return isLong ? switchState === 0 : switchState === 1;
       }
-    }
-
-    // Whether a present segment is the selected (active) route. A diagonal-only
-    // switch takes the clockwise MAIN/DIVERGE pick computed above; a regular
-    // switch's long NS/EW segment is MAIN (state 0) and its diagonals are DIVERGE
-    // (state 1).
-    const isSegmentActive = (seg: { bit: number }): boolean => {
-      if (isDiagonalOnly) return activeSegmentBits.has(seg.bit);
-      const isLongSegment = seg.bit <= 1;
-      return (isLongSegment && switchState === 0) || (!isLongSegment && switchState === 1);
+      return Object.entries(switchPoints).some(([entry, exits]) => {
+        if (!exits || exits.length < 2) return false;
+        const sorted = [...exits].sort((a, b) => CLOCKWISE.indexOf(a) - CLOCKWISE.indexOf(b));
+        const exit = switchState === 0 ? sorted[0] : sorted[1];
+        return (e1 === entry && e2 === exit) || (e2 === entry && e1 === exit);
+      });
     };
-
-    // The edges the selected route leaves by. An unselected arm meets the
-    // selected route at the switch on whichever of its two ends is one of these
-    // edges; that shared end is the "switch side" the gap opens at (below).
     const activeEdges = new Set<string>();
-    for (const seg of SEGMENTS) {
-      if (!(trackBits & (1 << seg.bit))) continue;
-      if (isSegmentActive(seg)) {
-        activeEdges.add(seg.edges[0]);
-        activeEdges.add(seg.edges[1]);
-      }
-    }
-
-    // Bed pass — the grey roadbed. A switch lays its bed HERE (not via the
-    // blanket drawTrackBed) so an unselected arm can be drawn SHORT. The selected
-    // route gets its full bed; an unselected arm is cut back to a stub at its
-    // outer end, so the switch side is simply never painted. Cutting by NOT
-    // drawing (rather than painting then erasing) leaves no stray bed slivers to
-    // notch into triangles at the junction. Each drawn end is EXTENDED past its
-    // edge point so the tile clip (set by drawTrack) trims it flush to the
-    // diamond border.
-    const extendPast = (pt: EdgePoint, away: EdgePoint): EdgePoint => {
-      const dx = pt.x - away.x;
-      const dy = pt.y - away.y;
-      const len = Math.hypot(dx, dy) || 1;
-      return { x: pt.x + (dx / len) * half, y: pt.y + (dy / len) * half };
-    };
-    // Fraction of an unselected arm removed, measured from the switch side; the
-    // remaining third is kept as a stub pointing at where the route continues.
-    const CUT_FRACTION = 2 / 3;
-    for (const seg of SEGMENTS) {
-      if (!(trackBits & (1 << seg.bit))) continue;
-      const [e1, e2] = seg.edges;
-      const a = edgePoints[e1];
-      const b = edgePoints[e2];
-      if (!a || !b) continue;
-      const isAxial = OPPOSITE_EDGE[e1] === e2;
-      const bedWidth = (isAxial ? TRACK_WIDTH * 2 : TRACK_WIDTH * Math.SQRT2) * this.scale;
-
-      if (isSegmentActive(seg)) {
-        this.drawCenterlineBand(extendPast(a, b), extendPast(b, a), bedWidth, p.track);
+    for (const seg of segments) if (isActive(seg)) seg.forEach((e) => activeEdges.add(e));
+    const arms: Array<{ e1: string; e2: string; stubFrom: string | null }> = [];
+    for (const seg of segments) {
+      const [e1, e2] = seg;
+      if (isActive(seg)) {
+        arms.push({ e1, e2, stubFrom: null });
         continue;
       }
-      // Unselected: keep only the outer third nearest the neighbour. The switch
-      // side is the end shared with the selected route; an arm that shares no end
-      // (the other diagonal of a crossing switch) is cut whole — no stub.
       const e1IsSwitch = activeEdges.has(e1);
-      const e2IsSwitch = activeEdges.has(e2);
-      if (e1IsSwitch === e2IsSwitch) continue;
-      const switchEnd = e1IsSwitch ? a : b;
-      const farEnd = e1IsSwitch ? b : a;
-      const cut = {
-        x: farEnd.x + (switchEnd.x - farEnd.x) * (1 - CUT_FRACTION),
-        y: farEnd.y + (switchEnd.y - farEnd.y) * (1 - CUT_FRACTION),
-      };
-      this.drawCenterlineBand(extendPast(farEnd, switchEnd), cut, bedWidth, p.track);
+      if (e1IsSwitch === activeEdges.has(e2)) continue;
+      arms.push({ e1, e2, stubFrom: e1IsSwitch ? e2 : e1 });
     }
-
-    for (const seg of SEGMENTS) {
-      if (!(trackBits & (1 << seg.bit))) continue;
-
-      const [e1, e2] = seg.edges;
-      const start = edgePoints[e1];
-      const end = edgePoints[e2];
-      if (!start || !end) continue;
-
-      if (isSegmentActive(seg)) {
-        // Colour pass — the selected arm, laid over its bed from the pass above
-        // with the SAME extend-and-clip geometry: footprint-matched (axial √2
-        // wider) and extended past the edge points so the tile clip trims it
-        // flush to the border, but narrower than the bed so the grey still frames
-        // it. Extending lets the clip chamfer the ends to the diamond instead of
-        // leaving a square cap the clip cuts into corner triangles, and two
-        // active arms of a crossing overlap solid instead of leaving a notched
-        // star.
-        const isAxial = OPPOSITE_EDGE[e1] === e2;
-        const segmentWidth = (isAxial ? TRACK_WIDTH * Math.SQRT2 : TRACK_WIDTH) * this.scale;
-        const dx = end.x - start.x;
-        const dy = end.y - start.y;
-        const len = Math.hypot(dx, dy) || 1;
-        const ux = (dx / len) * half;
-        const uy = (dy / len) * half;
-        this.drawCenterlineBand(
-          { x: start.x - ux, y: start.y - uy },
-          { x: end.x + ux, y: end.y + uy },
-          segmentWidth,
-          color,
-        );
-      }
-    }
-
-    // The M/D indicator is drawn separately (drawSwitchBadge), UNCLIPPED, so it
-    // can stick right to the entry edge without the tile clip cutting it.
+    return arms;
   }
 
   /**
-   * Draw the switch's M/D indicator at the root of its two branches — right at
-   * the entry edge (the switch_points key). The caller has translated to the
-   * tile centre and must NOT have the tile clip active, so the badge can sit
-   * flush against the edge instead of being trimmed by the diamond.
+   * Draw all track as lines of one thickness. Tile segments that meet on a
+   * shared tile edge are linked into one line, traced with rounded bends
+   * (track-path.ts), so horizontal, vertical and 45° track are equally thick.
+   *
+   * All track is drawn in the quiet track colour. Each block's status colour
+   * is then drawn as a thin line along the middle of its track, which stops
+   * TRACK_WIDTH short of each end of the block, so two blocks' lines never
+   * touch.
+   *
+   * A switch tile draws its selected route whole and the leg not taken in
+   * the dim track colour, stopping just short of the selected route. While
+   * alternate arrivals are on, both legs are drawn whole, because the runtime
+   * picks the leg. Until the switch's position is known, both legs are dim.
    */
+  /** Where the middle of a tile's edge is on screen. */
+  edgeOnScreen(x: number, y: number, edge: string): EdgePoint {
+    const quarter = (this.gridSize * this.scale) / 4;
+    return {
+      x: this.gridToScreenX(x, y) + EDGE_OFFSET[edge][0] * quarter,
+      y: this.gridToScreenY(x, y) + EDGE_OFFSET[edge][1] * quarter,
+    };
+  }
+
+  /** One segment of a tile, from edge `e1` to edge `e2`, ready to be linked
+   *  with its neighbours' (linkPieces). */
+  tilePiece(x: number, y: number, e1: string, e2: string): LinePiece {
+    return {
+      a: edgeName(x, y, e1),
+      b: edgeName(x, y, e2),
+      pa: this.edgeOnScreen(x, y, e1),
+      pb: this.edgeOnScreen(x, y, e2),
+      tile: `${x},${y}`,
+    };
+  }
+
+  drawTracks(tracks: Track[]): void {
+    const p = getCanvasPalette();
+    const bed: LinePiece[] = [];
+    const notTaken: EdgePoint[][] = [];
+    const colored = new Map<string, { color: string; width: number; inset: number; pieces: LinePiece[] }>();
+    const addColored = (key: string, color: string, width: number, inset: number, piece: LinePiece) => {
+      let group = colored.get(key);
+      if (!group) colored.set(key, group = { color, width, inset, pieces: [] });
+      group.pieces.push(piece);
+    };
+    const lineWidth = TRACK_LINE_WIDTH * this.scale;
+    const statusWidth = TRACK_STATUS_WIDTH * this.scale;
+    const crossings: EdgePoint[] = [];
+
+    for (const track of tracks) {
+      const bits = track.track_bits ?? 0;
+      const cx = this.gridToScreenX(track.x, track.y);
+      const cy = this.gridToScreenY(track.x, track.y);
+      const point = (edge: string): EdgePoint => this.edgeOnScreen(track.x, track.y, edge);
+      const piece = (e1: string, e2: string): LinePiece => this.tilePiece(track.x, track.y, e1, e2);
+      let color = p.track;
+      if (track.block_section_id && this.currentBlocks) {
+        color = blockTrackColor(this.currentBlocks[track.block_section_id]) || color;
+      }
+
+      if (track.is_switch) {
+        const arms = this.switchArms(
+          bits, track.switch_state || 0, track.is_diagonal_only_switch || false, track.switch_points || {},
+        );
+        const mark = switchMark(this.currentNetwork?.switches?.[track.switch_id ?? '']);
+        if (mark === 'unknown') {
+          // No leg is known to be set: every leg is dim, edge to edge.
+          for (const [e1, e2] of getActiveSegments(bits)) {
+            const a = point(e1);
+            const b = point(e2);
+            const length = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+            const nx = (-(b.y - a.y) / length) * (lineWidth / 2);
+            const ny = ((b.x - a.x) / length) * (lineWidth / 2);
+            notTaken.push([
+              { x: a.x + nx, y: a.y + ny }, { x: a.x - nx, y: a.y - ny },
+              { x: b.x - nx, y: b.y - ny }, { x: b.x + nx, y: b.y + ny },
+            ]);
+          }
+          continue;
+        }
+        if (mark === 'alternate') {
+          for (const [e1, e2] of getActiveSegments(bits)) bed.push(piece(e1, e2));
+          continue;
+        }
+        arms.forEach(({ e1, e2, stubFrom }, i) => {
+          if (!stubFrom) {
+            bed.push(piece(e1, e2));
+            if (color !== p.track) addColored(`switch|${color}`, color, statusWidth, 0, piece(e1, e2));
+            return;
+          }
+          // The leg not taken: full width, in the dim track colour, from
+          // its outer edge to just short of the selected route. Its end is
+          // cut parallel to that route, so a strip of the ground of one
+          // width shows between the two.
+          const nearEdge = stubFrom === e1 ? e2 : e1;
+          const far = point(stubFrom);
+          const near = point(nearEdge);
+          const length = Math.hypot(far.x - near.x, far.y - near.y) || 1;
+          const ux = (far.x - near.x) / length;
+          const uy = (far.y - near.y) / length;
+          const halfWidth = lineWidth / 2;
+          const clearance = halfWidth + (TRACK_WIDTH / 2) * this.scale;
+          // How far from the shared edge each side of the leg stops: where
+          // that side meets the line drawn `clearance` away from the middle
+          // of the selected route.
+          const stops = [0, 0];
+          for (const arm of arms) {
+            if (arm.stubFrom || (arm.e1 !== nearEdge && arm.e2 !== nearEdge)) continue;
+            const other = point(arm.e1 === nearEdge ? arm.e2 : arm.e1);
+            const otherLength = Math.hypot(other.x - near.x, other.y - near.y) || 1;
+            const vx = (other.x - near.x) / otherLength;
+            const vy = (other.y - near.y) / otherLength;
+            const along = ux * vx + uy * vy;
+            // The direction straight away from the selected route, on the
+            // leg's side of it.
+            let mx = ux - along * vx;
+            let my = uy - along * vy;
+            const sin = Math.hypot(mx, my);
+            if (sin < 0.1) continue;
+            mx /= sin;
+            my /= sin;
+            const across = -uy * mx + ux * my;
+            [1, -1].forEach((side, k) => {
+              stops[k] = Math.max(stops[k], (clearance - side * halfWidth * across) / sin);
+            });
+          }
+          const limit = length * 0.85;
+          const [stopA, stopB] = stops.map((stop) => Math.min(stop, limit));
+          const corner = (side: number, stop: number): EdgePoint => ({
+            x: near.x - uy * side * halfWidth + ux * stop,
+            y: near.y + ux * side * halfWidth + uy * stop,
+          });
+          notTaken.push([corner(1, length), corner(-1, length), corner(-1, stopB), corner(1, stopA)]);
+          // Grey under the leg as far as its shorter side, so the canvas
+          // joins the leg to the track beyond its outer edge.
+          const greyStop = Math.max(stopA, stopB);
+          bed.push({
+            a: edgeName(track.x, track.y, stubFrom),
+            b: `cut:${track.x},${track.y},${i}`,
+            pa: far,
+            pb: { x: near.x + ux * greyStop, y: near.y + uy * greyStop },
+            tile: `${track.x},${track.y}`,
+          });
+        });
+        continue;
+      }
+
+      for (const [e1, e2] of getActiveSegments(bits)) {
+        bed.push(piece(e1, e2));
+        if (color !== p.track) {
+          addColored(`${track.block_section_id}|${color}`, color, statusWidth, TRACK_WIDTH * this.scale, piece(e1, e2));
+        }
+      }
+      if (isCrossing(bits)) crossings.push({ x: cx, y: cy });
+    }
+
+    this.ctx.save();
+    this.ctx.lineCap = 'butt';
+    this.ctx.lineJoin = 'miter';
+    this.strokeLinePieces(bed, lineWidth, p.track, 0);
+    this.ctx.fillStyle = p.trackDim;
+    for (const corners of notTaken) {
+      this.ctx.beginPath();
+      corners.forEach((c, i) => (i === 0 ? this.ctx.moveTo(c.x, c.y) : this.ctx.lineTo(c.x, c.y)));
+      this.ctx.closePath();
+      this.ctx.fill();
+    }
+    this.ctx.lineCap = 'round';
+    for (const group of colored.values()) {
+      this.strokeLinePieces(group.pieces, group.width, group.color, group.inset);
+    }
+    this.ctx.fillStyle = p.accent;
+    for (const c of crossings) {
+      this.ctx.beginPath();
+      this.ctx.arc(c.x, c.y, 4 * this.scale, 0, Math.PI * 2);
+      this.ctx.fill();
+    }
+    this.ctx.restore();
+
+    for (const track of tracks) {
+      if (track.dead_end_ports && track.dead_end_ports.length > 0) {
+        this.renderer.debugHandler.highlightDeadEnds(track.x, track.y, track.dead_end_ports, track.track_bits || 0);
+      }
+    }
+  }
+
+  /** Link the pieces into lines and stroke them all in one stroke, so lines
+   *  of one colour that overlap do not darken each other. An open end where
+   *  the line simply stops is pulled back by `inset`. */
+  strokeLinePieces(pieces: LinePiece[], width: number, color: string, inset: number): void {
+    if (pieces.length === 0) return;
+    this.ctx.lineWidth = width;
+    this.ctx.strokeStyle = color;
+    this.ctx.beginPath();
+    for (const { points, closed, startFree, endFree } of linkPieces(pieces)) {
+      const pts = points.slice();
+      if (!closed && inset > 0) {
+        if (startFree) pts[0] = towards(pts[0], pts[1], inset);
+        if (endFree) pts[pts.length - 1] = towards(pts[pts.length - 1], pts[pts.length - 2], inset);
+      }
+      traceTrackLine(this.ctx, pts, closed, this.scale);
+    }
+    this.ctx.stroke();
+  }
+
+  /**
+   * The mark beside each switch that is not plain: a small round badge, off
+   * the track, on the side of the tile no track leaves by. A lock for a held
+   * switch, a hand for one marked manual, circling arrows while alternate
+   * arrivals are on, and a question mark until its position is known. The
+   * held badge is drawn in the train line's colour, because a train holds it.
+   */
+  drawSwitchMarks(tracks: Track[]): void {
+    const switches = this.currentNetwork?.switches;
+    if (!switches) return;
+    const p = getCanvasPalette();
+    const quarter = (this.gridSize * this.scale) / 4;
+    const OFFSET: Record<string, [number, number]> = { N: [1, -1], E: [1, 1], S: [-1, 1], W: [-1, -1] };
+    const radius = Math.max(7, Math.min(4.5 * this.scale, 11));
+    this.ctx.save();
+    this.ctx.textAlign = 'center';
+    this.ctx.textBaseline = 'middle';
+    for (const track of tracks) {
+      if (!track.is_switch || !track.switch_id) continue;
+      const mark = switchMark(switches[track.switch_id]);
+      if (!mark) continue;
+      const used = trackBitsToEdges(track.track_bits ?? 0);
+      const free = ['N', 'E', 'S', 'W'].find((edge) => !used.has(edge));
+      const [dx, dy] = free ? OFFSET[free] : [0, -1.4];
+      const x = this.gridToScreenX(track.x, track.y) + dx * quarter * 1.7;
+      const y = this.gridToScreenY(track.x, track.y) + dy * quarter * 1.7;
+      const ink = mark === 'held' ? p.trainLine : p.textDim;
+      this.ctx.beginPath();
+      this.ctx.arc(x, y, radius, 0, Math.PI * 2);
+      this.ctx.fillStyle = p.bg;
+      this.ctx.fill();
+      this.ctx.lineWidth = 1.5;
+      this.ctx.strokeStyle = ink;
+      this.ctx.stroke();
+      this.ctx.fillStyle = ink;
+      const glyph = SWITCH_MARK_GLYPH[mark];
+      this.ctx.font = glyph ? `${Math.round(radius * 1.3)}px "tabler-icons"` : `600 ${Math.round(radius * 1.3)}px sans-serif`;
+      this.ctx.fillText(glyph ?? '?', x, y + 0.5);
+    }
+    this.ctx.restore();
+  }
+
   /**
    * The edge the selected route leaves by, for the current switch_state. A
    * regular switch's MAIN route (state 0) runs straight through to the edge
    * opposite the entry; its DIVERGE route (state 1) takes the other listed exit.
    * A diagonal-only switch has no straight-through, so it picks the first or
-   * second exit in clockwise order (matching drawTrackWithSwitches). Returns
+   * second exit in clockwise order (matching switchArms). Returns
    * null when the switch lists no exits.
    */
   selectedExitEdge(entryEdge: string, exits: string[], switchState: number, isDiagonalOnly: boolean): string | null {
@@ -738,52 +756,42 @@ export class RendererTrackHandler {
     this.ctx.restore();
   }
 
+  /**
+   * The track the track tool is about to lay: drawn the way track is drawn,
+   * as one line as thick as the track with round bends, in the build-preview
+   * colour. One stroke for all of it, so the see-through colour is even where
+   * two tiles meet.
+   */
   drawPreviewTracks(tracks: Track[] | null | undefined): void {
     if (!tracks || tracks.length === 0) {
       return;
     }
 
     const p = getCanvasPalette();
-    const cellSize = this.gridSize * this.scale;
-    const half = cellSize / 2;
-    const previewColor = withAlpha(p.caution, 0.8);
-
+    const pieces: LinePiece[] = [];
+    const crossings: EdgePoint[] = [];
     for (const track of tracks) {
       const trackBits = track.track_bits ?? 0;
       if (trackBits === 0) continue;
-
-      const cx = this.gridToScreenX(track.x, track.y);
-      const cy = this.gridToScreenY(track.x, track.y);
-
-      this.ctx.save();
-      this.ctx.translate(cx, cy);
-
-      const edgePoints = this.getEdgePoints(half);
-      this.ctx.strokeStyle = previewColor;
-      this.ctx.lineWidth = 5 * this.scale;
-      this.ctx.lineCap = 'square';
-
-      const segments = getActiveSegments(trackBits);
-      for (const [e1, e2] of segments) {
-        const start = edgePoints[e1];
-        const end = edgePoints[e2];
-        if (start && end) {
-          this.ctx.beginPath();
-          this.ctx.moveTo(start.x, start.y);
-          this.ctx.lineTo(end.x, end.y);
-          this.ctx.stroke();
-        }
+      for (const [e1, e2] of getActiveSegments(trackBits)) {
+        pieces.push(this.tilePiece(track.x, track.y, e1, e2));
       }
-
       if (isCrossing(trackBits)) {
-        this.ctx.fillStyle = withAlpha(p.caution, 0.9);
-        this.ctx.beginPath();
-        this.ctx.arc(0, 0, 4 * this.scale, 0, Math.PI * 2);
-        this.ctx.fill();
+        crossings.push({ x: this.gridToScreenX(track.x, track.y), y: this.gridToScreenY(track.x, track.y) });
       }
-
-      this.ctx.restore();
     }
+
+    this.ctx.save();
+    this.ctx.lineCap = 'butt';
+    this.ctx.lineJoin = 'round';
+    this.strokeLinePieces(pieces, TRACK_LINE_WIDTH * this.scale, withAlpha(p.caution, 0.8), 0);
+    this.ctx.fillStyle = withAlpha(p.caution, 0.9);
+    for (const c of crossings) {
+      this.ctx.beginPath();
+      this.ctx.arc(c.x, c.y, 4 * this.scale, 0, Math.PI * 2);
+      this.ctx.fill();
+    }
+    this.ctx.restore();
   }
 
   drawEraserPreviewPath(path: Array<{ x: number; y: number }> | null | undefined): void {

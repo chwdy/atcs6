@@ -206,40 +206,63 @@ These are all the things the operator can do to trains and switches from the Ope
 
 ### Seeing trains on the layout
 
-The Operate screen draws a thin line along the track of each train's blocks,
-and a tag on the middle tile of its front block. Every train has the same line
-and tag, and their colour shows the train's `state`: moving, waiting, stopped
-or lost. Each layout theme sets its own four colours, and changing the layout
-theme changes them. On the Operate screen each layout theme also draws the
-blocks in calmer colours than on the other screens, so the train's tag and
-line are the strongest marks on the layout and the block colour reads
-underneath them; an empty block is close to the colour of bare track. The line is about a quarter of the width of the block's own
-colour band, so the band still shows whether the block reads occupied, reads
-empty or is claimed; the tag covers the band only where it sits. When the
-layout is zoomed out so far that the line would fill the track, the line is
-not drawn and the tag remains. The line stays on blocks the train still holds
-when they read empty. The line runs unbroken from the train's rear block to
-its front block, across the switch between two of its blocks. At the rear it
-stops short of the train's end and finishes with a bar across the track. At
-the far end of the front block it has an open arrowhead. The bar and every
-arrowhead are wider than the block's colour band. When the
-train holds a claim, the line carries on from there, across the switch if
-there is one, to the middle of the claimed block, and ends in a second open
-arrowhead. Without a claim, the line stops short of the front block's end at
-its arrowhead. The line breaks at tunnel mouths, and joins across a switch
-only when the layout shows one connection between consecutive blocks.
+All track is drawn in one quiet colour. Each block shows what it reads as a
+thin coloured line along the middle of its track: one colour when it reads
+occupied, one when it reads empty and one when it is claimed. A block's line
+stops short of each end of the block, so the gap between two lines shows where
+one block ends and the next begins. A switch is in no block and has no such
+line.
 
-The tag holds the train ID, which matches the ID on the card. The tag has a
-point on the side the train will leave its front block by, which shows
-**Direction**, including while stopped or waiting. A successful Reverse turns
-the point from the next snapshot. A lost train shows its retained block with
-a dashed line, and a tag with a dashed edge, a question mark beside its ID,
-and no point.
+A switch is drawn as track. The leg it is set to joins the track as one
+unbroken line. The other leg is drawn in a dimmer colour and stops just short
+of the set leg, so a strip of the background shows between the two. A switch
+that is in none of the conditions listed here has no mark. Otherwise one round
+mark sits beside it, off the track, and shows the first of these that holds:
 
-Hovering or focusing a card highlights the train: two thin lines in the
-theme's highlight colour run along the outside edges of the train's blocks,
-and the tag's edge takes the same colour. The highlight leaves the state
-colour and the block's colour band as they are. Clicking
+- a lock, when the switch is held (see **Switches**, A held switch is not
+  thrown);
+- a question mark, when its position is not known (see **Switch**,
+  `position_known` says whether the app knows where the points are). Both
+  legs are then drawn dim;
+- a hand, when it is marked manual (see **Switches**, A switch marked manual);
+- two circling arrows, while alternate arrivals are on for it (see
+  **Switches**, Alternate arrivals). Both legs are then drawn whole, because
+  the runtime chooses the leg.
+
+The Operate screen draws each train as a thin white border along both edges of
+the track of its blocks, a chevron on the middle tile of its front block, and a
+tag beside the chevron. Every train has the same border, chevron and tag. The
+border is white, whatever the train's `state`. The tag's fill colour
+shows the train's `state`: green while moving, light blue while waiting, grey
+while stopped and yellow while lost. The border's colour and the tag's four
+colours are the same in every layout theme. The border runs along the edges of
+the track and the tag sits off the track, so each block's line stays visible
+under a train. When the
+layout is zoomed out so far that the track is only a few pixels wide, the
+border and the chevrons are not drawn and the tag remains. The border stays on
+blocks the train still holds when they read empty. The border runs unbroken
+from the train's rear block to its front block, across the switch between two
+of its blocks, and its ends are round. At the rear it stops short of the
+train's end. When the
+train holds a claim, the border carries on from the front block, across the
+switch if there is one, to the middle of the claimed block, and a second,
+thinner chevron closes it there. Without a claim, the border stops short of the
+front block's end. The border breaks at tunnel mouths, and joins across a
+switch only when the layout shows one connection between consecutive blocks.
+
+The chevron is wider than the track and points the way the train faces, which
+shows **Direction**, including while stopped or waiting. The tag sits beside
+the chevron on the upper side of the track, or to the right of a stretch that
+runs straight up the screen. The tag holds the train ID. The train's card
+shows the same ID in a pointed tag of the same colour. The tag has a
+point on the side the train will leave its front block by. A successful
+Reverse turns the chevron and the point from the next snapshot. A lost train
+shows its retained block with a dashed border and no chevron, and a tag with a
+dashed edge, a question mark beside its ID, and no point.
+
+Hovering or focusing a card highlights the train: its border is drawn thicker
+in the theme's highlight colour, and the tag's edge takes the same colour. The
+highlight leaves the tag's fill colour and each block's line as they are. Clicking
 the card's ID or the train on the map selects it. Temporary highlighting takes
 precedence over selection and the selected train is highlighted again when it
 ends. The card remains the place to turn the knob or reverse the train.
@@ -258,12 +281,12 @@ A train is a label the runtime puts on blocks that read occupied. It is not a mo
   - `assigned_legs`: the train's assigned legs, a map from `switch_id` to `0` (main) or `1` (diverge). A new train has none. See **Switches**, Assigned leg.
   - `length_cm`: a length the operator may note. Nothing in v2 reads it.
   - `lost`: whether it is a lost train.
+  - `stop_block_id`: the block the train owes a stop, or none (see **Claiming the next block**, Stop time).
   - `stopped_at` and `waiting_since`: the pass `wall_time` at which the train last became stopped, and at which it began to wait, or none. The rules that say "less than the hold time ago" read these (see **Clocks**, The hold time is measured on pass wall time).
 - **Running, stopped, waiting.** A train is **stopped** while its knob is at 0 V and **running** while its knob is above 0 V. A running train is **waiting** while the runtime keeps its blocks at 0 V because it cannot claim the next block ahead and is wholly in its front block (see **When a train waits**), and **moving** otherwise.
 - **An occupied block with no train gets one.** On each pass, the runtime takes every block that reads occupied and is not one of a train's blocks, and every lost train's block that reads occupied, and gives it to the first of these that applies. It does not matter whether the block began to read occupied on this pass or earlier: a block left without a train, for example after its train was removed, gets one on the next pass.
   1. **The train that claimed it.** The block becomes that train's new front block, and the claim ends.
   2. **A lost train it belongs to.** When the block is a lost train's block, or can be reached from that block across switches as currently set with no other block between, the block becomes that train's only block and the train is no longer lost. The train stays stopped, keeps its direction when the block is the same one, and otherwise faces away from the end it came in by. The runtime emits the event `"train_found"`.
-  - `stop_block_id`: the block the train owes a stop, or none (see **Claiming the next block**, Stop time).
   3. **A train that just overran.** When the block is the next block ahead of a train that stopped or began waiting less than the hold time ago, the block becomes that train's new front block (see **When a train overruns**).
   4. **A new train.** Otherwise the runtime makes a new train with this one block, `direction = forward`, and the knob at 0 V.
 - **A train that is not moving keeps its blocks.** While a train is stopped or waiting, and at least one of its blocks reads occupied, a block of its that reads empty stays its block and no count runs for it. A train at 0 V does not move, so it cannot have left a block. The reason this matters: a block at 0 V is read by the '165 detector, which sees a motor car and does not see a car that only has lights, so the block under the lit cars of a standing train reads empty while the train is in it. When every one of the train's blocks reads empty, the rules below apply, and a standing train that was lifted off is removed.
@@ -320,11 +343,6 @@ Two trains are never let into the same block. To make sure, a train claims a blo
   - for a train coming to the toe of a switch with alternate arrivals on, the conditions under **Switches**, Alternate arrivals.
 - **A taken block.** A block is taken when it reads occupied, is one of a train's blocks, or is claimed. A train is never given a claim on a taken block.
 - **One block ahead.** A train holds at most one claim, and nothing is claimed all the way to a destination.
-- **First come, first served.** A train that asks and is not given the claim keeps asking on every pass. The runtime records the pass on which it first asked for that block, and that pass is when it began to wait for the order below, whether or not it has come to rest yet (see **When a train waits**). On each step the runtime serves the trains in the order they began to wait, the longest wait first, and trains that began on the same step in order of `train_id`. Claims have no other priority.
-- **A claimed block counts as taken.** No other train can claim it. It gets the claiming train's voltage (see **Track power**), and every switch on the way to it is held (see **Switches**).
-- **A claim ends in one of these ways:**
-  - the block reads occupied, and becomes the train's front block (see **Trains**, An occupied block with no train gets one);
-  - the train has been stopped for the hold time without entering it;
 - **Stop time.** Each train that arrives in a block whose `stop_time_s` is above `0` stands there for that many seconds before it may claim the next block ahead.
   - **An arriving train owes the block a stop.** When a block whose stop time is above `0` becomes a train's front block because the train claimed it and it now reads occupied (rule 1 of **Trains**, An occupied block with no train gets one), the runtime sets the train's `stop_block_id` to that block. A new train, a train that is found again and a train that overran owe no stop.
   - **A train that owes its front block a stop is not given a claim.** It does not ask for one either, so its place in First come, first served starts when the stop is over. It keeps moving until it is wholly in its front block and then begins to wait with `stop_time` (see **When a train waits**).
@@ -333,6 +351,11 @@ Two trains are never let into the same block. To make sure, a train claims a blo
   - **A stop and a wait for a taken block are one wait.** A train whose stop is over and whose next block ahead is taken goes on waiting with `block_taken`. `waiting_since` is not set again.
 
   The reason: a train that pauses at a station and then leaves is part of watching a layout run, and a stop the layout saves happens the same way on every lap and for every train, with nothing to set up per train.
+- **First come, first served.** A train that asks and is not given the claim keeps asking on every pass. The runtime records the pass on which it first asked for that block, and that pass is when it began to wait for the order below, whether or not it has come to rest yet (see **When a train waits**). On each step the runtime serves the trains in the order they began to wait, the longest wait first, and trains that began on the same step in order of `train_id`. Claims have no other priority.
+- **A claimed block counts as taken.** No other train can claim it. It gets the claiming train's voltage (see **Track power**), and every switch on the way to it is held (see **Switches**).
+- **A claim ends in one of these ways:**
+  - the block reads occupied, and becomes the train's front block (see **Trains**, An occupied block with no train gets one);
+  - the train has been stopped for the hold time without entering it;
   - the train's front block is taken off its blocks, so the claim was made from a block the train is no longer in; the train asks again from its new front block;
   - the train becomes a lost train, or is removed;
   - the session state leaves Live.
@@ -1420,7 +1443,8 @@ The live part of the snapshot is these fields and no others.
 - **A switch's live fields.**
   - `position` — `0` (main) or `1` (diverge), the position last commanded;
   - `position_known` — `bool` (see **Switch**);
-  - `held` — `bool`, whether the switch is held (see **Switches**, A held switch is not thrown).
+  - `held` — `bool`, whether the switch is held (see **Switches**, A held switch is not thrown);
+  - `alternate_next` — while alternate arrivals are on for the switch, `0` (main) or `1` (diverge): the leg whose passing block the next arrival gets when neither passing block is taken. Otherwise `null` (see **Switches**, Alternate arrivals).
 - **A tile's live fields.** A tile that holds a switch carries `switch_state`, that switch's `position`, read from the switch when the snapshot is built. No other tile has a live field.
 - **A train entry.** `trains` is a map from `train_id` to an entry with exactly these fields:
   - `train_id`, `name`, `length_cm`, `direction`, `knob_volts`, `destination_block_id`, `assigned_legs`, `lost`, `stopped_at`, `waiting_since` — as **Trains**, What a train holds, defines them;

@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 // renderer-tracks imports getActiveSegments/isCrossing from ../lib/constants;
-// mock just those two so drawTrackFromBits's fill-counting is tested in
-// isolation from the real bit math (the rest of constants stays real).
+// mock just those two so the drawing is tested in isolation from the real
+// bit math (the rest of constants stays real).
 const mocks = vi.hoisted(() => ({
   getActiveSegments: vi.fn((): Array<[string, string]> => [['N', 'S']]),
   isCrossing: vi.fn((): boolean => false),
@@ -18,7 +18,8 @@ vi.mock('../lib/helpers', () => ({
   getBlockStateColor: (state: string) => `token:${state}`,
 }));
 
-import { RendererTrackHandler, blockTrackColor, type TrackHandlerRenderer } from './renderer-tracks';
+import { TRACK_LINE_WIDTH, TRACK_STATUS_WIDTH, TRACK_WIDTH } from '../lib/constants';
+import { RendererTrackHandler, blockTrackColor, linkPieces, switchMark, type TrackHandlerRenderer } from './renderer-tracks';
 
 // renderer-tracks.js had no test before the migration; this is fresh coverage
 // for the shared geometry (getEdgePoints/drawGridSegment) and bit-driven draw.
@@ -32,6 +33,7 @@ function makeCtx() {
     moveTo: vi.fn(),
     lineTo: vi.fn(),
     closePath: vi.fn(),
+    arcTo: vi.fn(),
     clip: vi.fn(),
     fill: vi.fn(),
     stroke: vi.fn(),
@@ -42,6 +44,7 @@ function makeCtx() {
     strokeStyle: '',
     lineWidth: 0,
     lineCap: '',
+    lineJoin: '',
     font: '',
     textAlign: '',
     textBaseline: '',
@@ -106,59 +109,220 @@ describe('RendererTrackHandler', () => {
     });
   });
 
-  it('drawTrackFromBits fills an extended band per segment, plus a crossing dot fill when applicable', () => {
-    mocks.getActiveSegments.mockReturnValue([['N', 'S']]);
-    mocks.isCrossing.mockReturnValue(false);
-    const ctx = makeCtx();
-    new RendererTrackHandler(makeRenderer(ctx)).drawTrackFromBits(1, 40, '#666', []);
-    expect(ctx.fill).toHaveBeenCalledTimes(1); // one filled colored band (no stroke)
-    expect(ctx.stroke).not.toHaveBeenCalled();
+});
 
+/** Record every stroke: its colour, its width, and the points of its path. */
+function recordStrokes(ctx: ReturnType<typeof makeCtx>) {
+  const strokes: Array<{ style: string; width: number; starts: number[][]; points: number[][] }> = [];
+  let starts: number[][] = [];
+  let points: number[][] = [];
+  ctx.beginPath = vi.fn(() => { starts = []; points = []; });
+  ctx.moveTo = vi.fn((x: number, y: number) => { starts.push([x, y]); points.push([x, y]); });
+  ctx.lineTo = vi.fn((x: number, y: number) => { points.push([x, y]); });
+  // A bend is drawn as an arc round its corner point.
+  ctx.arcTo = vi.fn((x: number, y: number) => { points.push([x, y]); });
+  ctx.stroke = vi.fn(() => {
+    strokes.push({ style: ctx.strokeStyle, width: ctx.lineWidth, starts, points });
+  });
+  return Object.assign(strokes, { current: () => points });
+}
+
+describe('linkPieces', () => {
+  const at = (x: number, y: number) => ({ x, y });
+
+  it('links pieces that meet on a shared edge into one line with two free ends', () => {
+    const lines = linkPieces([
+      { a: 'e1', b: 'e2', pa: at(0, 0), pb: at(10, 0), tile: 't1' },
+      { a: 'e3', b: 'e2', pa: at(20, 10), pb: at(10, 0), tile: 't2' },
+    ]);
+    expect(lines).toHaveLength(1);
+    expect(lines[0].closed).toBe(false);
+    expect(lines[0].startFree && lines[0].endFree).toBe(true);
+    expect(lines[0].points).toHaveLength(3);
+    expect(lines[0].points[1]).toEqual(at(10, 0));
+  });
+
+  it('returns a loop of track as one closed line', () => {
+    const lines = linkPieces([
+      { a: 'e1', b: 'e2', pa: at(0, 0), pb: at(10, 0), tile: 't1' },
+      { a: 'e2', b: 'e3', pa: at(10, 0), pb: at(10, 10), tile: 't2' },
+      { a: 'e3', b: 'e1', pa: at(10, 10), pb: at(0, 0), tile: 't3' },
+    ]);
+    expect(lines).toHaveLength(1);
+    expect(lines[0].closed).toBe(true);
+    expect(lines[0].points).toHaveLength(3);
+  });
+
+  it('carries each line on into the neighbouring tile where three pieces meet', () => {
+    // Tile t1 has two pieces leaving edge `fork`; tile t2 has one arriving.
+    const lines = linkPieces([
+      { a: 'fork', b: 'e1', pa: at(0, 0), pb: at(-10, 0), tile: 't1' },
+      { a: 'fork', b: 'e2', pa: at(0, 0), pb: at(-10, 10), tile: 't1' },
+      { a: 'fork', b: 'e3', pa: at(0, 0), pb: at(10, 0), tile: 't2' },
+    ]);
+    expect(lines).toHaveLength(3);
+    for (const line of lines) {
+      // Every line passes THROUGH the meeting point, so the canvas joins it
+      // there instead of ending square.
+      expect(line.points).toHaveLength(3);
+      expect(line.points[1]).toEqual(at(0, 0));
+      expect(line.startFree).toBe(false);
+    }
+  });
+});
+
+describe('RendererTrackHandler.drawTracks', () => {
+  it('draws all track in the track colour, then the block status as a thin line pulled back at the block ends', () => {
+    mocks.getActiveSegments.mockReturnValue([['N', 'S']]);
+    const ctx = makeCtx();
+    const strokes = recordStrokes(ctx);
+    const r = makeRenderer(ctx);
+    r.currentBlocks = { B: { reads_occupied: true } };
+    new RendererTrackHandler(r).drawTracks([
+      { x: 0, y: 0, track_bits: 1, block_section_id: 'B' },
+      { x: 0, y: 1, track_bits: 1, block_section_id: 'B' },
+    ]);
+    expect(strokes.map((s) => s.style)).toEqual(['#3a3a44', 'token:occupied']);
+    // The track at its full thickness and the status as a thin line along
+    // its middle, one line each: the two tiles are linked, not drawn as two
+    // pieces.
+    expect(strokes.map((s) => s.width)).toEqual([TRACK_LINE_WIDTH, TRACK_STATUS_WIDTH]);
+    expect(strokes[0].starts).toHaveLength(1);
+    expect(strokes[1].starts).toHaveLength(1);
+    expect(strokes[1].points).toHaveLength(3);
+    // The status line stops TRACK_WIDTH short of where the track ends.
+    const [gx, gy] = strokes[0].starts[0];
+    const [cx, cy] = strokes[1].starts[0];
+    expect(Math.hypot(cx - gx, cy - gy)).toBeCloseTo(TRACK_WIDTH);
+  });
+
+  it('draws no colour line for track that is in no block', () => {
+    mocks.getActiveSegments.mockReturnValue([['N', 'S']]);
+    const ctx = makeCtx();
+    const strokes = recordStrokes(ctx);
+    new RendererTrackHandler(makeRenderer(ctx)).drawTracks([{ x: 0, y: 0, track_bits: 1 }]);
+    expect(strokes.map((s) => s.style)).toEqual(['#3a3a44']);
+  });
+
+  it('draws a switch with its selected route whole and the leg not taken dim, short of that route', () => {
+    // Regular turnout EW | NE: at switch_state 0 the straight EW segment is
+    // the selected route and the NE segment is not. Both leave by the E edge.
+    mocks.getActiveSegments.mockReturnValue([['E', 'W'], ['N', 'E']]);
+    const ctx = makeCtx();
+    const strokes = recordStrokes(ctx);
+    const fills: Array<{ style: string; points: number[][] }> = [];
+    ctx.fill = vi.fn(() => { fills.push({ style: ctx.fillStyle, points: strokes.current() }); });
+    const r = makeRenderer(ctx);
+    r.currentBlocks = { B: { reads_occupied: true } };
+    new RendererTrackHandler(r).drawTracks([{
+      x: 0, y: 0, track_bits: 6, block_section_id: 'B',
+      is_switch: true, switch_state: 0, switch_points: { E: ['N', 'W'] },
+    }]);
+    const [grey, colour] = strokes;
+    expect(grey.style).toBe('#3a3a44');
+    expect(grey.starts).toHaveLength(2); // the selected route + under the leg not taken
+    // The leg not taken is filled in the dim colour, as thick as the grey,
+    // from the N edge (10, -10) toward the E edge (10, 10), where it would
+    // meet the selected route.
+    expect(fills).toHaveLength(1);
+    expect(fills[0].style).toBe('#25252b');
+    const corners = fills[0].points;
+    expect(corners.slice(0, 2)).toEqual([[15, -10], [5, -10]]);
+    // The selected route runs from E (10, 10) to W (-10, -10): the line
+    // x = y. The leg's end is cut parallel to it, so both end corners are the
+    // same distance from the middle of that route: half its width plus the gap.
+    const clear = TRACK_LINE_WIDTH / 2 + TRACK_WIDTH / 2;
+    for (const [x, y] of corners.slice(2)) {
+      expect(Math.abs(x - y) / Math.SQRT2).toBeCloseTo(clear);
+    }
+    // Only the selected route takes the status line.
+    expect(colour.style).toBe('token:occupied');
+    expect(colour.starts).toHaveLength(1);
+    expect(colour.width).toBe(TRACK_STATUS_WIDTH);
+  });
+
+  it('draws both legs whole while alternate arrivals are on, and both dim until the position is known', () => {
+    mocks.getActiveSegments.mockReturnValue([['E', 'W'], ['N', 'E']]);
+    const tile = {
+      x: 0, y: 0, track_bits: 6, is_switch: true, switch_state: 0,
+      switch_id: 'SW', switch_points: { E: ['N', 'W'] },
+    };
+    const draw = (condition: object) => {
+      const ctx = makeCtx();
+      const strokes = recordStrokes(ctx);
+      const r = makeRenderer(ctx);
+      r.currentNetwork = { switches: { SW: condition } };
+      new RendererTrackHandler(r).drawTracks([tile]);
+      return { strokes, fills: ctx.fill.mock.calls.length };
+    };
+    // Alternate arrivals on: the runtime picks the leg, so neither is dim.
+    const alternate = draw({ alternate_next: 0 });
+    expect(alternate.strokes[0].style).toBe('#3a3a44');
+    expect(alternate.strokes[0].points).toHaveLength(3); // both legs, linked at E
+    expect(alternate.fills).toBe(0);
+    // Position not known: no leg is drawn as set.
+    const unknown = draw({ position_known: false });
+    expect(unknown.strokes).toHaveLength(0);
+    expect(unknown.fills).toBe(2);
+  });
+
+  it('marks a switch by the condition that matters most to someone about to throw it', () => {
+    expect(switchMark(undefined)).toBeNull();
+    expect(switchMark({ held: false, manual: false, alternate_next: null, position_known: true })).toBeNull();
+    expect(switchMark({ manual: true })).toBe('manual');
+    expect(switchMark({ alternate_next: 1 })).toBe('alternate');
+    expect(switchMark({ position_known: false, manual: true })).toBe('unknown');
+    expect(switchMark({ held: true, manual: true, position_known: false })).toBe('held');
+  });
+
+  it('draws a badge beside a switch that is not plain, off the track', () => {
+    const ctx = makeCtx();
+    const r = makeRenderer(ctx);
+    r.currentNetwork = { switches: { A: { held: true }, B: {} } };
+    // Track leaves tile A by E, W and N, so the badge goes on the S side:
+    // down and to the left of the tile's centre at (0, 0).
+    new RendererTrackHandler(r).drawSwitchMarks([
+      { x: 0, y: 0, track_bits: 6, is_switch: true, switch_id: 'A' },
+      { x: 5, y: 5, track_bits: 6, is_switch: true, switch_id: 'B' },
+    ]);
+    expect(ctx.arc).toHaveBeenCalledTimes(1); // the plain switch has no badge
+    const [x, y] = ctx.arc.mock.calls[0];
+    expect(x).toBeLessThan(0);
+    expect(y).toBeGreaterThan(0);
+    expect(ctx.fillText).toHaveBeenCalledTimes(1);
+  });
+
+  it('marks a plain crossing with a dot', () => {
+    mocks.getActiveSegments.mockReturnValue([['N', 'S'], ['E', 'W']]);
     mocks.isCrossing.mockReturnValue(true);
-    const ctx2 = makeCtx();
-    new RendererTrackHandler(makeRenderer(ctx2)).drawTrackFromBits(3, 40, '#666', []);
-    expect(ctx2.fill).toHaveBeenCalledTimes(2); // one band fill (mock returns 1 segment) + crossing dot
-    expect(ctx2.stroke).not.toHaveBeenCalled();
-  });
-
-  it('drawCenterlineBand fills one rectangle, offset perpendicular to the path', () => {
     const ctx = makeCtx();
-    // Horizontal path (0,0)->(10,0): the true normal is vertical, so the first
-    // corner is the start point offset by +halfWidth in y (NOT a diagonal offset).
-    new RendererTrackHandler(makeRenderer(ctx)).drawCenterlineBand({ x: 0, y: 0 }, { x: 10, y: 0 }, 4, '#666');
+    new RendererTrackHandler(makeRenderer(ctx)).drawTracks([{ x: 0, y: 0, track_bits: 3 }]);
+    expect(ctx.arc).toHaveBeenCalledTimes(1);
     expect(ctx.fill).toHaveBeenCalledTimes(1);
-    expect(ctx.lineTo).toHaveBeenCalledTimes(3);
-    expect(ctx.moveTo).toHaveBeenCalledWith(0, 2);
   });
+});
 
-  it('drawTrackBed fills a grey trapezoid band per segment (empty tile draws nothing)', () => {
+describe('RendererTrackHandler.drawPreviewTracks', () => {
+  it('draws the track about to be laid as one line as thick as the track, in one stroke', () => {
     mocks.getActiveSegments.mockReturnValue([['N', 'S']]);
     const ctx = makeCtx();
-    new RendererTrackHandler(makeRenderer(ctx)).drawTrackBed(1, 40);
-    expect(ctx.fill).toHaveBeenCalledTimes(1); // one grey trapezoid (drawCenterlineBand)
-
-    mocks.getActiveSegments.mockReturnValue([]);
-    const ctxEmpty = makeCtx();
-    new RendererTrackHandler(makeRenderer(ctxEmpty)).drawTrackBed(0, 40);
-    expect(ctxEmpty.fill).not.toHaveBeenCalled();
+    const strokes = recordStrokes(ctx);
+    new RendererTrackHandler(makeRenderer(ctx)).drawPreviewTracks([
+      { x: 0, y: 0, track_bits: 1 },
+      { x: 0, y: 1, track_bits: 1 },
+      { x: 0, y: 2, track_bits: 0 }, // nothing to lay on this tile
+    ]);
+    // One stroke, so the see-through colour is not doubled where tiles meet.
+    expect(strokes).toHaveLength(1);
+    expect(strokes[0].width).toBe(TRACK_LINE_WIDTH);
+    expect(strokes[0].starts).toHaveLength(1); // the two tiles are one line
   });
 
-  it('drawTrackWithSwitches lays the selected arm full + coloured and cuts the unselected arm to a short grey stub', () => {
-    // Regular turnout EW(2) | NE(4): at switch_state 0 the long EW arm is the
-    // selected (MAIN) route and the NE diagonal is unselected. The unselected arm
-    // is CUT to a short bed stub — not painted over / erased, not dim-tinted — so
-    // it reads as not connected at the switch with no stray triangles.
-    const fills: string[] = [];
+  it('draws nothing for an empty preview', () => {
     const ctx = makeCtx();
-    let fillStyle = '';
-    Object.defineProperty(ctx, 'fillStyle', { get: () => fillStyle, set: (v) => { fillStyle = v; } });
-    ctx.fill = vi.fn(() => { fills.push(fillStyle); });
-    new RendererTrackHandler(makeRenderer(ctx))
-      .drawTrackWithSwitches(6, 40, '#abcdef', 0, false, { E: ['N', 'W'] });
-    expect(fills).toContain('#abcdef'); // selected EW arm in the route colour
-    // Two grey beds: the selected arm's full bed + the unselected arm's stub.
-    expect(fills.filter((f) => f === '#666666')).toHaveLength(2);
-    expect(fills).not.toContain('#0a0a0c'); // not erased to the background
+    new RendererTrackHandler(makeRenderer(ctx)).drawPreviewTracks([]);
+    new RendererTrackHandler(makeRenderer(ctx)).drawPreviewTracks(null);
+    expect(ctx.stroke).not.toHaveBeenCalled();
   });
 });
 

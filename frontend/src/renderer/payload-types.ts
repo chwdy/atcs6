@@ -23,6 +23,12 @@ export interface TunnelPayloadEntry {
 export interface SwitchPayloadEntry {
   main_length_cm?: number;
   diverge_length_cm?: number;
+  /** The switch's condition (design_v2.md "Switches"); see SwitchCondition
+   *  in renderer-tracks.ts. */
+  held?: boolean;
+  manual?: boolean;
+  alternate_next?: number | null;
+  position_known?: boolean;
 }
 
 /**

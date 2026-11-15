@@ -53,6 +53,7 @@ export interface SegmentTrack {
   segment_id?: string | null;
   block_section_id?: string | null;
   track_bits?: number;
+  is_switch?: boolean;
 }
 
 /** The slice of the Renderer the segment handler reads through its back-reference. */
@@ -215,6 +216,9 @@ export class RendererSegmentHandler {
         const neighbor = trackMap[`${neighborX},${neighborY}`];
 
         if (!neighbor) continue;
+        // Next to a switch the end of the block is already grey, and the
+        // mark would show on the switch's dim leg.
+        if (neighbor.is_switch) continue;
 
         const neighborSegmentId = neighbor.segment_id;
         if (neighborSegmentId === track.segment_id) continue;

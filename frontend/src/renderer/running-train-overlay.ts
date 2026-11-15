@@ -1,5 +1,6 @@
 import { getCanvasPalette, type CanvasPalette } from '../lib/canvas-palette';
-import { getActiveSegments, getOppositeEdge, TRACK_WIDTH } from '../lib/constants';
+import { getActiveSegments, getOppositeEdge, TRACK_WIDTH, TRACK_LINE_WIDTH } from '../lib/constants';
+import { traceTrackLine } from './track-path';
 import type { RunningTrain } from '../next/operate/live';
 import { blockTerminalArrowSpec, compassFromDelta, forwardArrowEdges, type Renderer } from './renderer';
 import type { NetworkPayload } from './payload-types';
@@ -83,13 +84,22 @@ function distanceToLine(x: number, y: number, [a, b]: Line): number {
   return Math.hypot(x - a.x - t * dx, y - a.y - t * dy);
 }
 
-/** The line colour for a train's state (design_v2.md "Seeing trains on the
- *  layout"). Each layout theme sets the four colours. */
-export function trainLineColor(train: RunningTrain, palette: CanvasPalette): string {
-  if (train.lost || train.state === 'lost') return palette.trainLineLost;
-  if (train.state === 'moving') return palette.trainLineMoving;
-  if (train.state === 'waiting') return palette.trainLineWaiting;
-  return palette.trainLineStopped;
+/** Which side of the track the tag sits on, as a unit vector square to the
+ *  track: the upper side on screen, or the right of a vertical stretch. */
+export function tagSide(angle: number): Point {
+  const x = Math.sin(angle);
+  const y = -Math.cos(angle);
+  if (Math.abs(y) < 0.01) return { x: 1, y: 0 };
+  return y < 0 ? { x, y } : { x: -x, y: -y };
+}
+
+/** The tag's fill colour for a train's state (design_v2.md "Seeing trains
+ *  on the layout"). The train's border is always white. */
+export function trainTagColor(train: RunningTrain, palette: CanvasPalette): string {
+  if (train.lost || train.state === 'lost') return palette.trainTagLost;
+  if (train.state === 'moving') return palette.trainTagMoving;
+  if (train.state === 'waiting') return palette.trainTagWaiting;
+  return palette.trainTagStopped;
 }
 
 /** Split a block's tile lines into continuous runs (a tunnel mouth breaks
@@ -198,13 +208,17 @@ export class RunningTrainOverlay implements RendererOverlay {
     });
     const palette = getCanvasPalette();
     const { ctx } = renderer;
-    // About a quarter of the block's colour band, so the band still shows what the
-    // block reads. Not drawn once the layout is zoomed out so far that it
-    // would fill the track.
-    const lineWidth = TRACK_WIDTH * 0.4 * renderer.scale;
-    const showLine = lineWidth >= 1.2;
-    // The widest band (an axial tile's), for the highlight drawn outside it.
-    const bandWidth = TRACK_WIDTH * 2 * renderer.scale;
+    // The track's width, which the train's border runs along the edges of.
+    const bandWidth = TRACK_LINE_WIDTH * renderer.scale;
+    // The border is a thin white line just inside each edge of the track,
+    // with a thin dark line outside it so it reads on a light ground too.
+    // Not drawn once the layout is zoomed out so far that the track is only
+    // a few pixels wide.
+    const borderWidth = Math.min(Math.max(1.25, 0.9 * renderer.scale), 3);
+    const edgeWidth = 1;
+    const showBorder = bandWidth >= 5;
+    // Half the width of a chevron: it reaches past both edges of the track.
+    const chevronSpan = bandWidth * 0.8;
     ctx.save();
     ctx.font = '600 12px monospace';
     ctx.textBaseline = 'middle';
@@ -251,7 +265,9 @@ export class RunningTrainOverlay implements RendererOverlay {
           claim = cutAt(ahead[0], polylineLength(ahead[0]) - insideLength / 2);
         }
       }
-      // The tag sits on the middle tile of the front block.
+      // The chevron sits on the middle tile of the front block, and the tag
+      // sits beside it, off the track, on the upper side (to the right of a
+      // vertical stretch).
       const frontLines = perBlock[perBlock.length - 1] ?? [];
       const middleLine = frontLines[Math.floor(frontLines.length / 2)];
       if (!middleLine) return [];
@@ -261,103 +277,111 @@ export class RunningTrainOverlay implements RendererOverlay {
       const text = train.lost ? `${train.train_id} ?` : train.train_id;
       const w = Math.ceil(ctx.measureText(text).width) + 14;
       const h = 18;
-      const label = { x: centre.x - w / 2, y: centre.y - h / 2, w, h, tier: 'train' };
+      const side = tagSide(angle);
+      const reach = chevronSpan + 5 + (Math.abs(side.x) * w) / 2 + (Math.abs(side.y) * h) / 2;
+      const tagCentre = { x: centre.x + side.x * reach, y: centre.y + side.y * reach };
+      const label = { x: tagCentre.x - w / 2, y: tagCentre.y - h / 2, w, h, tier: 'train' };
       renderer.labelBounds.push(label);
       this.targets.push({ id: train.train_id, lines, label });
       const pointed = !train.lost && (end.x !== start.x || end.y !== start.y);
-      return [{ train, lines, pieces, claim, centre, angle, pointed, text, label, color: trainLineColor(train, palette) }];
+      return [{
+        train, lines, pieces, claim, centre, tagCentre, angle, pointed, text, label,
+        color: trainTagColor(train, palette),
+      }];
     });
 
-    const strokeLines = (lines: Line[]) => {
+    const trace = (points: Point[]) => {
       ctx.beginPath();
-      for (const [a, b] of lines) {
-        ctx.moveTo(a.x, a.y);
-        ctx.lineTo(b.x, b.y);
-      }
+      traceTrackLine(ctx, points, false, renderer.scale);
       ctx.stroke();
     };
-
-    // The highlight: two thin lines outside the edges of the train's blocks.
-    // Cut out of the live layer, so the block's band underneath shows through.
-    for (const { train, lines } of drawings) {
-      if (train.train_id !== emphasized) continue;
-      const inner = bandWidth + 4;
-      ctx.strokeStyle = palette.trainHighlight;
-      ctx.lineWidth = inner + 4;
-      strokeLines(lines);
-      ctx.save();
-      ctx.globalCompositeOperation = 'destination-out';
-      ctx.lineWidth = inner;
-      strokeLines(lines);
-      ctx.restore();
-    }
-
-    // The line stops short of the train's rear and finishes there with a bar
-    // across the track. At the front of its front block it ends in an open
-    // arrowhead. A claimed block ahead carries the line on to the middle of
-    // that block, which ends in a second open arrowhead.
-    if (showLine) {
-      const inset = TRACK_WIDTH * 0.7 * renderer.scale;
-      // The rear bar and both arrowheads reach past the edges of the block's
-      // colour band (at most TRACK_WIDTH * 2 wide), so they read as the train's
-      // ends rather than as part of the band.
-      const bar = TRACK_WIDTH * 1.5 * renderer.scale;
-      const spread = 0.75;
-      const arm = (TRACK_WIDTH * 1.5 * renderer.scale) / Math.sin(spread);
-      const stroke = (points: Point[]) => {
+    // A chevron: two arms that meet at `tip` and open backwards, each
+    // reaching `chevronSpan` to the side. Drawn dark first, then white.
+    const chevron = (tip: Point, along: number, width: number) => {
+      const tx = Math.cos(along);
+      const ty = Math.sin(along);
+      const back = { x: tip.x - tx * chevronSpan, y: tip.y - ty * chevronSpan };
+      const arms = () => {
         ctx.beginPath();
-        ctx.moveTo(points[0].x, points[0].y);
-        for (const point of points.slice(1)) ctx.lineTo(point.x, point.y);
-        ctx.stroke();
-      };
-      const arrow = (tip: Point, before: Point) => {
-        const along = Math.atan2(tip.y - before.y, tip.x - before.x);
-        ctx.beginPath();
-        ctx.moveTo(tip.x - Math.cos(along - spread) * arm, tip.y - Math.sin(along - spread) * arm);
+        ctx.moveTo(back.x + ty * chevronSpan, back.y - tx * chevronSpan);
         ctx.lineTo(tip.x, tip.y);
-        ctx.lineTo(tip.x - Math.cos(along + spread) * arm, tip.y - Math.sin(along + spread) * arm);
+        ctx.lineTo(back.x - ty * chevronSpan, back.y + tx * chevronSpan);
         ctx.stroke();
       };
-      ctx.save();
-      ctx.lineCap = 'butt';
-      ctx.lineJoin = 'miter';
-      for (const { train, pieces, claim, color } of drawings) {
-        ctx.lineWidth = lineWidth;
-        ctx.strokeStyle = color;
-        let rear: [Point, Point] | null = null;
-        let front: [Point, Point] | null = null;
-        for (let i = 0; i < pieces.length; i++) {
+      ctx.lineWidth = width + bandWidth * 0.2;
+      ctx.strokeStyle = palette.trainLineEdge;
+      arms();
+      ctx.lineWidth = width;
+      ctx.strokeStyle = palette.trainLine;
+      arms();
+    };
+
+    // The border: a thin white line along each edge of the track of the
+    // train's blocks, from its rear block to its front block, across the
+    // switch between two of them. Its ends are round. A claimed block ahead
+    // carries the border on to the middle of that block. It is drawn as one
+    // wide stroke with its middle cut out of the live layer, so the track and
+    // the block's status line underneath show through.
+    if (showBorder) {
+      const inset = TRACK_WIDTH * 0.7 * renderer.scale;
+      for (const { train, pieces, claim } of drawings) {
+        const active = train.train_id === emphasized;
+        const paths: Point[][] = [];
+        pieces.forEach((piece, i) => {
           const first = i === 0;
           const last = i === pieces.length - 1;
-          // The front is set back only when no claimed line carries on.
-          const points = setBack(pieces[i], inset, first, last && !claim);
-          if (!points) continue;
-          ctx.setLineDash(train.lost ? [lineWidth * 3, lineWidth * 3] : []);
-          stroke(points);
-          if (first) rear = [points[0], awayFrom(points, 0, 1)];
-          if (last) front = [points[points.length - 1], awayFrom(points, points.length - 1, -1)];
-        }
+          // The front is set back only when no claimed stretch carries on.
+          const points = setBack(piece, inset, first, last && !claim);
+          if (!points) return;
+          paths.push(last && claim && claim.length > 1 ? [...points, ...claim.slice(1)] : points);
+        });
+        // The highlight: the same border, twice as thick, in the highlight
+        // colour.
+        const border = active ? borderWidth * 2 : borderWidth;
+        ctx.save();
+        ctx.lineCap = train.lost ? 'butt' : 'round';
+        ctx.setLineDash(train.lost ? [bandWidth * 0.6, bandWidth * 0.6] : []);
+        ctx.strokeStyle = palette.trainLineEdge;
+        ctx.lineWidth = bandWidth + edgeWidth * 2;
+        paths.forEach(trace);
+        ctx.strokeStyle = active ? palette.trainHighlight : palette.trainLine;
+        ctx.lineWidth = bandWidth;
+        paths.forEach(trace);
         ctx.setLineDash([]);
-        if (rear) {
-          const [end, next] = rear;
-          const along = Math.atan2(next.y - end.y, next.x - end.x);
-          const dx = -Math.sin(along) * bar;
-          const dy = Math.cos(along) * bar;
-          ctx.beginPath();
-          ctx.moveTo(end.x - dx, end.y - dy);
-          ctx.lineTo(end.x + dx, end.y + dy);
-          ctx.stroke();
-        }
-        if (front && !train.lost) arrow(front[0], front[1]);
+        ctx.lineCap = 'round';
+        ctx.globalCompositeOperation = 'destination-out';
+        ctx.lineWidth = Math.max(bandWidth - border * 2, 1);
+        paths.forEach(trace);
+        ctx.restore();
+      }
+      // Chevrons, over every border. A thick one at the middle of the front
+      // block shows which way the train faces. A thinner one closes the
+      // border in the claimed block.
+      ctx.save();
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      for (const { train, claim, centre, angle } of drawings) {
+        if (train.lost) continue;
+        const tip = {
+          x: centre.x + Math.cos(angle) * chevronSpan * 0.35,
+          y: centre.y + Math.sin(angle) * chevronSpan * 0.35,
+        };
+        chevron(tip, angle, Math.max(2.5, bandWidth * 0.23));
         if (claim && claim.length > 1) {
-          stroke(claim);
-          arrow(claim[claim.length - 1], awayFrom(claim, claim.length - 1, -1));
+          const end = claim[claim.length - 1];
+          const before = awayFrom(claim, claim.length - 1, -1);
+          const along = Math.atan2(end.y - before.y, end.x - before.x);
+          const claimTip = {
+            x: end.x + Math.cos(along) * bandWidth * 0.73,
+            y: end.y + Math.sin(along) * bandWidth * 0.73,
+          };
+          chevron(claimTip, along, Math.max(2, bandWidth * 0.16));
         }
       }
       ctx.restore();
     }
 
-    for (const { train, centre, angle, pointed, text, label, color } of drawings) {
+    for (const { train, tagCentre: centre, angle, pointed, text, label, color } of drawings) {
       const active = train.train_id === emphasized;
       const tagPath = () => {
         // One outline: the tag's box, with its end (or corner, on a diagonal)

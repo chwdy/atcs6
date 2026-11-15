@@ -59,7 +59,14 @@ export const OPPOSITE_EDGE: Record<string, string> = { N: 'S', S: 'N', E: 'W', W
 // ============================================================================
 
 // Track rendering constants
-export const TRACK_WIDTH = 4; // Base track width in pixels (at scale=1)
+export const TRACK_WIDTH = 6; // Base track width in pixels (at scale=1)
+// How thick a line of track is drawn at scale=1, the same in every direction.
+export const TRACK_LINE_WIDTH = 10;
+// How thick a block's status line is at scale=1. It runs along the middle of
+// the track, so most of the track stays its own quiet colour.
+export const TRACK_STATUS_WIDTH = 2;
+// The radius of a bend in the track at scale=1 (renderer/track-path.ts).
+export const TRACK_BEND_RADIUS = 12;
 export const DEBUG_BLOCK_WIDTH = 12; // Debug block overlay width in pixels (at scale=1)
 
 // ============================================================================

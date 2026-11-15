@@ -2,11 +2,12 @@
  * The row of v2 train cards along the bottom of the Operate screen
  * (design_v2.md "Running a train").
  *
- * One card per train the runtime holds: its name, whether it is stopped,
- * moving, waiting or lost, the blocks it is on, a speed knob from 0 to 12 V,
- * Reverse and Stop. A lost or stopped train can be removed. The row ends with
- * Stop all. A train appears here by being put on the track; nothing is
- * created by hand.
+ * One card per train the runtime holds: its ID in a tag coloured by its
+ * state, as on the layout; whether it is stopped, moving, waiting or lost;
+ * the knob's voltage as a large number; the blocks it is on; a speed knob
+ * from 0 to 12 V; Reverse and Stop. A lost or stopped train can be removed.
+ * Stop all is in the top bar. A train appears here by being put on the
+ * track; nothing is created by hand.
  */
 import type { Signal } from '@preact/signals';
 import { useState } from 'preact/hooks';
@@ -31,8 +32,8 @@ const WAITING: Record<string, string> = {
   block_taken: 'the next block is taken',
   switch_against: 'a switch is set against it',
   switch_held: 'a switch on its way is held',
-  own_block: 'the next block is its own',
   stop_time: 'it is standing for the stop time',
+  own_block: 'the next block is its own',
 };
 
 async function send(label: string, request: Promise<{ success: boolean; reason: string | null }>): Promise<void> {
@@ -47,13 +48,10 @@ async function send(label: string, request: Promise<{ success: boolean; reason: 
   await window.app?.refreshNetwork();
 }
 
-export function stateChip(state: RunningTrain['state']): string {
-  return { moving: 'chip-success', waiting: 'chip-info', lost: 'chip-danger', stopped: 'chip-muted' }[state];
-}
-
-export function cardTone(state: RunningTrain['state']): string {
-  return { moving: 'ok', waiting: 'info', lost: 'danger', stopped: '' }[state];
-}
+/** The state in words, beside the tag. */
+const STATE_WORD: Record<RunningTrain['state'], string> = {
+  moving: 'Moving', waiting: 'Waiting', stopped: 'Stopped', lost: 'Lost',
+};
 
 /** The line under the name: where the train is and what it is doing. */
 export function cardLine(train: RunningTrain): string {
@@ -84,16 +82,6 @@ export function RunningTrainsRow({ interaction }: { interaction?: TrainCardInter
       {trains.map((train) => (
         <RunningTrainCard key={train.train_id} train={train} interaction={interaction} />
       ))}
-      <div class="op-cards-actions">
-        <button
-          type="button"
-          class="tc-btn tc-btn-danger"
-          title="Set every train's knob to 0 V and take the voltage off every block"
-          onClick={() => void send('Stop all', api.stopAllTrains())}
-        >
-          ■ Stop all
-        </button>
-      </div>
     </div>
   );
 }
@@ -105,11 +93,12 @@ export function RunningTrainCard({ train, interaction }: { train: RunningTrain; 
   const lost = train.state === 'lost';
   const line = cardLine(train);
   const selected = interaction?.selected.value === id;
-  const identity = train.name === id ? id : `${id} · ${train.name}`;
+  const named = train.name !== id;
+  const identity = named ? `${id} · ${train.name}` : id;
   return (
     <div
       class={selected ? 'op-card rt-card row-selected' : 'op-card rt-card'}
-      data-tone={cardTone(train.state)}
+      data-state={train.state}
       data-train-id={id}
       aria-label={`Train ${train.name}`}
       onMouseEnter={() => interaction?.hover(id)}
@@ -121,10 +110,14 @@ export function RunningTrainCard({ train, interaction }: { train: RunningTrain; 
     >
       <div class="op-card-head">
         {interaction ? (
-          <button type="button" class="op-card-name rt-card-identity" aria-pressed={selected}
-            title={identity} onClick={() => interaction.select(id)}>{identity}</button>
-        ) : <span class="op-card-name" title={identity}>{identity}</span>}
-        <span class={`chip chip-state ${stateChip(train.state)}`}>{train.state.toUpperCase()}</span>
+          <button type="button" class="rt-tag rt-card-identity" aria-pressed={selected}
+            title={identity} onClick={() => interaction.select(id)}>{id}</button>
+        ) : <span class="rt-tag" title={identity}>{id}</span>}
+        {named && <span class="op-card-name" title={train.name}>{train.name}</span>}
+        <span class="rt-card-state">{STATE_WORD[train.state]}</span>
+        <span class="rt-card-volts" aria-hidden="true">
+          {volts.toFixed(1)}<span class="rt-card-unit"> V</span>
+        </span>
       </div>
       <div class="rt-card-line" title={line}>
         {line}
@@ -132,7 +125,7 @@ export function RunningTrainCard({ train, interaction }: { train: RunningTrain; 
       <div class="op-card-handle">
         <input
           type="range"
-          class="tc-power-slider op-card-handle-slider"
+          class="tc-power-slider"
           min={0}
           max={MAX_KNOB_VOLTS}
           step={0.5}
@@ -154,38 +147,50 @@ export function RunningTrainCard({ train, interaction }: { train: RunningTrain; 
             }
           }}
         />
-        <span class="op-card-handle-pos rt-card-volts">{volts.toFixed(1)} V</span>
       </div>
-      <div class="rt-card-buttons">
-        <button
-          type="button"
-          class="tc-btn op-card-btn"
-          disabled={lost || train.state !== 'stopped'}
-          title="Turn the train round. It must be stopped."
-          onClick={() => void send('Reverse', api.reverseRunningTrain(id))}
-        >
-          ⇄ Reverse
-        </button>
-        <button
-          type="button"
-          class="tc-btn tc-btn-danger op-card-btn"
-          disabled={train.state === 'stopped' || lost}
-          onClick={() => void send('Stop', api.stopRunningTrain(id))}
-        >
-          ■ Stop
-        </button>
-        {(lost || train.state === 'stopped') && (
+      {lost ? (
+        <div class="rt-card-buttons">
           <button
             type="button"
-            class="tc-btn op-card-btn rt-card-remove"
+            class="tc-btn op-card-btn"
             title="Remove this train from the page. If it is still on the track it appears again as a new train."
-            aria-label={`Remove ${train.name}`}
             onClick={() => void send('Remove', api.removeRunningTrain(id))}
           >
-            ✕
+            Remove
           </button>
-        )}
-      </div>
+        </div>
+      ) : (
+        <div class="rt-card-buttons">
+          <button
+            type="button"
+            class="tc-btn op-card-btn"
+            disabled={train.state !== 'stopped'}
+            title="Turn the train round. It must be stopped."
+            onClick={() => void send('Reverse', api.reverseRunningTrain(id))}
+          >
+            <i class="ti ti-arrows-exchange" aria-hidden="true" /> Reverse
+          </button>
+          <button
+            type="button"
+            class="tc-btn tc-btn-danger op-card-btn"
+            disabled={train.state === 'stopped'}
+            onClick={() => void send('Stop', api.stopRunningTrain(id))}
+          >
+            <i class="ti ti-player-stop" aria-hidden="true" /> Stop
+          </button>
+          {train.state === 'stopped' && (
+            <button
+              type="button"
+              class="tc-btn op-card-btn rt-card-remove"
+              title="Remove this train from the page. If it is still on the track it appears again as a new train."
+              aria-label={`Remove ${train.name}`}
+              onClick={() => void send('Remove', api.removeRunningTrain(id))}
+            >
+              <i class="ti ti-x" aria-hidden="true" />
+            </button>
+          )}
+        </div>
+      )}
     </div>
   );
 }

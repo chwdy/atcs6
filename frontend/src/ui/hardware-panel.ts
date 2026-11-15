@@ -1891,7 +1891,7 @@ export async function stopHardwareTests(): Promise<void> {
 }
 
 /** Read the environment and the readiness report again: the session state
- *  changed somewhere else (the top bar's Activate, Emergency stop), or the
+ *  changed somewhere else (the top bar's Activate, Stop all), or the
  *  operator asked for the report (step 6). */
 export async function reloadHardwareEnvironment(): Promise<void> {
   try {

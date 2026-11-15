@@ -13,7 +13,7 @@ textarea {
    Follows docs/DESIGN_LANGUAGE.md: ghost buttons (32px, --bg-dark + border),
    a segmented control for the screen tabs, one filled accent CTA (the
    status control's next step). Clusters separated by hairline dividers.
-   The top bar's own additions (menus, Emergency stop) are in
+   The top bar's own additions (menus, Stop all) are in
    next-top-bar.css.
    ============================================================================ */
 .app-header {
@@ -57,7 +57,7 @@ textarea {
 
 /* ---- Two zones ----
    Left: the wordmark, the Layout menu and the screen tabs. Right: the status
-   control, Emergency stop, and the Logs, View and Settings menus. Within a
+   control, Stop all, and the Logs, View and Settings menus. Within a
    zone, clusters are split by a 1px hairline centred in the gap. */
 .header-zone {
     display: flex;
@@ -144,7 +144,7 @@ textarea {
 /* ---- Session state chip — the top bar's one answer to "is the layout
    live?" (design_v2.md "Session state"). It names the operating environment
    in muted text, then the session state. Live reads success; a halt reads
-   danger only for a failure or Emergency stop; Paused, Setup and
+   danger only for a failure or Stop all; Paused, Setup and
    not-activated stay neutral. A long halt label is cut with an ellipsis; the
    full label and the way back are in the tooltip. ---- */
 .session-chip {
