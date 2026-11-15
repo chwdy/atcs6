@@ -184,6 +184,21 @@ class TestBlockRoutes:
         data = response.get_json()
         assert data["name"] == "Updated"
 
+    def test_update_block_sets_the_stop_time(self, client, app_state):
+        """design_v2.md "Running a train", Set a block's stop time."""
+        make_segment_block(app_state.network, "BLK_001", "Test")
+        response = client.patch("/api/blocks/BLK_001", json={"stop_time_s": 8})
+        assert response.status_code == 200
+        assert response.get_json()["stop_time_s"] == 8.0
+        assert app_state.network.get_block("BLK_001").stop_time_s == 8.0
+
+    @pytest.mark.parametrize("bad", [-1, "8", None, True])
+    def test_update_block_refuses_a_bad_stop_time(self, client, app_state, bad):
+        make_segment_block(app_state.network, "BLK_001", "Test")
+        response = client.patch("/api/blocks/BLK_001", json={"stop_time_s": bad})
+        assert response.status_code == 400
+        assert app_state.network.get_block("BLK_001").stop_time_s == 0.0
+
     def test_update_block_rejects_geometry(self, client, app_state):
         """PATCH /api/blocks is config only — a geometry field is rejected and
         points at the segment endpoint."""

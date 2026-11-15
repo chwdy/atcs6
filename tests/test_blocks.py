@@ -91,6 +91,22 @@ class TestBlock:
         assert restored.name == ""
         assert restored.segments[0].name == "Left"
 
+    def test_stop_time_is_saved_with_the_layout(self):
+        """design_v2.md "Claiming the next block", Stop time: `stop_time_s`
+        is the block's saved setting, 0 by default."""
+        block = Block(block_id="BLK_STATION", length_cm=100)
+        assert block.stop_time_s == 0.0
+        assert Block.from_dict(block.to_layout_dict()).stop_time_s == 0.0
+
+        block.stop_time_s = 8.0
+        assert block.to_dict()["stop_time_s"] == 8.0
+        assert Block.from_dict(block.to_layout_dict()).stop_time_s == 8.0
+
+    def test_a_save_with_no_stop_time_loads_with_none(self):
+        stored = Block(block_id="BLK_OLD", length_cm=100).to_layout_dict()
+        del stored["stop_time_s"]
+        assert Block.from_dict(stored).stop_time_s == 0.0
+
     def test_load_keeps_a_block_name_of_its_own(self):
         """Only an exact copy is dropped; a distinct block name survives."""
         block = Block(block_id="BLK_YARD", length_cm=100)

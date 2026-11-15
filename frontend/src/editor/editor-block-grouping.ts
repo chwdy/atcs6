@@ -21,6 +21,7 @@
 // no feed of its own.
 
 import { showToast } from '../lib/toast';
+import type { FieldParseResult } from '../lib/helpers';
 import { copyIdButton } from '../lib/copy-id';
 import type { EditorHost } from './types';
 import { blockColorCss } from '../lib/block-color';
@@ -47,6 +48,14 @@ function escAttr(s: unknown): string {
 /** Read the value of a text/number/select input by id. */
 function inputValue(id: string): string | undefined {
   return (document.getElementById(id) as HTMLInputElement | null)?.value;
+}
+
+// A block's stop time in seconds: a number of 0 or more. Blank means no stop.
+export function parseStopTime(raw: string): FieldParseResult {
+  const trimmed = raw.trim();
+  if (trimmed === '') return { ok: true, value: 0 };
+  const seconds = Number(trimmed);
+  return Number.isFinite(seconds) && seconds >= 0 ? { ok: true, value: seconds } : { ok: false };
 }
 
 export class BlockGroupingEditorHandler {
@@ -286,6 +295,12 @@ export class BlockGroupingEditorHandler {
                     <input id="block-detail-name" class="property-input w-full" value="${escAttr(block.name || '')}" placeholder="Add a name…">
                 </div>
 
+                <label class="property-label" for="block-detail-stop-time">Stop time (s)</label>
+                <div class="mb-12">
+                    <input id="block-detail-stop-time" class="property-input w-full" inputmode="decimal" value="${escAttr(String(block.stop_time_s || 0))}">
+                    <div class="text-muted text-xs mt-4">Each train that arrives here stands this long before it leaves. 0 means no stop.</div>
+                </div>
+
                 ${feedBanner}
 
                 <div class="control-section-header">Member Segments (${memberIds.length})</div>
@@ -364,6 +379,14 @@ export class BlockGroupingEditorHandler {
         this.editor.uiHandler?.updatePanelTitle('block-detail', blockId, title);
         await this.editor.host?.refreshNetwork();
       },
+    });
+
+    // Stop time auto-saves on blur, like the name (design_v2.md "Running a
+    // train", Set a block's stop time). Blank means no stop.
+    bindFieldAutoSave(this.editor.$id('block-detail-stop-time') as HTMLInputElement | null, {
+      parse: parseStopTime,
+      commit: (value) => this.api.updateBlock(blockId, { stop_time_s: value }),
+      onApplied: async () => { await this.editor.host?.refreshNetwork(); },
     });
 
     // Rail polarity auto-applies on click (§5C), same contract as the segment

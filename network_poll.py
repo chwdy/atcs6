@@ -29,6 +29,7 @@ LAYOUT_SECTIONS: Tuple[str, ...] = (
 BLOCK_LAYOUT_FIELDS = frozenset({
     "block_id",
     "name",
+    "stop_time_s",
     "length_cm",
     "min_radius_cm",
     "grade_percent",

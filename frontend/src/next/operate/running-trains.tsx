@@ -32,6 +32,7 @@ const WAITING: Record<string, string> = {
   switch_against: 'a switch is set against it',
   switch_held: 'a switch on its way is held',
   own_block: 'the next block is its own',
+  stop_time: 'it is standing for the stop time',
 };
 
 async function send(label: string, request: Promise<{ success: boolean; reason: string | null }>): Promise<void> {

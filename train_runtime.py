@@ -55,6 +55,7 @@ use."""
 BLOCK_TAKEN = "block_taken"
 OWN_BLOCK = "own_block"
 SWITCH_HELD = "switch_held"
+STOP_TIME = "stop_time"
 
 Result = Tuple[bool, Optional[str]]
 """An operator request's answer: `(success, reason)`."""
@@ -108,6 +109,10 @@ class RunningTrain:
     """For each of those blocks, whether the train was running, or had
     stopped less than the hold time before, when the block began to read
     empty."""
+
+    stop_block_id: Optional[str] = None
+    """The block the train owes a stop, or none (design_v2.md "Claiming the
+    next block", Stop time)."""
 
     end_of_track_block: Optional[str] = None
     """The front block the runtime has already stopped this train in for End
@@ -326,6 +331,10 @@ class TrainRuntime:
                         self.alternate_next[switch_id] = 1 - position
                 self._end_claim(claimer)
                 self._add_front_block(claimer, block_id, direction)
+                # An arriving train owes the block a stop.
+                claimer.stop_block_id = (
+                    block_id if self._stop_time_of(block_id) > 0.0 else None
+                )
                 continue
 
             # 2. A lost train it belongs to.
@@ -504,6 +513,7 @@ class TrainRuntime:
             if was_moving:
                 train.lost = True
                 train.knob_volts = 0.0
+                train.stop_block_id = None
                 train.stopped_at = now
                 train.waiting_since = None
                 train.waiting_reason = None
@@ -580,6 +590,7 @@ class TrainRuntime:
         train.knob_volts = 0.0
         train.waiting_since = None
         train.waiting_reason = None
+        train.stop_block_id = None
         self._clear_asking(train)
 
     # --- item 4: end claims -------------------------------------------
@@ -688,6 +699,11 @@ class TrainRuntime:
         for train in self.trains.values():
             if not train.running or train.claim_block_id is not None:
                 continue
+            if self._owes_stop(train, now):
+                # Not given a claim, and does not ask for one.
+                self._clear_asking(train)
+                self._wait_or_keep_moving(train, STOP_TIME, train.front_block, now)
+                continue
             walk, _, _ = self._claim_walk(train)
             wanted = walk.block_id or walk.reason or ""
             if train.asked_for != wanted or train.asked_step is None:
@@ -749,26 +765,52 @@ class TrainRuntime:
                 train.waiting_since = None
                 train.waiting_reason = None
                 continue
-            if train.waiting_since is None and not self.wholly_in_front_block(train):
-                # Keeps moving on its own blocks until the block behind
-                # reads empty. A train that is already waiting stays
-                # waiting: it stands at 0 V, so a front block that reads
-                # empty for a moment must not put voltage back on it.
-                train.waiting_since = None
-                train.waiting_reason = None
-                continue
-            began = train.waiting_since is None
-            if began:
-                train.waiting_since = now
-            if began or train.waiting_reason != reason:
-                train.waiting_reason = reason
-                self._emit(
-                    "train_waiting",
-                    "info",
-                    train,
-                    f"{train.name} is waiting ({reason}).",
-                    {"reason": reason, "block_id": walk.block_id},
-                )
+            self._wait_or_keep_moving(train, reason, walk.block_id, now)
+
+    def _wait_or_keep_moving(
+        self, train: RunningTrain, reason: str, block_id: Optional[str], now: float
+    ) -> None:
+        """A train that cannot be given a claim begins to wait once it is
+        wholly in its front block (design_v2.md "When a train waits")."""
+        if train.waiting_since is None and not self.wholly_in_front_block(train):
+            # Keeps moving on its own blocks until the block behind reads
+            # empty. A train that is already waiting stays waiting: it stands
+            # at 0 V, so a front block that reads empty for a moment must not
+            # put voltage back on it.
+            train.waiting_reason = None
+            return
+        began = train.waiting_since is None
+        if began:
+            train.waiting_since = now
+        if began or train.waiting_reason != reason:
+            train.waiting_reason = reason
+            self._emit(
+                "train_waiting",
+                "info",
+                train,
+                f"{train.name} is waiting ({reason}).",
+                {"reason": reason, "block_id": block_id},
+            )
+
+    def _stop_time_of(self, block_id: str) -> float:
+        """The block's stop time in seconds; 0 means no stop."""
+        block = self._network.blocks.get(block_id)
+        return float(getattr(block, "stop_time_s", 0.0) or 0.0)
+
+    def _owes_stop(self, train: RunningTrain, now: float) -> bool:
+        """Whether the train still owes its front block a stop. Clears the
+        stop when it is over (design_v2.md "Claiming the next block", Stop
+        time)."""
+        if train.stop_block_id is None:
+            return False
+        stop_time_s = self._stop_time_of(train.stop_block_id)
+        if train.stop_block_id != train.front_block or (
+            train.waiting_since is not None
+            and now - train.waiting_since >= stop_time_s
+        ):
+            train.stop_block_id = None
+            return False
+        return True
 
     def _why_no_claim(self, train: RunningTrain, walk: WalkResult) -> Optional[str]:
         """None when the train can be given the claim, else why not."""

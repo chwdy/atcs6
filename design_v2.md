@@ -62,6 +62,7 @@ These are the terms this document uses for v2's own ideas. Names of code (classe
 - **Passing block**: one of the two blocks the legs of a switch with alternate arrivals on lead to. See **Switches**, Alternate arrivals.
 - **Assigned leg**: the leg of a switch the operator has picked for one train. Each time that train comes to the switch's toe, the runtime sends it out of that leg. See **Switches**, Assigned leg.
 - **Destination**: a block the operator picks for a train to run to and stop in. Optional.
+- **Stop time**: how many seconds a block makes each train that arrives in it stand there before the train may claim the next block ahead. It is the block's saved setting `stop_time_s`; `0` means trains do not stop there. See **Claiming the next block**, Stop time.
 - **Hold time**: 5 seconds (the runtime setting `hold_time_s`). A block that reads empty while no block further forward in its train reads occupied stays the train's block for this long. See **Trains**.
 - **Pass**: one turn of the runtime loop that reads the detectors. While the session is Live a pass is a whole runtime step; in Setup it is the stopped pass; in Halted the loop makes no pass. See **Runtime loop**.
 - **Safe state**: every block at 0 V and every point motor switched off. See **Safe state, watchdog and hardware failure**.
@@ -198,7 +199,8 @@ These are all the things the operator can do to trains and switches from the Ope
   - the switch is marked manual (`switch_manual`);
   - `leg` is not `0`, `1` or `null` (`out_of_range`).
 - **Throw a switch.** `PUT /api/switches/<switch_id>/state` throws a switch (see **Switch**, Canonical `Switch.position` mutation workflow). It is refused while the session is not Live (`not_live`), and while the switch is held (`switch_held`, see **Switches**, A held switch is not thrown).
-- **Edit the layout.** The layout is drawn and edited on the Editor screen. Loading a layout, clearing it, and every edit to tiles, segments, blocks, switches and tunnels are refused while the session is Live (`live`), because the rig is wired to the layout it was activated with. Saving a layout is accepted in every session state. Loading or clearing a layout, and any edit that adds, deletes or regroups a block, removes every train; the detectors then find them again.
+- **Set a block's stop time.** `PATCH /api/blocks/<block_id>` with `{ "stop_time_s": number }` sets the block's stop time in seconds, and `0` turns the stop off (see **Claiming the next block**, Stop time). The operator sets it on the block's panel on the Editor screen. It is saved with the layout. It is accepted in every session state, so a stop can be made longer or shorter while the trains run. It is refused when `stop_time_s` is not a number or is below `0`.
+- **Edit the layout.** The layout is drawn and edited on the Editor screen. Loading a layout, clearing it, and every edit to tiles, segments, blocks, switches and tunnels, a block's stop time apart, are refused while the session is Live (`live`), because the rig is wired to the layout it was activated with. Saving a layout is accepted in every session state. Loading or clearing a layout, and any edit that adds, deletes or regroups a block, removes every train; the detectors then find them again.
 - **Save the Hardware Setup.** `PUT /api/hardware/config` is accepted in every session state, so a wiring fix can be saved while trains run (see **A binding is read per write**). The setup is the operator's to get right: a save that takes away a binding the running session needs makes the next write to it fail, and that is a hardware failure like any other.
 - **Manage trains.** Rename, note a length, mark two trains as one, split, and remove are defined under **Trains**.
 
@@ -261,6 +263,7 @@ A train is a label the runtime puts on blocks that read occupied. It is not a mo
 - **An occupied block with no train gets one.** On each pass, the runtime takes every block that reads occupied and is not one of a train's blocks, and every lost train's block that reads occupied, and gives it to the first of these that applies. It does not matter whether the block began to read occupied on this pass or earlier: a block left without a train, for example after its train was removed, gets one on the next pass.
   1. **The train that claimed it.** The block becomes that train's new front block, and the claim ends.
   2. **A lost train it belongs to.** When the block is a lost train's block, or can be reached from that block across switches as currently set with no other block between, the block becomes that train's only block and the train is no longer lost. The train stays stopped, keeps its direction when the block is the same one, and otherwise faces away from the end it came in by. The runtime emits the event `"train_found"`.
+  - `stop_block_id`: the block the train owes a stop, or none (see **Claiming the next block**, Stop time).
   3. **A train that just overran.** When the block is the next block ahead of a train that stopped or began waiting less than the hold time ago, the block becomes that train's new front block (see **When a train overruns**).
   4. **A new train.** Otherwise the runtime makes a new train with this one block, `direction = forward`, and the knob at 0 V.
 - **A train that is not moving keeps its blocks.** While a train is stopped or waiting, and at least one of its blocks reads occupied, a block of its that reads empty stays its block and no count runs for it. A train at 0 V does not move, so it cannot have left a block. The reason this matters: a block at 0 V is read by the '165 detector, which sees a motor car and does not see a car that only has lights, so the block under the lit cars of a standing train reads empty while the train is in it. When every one of the train's blocks reads empty, the rules below apply, and a standing train that was lifted off is removed.
@@ -307,7 +310,8 @@ Two trains are never let into the same block. To make sure, a train claims a blo
   - For a train with an assigned leg at a switch it meets at its toe, the walk leads out of that leg (see **Switches**, Assigned leg).
   - For a train with no assigned leg there, coming to the toe of a switch with alternate arrivals on, the walk leads out of the leg of the passing block chosen under **Switches**, Alternate arrivals.
 - **Who claims.** On each runtime step, every train that is running, is not lost, and holds no claim asks for its next block ahead.
-- **When a claim is given.** The train gets the claim when **all six hold**:
+- **When a claim is given.** The train gets the claim when **all seven hold**:
+  - the train does not owe its front block a stop (see Stop time);
   - there is a next block ahead;
   - that block reads empty;
   - that block is not one of any train's blocks, a lost train's included;
@@ -321,6 +325,14 @@ Two trains are never let into the same block. To make sure, a train claims a blo
 - **A claim ends in one of these ways:**
   - the block reads occupied, and becomes the train's front block (see **Trains**, An occupied block with no train gets one);
   - the train has been stopped for the hold time without entering it;
+- **Stop time.** Each train that arrives in a block whose `stop_time_s` is above `0` stands there for that many seconds before it may claim the next block ahead.
+  - **An arriving train owes the block a stop.** When a block whose stop time is above `0` becomes a train's front block because the train claimed it and it now reads occupied (rule 1 of **Trains**, An occupied block with no train gets one), the runtime sets the train's `stop_block_id` to that block. A new train, a train that is found again and a train that overran owe no stop.
+  - **A train that owes its front block a stop is not given a claim.** It does not ask for one either, so its place in First come, first served starts when the stop is over. It keeps moving until it is wholly in its front block and then begins to wait with `stop_time` (see **When a train waits**).
+  - **The stop is over when the train has waited for the stop time.** On the first pass on which the train has been waiting for at least the block's `stop_time_s`, the runtime clears `stop_block_id`, and the train asks for its claim on that pass like any other train. The time is counted from `waiting_since`, between pass `wall_time` values, as the hold time is (see **Clocks**, The hold time is measured on pass wall time). The block's `stop_time_s` is read on each pass, so a change made while a train stands there applies to that train.
+  - **A train that is stopped owes no stop.** When a train's knob goes to 0 V, by the operator's request or by the runtime, or the train becomes a lost train, or its front block is taken off its blocks, the runtime clears `stop_block_id`. A train the operator starts again leaves as soon as it is given the claim.
+  - **A stop and a wait for a taken block are one wait.** A train whose stop is over and whose next block ahead is taken goes on waiting with `block_taken`. `waiting_since` is not set again.
+
+  The reason: a train that pauses at a station and then leaves is part of watching a layout run, and a stop the layout saves happens the same way on every lap and for every train, with nothing to set up per train.
   - the train's front block is taken off its blocks, so the claim was made from a block the train is no longer in; the train asks again from its new front block;
   - the train becomes a lost train, or is removed;
   - the session state leaves Live.
@@ -383,7 +395,8 @@ A train that cannot be given a claim and is not yet wholly in its front block ke
 - `block_taken`: the next block ahead is taken by another train (see **Claiming the next block**, A taken block);
 - `switch_against`: a switch met from a leg is set to the other leg, and the train has no destination;
 - `switch_held`: a switch that has to be thrown for the train's destination, for its assigned leg or for alternate arrivals is held or is marked manual;
-- `own_block`: the next block ahead is one of the train's own blocks.
+- `own_block`: the next block ahead is one of the train's own blocks;
+- `stop_time`: the train owes its front block a stop (see **Claiming the next block**, Stop time).
 
 - **A waiting train stays waiting until it is given the claim.** Once a train waits, its blocks stay at 0 V until it is given the claim or it is stopped, whatever its front block reads in between. A train at 0 V does not move, so a front block that reads empty for a moment is a detector flicker, and putting voltage back on the train would drive it toward the train ahead.
 
@@ -750,7 +763,7 @@ Segment create, extend, delete, split, tile removal and `name` edits each have t
 **Block model**
 
 - **What a block is.** A `Block` is the unit of power and of occupancy: a connected run of one or more segments with no switch in it, wired to one power feed. It carries one voltage and holds one train at a time (see **One train per block**).
-- **Block fields.** A `Block` stores its `block_id`, its display `name`, and `segments` — the ordered `Segment` objects it owns. The derived read `segment_ids -> List[str]` gives their ids in that order, and the derived read `length_cm` is the sum of its segments' `length_cm`.
+- **Block fields.** A `Block` stores its `block_id`, its display `name`, its `stop_time_s` (the block's stop time in seconds, `0` by default; see **Claiming the next block**, Stop time), and `segments` — the ordered `Segment` objects it owns. The derived read `segment_ids -> List[str]` gives their ids in that order, and the derived read `length_cm` is the sum of its segments' `length_cm`.
 - **Block state.** A block reads occupied or empty, and may be claimed by one train (see **Claiming the next block**).
 - **Block tile order.** `Block.ordered_tiles` is a derived, read-only property: the member segments' `Segment.ordered_tiles` joined in `segment_ids` order. The block stores no tile list of its own. The segments in a block join end to end into one connected walk with no switch in it, so the joined list is one well-defined tile order for the block.
 - **Forward and reverse along a block.** `forward` means movement in the increasing direction of `Block.ordered_tiles`, and `reverse` means movement in the decreasing direction.
@@ -1425,7 +1438,7 @@ The live part of the snapshot is these fields and no others.
 | Snapshot key | Layout part |
 | --- | --- |
 | `tunnels` | the whole section |
-| `blocks` | per block: `block_id`, `name`, `length_cm`, `ordered_tiles`, `segment_ids`, `segments` |
+| `blocks` | per block: `block_id`, `name`, `stop_time_s`, `length_cm`, `ordered_tiles`, `segment_ids`, `segments` |
 | `switches` | per switch: `switch_id`, `x`, `y`, `main_length_cm`, `diverge_length_cm`, `main_radius_cm`, `diverge_radius_cm`, `switch_type`, `name`, `notes`, `manual`, `motor_unavailable`, `allow_exit_from_either_leg` |
 | `tracks` | per tile: every field, except `switch_state` on a tile that holds a switch |
 

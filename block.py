@@ -36,9 +36,14 @@ class Block:
         ordered_tiles: Optional[List[SegmentTileEntry]] = None,
         segments: Optional[List[Segment]] = None,
         segment_id: Optional[str] = None,
+        stop_time_s: float = 0.0,
     ) -> None:
         self.block_id = block_id  # Unique ID (e.g., "BLK_001")
         self.name = name  # Human-readable name
+        # How many seconds each arriving train stands here before it may claim
+        # the next block ahead; 0 means no stop (design_v2.md "Claiming the
+        # next block", Stop time).
+        self.stop_time_s = float(stop_time_s)
 
         # Rail polarity is NOT a block field. A block whose rails are wired the
         # opposite way round is corrected on its `block_track` hardware binding
@@ -196,6 +201,7 @@ class Block:
         return {
             "block_id": self.block_id,
             "name": self.name,
+            "stop_time_s": self.stop_time_s,
             "length_cm": self.length_cm,
             "min_radius_cm": self.min_radius_cm,
             "grade_percent": self.grade_percent,
@@ -226,6 +232,7 @@ class Block:
         return {
             "block_id": self.block_id,
             "name": self.name,
+            "stop_time_s": self.stop_time_s,
             "length_cm": self.length_cm,
             "min_radius_cm": self.min_radius_cm,
             "grade_percent": self.grade_percent,
@@ -297,6 +304,7 @@ class Block:
                 block_id=block_id,
                 name=cls._loaded_name(data.get("name", ""), segments),
                 segments=segments,
+                stop_time_s=data.get("stop_time_s", 0.0),
             )
 
         raw_tiles = data.get("ordered_tiles") or []
@@ -326,4 +334,5 @@ class Block:
             grade_percent=data.get("grade_percent"),
             speed_limit_kmh=data.get("speed_limit_kmh", data.get("max_speed_kmh")),
             ordered_tiles=ordered_tiles,
+            stop_time_s=data.get("stop_time_s", 0.0),
         )

@@ -362,6 +362,80 @@ def test_held_switches(rig):
     assert rig.runtime.held_switch_ids() == {RIGHT_SWITCH}
 
 
+# --- stop time ----------------------------------------------------------------
+# design_v2.md "Claiming the next block", Stop time.
+
+
+def _arrive_in_main(rig, stop_time_s, *others):
+    """T1 runs Left -> Main and comes to rest wholly in Main."""
+    rig.network.blocks[rig.ids["Main"]].stop_time_s = stop_time_s
+    rig.step("Left", *others)
+    train_id = rig.runtime.train_of_block(rig.ids["Left"]).train_id
+    rig.knob(train_id, 6.0)
+    rig.step("Left", *others)
+    assert rig.claim(train_id) == "Main"
+    rig.step("Left", "Main", *others)
+    # Not yet wholly in Main: it keeps moving. A train that owes Main a stop
+    # is given no claim.
+    assert rig.state(train_id) == "moving"
+    assert (rig.claim(train_id) is None) == (stop_time_s > 0)
+    rig.step("Main", *others)
+    return train_id
+
+
+def test_an_arriving_train_stands_for_the_stop_time(rig):
+    t1 = _arrive_in_main(rig, 3.0)
+    assert rig.state(t1) == "waiting"
+    assert rig.train(t1).waiting_reason == "stop_time"
+    assert rig.volts["Main"] == 0.0
+    rig.step("Main", seconds=2.5)
+    assert rig.state(t1) == "waiting" and rig.claim(t1) is None
+    rig.step("Main", seconds=0.6)
+    assert rig.state(t1) == "moving" and rig.claim(t1) == "Right"
+    assert rig.train(t1).stop_block_id is None
+
+
+def test_a_block_with_no_stop_time_does_not_stop_a_train(rig):
+    t1 = _arrive_in_main(rig, 0.0)
+    assert rig.state(t1) == "moving" and rig.claim(t1) == "Right"
+
+
+def test_a_train_started_in_a_stop_block_leaves_at_once(rig):
+    rig.network.blocks[rig.ids["Main"]].stop_time_s = 3.0
+    rig.step("Main")
+    rig.knob("T1", 6.0)
+    rig.step("Main")
+    assert rig.state("T1") == "moving" and rig.claim("T1") == "Right"
+
+
+def test_a_stop_and_a_wait_for_a_taken_block_are_one_wait(rig):
+    t1 = _arrive_in_main(rig, 3.0, "Right")
+    began = rig.train(t1).waiting_since
+    rig.step("Main", "Right", seconds=3.1)
+    assert rig.state(t1) == "waiting"
+    assert rig.train(t1).waiting_reason == "block_taken"
+    assert rig.train(t1).waiting_since == began
+
+
+def test_a_train_the_operator_stops_owes_no_stop(rig):
+    t1 = _arrive_in_main(rig, 30.0)
+    assert rig.train(t1).waiting_reason == "stop_time"
+    rig.knob(t1, 0.0)
+    assert rig.train(t1).stop_block_id is None
+    rig.knob(t1, 6.0)
+    rig.step("Main")
+    assert rig.state(t1) == "moving" and rig.claim(t1) == "Right"
+
+
+def test_a_stop_time_changed_while_a_train_stands_applies_to_it(rig):
+    t1 = _arrive_in_main(rig, 30.0)
+    rig.step("Main", seconds=1.0)
+    assert rig.state(t1) == "waiting"
+    rig.network.blocks[rig.ids["Main"]].stop_time_s = 0.5
+    rig.step("Main")
+    assert rig.state(t1) == "moving" and rig.claim(t1) == "Right"
+
+
 # --- stopping ---------------------------------------------------------------
 
 

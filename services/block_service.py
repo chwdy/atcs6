@@ -25,6 +25,7 @@ another that takes it.
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
+import math
 import uuid
 
 from app_state import AppState
@@ -175,7 +176,8 @@ def remove_segment_from_block(
 def update_block(state: AppState, block_id: str, *, data: Dict[str, Any]):
     """Update a block's config (NOT geometry).
 
-    Handles ``name``. Geometry fields are rejected — they live on the member
+    Handles ``name`` and ``stop_time_s`` (design_v2.md "Claiming the next
+    block", Stop time). Geometry fields are rejected — they live on the member
     segments and are written through
     ``services.segment_service.update_segment``.
 
@@ -185,7 +187,7 @@ def update_block(state: AppState, block_id: str, *, data: Dict[str, Any]):
     Raises:
         NotFoundError when no block has that id.
         ValidationError when a geometry field or ``polarity_reversed`` is
-            present.
+            present, or ``stop_time_s`` is not a number of 0 or more.
     """
     data = dict(data or {})
 
@@ -201,8 +203,20 @@ def update_block(state: AppState, block_id: str, *, data: Dict[str, Any]):
         if not block:
             raise NotFoundError("Block not found")
 
+        if "stop_time_s" in data:
+            stop_time_s = data["stop_time_s"]
+            if (
+                isinstance(stop_time_s, bool)
+                or not isinstance(stop_time_s, (int, float))
+                or not math.isfinite(stop_time_s)
+                or stop_time_s < 0
+            ):
+                raise ValidationError("stop_time_s must be a number of 0 or more")
+
         if "name" in data:
             block.name = data["name"] if data["name"] is not None else ""
+        if "stop_time_s" in data:
+            block.stop_time_s = float(data["stop_time_s"])
 
         # Rail polarity moved onto the block's `block_track` hardware binding
         # (design_v2.md "Hardware setup", A block's rails). It
