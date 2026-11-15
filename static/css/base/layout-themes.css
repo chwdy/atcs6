@@ -96,10 +96,10 @@
     --canvas-info: #0e85a8;
     --canvas-hold: #8b4513;
     --canvas-lock: #c2570c;
-    --block-free: #0a86ad;
-    --block-reserved: #0a964a;
-    --block-occupied: #dc2444;
-    --block-caution: #b07d00;
+    --block-free: #00a6e0;
+    --block-reserved: #00b84f;
+    --block-occupied: #ff2d4b;
+    --block-caution: #e6a800;
     --train-body: #2a2a30;
     --train-body-manual: #b07d00;
     --train-body-teardown: #7c3aed;
