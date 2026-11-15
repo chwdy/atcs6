@@ -637,9 +637,6 @@ function rigTestCalls(): RigTestCalls {
       await api.closeOccupancyBench();
     },
     throwSwitch: (switchId, position) => api.switchThrowTest(saved, switchId, position),
-    releaseSwitches: async () => {
-      await api.commissionClose();
-    },
     pause: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     progress: (text) => {
       rigProgress.value = text || null;

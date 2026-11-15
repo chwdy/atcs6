@@ -52,9 +52,6 @@ function fakeCalls(overrides: Partial<RigTestCalls> = {}, saved: SavedSetup = se
       log.push(`throw ${switchId} ${position}`);
       return { ok: true };
     },
-    releaseSwitches: async () => {
-      log.push('release');
-    },
     pause: async (ms) => {
       log.push(`pause ${ms}`);
     },
@@ -81,7 +78,6 @@ describe('runRigTest', () => {
       'throw S2 0',
       `pause ${THROW_GAP_MS}`,
       'throw S2 1',
-      'release',
     ]);
   });
 

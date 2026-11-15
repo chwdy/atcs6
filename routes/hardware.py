@@ -544,6 +544,49 @@ def register(app, state: AppState) -> None:
                 ),
             )
 
+    def _switch_test_pulse(
+        session, opened_here, cfg, handle, saved_switch_output,
+        binding, coil, other, data, switch_manager, switch_id, position,
+    ):
+        """The Setup half of the switch throw test, run under `simulation_lock`:
+        open the commissioning session (or add this switch's chips to the open
+        one), pulse the coil, then record where the points now are. Returns
+        `(early_response, ok, message)`; `early_response` is set when the test
+        stops before recording."""
+        from hardware.catalog import SWITCH_THROW_PULSE_S
+        from hardware import self_test
+
+        try:
+            if opened_here:
+                session.open(cfg, handle, saved_switch_output=saved_switch_output)
+            else:
+                session.add_chips(cfg, saved_switch_output)
+        except owners.OutputsOwned as exc:
+            return _owned_refusal(exc), False, None
+        except Exception as exc:
+            return jsonify({"ok": False, "error": str(exc)}), False, None
+        try:
+            session.pulse_output(
+                binding.chip_id,
+                coil,
+                standby_port=binding.port_standby,
+                off_port=other,
+                pulse_s=self_test.clamp_pulse_s(
+                    data.get("pulse_s"), default=SWITCH_THROW_PULSE_S
+                ),
+            )
+        except SetupToolWriteFailed as exc:
+            return _tool_write_failed(exc, locked=True), False, None
+        except Exception as exc:
+            return jsonify({"ok": False, "error": str(exc)}), False, None
+
+        # The coil is already pulsed, through the commissioning session, so
+        # this only records where the points now are. The operating throw
+        # cannot do it: it would drive the coil again, and it refuses while no
+        # environment is active — which is the state a bench throw runs in.
+        ok, message = switch_manager.record_bench_alignment(switch_id, position)
+        return None, ok, message
+
     @app.route("/api/hardware/switch-test", methods=["POST"])
     def hardware_switch_test():
         """Throw one switch to a named position — the switch editor's Test
@@ -563,8 +606,8 @@ def register(app, state: AppState) -> None:
           an operating throw.
         - Otherwise the test runs only in Setup, and pulses the coil through the
           commissioning session, using this switch's configured binding: an open
-          session is used, and when none is open the test opens one, which
-          stays open until the operator closes it or its idle timeout passes
+          session is used and left open, and when none is open the test opens
+          one for this request and closes it when the request ends
           (design_v2.md "Setup tools", The switch throw test pulses through the
           commissioning session). It is refused with `409 outputs_owned` while
           the occupancy bench is open. The model position is written after the
@@ -639,8 +682,6 @@ def register(app, state: AppState) -> None:
                     "error": f"switch {switch_id!r} has no coil binding to test",
                 }), 400
             from hardware import commission
-            from hardware.catalog import SWITCH_THROW_PULSE_S
-            from hardware import self_test
 
             coil = binding.port_main if position == 0 else binding.port_diverge
             other = binding.port_diverge if position == 0 else binding.port_main
@@ -650,40 +691,22 @@ def register(app, state: AppState) -> None:
                 if refused is not None:
                     return refused
                 session = commission.get_session()
+                opened_here = not session.is_open()
                 try:
-                    if session.is_open():
-                        session.add_chips(cfg, saved_switch_output)
-                    else:
-                        session.open(
-                            cfg, handle, saved_switch_output=saved_switch_output
-                        )
-                except owners.OutputsOwned as exc:
-                    return _owned_refusal(exc)
-                except Exception as exc:
-                    return jsonify({"ok": False, "error": str(exc)})
-                try:
-                    session.pulse_output(
-                        binding.chip_id,
-                        coil,
-                        standby_port=binding.port_standby,
-                        off_port=other,
-                        pulse_s=self_test.clamp_pulse_s(
-                            data.get("pulse_s"), default=SWITCH_THROW_PULSE_S
-                        ),
+                    return_early, ok, message = _switch_test_pulse(
+                        session, opened_here, cfg, handle, saved_switch_output,
+                        binding, coil, other, data, switch_manager, switch_id, position,
                     )
-                except SetupToolWriteFailed as exc:
-                    return _tool_write_failed(exc, locked=True)
-                except Exception as exc:
-                    return jsonify({"ok": False, "error": str(exc)})
-
-                # The coil is already pulsed, through the commissioning
-                # session, so this only records where the points now are. The
-                # operating throw cannot do it: it would drive the coil again,
-                # and it refuses while no environment is active — which is the
-                # state a bench throw runs in.
-                ok, message = switch_manager.record_bench_alignment(
-                    switch_id, position
-                )
+                finally:
+                    # A session this test opened is closed when its request
+                    # ends, so no tool owns the outputs afterwards; a session
+                    # that was already open is used and left open (design_v2.md
+                    # "Setup tools", The switch throw test pulses through the
+                    # commissioning session).
+                    if opened_here:
+                        _report_zeroing_failures(session.close(), locked=True)
+                if return_early is not None:
+                    return return_early
 
         return jsonify({
             "ok": bool(ok),

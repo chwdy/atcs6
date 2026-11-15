@@ -47,8 +47,6 @@ export interface RigTestCalls {
   closeBench(): Promise<void>;
   /** Throw one switch (0 = main, 1 = diverge). */
   throwSwitch(switchId: string, position: 0 | 1): Promise<{ ok: boolean; error?: string }>;
-  /** Give back the controller the switch throws took. */
-  releaseSwitches(): Promise<void>;
   /** Wait between two throws, so the operator sees each one land. */
   pause(ms: number): Promise<void>;
   /** What the run is doing now, for the button's status line. */
@@ -257,7 +255,6 @@ export async function runRigTest(calls: RigTestCalls): Promise<RigTestReport> {
   const switches = Object.keys(setup.switch_output).filter(id => !unavailableMotors.includes(id)).sort();
   const throwFailures = new Map<string, string>();
   const thrown = new Map<string, string[]>();
-  let tookController = false;
   for (const switchId of switches) {
     const chipId = setup.switch_output[switchId].chip_id;
     const at = switchPositions[switchId];
@@ -270,7 +267,6 @@ export async function runRigTest(calls: RigTestCalls): Promise<RigTestReport> {
     for (const [n, position] of [other, at as 0 | 1].entries()) {
       if (n) await calls.pause(THROW_GAP_MS);
       calls.progress(`Throwing ${switchId} to ${POSITION_NAME[position]}…`);
-      tookController = true;
       let res: { ok: boolean; error?: string };
       try {
         res = await calls.throwSwitch(switchId, position);
@@ -287,13 +283,6 @@ export async function runRigTest(calls: RigTestCalls): Promise<RigTestReport> {
       if (!throwFailures.has(chipId)) throwFailures.set(chipId, failure);
     } else {
       thrown.set(chipId, [...(thrown.get(chipId) || []), switchId]);
-    }
-  }
-  if (tookController) {
-    try {
-      await calls.releaseSwitches();
-    } catch {
-      /* best effort: the commissioning session's idle timeout closes it too */
     }
   }
 

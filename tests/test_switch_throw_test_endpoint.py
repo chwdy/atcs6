@@ -281,21 +281,67 @@ def test_the_commissioning_throw_is_refused_outside_setup(client):
     assert int(switch.position) == 0
 
 
-def test_the_test_throw_opens_a_commissioning_session_that_stays_open(client):
-    """With none open, the test opens a commissioning session, and it stays
-    open; with one open, the test uses it (design_v2.md "Setup tools", The
-    switch throw test pulses through the commissioning session)."""
+def test_the_test_throw_closes_the_session_it_opened(client):
+    """With none open, the test opens a commissioning session for its own
+    request and closes it when the request ends, so no tool owns the outputs
+    afterwards (design_v2.md "Setup tools", The switch throw test pulses
+    through the commissioning session)."""
     from hardware import commission
 
     test_client, _state, switch = client
     assert commission.get_session().is_open() is False
 
     assert _throw(test_client, 1).get_json()["ok"] is True
-    assert commission.get_session().is_open() is True
-    assert hardware_config.get_device_handle().owner == "commissioning_session"
+    assert commission.get_session().is_open() is False
+    assert hardware_config.get_device_handle().owner is None
+    assert int(switch.position) == 1
 
     assert _throw(test_client, 0).get_json()["ok"] is True
+    assert commission.get_session().is_open() is False
+    assert int(switch.position) == 0
+
+
+def test_the_bench_opens_straight_after_a_test_throw(client):
+    test_client, _state, _switch = client
+    hardware_config.apply_updates(CONFIG, persist=False)
+    assert _throw(test_client, 1).get_json()["ok"] is True
+
+    try:
+        assert test_client.post("/api/hardware/bench/open").get_json()["ok"] is True
+    finally:
+        test_client.post("/api/hardware/bench/close")
+
+
+def test_the_test_throw_uses_an_open_session_and_leaves_it_open(client):
+    from hardware import commission
+
+    test_client, _state, switch = client
+    assert test_client.post(
+        "/api/hardware/commission/open", json={"config": CONFIG}
+    ).get_json()["ok"] is True
+
+    assert _throw(test_client, 1).get_json()["ok"] is True
     assert commission.get_session().is_open() is True
+    assert hardware_config.get_device_handle().owner == "commissioning_session"
+    assert int(switch.position) == 1
+
+
+def test_a_failed_test_throw_still_closes_the_session_it_opened(client, monkeypatch):
+    from hardware import commission
+
+    test_client, _state, switch = client
+    session = commission.get_session()
+
+    def refuse(*_a, **_kw):
+        raise ValueError("pulse refused")
+
+    monkeypatch.setattr(session, "pulse_output", refuse)
+
+    body = _throw(test_client, 1).get_json()
+
+    assert body["ok"] is False
+    assert session.is_open() is False
+    assert hardware_config.get_device_handle().owner is None
     assert int(switch.position) == 0
 
 
