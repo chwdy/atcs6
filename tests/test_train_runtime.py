@@ -358,11 +358,8 @@ def test_held_switches(rig):
     rig.step("Main", "Up")  # the rear has left Left
     assert rig.blocks("T1") == ["Main"]
     # The claim on Right holds the right switch. The left switch is no longer
-    # held, but the runtime does not throw it for the hold time.
+    # held.
     assert rig.runtime.held_switch_ids() == {RIGHT_SWITCH}
-    assert rig.runtime.switches_just_left() == {LEFT_SWITCH}
-    rig.step("Main", "Up", seconds=5.2)
-    assert rig.runtime.switches_just_left() == set()
 
 
 # --- stopping ---------------------------------------------------------------

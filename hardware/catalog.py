@@ -58,12 +58,12 @@ GPIO_LINES: List[str] = [f"gpio{i}" for i in range(8)]
 # is the only place the width is set — the runtime driver and the commissioning
 # pulse both read it, so a bench test energizes the coil for exactly as long as
 # an operating session does.
-SWITCH_THROW_PULSE_S = 0.01
+SWITCH_THROW_PULSE_S = 0.02
 
 # How long the bench port test drives one output line, in seconds. This is a
 # different question from a throw: the port test asks "is this the wire I think
 # it is", and the answer is read off a multimeter or a scope, so the line must
-# stay high long enough to measure. A throw pulse is not — 10 ms reads as noise.
+# stay high long enough to measure. A throw pulse is not — 20 ms reads as noise.
 # Callers may override it per test (`run_port_test` / `pulse_output` take a
 # width, and the REST endpoints pass one through), capped at
 # MAX_PORT_TEST_PULSE_S so a stray request cannot ask for an open-ended hold.

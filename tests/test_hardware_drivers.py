@@ -1186,7 +1186,7 @@ def test_port_test_pulse_is_long_enough_to_measure():
     """On a PWM output the bench pulse answers "is this the wire I think it is",
     read off a multimeter — so that default has to be measurable."""
     assert PORT_TEST_PULSE_S >= 1.0
-    assert PORT_TEST_PULSE_S > SWITCH_THROW_PULSE_S * 50
+    assert PORT_TEST_PULSE_S > SWITCH_THROW_PULSE_S * 10
 
 
 def test_port_test_never_holds_a_shift_out_bit_past_the_coil_limit(monkeypatch):

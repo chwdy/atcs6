@@ -161,11 +161,6 @@ class TrainRuntime:
         self._step_count = 0
         self.occupied: Set[str] = set()
         """The blocks that read occupied on the last step."""
-        self._now = 0.0
-        self._left_at: Dict[str, float] = {}
-        """For each block a train's rear has just left, when it was taken
-        off. The runtime does not throw a switch next to such a block for the
-        hold time."""
 
     # ------------------------------------------------------------------
     # Reading
@@ -295,7 +290,6 @@ class TrainRuntime:
         nothing is claimed and no voltage is written.
         """
         self._step_count += 1
-        self._now = now
         self.occupied = {b for b in occupied if b in self._network.blocks}
         self._give_trains_to_occupied_blocks(now)
         self._take_off_rear_blocks(now)
@@ -448,23 +442,7 @@ class TrainRuntime:
                 and train.blocks[0] not in self.occupied
                 and any(b in self.occupied for b in train.blocks[1:])
             ):
-                rear = train.blocks[0]
-                self._take_off_block(train, rear)
-                self._left_at[rear] = now
-        for block_id, left_at in list(self._left_at.items()):
-            if now - left_at >= self.hold_time_s:
-                del self._left_at[block_id]
-
-    def switches_just_left(self) -> Set[str]:
-        """Every switch next to a block a train's rear left less than the
-        hold time ago. The runtime does not throw these; the operator may
-        (design_v2.md "Switches", The runtime does not throw a switch a train
-        has just left)."""
-        found: Set[str] = set()
-        for block_id, left_at in self._left_at.items():
-            if self._now - left_at < self.hold_time_s:
-                found |= switches_next_to(self._network, block_id)
-        return found
+                self._take_off_block(train, train.blocks[0])
 
     def _keeps_its_blocks(self, train: RunningTrain) -> bool:
         """Whether the train is not moving while one of its blocks reads
@@ -724,12 +702,9 @@ class TrainRuntime:
             reason = self._why_no_claim(train, walk)
             if reason is None and passage is not None:
                 switch_id, position = passage
-                needs_throw = self._needs_throw(switch_id, position)
-                if switch_id in self.held_switch_ids() or (
-                    needs_throw and switch_id in self.switches_just_left()
-                ):
+                if switch_id in self.held_switch_ids():
                     reason = SWITCH_HELD
-                elif needs_throw and (
+                elif self._needs_throw(switch_id, position) and (
                     self._throw_switch is None or not self._throw_switch(switch_id, position)
                 ):
                     if not self._outputs_active():
@@ -743,7 +718,7 @@ class TrainRuntime:
                     for switch_id, position in assigned.items()
                     if self._needs_throw(switch_id, position)
                 ]
-                blocked = self.held_switch_ids() | self.switches_just_left()
+                blocked = self.held_switch_ids()
                 if any(switch_id in blocked for switch_id, _ in to_throw):
                     reason = SWITCH_HELD
                 for switch_id, position in to_throw if reason is None else ():
@@ -953,7 +928,6 @@ class TrainRuntime:
         self.alternate_next.clear()
         self.passing_blocks.clear()
         self.occupied = set()
-        self._left_at.clear()
 
     # ------------------------------------------------------------------
 
