@@ -139,7 +139,7 @@ def test_a_stopped_train_across_a_boundary_keeps_the_block_under_its_lit_cars(ri
     assert LEFT_SWITCH in rig.runtime.held_switch_ids()
     # It runs again: now the detectors say the rear really has left.
     rig.knob("T1", 6.0)
-    rig.step("Main")
+    rig.step("Main", seconds=1.2)
     assert rig.blocks("T1") == ["Main"]
 
 
@@ -157,13 +157,15 @@ def test_a_stopped_train_across_a_boundary_that_is_lifted_off_is_removed(rig):
 # --- one train round the loop ---------------------------------------------
 
 
-def test_turning_the_knob_claims_the_next_block_and_powers_both(rig):
+def test_turning_the_knob_claims_the_next_block_and_powers_its_own_block(rig):
+    """A claimed block stays at 0 V until it reads occupied (design_v2.md
+    "Track power")."""
     rig.step("Left")
     assert rig.knob("T1", 6.0) == (True, None)
     rig.step("Left")
     assert rig.state("T1") == "moving"
     assert rig.claim("T1") == "Main"
-    assert rig.volts == {"Left": 6.0, "Main": 6.0, "Right": 0.0, "Up": 0.0, "Sideline": 0.0}
+    assert rig.volts == {"Left": 6.0, "Main": 0.0, "Right": 0.0, "Up": 0.0, "Sideline": 0.0}
 
 
 def test_a_claimed_block_that_reads_occupied_becomes_the_front_block(rig):
@@ -173,20 +175,110 @@ def test_a_claimed_block_that_reads_occupied_becomes_the_front_block(rig):
     rig.step("Left", "Main")
     assert rig.blocks("T1") == ["Left", "Main"]
     assert rig.claim("T1") == "Right"
-    # Right is run in reverse this way round, so its voltage is negative.
-    assert rig.volts == {"Left": 6.0, "Main": 6.0, "Right": -6.0, "Up": 0.0, "Sideline": 0.0}
+    # Main got its voltage when it read occupied. Right is claimed and
+    # stays at 0 V.
+    assert rig.volts == {"Left": 6.0, "Main": 6.0, "Right": 0.0, "Up": 0.0, "Sideline": 0.0}
 
 
-def test_the_rear_block_is_taken_off_at_once_when_the_train_reads_further_forward(rig):
+def _across_left_and_main(rig):
+    """T1 moving at 6 V with Left and Main as its blocks."""
     rig.step("Left")
     rig.knob("T1", 6.0)
     rig.step("Left")
     rig.step("Left", "Main")
     assert rig.blocks("T1") == ["Left", "Main"]
+
+
+# design_v2.md "Trains", A block that reads empty is checked at 0 V or stays
+# for the hold time.
+
+
+def test_a_block_behind_an_occupied_block_is_cut_off_and_then_taken_off(rig):
+    _across_left_and_main(rig)
+    rig.step("Main")
+    # Cut off: 0 V, and still the train's block.
+    assert rig.blocks("T1") == ["Left", "Main"]
+    assert rig.volts["Left"] == 0.0 and rig.volts["Main"] == 6.0
+    assert rig.runtime.block_is_taken(rig.ids["Left"])
+    rig.step("Main", seconds=0.9)  # ten passes cut off, all reading empty
+    assert rig.blocks("T1") == ["Left", "Main"]
     rig.step("Main")
     assert rig.blocks("T1") == ["Main"]
-    assert rig.volts["Left"] == 0.0
     assert not rig.runtime.block_is_taken(rig.ids["Left"])
+    assert list(rig.runtime.trains) == ["T1"]
+
+
+def test_a_cut_off_block_that_reads_occupied_gets_its_voltage_back_once(rig):
+    """A long train: its unpowered cars read no current under voltage and
+    read occupied at 0 V."""
+    _across_left_and_main(rig)
+    rig.step("Main")  # no current in Left: cut off
+    assert rig.volts["Left"] == 0.0
+    rig.step("Left", "Main")  # at 0 V the tail is seen: voltage back
+    assert rig.volts["Left"] == 6.0
+    rig.step("Left", "Main", seconds=0.5)
+    rig.step("Main")  # no current again: cut off for good
+    assert rig.volts["Left"] == 0.0
+    rig.step("Left", "Main", seconds=3.0)  # the tail is seen at 0 V
+    assert rig.volts["Left"] == 0.0
+    assert rig.blocks("T1") == ["Left", "Main"]
+    rig.step("Main")  # the tail has left
+    assert rig.blocks("T1") == ["Main"]
+    assert list(rig.runtime.trains) == ["T1"]
+    assert "train_appeared" not in rig.operations()[1:]
+
+
+def test_a_block_that_keeps_reading_occupied_after_its_voltage_came_back_is_ordinary_again(rig):
+    """A motor car whose current reading dropped out: under voltage again it
+    draws current, and a later drop-out gets its own voltage back."""
+    _across_left_and_main(rig)
+    rig.step("Main")
+    rig.step("Left", "Main", seconds=5.2)  # reads occupied for the hold time
+    assert rig.volts["Left"] == 6.0
+    assert rig.train("T1").voltage_back == {}
+    rig.step("Main")  # drops out again: cut off
+    assert rig.volts["Left"] == 0.0
+    rig.step("Left", "Main")  # and gets its voltage back again
+    assert rig.volts["Left"] == 6.0
+
+
+def test_a_block_ahead_of_an_occupied_block_stays_and_keeps_its_voltage(rig):
+    """A long train whose front car only has lights: the front car is seen
+    as it rolls into the claimed block at 0 V, is not seen there under
+    voltage, and the motor car follows a block behind."""
+    rig.step("Left")
+    rig.knob("T1", 6.0)
+    rig.step("Left")
+    rig.step("Left", "Main")  # the front car rolls into Main, at 0 V
+    rig.step("Left", "Main", "Right")  # and on into Right
+    assert rig.blocks("T1") == ["Left", "Main", "Right"]
+    assert rig.claim("T1") == "Up"
+    # Under voltage the front car is not seen; the motor car is still in Left.
+    rig.step("Left", seconds=8.0)
+    assert rig.blocks("T1") == ["Left", "Main", "Right"]
+    assert rig.volts == {"Left": 6.0, "Main": 6.0, "Right": -6.0, "Up": 0.0, "Sideline": 0.0}
+    assert rig.train("T1").cut_off == {}
+    assert rig.claim("T1") == "Up"
+    # The motor car moves into Main: now Left is behind an occupied block.
+    rig.step("Main", seconds=1.2)
+    assert rig.blocks("T1") == ["Main", "Right"]
+    assert list(rig.runtime.trains) == ["T1"]
+
+
+def test_a_cut_off_goes_on_when_the_train_stops(rig):
+    _across_left_and_main(rig)
+    rig.step("Main")
+    rig.runtime.stop("T1", rig.now)
+    rig.step("Main", seconds=1.2)  # Left still reads empty at 0 V
+    assert rig.blocks("T1") == ["Main"]
+
+
+def test_a_stopped_train_gets_no_new_cut_off(rig):
+    _across_left_and_main(rig)
+    rig.runtime.stop("T1", rig.now)
+    rig.step("Main", seconds=8.0)
+    assert rig.blocks("T1") == ["Left", "Main"]
+    assert rig.train("T1").cut_off == {}
 
 
 def test_a_train_that_reads_on_no_block_keeps_its_block_and_voltage_for_the_hold_time(rig):
@@ -196,24 +288,22 @@ def test_a_train_that_reads_on_no_block_keeps_its_block_and_voltage_for_the_hold
     rig.step(seconds=4.5)  # on the switch: no block reads occupied
     assert rig.blocks("T1") == ["Left"]
     assert rig.state("T1") == "moving"
-    assert rig.volts["Left"] == 6.0 and rig.volts["Main"] == 6.0
-    rig.step("Main")
+    assert rig.volts["Left"] == 6.0 and rig.volts["Main"] == 0.0
+    rig.step("Main", seconds=1.2)
     assert rig.blocks("T1") == ["Main"]
     assert "train_lost" not in rig.operations()
 
 
-def test_a_front_block_that_reads_empty_stays_for_the_hold_time_and_then_ends_the_claim(rig):
+def test_a_front_block_that_reads_empty_stays_while_a_block_behind_reads_occupied(rig):
     rig.step("Left")
     rig.knob("T1", 6.0)
     rig.step("Left")
     rig.step("Left", "Main")  # the nose touches Main
     assert rig.claim("T1") == "Right"
-    rig.step("Left", seconds=4.5)  # Main reads empty again; Left still reads occupied
+    rig.step("Left", seconds=8.0)  # Main reads empty again; Left still reads occupied
     assert rig.blocks("T1") == ["Left", "Main"]
-    rig.step("Left", seconds=1.0)
-    assert rig.blocks("T1") == ["Left"]
-    # The claim on Right was made from Main. The train asks again from Left.
-    assert rig.claim("T1") == "Main"
+    assert rig.claim("T1") == "Right"
+    assert rig.volts["Main"] == 6.0
 
 
 def test_three_laps_without_waiting_for_its_own_block(rig):
@@ -223,7 +313,7 @@ def test_three_laps_without_waiting_for_its_own_block(rig):
     lap = [("Left", "Main"), ("Main", "Right"), ("Right", "Up"), ("Up", "Left")]
     for behind, ahead in lap * 3:
         rig.step(behind, ahead, seconds=0.5)
-        rig.step(ahead, seconds=1.0)
+        rig.step(ahead, seconds=1.2)
         assert rig.blocks("T1") == [ahead]
     assert "train_waiting" not in rig.operations()
     assert list(rig.runtime.trains) == ["T1"]
@@ -238,7 +328,7 @@ def test_reverse_after_a_stop_leaves_no_old_block_at_the_front(rig):
     rig.knob("T1", 6.0)
     rig.step("Sideline")
     rig.step("Sideline", "Left", seconds=0.5)
-    rig.step("Left", seconds=0.5)
+    rig.step("Left", seconds=1.2)
     rig.step("Left", "Up", seconds=0.5)
     rig.runtime.stop("T1", rig.now)
     rig.step("Left", "Up", seconds=5.2)
@@ -248,7 +338,7 @@ def test_reverse_after_a_stop_leaves_no_old_block_at_the_front(rig):
     rig.knob("T1", 6.0)
     rig.step("Left", "Up")
     assert rig.claim("T1") == "Sideline"
-    rig.step("Left", "Sideline", seconds=0.5)
+    rig.step("Left", "Sideline", seconds=1.2)
     assert rig.blocks("T1") == ["Left", "Sideline"]
     assert list(rig.runtime.trains) == ["T1"]
 
@@ -272,7 +362,7 @@ def test_the_knob_changes_the_voltage_on_the_next_step(rig):
     rig.step("Left")
     rig.knob("T1", 9.0)
     rig.step("Left")
-    assert rig.volts["Left"] == 9.0 and rig.volts["Main"] == 9.0
+    assert rig.volts["Left"] == 9.0 and rig.volts["Main"] == 0.0
 
 
 # --- two trains ------------------------------------------------------------
@@ -293,11 +383,11 @@ def test_a_train_waits_while_the_next_block_is_taken_and_starts_by_itself(rig):
     rig.step("Main", "Left")
     rig.step("Main", "Right", "Left", seconds=1.0)
     assert rig.state("T2") == "waiting"
-    rig.step("Right", "Left")  # T1's tail has left Main
+    rig.step("Right", "Left", seconds=1.2)  # T1's tail has left Main
     assert rig.blocks("T1") == ["Right"]
     assert rig.state("T2") == "moving"
     assert rig.claim("T2") == "Main"
-    assert rig.volts["Left"] == 6.0 and rig.volts["Main"] == 6.0
+    assert rig.volts["Left"] == 6.0 and rig.volts["Main"] == 0.0
 
 
 def test_a_train_keeps_moving_until_it_is_wholly_in_its_front_block(rig):
@@ -328,7 +418,7 @@ def _t2_entering_main_behind_t1(rig, knob):
 
 def test_a_train_with_a_claim_gets_its_knob_voltage(rig):
     _t2_entering_main_behind_t1(rig, 9.0)
-    assert rig.volts["Left"] == 9.0 and rig.volts["Main"] == 9.0
+    assert rig.volts["Left"] == 9.0 and rig.volts["Main"] == 0.0
 
 
 def test_a_knob_below_the_caution_voltage_is_not_raised(rig):
@@ -344,7 +434,7 @@ def test_the_caution_voltage_is_signed_like_the_knob_voltage(rig):
     assert rig.runtime.reverse("T2", rig.live) == (True, None)  # Right reverse -> Up
     rig.knob("T2", 9.0)
     rig.step("Left", "Right")
-    assert rig.volts["Right"] == -9.0 and rig.volts["Up"] == -9.0
+    assert rig.volts["Right"] == -9.0 and rig.volts["Up"] == 0.0
     rig.step("Left", "Right", "Up")  # T2's front is now Up; Left is taken
     assert rig.volts["Right"] == -4.5 and rig.volts["Up"] == -4.5
 
@@ -367,7 +457,7 @@ def test_a_train_given_the_claim_gets_its_knob_voltage_again(rig):
     rig.step("Left", "Main", seconds=6.0)  # T1 is lifted off Right
     assert rig.claim("T2") == "Right"
     assert rig.volts["Left"] == 9.0 and rig.volts["Main"] == 9.0
-    assert rig.volts["Right"] == -9.0
+    assert rig.volts["Right"] == 0.0
 
 
 def test_a_train_that_owes_a_stop_gets_the_caution_voltage(rig):
@@ -439,7 +529,7 @@ def test_held_switches(rig):
     assert rig.runtime.held_switch_ids() == {LEFT_SWITCH}
     rig.step("Left", "Main", "Up")  # stands across the left switch
     assert LEFT_SWITCH in rig.runtime.held_switch_ids()
-    rig.step("Main", "Up")  # the rear has left Left
+    rig.step("Main", "Up", seconds=1.2)  # the rear has left Left
     assert rig.blocks("T1") == ["Main"]
     # The claim on Right holds the right switch. The left switch is no longer
     # held.
@@ -603,7 +693,7 @@ def test_reverse_turns_the_train_round(rig):
     rig.knob("T1", 6.0)
     rig.step("Left")
     assert rig.claim("T1") == "Up"
-    assert rig.volts["Left"] == -6.0 and rig.volts["Up"] == 6.0
+    assert rig.volts["Left"] == -6.0 and rig.volts["Up"] == 0.0
 
 
 def test_reverse_swaps_the_front_and_rear_blocks(rig):
@@ -619,7 +709,7 @@ def test_reverse_swaps_the_front_and_rear_blocks(rig):
     rig.knob("T1", 6.0)
     rig.step("Left", "Main")
     assert rig.claim("T1") == "Up"
-    assert rig.volts["Main"] == -6.0 and rig.volts["Left"] == -6.0 and rig.volts["Up"] == 6.0
+    assert rig.volts["Main"] == -6.0 and rig.volts["Left"] == -6.0 and rig.volts["Up"] == 0.0
 
 
 # --- overrun, lost, found ---------------------------------------------------
@@ -745,7 +835,7 @@ def _run_into_main(rig):
     rig.step("Right", "Up")
     assert rig.claim("T1") == "Main"
     rig.step("Right", "Main", "Up")
-    rig.step("Main", "Up")
+    rig.step("Main", "Up", seconds=1.2)
     assert rig.blocks("T1") == ["Main"]
 
 
@@ -984,7 +1074,7 @@ def test_the_train_behind_gets_a_kept_block_when_the_stopped_train_runs_again(ri
     assert rig.train("T2").waiting_reason == "block_taken"
 
     rig.knob("T1", 6.0)
-    rig.step("Main", "Up")
+    rig.step("Main", "Up", seconds=1.2)
     assert rig.blocks("T1") == ["Main"]
     assert rig.claim("T2") == "Left"
     assert rig.state("T2") == "moving"

@@ -28,6 +28,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
 
+from constants import OCCUPANCY_OFF_THRESHOLD
 from next_block import (
     FORWARD,
     SWITCH_AGAINST,
@@ -114,6 +115,14 @@ class RunningTrain:
     """For each of those blocks, whether the train was running, or had
     stopped less than the hold time before, when the block began to read
     empty."""
+
+    cut_off: Dict[str, int] = field(default_factory=dict)
+    """The train's blocks that are cut off, each with the number of passes
+    since it was last cut off (design_v2.md "Trains", A block behind an
+    occupied block is cut off)."""
+    voltage_back: Dict[str, float] = field(default_factory=dict)
+    """The train's blocks that have had their voltage back after a cut-off,
+    each with the pass wall time at which it came back."""
 
     stop_block_id: Optional[str] = None
     """The block the train owes a stop, or none (design_v2.md "Claiming the
@@ -319,7 +328,7 @@ class TrainRuntime:
         self._step_count += 1
         self.occupied = {b for b in occupied if b in self._network.blocks}
         self._give_trains_to_occupied_blocks(now)
-        self._take_off_rear_blocks(now)
+        self._check_blocks_behind(now)
         self._note_empty_blocks(now)
         self._take_off_empty_blocks(now)
         if not live:
@@ -461,19 +470,62 @@ class TrainRuntime:
             {"block_id": block_id},
         )
 
-    def _take_off_rear_blocks(self, now: float) -> None:
-        """Take off each rear block that reads empty while a block further
-        forward in its train reads occupied (design_v2.md "Trains", A block
-        that reads empty is taken off at once or after the hold time)."""
+    def _check_blocks_behind(self, now: float) -> None:
+        """Cut off, give voltage back to, and take off the blocks behind each
+        train (design_v2.md "Trains", A block that reads empty is checked at
+        0 V or stays for the hold time)."""
         for train in sorted(self.trains.values(), key=lambda t: t.seq):
-            if train.lost or self._keeps_its_blocks(train):
+            if train.lost:
+                train.cut_off.clear()
+                train.voltage_back.clear()
                 continue
-            while (
-                len(train.blocks) > 1
-                and train.blocks[0] not in self.occupied
-                and any(b in self.occupied for b in train.blocks[1:])
+            # The front block is never cut off.
+            train.cut_off.pop(train.front_block, None)
+            train.voltage_back.pop(train.front_block, None)
+            for block_id in train.cut_off:
+                train.cut_off[block_id] += 1
+
+            # A block is newly cut off, or gets its voltage back, only while
+            # the train is moving.
+            if self.state_of(train) == "moving":
+                self._cut_off_and_give_back(train, now)
+
+            # A cut-off rear block that reads empty is taken off, whether or
+            # not the train is still moving.
+            while len(train.blocks) > 1:
+                rear = train.blocks[0]
+                if (
+                    rear in self.occupied
+                    or train.cut_off.get(rear, -1) < OCCUPANCY_OFF_THRESHOLD
+                ):
+                    break
+                self._take_off_block(train, rear)
+
+    def _cut_off_and_give_back(self, train: RunningTrain, now: float) -> None:
+        # A cut-off block that reads occupied gets its voltage back once.
+        for block_id in list(train.cut_off):
+            if block_id in self.occupied and block_id not in train.voltage_back:
+                del train.cut_off[block_id]
+                train.voltage_back[block_id] = now
+        # It is an ordinary block again once it has read occupied for the
+        # hold time since its voltage came back.
+        for block_id, since in list(train.voltage_back.items()):
+            if (
+                block_id not in train.cut_off
+                and block_id in self.occupied
+                and now - since >= self.hold_time_s
             ):
-                self._take_off_block(train, train.blocks[0])
+                del train.voltage_back[block_id]
+        # A block behind an occupied block is cut off: it reads empty, a
+        # block further forward reads occupied, and none behind it does. A
+        # block ahead of an occupied block stays and keeps its voltage.
+        for index, block_id in enumerate(train.blocks):
+            if block_id in self.occupied:
+                break
+            if block_id not in train.cut_off and any(
+                b in self.occupied for b in train.blocks[index + 1:]
+            ):
+                train.cut_off[block_id] = 0
 
     def _keeps_its_blocks(self, train: RunningTrain) -> bool:
         """Whether the train is not moving while one of its blocks reads
@@ -491,15 +543,15 @@ class TrainRuntime:
         for train in self.trains.values():
             if train.lost:
                 continue
-            if self._keeps_its_blocks(train):
+            if any(b in self.occupied for b in train.blocks):
+                # The count runs only while the train reads on no block
+                # (design_v2.md "Trains", A block of a train that reads on
+                # no block stays for the hold time).
                 train.empty_since.clear()
                 train.empty_while_moving.clear()
                 continue
             for block_id in train.blocks:
-                if block_id in self.occupied:
-                    train.empty_since.pop(block_id, None)
-                    train.empty_while_moving.pop(block_id, None)
-                elif block_id not in train.empty_since:
+                if block_id not in train.empty_since:
                     train.empty_since[block_id] = now
                     train.empty_while_moving[block_id] = train.running or (
                         train.stopped_at is not None
@@ -563,6 +615,8 @@ class TrainRuntime:
         train.directions.pop(block_id, None)
         train.empty_since.pop(block_id, None)
         train.empty_while_moving.pop(block_id, None)
+        train.cut_off.pop(block_id, None)
+        train.voltage_back.pop(block_id, None)
         self._emit(
             "train_block_removed",
             "info",
@@ -855,19 +909,20 @@ class TrainRuntime:
 
     def block_voltages(self) -> Dict[str, float]:
         """The voltage each block gets on this step (design_v2.md "Track
-        power"): a moving train's blocks and its claim get its knob voltage,
-        or the caution voltage when that is lower and the train is going to
-        come to rest in its front block, signed by its line of travel. Every
-        other block gets 0 V."""
+        power"): a moving train's blocks that are not cut off get its knob
+        voltage, or the caution voltage when that is lower and the train is
+        going to come to rest in its front block, signed by its line of
+        travel. Every other block gets 0 V, a claimed block included: it
+        gets voltage once it reads occupied and is the train's front block."""
         volts: Dict[str, float] = {block_id: 0.0 for block_id in self._network.blocks}
         for train in self.trains.values():
             if self.state_of(train) != "moving":
                 continue
             drive = self.drive_volts(train)
             for block_id in train.blocks:
+                if block_id in train.cut_off:
+                    continue
                 volts[block_id] = self._signed(drive, train.directions.get(block_id))
-            if train.claim_block_id is not None:
-                volts[train.claim_block_id] = self._signed(drive, train.claim_direction)
         return volts
 
     def drive_volts(self, train: RunningTrain) -> float:
@@ -943,6 +998,8 @@ class TrainRuntime:
         }
         train.destination_block_id = None
         train.end_of_track_block = None
+        train.cut_off.clear()
+        train.voltage_back.clear()
         self._clear_asking(train)
         return True, None
 

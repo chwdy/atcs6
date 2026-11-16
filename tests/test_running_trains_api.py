@@ -89,7 +89,8 @@ def test_a_live_session_runs_the_train_step(session):
     reply = session.client.put("/api/trains/T1/knob", json={"volts": 6})
     assert reply.status_code == 200 and reply.get_json() == {"success": True, "reason": None}
     session.passes("Left")
-    assert session.volts("Left") == 6.0 and session.volts("Main") == 6.0
+    # Main is claimed and stays at 0 V until it reads occupied.
+    assert session.volts("Left") == 6.0 and session.volts("Main") == 0.0
     assert session.volts("Up") == 0.0
 
 
@@ -227,7 +228,9 @@ def test_alternation_throws_before_powering_siding(session):
     session.passes("Right")
     assert session.sim.switch_power_controller.get_last_throw(switch_id) == 1
     assert runtime.trains["T1"].claim_block_id == session.ids["Sideline"]
-    assert abs(session.volts("Sideline")) == 6
+    assert session.volts("Sideline") == 0
+    session.passes("Right", "Sideline")
+    assert session.volts("Sideline") != 0
     assert session.volts("Main") == 0
 
 
@@ -240,7 +243,7 @@ def test_an_arrival_gets_the_passing_block_that_is_not_taken(session):
     session.client.put(f"/api/trains/{train.train_id}/knob", json={"volts": 6})
     session.passes("Right", "Sideline")
     assert train.claim_block_id == session.ids["Main"]
-    assert abs(session.volts("Main")) == 6
+    assert session.volts("Main") == 0
     # The turn does not move on until the train enters.
     assert runtime.alternate_next[switch_id] == 1
 
