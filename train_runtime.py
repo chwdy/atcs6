@@ -26,9 +26,9 @@ splitting, and renaming.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, List, Mapping, Optional, Set, Tuple
 
-from constants import OCCUPANCY_OFF_THRESHOLD
+from constants import OCCUPANCY_OFF_THRESHOLD, SHORT_CIRCUIT_READS
 from next_block import (
     FORWARD,
     SWITCH_AGAINST,
@@ -56,6 +56,12 @@ CAUTION_VOLTS: float = 4.5
 """The caution voltage: the most a moving train's blocks get while the train
 is going to come to rest in its front block (design_v2.md "Track power"). The
 runtime setting `caution_volts` writes this module attribute."""
+
+SHORT_CIRCUIT_MA: float = 1000.0
+"""The short-circuit current, in mA: a block that measures more than this on
+`SHORT_CIRCUIT_READS` runtime steps in a row is shorted (design_v2.md "When
+the runtime stops a train"). The runtime setting `short_circuit_ma` writes
+this module attribute."""
 
 # Why a train cannot be given a claim (design_v2.md "When a train waits").
 BLOCK_TAKEN = "block_taken"
@@ -180,6 +186,9 @@ class TrainRuntime:
         self._step_count = 0
         self.occupied: Set[str] = set()
         """The blocks that read occupied on the last step."""
+        self._short_counts: Dict[str, int] = {}
+        """Per block, how many steps in a row it has measured more than the
+        short-circuit current."""
 
     # ------------------------------------------------------------------
     # Reading
@@ -317,13 +326,21 @@ class TrainRuntime:
     # The runtime step
     # ------------------------------------------------------------------
 
-    def step(self, occupied: Iterable[str], now: float, live: bool) -> None:
+    def step(
+        self,
+        occupied: Iterable[str],
+        now: float,
+        live: bool,
+        currents_ma: Optional[Mapping[str, float]] = None,
+    ) -> None:
         """One runtime step.
 
         `occupied` is the blocks that read occupied after the debounce, `now`
         is this pass's wall time, and `live` is whether the session state is
         Live. While it is not Live the step only updates each train's blocks:
-        nothing is claimed and no voltage is written.
+        nothing is claimed and no voltage is written. `currents_ma` is the
+        current each block's current channel measured on this pass's read
+        (`OccupancyInput.last_block_currents_ma()`).
         """
         self._step_count += 1
         self.occupied = {b for b in occupied if b in self._network.blocks}
@@ -333,7 +350,7 @@ class TrainRuntime:
         self._take_off_empty_blocks(now)
         if not live:
             return
-        self._stop_trains(now)
+        self._stop_trains(now, self._shorted_blocks(currents_ma or {}))
         self._end_claims(now)
         self._give_claims(now)
         if self._outputs_active():
@@ -638,10 +655,42 @@ class TrainRuntime:
 
     # --- item 3: stop trains ------------------------------------------
 
-    def _stop_trains(self, now: float) -> None:
-        """End of track (design_v2.md "When the runtime stops a train")."""
+    def _shorted_blocks(self, currents_ma: Mapping[str, float]) -> Set[str]:
+        """Update every block's short-circuit count and return the blocks that
+        are shorted on this step (design_v2.md "When the runtime stops a
+        train", A block is shorted after two reads above the short-circuit
+        current)."""
+        shorted: Set[str] = set()
+        counts: Dict[str, int] = {}
+        for block_id, current_ma in currents_ma.items():
+            if block_id not in self._network.blocks or current_ma <= SHORT_CIRCUIT_MA:
+                continue
+            count = self._short_counts.get(block_id, 0) + 1
+            if count >= SHORT_CIRCUIT_READS:
+                shorted.add(block_id)
+            else:
+                counts[block_id] = count
+        # A block left out of `counts` is back at zero.
+        self._short_counts = counts
+        return shorted
+
+    def _stop_trains(self, now: float, shorted: Set[str]) -> None:
+        """Short circuit and End of track (design_v2.md "When the runtime
+        stops a train")."""
         for train in sorted(self.trains.values(), key=lambda t: t.seq):
             if not train.running:
+                continue
+            shorted_block = next((b for b in train.blocks if b in shorted), None)
+            if shorted_block is not None:
+                self._stop(train, now)
+                self._emit(
+                    "short_circuit",
+                    "warning",
+                    train,
+                    f"{train.name} stopped: short circuit on "
+                    f"{self._block_name(shorted_block)}.",
+                    {"block_id": shorted_block},
+                )
                 continue
             if train.end_of_track_block == train.front_block:
                 continue

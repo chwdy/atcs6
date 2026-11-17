@@ -28,6 +28,7 @@ class RuntimeConfig:
     # --- Trains (the runtime) ---
     hold_time_s: float = 5.0
     caution_volts: float = 4.5
+    short_circuit_ma: float = 1000.0
     # --- Event stream ---
     notification_retention_rows: int = C.NOTIFICATION_RETENTION_ROWS
 
@@ -37,6 +38,7 @@ class RuntimeConfig:
 _TARGETS: Dict[str, List[Tuple[str, str]]] = {
     "hold_time_s": [("train_runtime", "HOLD_TIME_S")],
     "caution_volts": [("train_runtime", "CAUTION_VOLTS")],
+    "short_circuit_ma": [("train_runtime", "SHORT_CIRCUIT_MA")],
     "notification_retention_rows": [
         ("constants", "NOTIFICATION_RETENTION_ROWS"),
         ("notification_center", "NOTIFICATION_RETENTION_ROWS"),
@@ -56,6 +58,7 @@ _MIN_INCLUSIVE: Dict[str, float] = {
 _MIN_EXCLUSIVE: Dict[str, float] = {
     "hold_time_s": 0.0,
     "caution_volts": 0.0,
+    "short_circuit_ma": 0.0,
 }
 # Single-field upper bounds, `<= b`.
 _MAX_INCLUSIVE: Dict[str, float] = {

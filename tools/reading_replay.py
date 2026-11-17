@@ -43,7 +43,7 @@ import os
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set
 
-from block_occupancy import OccupancyInput
+from block_occupancy import OccupancyInput, currents_ma_from_detail
 
 PASS_TICK = "tick"
 PASS_STOPPED = "stopped"
@@ -203,6 +203,9 @@ class ReplayOccupancyInput(OccupancyInput):
 
     def last_read_detail(self) -> Dict[str, Dict[str, Any]]:
         return {block_id: dict(d) for block_id, d in self._detail.items() if d}
+
+    def last_block_currents_ma(self) -> Dict[str, float]:
+        return currents_ma_from_detail(self._detail)
 
     def detected_block_ids(self) -> Set[str]:
         return set(self._blocks)

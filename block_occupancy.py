@@ -12,7 +12,7 @@ of blocks that read occupied (design_v2.md "Occupancy detection").
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Callable, Dict, Optional, Set, Tuple, TYPE_CHECKING
+from typing import Any, Callable, Dict, Optional, Set, Tuple, TYPE_CHECKING
 
 from constants import (
     OCCUPANCY_OFF_THRESHOLD,
@@ -42,6 +42,17 @@ class OccupancyInput(ABC):
         """
         raise NotImplementedError
 
+    def last_block_currents_ma(self) -> Dict[str, float]:
+        """The size of the current each block's current channel measured on the
+        last `read_block_currents()`, in mA, with no sign (design_v2.md
+        "Hardware interface", The measured current of the last read).
+
+        A block whose digital detector answered is left out. This makes no
+        device read of its own. The default is empty, which is the answer for
+        an input with no current channel.
+        """
+        return {}
+
     def detected_block_ids(self) -> Set[str]:
         """The blocks this input can answer for (design_v2.md "Hardware
         interface", Input and sensing).
@@ -52,6 +63,20 @@ class OccupancyInput(ABC):
         behind it.
         """
         return set()
+
+
+def currents_ma_from_detail(detail: Dict[str, Dict[str, Any]]) -> Dict[str, float]:
+    """The unsigned current, in mA, of each block whose current channel
+    answered, taken from a read's per-block detail (design_v2.md "Hardware
+    interface", The measured current of the last read)."""
+    currents: Dict[str, float] = {}
+    for block_id, entry in detail.items():
+        if entry.get("source") != "current":
+            continue
+        current_ma = entry.get("current_ma")
+        if current_ma is not None:
+            currents[block_id] = abs(float(current_ma))
+    return currents
 
 
 class InactiveOccupancyInput(OccupancyInput):

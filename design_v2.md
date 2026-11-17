@@ -53,6 +53,7 @@ These are the terms this document uses for v2's own ideas. Names of code (classe
 - **Direction**: which way a train faces in its front block. See **Direction**.
 - **Speed knob**: the voltage, from 0 V to 12 V, that a train's blocks get while it moves.
 - **Caution voltage**: 4.5 V (the runtime setting `caution_volts`). A moving train that is going to come to rest in its front block gets at most this voltage. See **Track power**.
+- **Short-circuit current, shorted**: the short-circuit current is 1000 mA (the runtime setting `short_circuit_ma`). A block is shorted when it has measured more current than that on two runtime steps in a row. See **When the runtime stops a train**.
 - **Stopped, running, waiting, moving**: a train is stopped while its knob is at 0 V and running while it is above 0 V. A running train is waiting while the runtime keeps its blocks at 0 V because it cannot claim the next block ahead, and moving otherwise.
 - **Wholly in its front block**: a train is wholly in its front block when that block is the only one of its blocks that reads occupied. The detectors then say its rear has left the block behind.
 - **Next block ahead**: the block a train enters next. See **Claiming the next block**.
@@ -176,6 +177,7 @@ These are all the things the operator can do to trains and switches from the Ope
   - the train is lost (`train_lost`);
   - `volts` is below `0` or above `MAX_TRACK_VOLTAGE` (`out_of_range`).
 - **Stop.** `POST /api/trains/<train_id>/stop` sets the knob to 0 V. It is always accepted.
+- **A short circuit stops the train.** When one of a train's blocks is shorted, the runtime stops that train with a warning that names the block, and the other trains keep running (see **When the runtime stops a train**, Short circuit). The operator clears the track and turns the knob up again.
 - **An unknown train.** Every request that names a `train_id` the runtime does not hold is refused with `unknown_train`.
 - **Reverse.** See **Direction**, Reverse turns the train round.
 - **Set a destination.** `PUT /api/trains/<train_id>/destination` with `{ "block_id": id }` sets the destination, and `{ "block_id": null }` clears it. The train runs to that block and the runtime stops it there (see **When the runtime stops a train**). A destination does not start a train: it moves when its knob is above 0 V. Without a destination the train just runs, following the switches as they are set. Setting one is refused when **any of these holds**:
@@ -469,11 +471,18 @@ A train that rolls a whole block past its stop is a reason to turn its knob or t
 Each block gets one voltage at a time, signed for direction (see **Direction**). Item 6 of **Runtime step** decides every block's voltage on every step from these rules alone, and `BlockPowerController` is the one place that sends a block's voltage while the session is Live:
 
 - **A moving train's blocks that are not cut off get its knob voltage.** Each block is signed by the train's line of travel through it. A cut-off block gets 0 V (see **Trains**, A block behind an occupied block is cut off). A block the train still holds for the hold time (see **Trains**, A block that reads empty is checked at 0 V or stays for the hold time) counts as the train's, so it keeps its voltage through a short loss of contact.
+- **Short circuit.** One of the train's blocks is shorted (see **A block is shorted after two reads above the short-circuit current**). The runtime emits the warning event `"short_circuit"`, for example "Train A stopped: short circuit on block B." The train keeps its destination. When the operator turns the knob up again, the train's blocks get its voltage again, and the runtime stops the train again when one of them is shorted again.
 - **A claimed block gets 0 V until it reads occupied.** On the pass on which the claimed block reads occupied it becomes the train's front block (rule 1 of **Trains**, An occupied block with no train gets one), and it gets the train's voltage from that step on. The reason: at 0 V the digital detector reads the block, and it sees the first car of the train that conducts, a front car that only has lights included. A claimed block that already carried the train's voltage would be read by its current channel, which does not see such a car (see **Occupancy source and drive zones**, A car that only has lights is not seen in the driven zone), and the front of the train would run through the block and out of its far end unseen. A locomotive rolls onto the block at 0 V and gets its voltage there once the detector has confirmed it, about 0.2 seconds later (see **Occupancy detection**).
 - **A moving train that is going to come to rest in its front block gets at most the caution voltage.** While **either of these holds** for a moving train, each of its blocks that is not cut off gets the lower of its knob voltage and the caution voltage (4.5 V, the runtime setting `caution_volts`), signed as its knob voltage would be:
   - the train holds no claim — it cannot be given one or owes its front block a stop (see **When a train waits**), or its track ends ahead (see **When the runtime stops a train**, End of track);
   - the train's front block is its destination.
 
+- **A block is shorted after two reads above the short-circuit current.** The runtime keeps a count for each block. On each runtime step:
+  - a block whose measured current is above the short-circuit current (1000 mA, the runtime setting `short_circuit_ma`) adds one to its count;
+  - every other block's count goes back to zero, a block with no measured current included.
+
+  A block is shorted on the step its count reaches `SHORT_CIRCUIT_READS` (2, in `constants.py`), and its count then goes back to zero. The measured current is the one **Hardware interface**, The measured current of the last read, gives. Two reads are asked for because one read is one sample of a noisy channel. A train on the rig draws well under 1000 mA, and a power brick cuts out on a short in the same way.
+- **A short at a low voltage is not stopped.** A low voltage reaches the rails as the full supply switched on for a fraction of each cycle, so a short on such a block measures that fraction of its current and can stay under the short-circuit current.
   On the step the train is given the claim, its blocks get its knob voltage again. The reason: such a train loses its voltage once it is wholly in its front block, and from a lower speed it rolls less far past that point.
   - **A train the runtime has stopped for End of track is not held to the caution voltage.** When the operator turns its knob up again in that block, its blocks get its knob voltage, because a train in its last block is the operator's to drive.
   - **A caution voltage below `current_sense_min_drive_v` makes a train come to rest later.** Its blocks are then in the lighting zone, where a block takes 3 seconds longer to read empty (see **Occupancy source and drive zones**, The lighting hold).
@@ -493,7 +502,7 @@ While the session state is Live, the runtime loop runs one runtime step ten time
    1. give a train to each block that reads occupied and has none (see **Trains**, An occupied block with no train gets one);
    2. apply **Trains**, A block that reads empty is checked at 0 V or stays for the hold time, in this order. For each moving train: end each cut-off whose block reads occupied and has not had its voltage back; make each block that has read occupied for the hold time since its voltage came back an ordinary block again; cut off each block that reads empty while a block further forward in its train reads occupied and no block behind it in its train does. For every train: take off each cut-off rear block that reads empty and has been cut off for `OCCUPANCY_OFF_THRESHOLD` passes. Then, leaving alone each train that is not moving while one of its blocks reads occupied (see **Trains**, A train that is not moving keeps its blocks): for each train none of whose blocks reads occupied, take off each block that has read empty for the hold time, except the last block of a train that is about to become a lost train;
    3. make each train whose blocks have all read empty for the hold time a lost train, or remove it.
-3. **Stop trains.** Apply **When the runtime stops a train** to every running train.
+3. **Stop trains.** Update every block's short-circuit count (see **When the runtime stops a train**, A block is shorted after two reads above the short-circuit current). Then apply **When the runtime stops a train** to every running train.
 4. **End claims.** End every claim that **Claiming the next block** says is over.
 5. **Give claims.** Serve the running trains in first-come order. For each, in this order: find the next block ahead; check the conditions under **Claiming the next block**, When a claim is given; when they all hold, throw any switch the destination, an assigned leg or alternate arrivals need thrown, then give the claim; otherwise throw nothing and record that the train is waiting, and why.
 6. **Set every block's voltage** (see **Track power**).
@@ -1037,6 +1046,7 @@ The hardware interface is the line between the runtime and the rig. Above it, co
   - for every runtime-thread caller, the runtime's `enter_output_safe_state()` reconciles synchronously, immediately after `enter_safe_state()` returns;
   - on the watchdog path, the runtime reconciles when it consumes the trip record, on the runtime loop's next iteration (see **Trip-record consumption escalates a failed drop to hardware failure**).
 - **Runtime-thread callers reach the sequence through `enter_output_safe_state()`.** `enter_output_safe_state()` is the runtime's wrapper around `OutputSafety.enter_safe_state()`. The wrapper runs the sequence. Entering Setup, a restart or shutdown, and entering hardware failure all use the wrapper.
+- **The measured current of the last read.** `OccupancyInput.last_block_currents_ma()` returns, for each block whose current channel answered the last `read_block_currents()`, the size of the current that channel measured, in mA, with no sign. A block whose digital detector answered is left out. The method makes no device read of its own. Its one consumer is the runtime's short-circuit count (see **When the runtime stops a train**, A block is shorted after two reads above the short-circuit current).
 - **The watchdog is the sole direct caller.** The Real Hardware `OutputWatchdog` is the only caller that calls `enter_safe_state()` directly.
 - **A Setup tool's ending is not a caller.** A Setup tool zeros the outputs it drives through its own writes (see **Setup tools**, Closing a Setup tool restores the safe state).
 - **Environment behavior for safe state.** Virtual Hardware performs the same sequence as Real Hardware, against the in-memory device.
@@ -1649,6 +1659,7 @@ The event log is the operator-facing record of what happened during a run. It is
 ### Viewer
 
 - **A read-only panel.** The event-log viewer is a read-only panel on the page. It reads the persisted stream and lets the operator filter it by:
+| `"short_circuit"` | the runtime stops a train one of whose blocks is shorted | `warning` |
   - entity
   - `kind`
   - `source`
@@ -1779,7 +1790,8 @@ An operator can change a fixed set of values from a live session, with no restar
 - **Field rules.** After coercion, every numeric value must be finite and must satisfy its field rule. A value that fails is ignored in the same way as a value that cannot be coerced, and valid fields in the same request still apply. The field rule is:
   - `notification_retention_rows >= 1`;
   - `hold_time_s > 0`;
-  - `0 < caution_volts <= 12`.
+  - `0 < caution_volts <= 12`;
+  - `short_circuit_ma > 0`.
 
 **Tunable fields**
 
@@ -1812,6 +1824,7 @@ Every field is a top-level key in the `GET` / `PUT /api/settings` payload, named
 
 Where each part of this document lives in the code. A file this list does not name, and no section describes, is not part of v2.
 
+| `short_circuit_ma` | `float` | `1000.0` | The short-circuit current: the measured current above which a block counts toward being shorted — see **When the runtime stops a train**, A block is shorted after two reads above the short-circuit current. Raising it lets a train that draws more current run. Lowering it stops a train on a smaller short. |
 - **Hardware layer** (`hardware/`, `hardware_config.py`, `block_power.py`, `switch_power.py`, `block_occupancy.py`): the interfaces, chip drivers, bindings, safe state, watchdog and Setup tools. See **Hardware interface**, **Hardware setup** and **Setup tools**.
 - **Track model** (`track.py`, `segment.py`, `block.py`, `switch.py`, and the layout model that loads a layout file): see **Tile**, **Segment**, **Block** and **Switch**.
 - **Runtime** (`simulation.py`, `switch_manager.py`, and the modules they are split into): the loop, the session state, trains, claims, switch throws and the runtime step. See **Runtime step**, **Trains**, **Switch** and **Session state**.

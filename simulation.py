@@ -221,7 +221,10 @@ class SimulationController(SwitchOutputOwner):
             environment=self.operation_mode.value if self.environment_active else None,
         )
         self.train_runtime.step(
-            detector.confirmed_occupied, self._pass_started_wall_time, live
+            detector.confirmed_occupied,
+            self._pass_started_wall_time,
+            live,
+            detector.input_interface.last_block_currents_ma(),
         )
 
     # ------------------------------------------------------------------

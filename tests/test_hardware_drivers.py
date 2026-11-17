@@ -685,6 +685,36 @@ def test_driven_threshold_judges_only_the_driven_zone():
     assert inp.last_read_detail()["B1"]["threshold_ma"] == pytest.approx(10.0)
 
 
+def test_the_measured_current_of_the_last_read_covers_current_channel_blocks_only():
+    # design_v2.md "Hardware interface", The measured current of the last read.
+    dev = FakeCh347Device(present_addresses={0x40, 0x41})
+    specs = [
+        ChipConfig("pwm1", "pca9685", i2c_address=0x40),
+        ChipConfig("sr1", "hc165", spi_select="cs1"),
+        ChipConfig("cur1", "ina3221", i2c_address=0x41),
+    ]
+    inp, blk, _sw = build_real_interfaces(
+        dev, specs,
+        block_track={"B1": ("pwm1", 0, 1), "B2": ("pwm1", 2, 3)},
+        block_occupancy={"B1": ("sr1", 0), "B2": ("sr1", 1)},
+        switch_output={},
+        block_occupancy_current={
+            "B1": ("cur1", 0, 0.0, 0.010, 0.025),
+            "B2": ("cur1", 1, 0.0, 0.010, 0.025),
+        },
+        idle_deadband_v=0.25,
+        current_sense_min_drive_v=4.0,
+    )
+    assert inp.last_block_currents_ma() == {}
+    dev.set_ina3221_current(0x41, 1, -1.2)
+    dev.set_ina3221_current(0x41, 2, 0.5)
+    blk.set_voltage("B1", 8.0)                   # driven: the current channel answers
+    inp.read_block_currents()                    # B2 is idle: the digital detector answers
+    currents = inp.last_block_currents_ma()
+    assert set(currents) == {"B1"}
+    assert currents["B1"] == pytest.approx(1200.0)
+
+
 def _lighting_zone_block(hold_reads=3):
     """A block bound to both sources, wired so 2 V lands in the lighting zone.
 

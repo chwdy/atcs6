@@ -55,6 +55,12 @@ DETECTOR_READING_LOG_MAX_TOTAL_BYTES: int = 200 * 1024 * 1024
 OCCUPANCY_ON_THRESHOLD: int = 2
 OCCUPANCY_OFF_THRESHOLD: int = 10
 
+# How many runtime steps in a row a block must measure more than the
+# short-circuit current before it is shorted (design_v2.md "When the runtime
+# stops a train", A block is shorted after two reads above the short-circuit
+# current). Two, because one read is one sample of a noisy channel.
+SHORT_CIRCUIT_READS: int = 2
+
 # How many consecutive reads the lighting zone's deciding source — the current
 # channel, or the '165 on a block that has no current channel — must call a
 # block clear before the driver stops holding it occupied (design_v2.md

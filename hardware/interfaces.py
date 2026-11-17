@@ -18,7 +18,7 @@ from contextlib import nullcontext
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
-from block_occupancy import OccupancyInput
+from block_occupancy import OccupancyInput, currents_ma_from_detail
 from block_power import MAX_TRACK_VOLTAGE, TrackOutput
 from constants import LIGHTING_CLEAR_HOLD_READS, OCCUPANCY_ON_THRESHOLD
 from switch_power import SwitchOutput
@@ -751,6 +751,9 @@ class OccupancyDriver(OccupancyInput):
         """Per-block detail of the last read: source ("current"/"digital"), the
         measured mA or raw bit, and the commanded drive state. Diagnostic only."""
         return self._last_read_detail
+
+    def last_block_currents_ma(self) -> Dict[str, float]:
+        return currents_ma_from_detail(self._last_read_detail)
 
     def read_all_sources(self) -> Dict[str, Dict[str, Any]]:
         """Read BOTH detectors for every bound block and report each separately,

@@ -51,12 +51,16 @@ class Rig:
         self.network.switches[LEFT_SWITCH].position = SwitchState(left)
         self.network.switches[RIGHT_SWITCH].position = SwitchState(right)
 
-    def step(self, *occupied, seconds=STEP_S):
-        """Run steps for `seconds` with these blocks reading occupied."""
+    def step(self, *occupied, seconds=STEP_S, currents_ma=None):
+        """Run steps for `seconds` with these blocks reading occupied, and
+        with each block in `currents_ma` (by name) measuring that current."""
         steps = max(1, round(seconds / STEP_S))
+        currents = {self.ids[n]: ma for n, ma in (currents_ma or {}).items()}
         for _ in range(steps):
             self.now += STEP_S
-            self.runtime.step({self.ids[n] for n in occupied}, self.now, self.live)
+            self.runtime.step(
+                {self.ids[n] for n in occupied}, self.now, self.live, currents
+            )
 
     def knob(self, train_id, volts):
         return self.runtime.set_knob(train_id, volts, self.now, self.live)
@@ -662,6 +666,78 @@ def test_leaving_live_stops_every_train_and_ends_every_claim(rig):
     rig.runtime.leave_live(rig.now)
     assert rig.state("T1") == "stopped" and rig.claim("T1") is None
     assert list(rig.runtime.trains) == ["T1"]
+
+
+def test_a_block_shorted_for_two_steps_stops_its_train(rig):
+    rig.step("Left")
+    rig.knob("T1", 6.0)
+    rig.step("Left", currents_ma={"Left": 300.0})
+    assert rig.state("T1") == "moving"
+    # One step above the short-circuit current is not enough.
+    rig.step("Left", currents_ma={"Left": 1200.0})
+    assert rig.state("T1") == "moving"
+    rig.step("Left", currents_ma={"Left": 1200.0})
+    assert rig.state("T1") == "stopped"
+    assert rig.volts["Left"] == 0.0
+    operation, kind, train_id, payload = rig.events[-1]
+    assert (operation, kind, train_id) == ("short_circuit", "warning", "T1")
+    assert payload == {"block_id": rig.ids["Left"]}
+    assert rig.operations().count("short_circuit") == 1
+
+
+def test_a_step_at_or_under_the_short_circuit_current_restarts_the_count(rig):
+    rig.step("Left")
+    rig.knob("T1", 6.0)
+    for current_ma in (1200.0, 1000.0, 1200.0, None, 1200.0):
+        currents = {} if current_ma is None else {"Left": current_ma}
+        rig.step("Left", currents_ma=currents)
+    assert rig.state("T1") == "moving"
+    assert "short_circuit" not in rig.operations()
+
+
+def test_a_train_stopped_for_a_short_runs_again_and_is_stopped_again(rig):
+    rig.step("Left")
+    rig.train("T1").destination_block_id = rig.ids["Main"]
+    rig.knob("T1", 6.0)
+    rig.step("Left", seconds=0.2, currents_ma={"Left": 1200.0})
+    assert rig.state("T1") == "stopped"
+    # The train keeps its destination.
+    assert rig.train("T1").destination_block_id == rig.ids["Main"]
+    rig.knob("T1", 6.0)
+    rig.step("Left", currents_ma={"Left": 1200.0})
+    assert rig.state("T1") == "moving" and rig.volts["Left"] != 0.0
+    rig.step("Left", currents_ma={"Left": 1200.0})
+    assert rig.state("T1") == "stopped"
+    assert rig.operations().count("short_circuit") == 2
+
+
+def test_a_short_stops_only_the_train_whose_block_it_is(rig):
+    rig.step("Left", "Right")
+    rig.knob("T1", 6.0)
+    rig.knob("T2", 6.0)
+    shorted = rig.blocks("T2")[0]
+    other = "T1"
+    rig.step("Left", "Right", seconds=0.2, currents_ma={shorted: 1200.0})
+    assert rig.state("T2") == "stopped"
+    assert rig.train(other).running
+
+
+def test_the_short_circuit_current_setting_is_read_on_each_step(rig, monkeypatch):
+    rig.step("Left")
+    rig.knob("T1", 6.0)
+    monkeypatch.setattr("train_runtime.SHORT_CIRCUIT_MA", 500.0)
+    rig.step("Left", seconds=0.2, currents_ma={"Left": 600.0})
+    assert rig.state("T1") == "stopped"
+
+
+def test_no_short_is_counted_while_the_session_is_not_live(rig):
+    rig.live = False
+    rig.step("Left", seconds=0.5, currents_ma={"Left": 1200.0})
+    assert "short_circuit" not in rig.operations()
+    rig.live = True
+    rig.knob("T1", 6.0)
+    rig.step("Left", currents_ma={"Left": 1200.0})
+    assert rig.state("T1") == "moving"
 
 
 def test_the_runtime_stops_a_train_where_the_track_ends_once(rig):
